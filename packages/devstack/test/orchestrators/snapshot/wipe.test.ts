@@ -3,9 +3,10 @@
 //
 // `planWipe` must enumerate the concrete teardown targets WITHOUT
 // removing anything: matching container names (via the runtime adapter),
-// the network/volume label scope, the state file, and the on-disk
-// stack-root children a real wipe removes (everything except preserved
-// `snapshots/` and, unless `keepCache`, `cache/`).
+// the network/volume label scope, and the on-disk stack-root children a
+// real wipe removes (everything except the wipe-scoped survivors —
+// `snapshots/` AND `cache/` are kept together by default and dropped
+// together on a hard reset).
 //
 // `runWipe` must additionally reap the stack root when nothing survived
 // so a wipe never leaks an empty `stacks/<stack>/` shell.
@@ -49,20 +50,17 @@ const stubRuntime = (overrides: Partial<ContainerRuntime> = {}): ContainerRuntim
 		...(overrides as any),
 	}) as unknown as ContainerRuntime;
 
-// Lay down a realistic stack root: state + cross-process artifacts +
-// per-plugin runtime trees, plus the preserved `snapshots/` and `cache/`.
-const seedStackRoot = (stackRoot: string): { stateFile: string } => {
+// Lay down a realistic stack root: cross-process artifacts + per-plugin
+// runtime trees, plus the preserved `snapshots/` and `cache/`.
+const seedStackRoot = (stackRoot: string): void => {
 	mkdirSync(join(stackRoot, 'snapshots', 'snap-1'), { recursive: true });
 	mkdirSync(join(stackRoot, 'cache', 'sui'), { recursive: true });
 	mkdirSync(join(stackRoot, 'runtime', 'sui-fork'), { recursive: true });
 	writeFileSync(join(stackRoot, 'snapshots', 'snap-1', 'meta.json'), '{}', 'utf8');
 	writeFileSync(join(stackRoot, 'cache', 'sui', 'x.json'), '{}', 'utf8');
 	writeFileSync(join(stackRoot, 'runtime', 'sui-fork', 'genesis'), 'x', 'utf8');
-	const stateFile = join(stackRoot, 'state.json');
-	writeFileSync(stateFile, '{}', 'utf8');
 	writeFileSync(join(stackRoot, 'roster.json'), '{}', 'utf8');
 	writeFileSync(join(stackRoot, 'stack.lock'), '', 'utf8');
-	return { stateFile };
 };
 
 describe('planWipe — dry-run enumeration', () => {
@@ -70,7 +68,7 @@ describe('planWipe — dry-run enumeration', () => {
 		withTempRoot('wipe-plan', (root) =>
 			Effect.gen(function* () {
 				const stackRoot = join(root, 'stacks', STACK);
-				const { stateFile } = seedStackRoot(stackRoot);
+				seedStackRoot(stackRoot);
 
 				const runtime = stubRuntime({
 					inspectByLabels: () =>
@@ -83,7 +81,6 @@ describe('planWipe — dry-run enumeration', () => {
 				const targets = yield* planWipe({
 					labelMatch: { app: APP, stack: STACK },
 					stackRoot,
-					stateFilePath: stateFile,
 					runtime,
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 
@@ -97,44 +94,38 @@ describe('planWipe — dry-run enumeration', () => {
 				// Network/volume scope is the label match.
 				expect(targets.networkLabelMatch).toEqual({ app: APP, stack: STACK });
 				expect(targets.volumeLabelMatch).toEqual({ app: APP, stack: STACK });
-				expect(targets.stateFile).toBe(stateFile);
 				expect(targets.stackRoot).toBe(stackRoot);
 
-				// On-disk: `snapshots/` preserved by default, `cache/` removed
-				// (keepCache defaults false), plus the rest of the tree.
+				// On-disk: `snapshots/` AND `cache/` are preserved together by
+				// default (wipe-scoped coupling), plus the rest of the tree is
+				// removed.
 				const onDiskNames = targets.onDiskPaths.map((p) => p.slice(stackRoot.length + 1)).sort();
-				expect(onDiskNames).toEqual([
-					'cache',
-					'roster.json',
-					'runtime',
-					'stack.lock',
-					'state.json',
-				]);
-				expect(targets.preserved).toEqual(['snapshots']);
+				expect(onDiskNames).toEqual(['roster.json', 'runtime', 'stack.lock']);
+				expect([...targets.preserved].sort()).toEqual(['cache', 'snapshots']);
 
 				// Read-only: nothing was removed.
 				expect(existsSync(join(stackRoot, 'runtime'))).toBe(true);
-				expect(existsSync(stateFile)).toBe(true);
 				expect(existsSync(join(stackRoot, 'snapshots'))).toBe(true);
 			}),
 		),
 	);
 
-	it.effect('keepCache preserves cache/ in the plan', () =>
-		withTempRoot('wipe-plan-keepcache', (root) =>
+	it.effect('a hard reset (keepSnapshots:false) drops BOTH snapshots/ and cache/', () =>
+		withTempRoot('wipe-plan-hard-reset', (root) =>
 			Effect.gen(function* () {
 				const stackRoot = join(root, 'stacks', STACK);
-				const { stateFile } = seedStackRoot(stackRoot);
+				seedStackRoot(stackRoot);
 				const targets = yield* planWipe({
 					labelMatch: { app: APP, stack: STACK },
 					stackRoot,
-					stateFilePath: stateFile,
 					runtime: stubRuntime(),
-					keepCache: true,
+					keepSnapshots: false,
 				}).pipe(Effect.provide(NodeFileSystem.layer));
-				expect([...targets.preserved].sort()).toEqual(['cache', 'snapshots']);
-				const onDiskNames = targets.onDiskPaths.map((p) => p.slice(stackRoot.length + 1));
-				expect(onDiskNames).not.toContain('cache');
+				// Coupled: neither survives a hard reset.
+				expect(targets.preserved).toEqual([]);
+				const onDiskNames = targets.onDiskPaths.map((p) => p.slice(stackRoot.length + 1)).sort();
+				expect(onDiskNames).toContain('cache');
+				expect(onDiskNames).toContain('snapshots');
 			}),
 		),
 	);
@@ -146,7 +137,6 @@ describe('planWipe — dry-run enumeration', () => {
 				const targets = yield* planWipe({
 					labelMatch: { app: APP, stack: STACK },
 					stackRoot,
-					stateFilePath: join(stackRoot, 'state.json'),
 					runtime: stubRuntime({ inspectByLabels: () => Effect.succeed([handle('only-svc')]) }),
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 				expect(targets.onDiskPaths).toEqual([]);
@@ -164,16 +154,13 @@ describe('runWipe — empty stack-root cleanup', () => {
 				const stackRoot = join(root, 'stacks', STACK);
 				// No snapshots/, no cache/ — only removable state.
 				mkdirSync(join(stackRoot, 'runtime'), { recursive: true });
-				const stateFile = join(stackRoot, 'state.json');
-				writeFileSync(stateFile, '{}', 'utf8');
 				writeFileSync(join(stackRoot, 'roster.json'), '{}', 'utf8');
 
 				yield* runWipe({
 					labelMatch: { app: APP, stack: STACK },
 					stackRoot,
-					stateFilePath: stateFile,
 					runtime: stubRuntime(),
-					keepCache: false,
+					keepSnapshots: false,
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 
 				// The whole stack root is gone — no empty shell left behind.
@@ -182,27 +169,47 @@ describe('runWipe — empty stack-root cleanup', () => {
 		),
 	);
 
-	it.effect('keeps the stack root (preserving snapshots) when a snapshot survives', () =>
+	it.effect('keeps the stack root preserving snapshots AND cache together by default', () =>
 		withTempRoot('wipe-keep', (root) =>
 			Effect.gen(function* () {
 				const stackRoot = join(root, 'stacks', STACK);
-				const { stateFile } = seedStackRoot(stackRoot);
+				seedStackRoot(stackRoot);
 
 				yield* runWipe({
 					labelMatch: { app: APP, stack: STACK },
 					stackRoot,
-					stateFilePath: stateFile,
 					runtime: stubRuntime(),
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 
-				// Stack root survives because `snapshots/` is preserved...
+				// Stack root survives because the wipe-scoped state survives...
 				expect(existsSync(stackRoot)).toBe(true);
+				// ...both `snapshots/` and `cache/` ride the one flag (coupled).
 				expect(existsSync(join(stackRoot, 'snapshots'))).toBe(true);
+				expect(existsSync(join(stackRoot, 'cache'))).toBe(true);
 				// ...but the removable state is gone.
-				expect(existsSync(stateFile)).toBe(false);
 				expect(existsSync(join(stackRoot, 'runtime'))).toBe(false);
-				expect(existsSync(join(stackRoot, 'cache'))).toBe(false);
 			}),
 		),
+	);
+
+	it.effect(
+		'a hard reset (keepSnapshots:false) removes snapshots AND cache and reaps the root',
+		() =>
+			withTempRoot('wipe-hard-reset', (root) =>
+				Effect.gen(function* () {
+					const stackRoot = join(root, 'stacks', STACK);
+					seedStackRoot(stackRoot);
+
+					yield* runWipe({
+						labelMatch: { app: APP, stack: STACK },
+						stackRoot,
+						runtime: stubRuntime(),
+						keepSnapshots: false,
+					}).pipe(Effect.provide(NodeFileSystem.layer));
+
+					// Nothing was preserved → the whole stack root is reaped.
+					expect(existsSync(stackRoot)).toBe(false);
+				}),
+			),
 	);
 });

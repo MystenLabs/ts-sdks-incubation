@@ -28,18 +28,16 @@ export interface PluginContribution {
 	readonly after?: ReadonlyArray<AnyPlugin>;
 }
 
-/** Context handed to each plugin's `setup()`. Kept minimal; today plugins need
- *  nothing from core, but threading a context keeps the signature stable as the
- *  template grows (e.g. passing `localnet` or `HERE`). */
+/** Context handed to each plugin's `setup()`. Kept minimal; currently it carries
+ *  only `here` (used by seal to resolve its local `vault` Move package path), but
+ *  threading a context keeps the signature stable as the template grows. */
 export interface PluginContext {
 	/** Absolute path of the app directory (the dir holding devstack.config.ts),
 	 *  for plugins that publish a local Move package. */
 	readonly here: string;
 }
 
-/** A plugin module: a stable id plus a pure `setup()` producing its
- *  contribution. */
+/** A plugin module: a pure `setup()` producing its contribution. */
 export interface PluginModule {
-	readonly id: string;
 	setup(ctx: PluginContext): PluginContribution;
 }

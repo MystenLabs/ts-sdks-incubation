@@ -14,9 +14,10 @@
 // `_tag` assertion fails.
 //
 // The resolution miss is reached BEFORE the body yields
-// `ArtifactPublisherService`, so the Effect short-circuits without
-// touching any service — we drive it directly and cast the R channel to
-// `never`, mirroring the `member.start([...])` idiom in `factory.test.ts`.
+// `CacheService` (whose `.publish` is the folded-in artifact-publisher
+// cycle), so the Effect short-circuits without touching any service — we
+// drive it directly and cast the R channel to `never`, mirroring the
+// `member.start([...])` idiom in `factory.test.ts`.
 
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect, Exit, Option } from 'effect';
@@ -25,6 +26,7 @@ import { account } from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
 import { deepbook, type DeepbookResolved } from '../../../src/plugins/deepbook/index.ts';
 import { localPackage } from '../../../src/plugins/package/index.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 const localMemberWithUnresolvedCoin = () => {
 	const publisher = account('publisher');
@@ -72,8 +74,9 @@ describe('deepbook local start — unresolved pool coin', () => {
 				captured: { registryId: '0xreg', adminCapId: '0xcap' },
 			};
 
+			const { provide } = makeTestPluginCtx();
 			const exit = yield* Effect.exit(
-				member.start([sui, publisherValue, packageValue] as never) as Effect.Effect<
+				provide(member.start([sui, publisherValue, packageValue] as never)) as Effect.Effect<
 					DeepbookResolved,
 					{ readonly _tag: string },
 					never

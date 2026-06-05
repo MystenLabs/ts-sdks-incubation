@@ -134,9 +134,8 @@ const findSingleStackManifestPath = (options: DefineGlobalSetupOptions): string 
 	if (stackOptionWasExplicit(options)) return null;
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
 	// Shared ladder (option > DEVSTACK_RUNTIME_ROOT > DEVSTACK_STATE_DIR
-	// > '.devstack'). Previously read only DEVSTACK_STATE_DIR, dropping
-	// DEVSTACK_RUNTIME_ROOT — aligned via `resolveDiscoveryEnv`. The
-	// single-stack walk only needs the state-dir rung; stack is ignored.
+	// > '.devstack'), resolved via `resolveDiscoveryEnv`. The single-stack
+	// walk only needs the state-dir rung; stack is ignored.
 	const { stateDir } = resolveDiscoveryEnv(env, {
 		...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
 	});

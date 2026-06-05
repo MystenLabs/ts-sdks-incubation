@@ -1,7 +1,7 @@
 // Shared tagged errors for the runtime persistence layer.
 //
 // Per-subsystem tags so `Effect.catchTags({ ... })` reads at the call
-// site as "what did the state-store / cache / registry just fail with".
+// site as "what did the cache / registry just fail with".
 
 import { Schema } from 'effect';
 
@@ -16,15 +16,6 @@ export class AtomicWriteFailed extends Schema.TaggedErrorClass<AtomicWriteFailed
 		cause: Schema.optional(Schema.Defect),
 	},
 ) {}
-
-/** State-store I/O / corruption surface. Distinct from
- *  `AtomicWriteFailed` so consumers can recover ("re-init on
- *  corruption") without catching write errors. */
-export class StateStoreError extends Schema.TaggedErrorClass<StateStoreError>()('StateStoreError', {
-	reason: Schema.Literals(['io-failed', 'corruption', 'lock-contention']),
-	detail: Schema.String,
-	cause: Schema.optional(Schema.Defect),
-}) {}
 
 /** Cache surface — same tri-state as the L0 cache contract. */
 export class CacheError extends Schema.TaggedErrorClass<CacheError>()('CacheError', {

@@ -11,7 +11,6 @@
 import { Box, Static, Text } from 'ink';
 import type React from 'react';
 
-import type { SnapshotCaptureProgressPhase } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
 import type { EventLogLine } from './event-log.ts';
 import { Heartbeat } from './heartbeat.tsx';
@@ -42,16 +41,6 @@ export interface DashboardProps {
 }
 
 export type SnapshotStatus =
-	| {
-			readonly tag: 'running';
-			readonly phase: SnapshotCaptureProgressPhase | 'starting';
-			readonly snapshotId?: string;
-			readonly name?: string;
-			readonly detail?: string;
-			readonly pausedContainers?: number;
-			readonly totalContainers?: number;
-			readonly at: number;
-	  }
 	| {
 			readonly tag: 'captured';
 			readonly snapshotId: string;
@@ -103,62 +92,8 @@ const snapshotLabel = (status: SnapshotStatus): string => {
 	return 'manual snapshot';
 };
 
-const snapshotPhaseLabel = (phase: SnapshotCaptureProgressPhase | 'starting'): string => {
-	switch (phase) {
-		case 'starting':
-			return 'starting';
-		case 'quiescing':
-			return 'checking participants';
-		case 'pausing':
-			return 'pausing containers';
-		case 'paused':
-			return 'stack paused';
-		case 'capturing-containers':
-			return 'capturing containers';
-		case 'saving-images':
-			return 'saving images';
-		case 'capturing-host-tree':
-			return 'capturing files';
-		case 'saving-state':
-			return 'saving state';
-		case 'saving-contributions':
-			return 'saving metadata';
-		case 'writing-metadata':
-			return 'finalizing';
-		case 'resuming':
-			return 'resuming stack';
-	}
-};
-
-const snapshotPhaseMeansPaused = (phase: SnapshotCaptureProgressPhase | 'starting'): boolean =>
-	phase === 'paused' ||
-	phase === 'capturing-containers' ||
-	phase === 'saving-images' ||
-	phase === 'capturing-host-tree' ||
-	phase === 'saving-state' ||
-	phase === 'saving-contributions' ||
-	phase === 'writing-metadata' ||
-	phase === 'resuming';
-
 const SnapshotStatusLine = ({ status }: { readonly status: SnapshotStatus }): React.JSX.Element => {
 	switch (status.tag) {
-		case 'running': {
-			const paused = snapshotPhaseMeansPaused(status.phase);
-			const count =
-				status.pausedContainers !== undefined && status.totalContainers !== undefined
-					? `${status.pausedContainers}/${status.totalContainers}`
-					: null;
-			return (
-				<Box flexDirection="row" gap={1} marginTop={1}>
-					<Text color={paused ? 'yellow' : 'cyan'}>Snapshot:</Text>
-					<Text>{snapshotLabel(status)}</Text>
-					<Text color={paused ? 'yellow' : 'cyan'}>{snapshotPhaseLabel(status.phase)}</Text>
-					{paused && <Text color="yellow">stack paused</Text>}
-					{count !== null && <Text dimColor>{count}</Text>}
-					{status.detail !== undefined && <Text dimColor>{status.detail}</Text>}
-				</Box>
-			);
-		}
 		case 'captured':
 			return (
 				<Box flexDirection="row" gap={1} marginTop={1}>

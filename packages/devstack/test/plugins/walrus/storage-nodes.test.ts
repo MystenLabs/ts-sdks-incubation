@@ -40,7 +40,9 @@ const runtimeCapturingStorageNodeSpecs = (specs: EnsureContainerSpec[]): Contain
 				labels: spec.labels,
 			};
 		}),
-	exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
+	// The boot ready-gate execs a TCP bind check + a `/v1/health` fetch; the
+	// stub returns a write-ready (`Active`) health body so the gate passes.
+	exec: () => Effect.succeed({ exitCode: 0, stdout: '{"nodeStatus":"Active"}', stderr: '' }),
 	runOneShot: () => Effect.die('runOneShot not used'),
 	inspectByLabels: () => Effect.die('inspectByLabels not used'),
 	followLogs: () => Stream.empty,

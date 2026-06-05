@@ -10,7 +10,6 @@
 // `<stackRoot>/snapshots/<snapshotId>/`):
 //
 //   meta.json              — versioned metadata record, schema-decoded
-//   state.json             — copy of the stack's scalar state-store
 //   host-tree.tar          — tar of subtrees declared by participants
 //   containers/images.tar  — deduplicated Docker save bundle for all
 //                            committed managed-container images
@@ -40,7 +39,6 @@ import { versionedDocSchema } from '../../substrate/versioned-doc-schema.ts';
 /** Canonical file / directory names inside one snapshot artifact. */
 export const SnapshotLayout = {
 	metaFile: 'meta.json',
-	stateFile: 'state.json',
 	hostTreeTar: 'host-tree.tar',
 	containersDir: 'containers',
 	contributionsDir: 'contributions',
@@ -111,17 +109,6 @@ export const isRestorableContainerImageName = (imageName: string): boolean =>
 	!imageName.includes('@') &&
 	!imageName.startsWith('sha256:');
 
-const snapshotPathSegment = (kind: string, value: string): string => {
-	if (!isSafeSnapshotPathSegment(value)) {
-		throw new SnapshotDescriptorError({
-			kind: 'invalid-segment',
-			detail: `unsafe snapshot ${kind} path segment`,
-			value,
-		});
-	}
-	return value;
-};
-
 const encodedSnapshotPathSegment = (value: string): string => {
 	let hex = '';
 	for (const byte of new TextEncoder().encode(value)) {
@@ -129,13 +116,6 @@ const encodedSnapshotPathSegment = (value: string): string => {
 	}
 	return `p-${hex}`;
 };
-
-/** Canonical sub-path for one captured container image. */
-export const containerImagePath = (plugin: string, role: string): string =>
-	`${SnapshotLayout.containersDir}/${snapshotPathSegment(
-		'plugin',
-		plugin,
-	)}/${snapshotPathSegment('role', role)}.tar`;
 
 /** Canonical sub-path for the deduplicated managed-container image bundle. */
 export const containerImagesBundlePath = (): string => `${SnapshotLayout.containersDir}/images.tar`;
@@ -187,13 +167,19 @@ export type CapturedSubtree = Schema.Schema.Type<typeof CapturedSubtreeSchema>;
  *  objects, seal key-server object, deepbook pool ids, coin treasury. These
  *  must come back after a restore so the post-restore boot REUSES the deploy
  *  instead of re-running it with fresh ids (which orphans every pre-snapshot
- *  object). Honored by BOTH halves so the contract holds across lifecycles:
- *  the capture TARS `cache/<ns>` into the snapshot (self-contained — survives a
- *  `wipe` that drops the live cache), and the restore also PRESERVES the live
- *  `cache/<ns>` (the in-place `snapshot → restore` fast path, no tar). A
- *  slash-prefixed plugin namespace (`seal/package`, `deepbook/pools`) nests
- *  under its root, so the root entry covers all of that plugin's namespaces.
- *  The generic per-call `cache/entry` is NOT here and stays dropped on restore. */
+ *  object).
+ *
+ *  The contract is SELF-CONTAINED: capture TARs `cache/<ns>` into the
+ *  snapshot's host-tree (see `deployCacheSubtreeRelPaths`), and restore
+ *  untars that copy and DROPS the deploy-cache from the stage-and-swap
+ *  preserve list — the snapshot's cache is the SOLE source on restore
+ *  (no preserve-from-live, so no double-store drift). This is what makes a
+ *  CROSS-MACHINE restore work: a fresh runner with an empty live cache
+ *  recovers the ids from the snapshot itself. (Earlier the live cache was
+ *  the sole source, which only works same-machine.) A slash-prefixed plugin
+ *  namespace (`seal/package`, `deepbook/pools`) nests under its root, so the
+ *  root entry covers all of that plugin's namespaces. The generic per-call
+ *  `cache/entry` is NOT here and stays dropped on restore. */
 export const DEPLOY_CACHE_NAMESPACES: ReadonlyArray<string> = [
 	'walrus-deploy',
 	'package',
@@ -202,6 +188,14 @@ export const DEPLOY_CACHE_NAMESPACES: ReadonlyArray<string> = [
 	'coin-mint',
 	'action',
 ];
+
+/** Host-tree subtree relPaths (relative to the stack root) for the deploy-cache
+ *  namespaces. Capture tars these into `host-tree.tar` so the snapshot is
+ *  self-contained; restore untars them into the swapped tree. The on-disk cache
+ *  lives at `<stackRoot>/cache/<ns>/<chain>/<contentHash>.json`, so the root
+ *  `cache/<ns>` entry covers every nested namespace + chain under it. */
+export const deployCacheSubtreeRelPaths = (cacheDirName: string): ReadonlyArray<string> =>
+	DEPLOY_CACHE_NAMESPACES.map((namespace) => `${cacheDirName}/${namespace}`);
 
 /** Identity slice that fires the cross-chain refusal guard. The
  *  orchestrator threads contributions from participating plugins
@@ -219,7 +213,6 @@ export const OpaqueContributionStateSchema = Schema.Struct({
 	encoding: Schema.Literal('json'),
 	value: Schema.Unknown,
 });
-export type OpaqueContributionState = Schema.Schema.Type<typeof OpaqueContributionStateSchema>;
 
 /** Per-participant metadata envelope. The plugin payload is explicitly
  *  opaque so a successful decode cannot be mistaken for validation of

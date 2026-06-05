@@ -4,11 +4,11 @@
 // the local-keygen path.
 //
 //   1. Look up the known deployment (or accept explicit overrides).
-//   2. Publish the endpoint + state-store entry to the substrate
-//      registries (the codegen + manifest emitters consume these).
+//   2. Publish the resolved key-server endpoint as the plugin's
+//      resource (the codegen + manifest emitters consume it).
 //   3. Return the read-side handle.
 //
-// NO chain interactions, NO docker, NO state-store writes, NO
+// NO chain interactions, NO docker, NO on-disk persistence, NO
 // keygen. Distilled-doc invariant #15 — the manager tag is NOT
 // produced (we don't own the master key for a remote deployment).
 //
@@ -73,7 +73,7 @@ export interface LiveModeInputs {
 
 /** Validate the inputs at the factory boundary. Pure synchronous
  *  function. The plugin `start` body is reserved for Effect-flavored
- *  work; the throw here matches v3's pattern (distilled-doc
+ *  work; this validation throws synchronously (distilled-doc
  *  §Failure modes). */
 export const validateLiveInputs = (
 	inputs: LiveModeInputs,

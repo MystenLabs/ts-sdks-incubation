@@ -9,7 +9,6 @@
 
 import { Effect } from 'effect';
 
-import type { ChainId } from '../../brand.ts';
 import type { StrategyNotFoundError } from '../errors.ts';
 import { StrategyRegistryService } from './service.ts';
 
@@ -36,7 +35,7 @@ import { StrategyRegistryService } from './service.ts';
  */
 export const chainKeyedStrategyFor = <P>(
 	prefix: string,
-	chainId: ChainId,
+	chainId: string,
 ): Effect.Effect<P, StrategyNotFoundError, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		const registry = yield* StrategyRegistryService;

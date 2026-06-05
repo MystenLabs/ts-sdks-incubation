@@ -6,7 +6,6 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { routable } from '../../src/api/define-capabilities.ts';
 import type {
 	RoutableDecl,
 	RoutableHttpDecl,
@@ -75,23 +74,6 @@ describe('contracts/routable — structural pins', () => {
 			cors: true,
 		};
 		expect(decl.upstream.type).toBe('container');
-	});
-
-	it('`define-capabilities.ts` helper round-trips and adds `kind`', () => {
-		const decl = routable({
-			endpointName: 'demo',
-			dispatchId: { serviceKey: 'demo', role: 'app' },
-			upstream: { type: 'host-loopback', port: 8080 },
-			wireProtocol: 'http',
-			cors: true,
-		});
-		expect(decl.kind).toBe('routable');
-		expect(decl.endpointName).toBe('demo');
-		expect(decl.wireProtocol).toBe('http');
-		// Discriminator narrowing.
-		if (decl.wireProtocol !== 'tcp') {
-			expect(decl.cors).toBe(true);
-		}
 	});
 
 	it('`readiness: "deferred"` is the only allowed readiness value', () => {

@@ -23,13 +23,13 @@
 //
 // Boundary discipline: this module lives under `plugins/internal/`
 // because it consumes the public `ArtifactPublisher` surface AND the
-// public `ChainId`/`ContentHash` brands. No plugin-domain types leak in;
+// public `ContentHash` brand. No plugin-domain types leak in;
 // callers project the `Produced` payload to their resolved value
 // themselves.
 
 import { Effect, type Scope } from 'effect';
 
-import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import type { ContentHash } from '../../substrate/brand.ts';
 import {
 	type ArtifactPublishError,
 	type ArtifactPublisher,
@@ -42,7 +42,7 @@ import {
  *  artifact plugins with no in-process registry to feed. */
 export interface AcquireOnChainArtifactSpec<Produced, Verified> {
 	readonly namespace: string;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly contentHash: ContentHash;
 	readonly verify: ArtifactSpec<Produced, Verified>['verify'];
 	readonly produce: ArtifactSpec<Produced, Verified>['produce'];

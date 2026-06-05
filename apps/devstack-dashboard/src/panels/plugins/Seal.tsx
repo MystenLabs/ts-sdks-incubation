@@ -10,15 +10,24 @@
 // Health path: devstack's own readiness probe (see
 // `packages/devstack/src/plugins/seal/key-server.ts`) hits `GET /health`, which
 // returns `{name, version, status: "up"}` once the daemon has parsed its config
-// and bound its listener. We probe the same `/health` route. The `/v1/*` routes
-// (e.g. `/v1/service`) are the key-fetch API and reject a bare GET with HTTP 400
-// — a 400 there means the server IS up and listening, not unhealthy. We treat
-// any HTTP response (including 4xx) as "the socket is up and serving" and only
-// warn on a genuine connection/CORS failure.
+// and bound its listener. We probe the same `/health` route.
+//
+// The 3-state browser-direct probe (`up`/`down`/`unreachable`) lives in
+// `../../lib/probe.ts` — the single source of truth shared with the Walrus
+// panel. See that module for the full classification rationale. This panel
+// supplies a single `/health` candidate and its key-server-specific banner copy.
 
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { restartPlugin, type SealInfo } from '../../lib/api.ts';
 import { truncateMiddle } from '../../lib/format.ts';
+import {
+	PROBE_TOKEN,
+	type ProbeResult,
+	probeBanner,
+	probeDaemon,
+	probeLabel,
+	trimTrailingSlash,
+} from '../../lib/probe.ts';
 import { navigate } from '../../lib/router.ts';
 import { useSealInfo } from '../../lib/useChain.ts';
 import { useToast } from '../../lib/toast.tsx';
@@ -36,66 +45,8 @@ import {
 } from '../../ui/index.ts';
 import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
-/** Health states for the browser-direct key-server probe. A 2xx on `/health`
- *  (or an opaque ping that resolves when CORS blocks the read) is `healthy`; a
- *  non-2xx or a connection/CORS failure degrades to `unreachable`. */
-type ProbeState = 'probing' | 'healthy' | 'unreachable';
-
-interface ProbeResult {
-	readonly state: ProbeState;
-	/** Short human note (HTTP status / failure reason) for the tooltip/body. */
-	readonly detail: string;
-}
-
-/**
- * Probe the key-server directly from the browser. We hit the same `/health`
- * route devstack's own readiness probe uses (returns `{name, version,
- * status: "up"}` with a 2xx on a healthy daemon).
- *
- * Healthy = a 2xx on `/health`. A non-2xx (404/502/503) is NOT healthy: a real
- * daemon answers `/health` with 2xx, so a non-2xx means a wrong URL or an
- * intermediary sitting in front of a down daemon — painting that green would
- * hide an outage. We only fall back to the opaque-reachability nuance when the
- * fetch itself *throws* (CORS-opaque or network): a no-cors ping that resolves
- * proves the socket is alive even though the browser can't read the status —
- * the in-process key server may still serve Seal in that case. A network/CORS
- * rejection on both means we genuinely couldn't reach it.
- */
-const probeKeyServer = async (baseUrl: string): Promise<ProbeResult> => {
-	const root = baseUrl.replace(/\/+$/, '');
-	const url = `${root}/health`;
-	try {
-		const res = await fetch(url, { method: 'GET', mode: 'cors' });
-		if (res.ok) {
-			return { state: 'healthy', detail: `HTTP ${res.status} · ${url}` };
-		}
-		// Non-2xx on /health — a healthy daemon returns 2xx here, so this is a
-		// wrong URL or a proxy in front of a down daemon. Don't paint it green.
-		return { state: 'unreachable', detail: `HTTP ${res.status} on ${url} (expected 2xx)` };
-	} catch (err) {
-		// CORS-opaque or network failure. A no-cors ping that resolves proves the
-		// socket is alive even though we can't read the status/body.
-		try {
-			await fetch(url, { method: 'GET', mode: 'no-cors' });
-			return { state: 'healthy', detail: `reachable (opaque) · ${url}` };
-		} catch {
-			const detail = err instanceof Error ? err.message : String(err);
-			return { state: 'unreachable', detail };
-		}
-	}
-};
-
-const PROBE_TOKEN: Record<ProbeState, 'green' | 'yellow' | 'red'> = {
-	probing: 'yellow',
-	healthy: 'green',
-	unreachable: 'yellow',
-};
-
-const PROBE_LABEL: Record<ProbeState, string> = {
-	probing: 'probing',
-	healthy: 'healthy',
-	unreachable: 'unreachable',
-};
+/** Status label per probe state — Seal renders `up` for the healthy state. */
+const PROBE_LABEL = probeLabel();
 
 export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginViewProps) => {
 	const { success, error } = useToast();
@@ -119,7 +70,9 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 	const runProbe = useCallback(async () => {
 		if (!keyServerUrl) return;
 		setProbe({ state: 'probing', detail: '' });
-		const result = await probeKeyServer(keyServerUrl);
+		// Same `/health` route devstack's own readiness probe uses (returns
+		// `{name, version, status: "up"}` with a 2xx on a healthy daemon).
+		const result = await probeDaemon([`${trimTrailingSlash(keyServerUrl)}/health`]);
 		setProbe(result);
 	}, [keyServerUrl]);
 
@@ -145,9 +98,18 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 	}, [busy, endpoint, row, pluginKey, success, error, refresh]);
 
 	const probeToken = PROBE_TOKEN[probe.state];
-	// Only the genuine connection failure is worth a banner; a reachable server
-	// (any HTTP response) is healthy, and `probing` is a transient state.
-	const unreachable = probe.state === 'unreachable';
+	// Banner content (tone + title + body) for the two banner-worthy states comes
+	// from the shared `probeBanner`: `down` = a readable non-2xx /health (genuine
+	// outage, red); `unreachable` = no readable response (ambiguous CORS/network,
+	// soft yellow). Returns null for `up`/`probing`. The trailing ` (detail)` is
+	// appended here, exactly as before.
+	const banner = probeBanner(probe.state, {
+		downTitle: 'Key-server is down',
+		unreachableTitle: 'Key-server unreachable from the browser',
+		endpointPhrase: "key-server's /health route",
+		unreachableSubject: 'server',
+		downConsequence: 'Encryption',
+	});
 
 	return (
 		<PluginScaffold
@@ -187,22 +149,22 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 				</Panel>
 			) : (
 				<>
-					{/* Banner + re-probe only when the key-server is genuinely
-					    unreachable (connection/CORS failure). A reachable server —
-					    even one that answers a bare GET with 4xx — is healthy. */}
-					{unreachable && (
+					{/* Banner-worthy states only. `down` = the daemon answered /health
+					    with a readable non-2xx status (genuine outage, red: encryption
+					    will fail). `unreachable` = no readable response (ambiguous —
+					    may still work in-process — so soft yellow, NOT red). Content
+					    comes from the shared `probeBanner`; null for `up`/`probing`. */}
+					{banner && (
 						<Banner
-							tone="warn"
-							title="Key-server unreachable from the browser"
+							tone={banner.tone}
+							title={banner.title}
 							action={
 								<button className="btn btn-sm" onClick={() => void runProbe()}>
 									<Icon name="refresh" size={13} /> Probe
 								</button>
 							}
 						>
-							Couldn't reach the key-server's /health route. This may be a CORS or network issue
-							from the browser rather than the server being down — encryption requests may still
-							work in-process.
+							{banner.body}
 							{probe.detail ? ` (${probe.detail})` : ''}
 						</Banner>
 					)}

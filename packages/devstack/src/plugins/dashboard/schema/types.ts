@@ -39,6 +39,11 @@ import type {
 	DashboardSealInfo,
 	DashboardSealKeyServer,
 } from '../domain.ts';
+// The surface-neutral health derivation lives in the TUI module
+// (`display-derivation.ts`) but is itself ink/react-free with type-only
+// substrate imports — so the web schema can reuse the SAME canonical
+// bucketing + named policies without acquiring any TUI/ink coupling.
+import { deriveHealth, deriveStackViewModel } from '../../../surfaces/tui/display-derivation.ts';
 import type { LogRecord, SpanRecord } from '../../../substrate/runtime/observability/index.ts';
 import type {
 	AccountProjection,
@@ -69,44 +74,34 @@ export interface HealthSummarySource {
 	readonly health: Health;
 }
 
-/** Compute the stack health summary from the projection rows. `active`
- *  counts rows mid-flight (acquiring/stopping); `waiting` counts rows that
- *  have not started (pending). Overall `health` is `failed`→blocked,
- *  any-active→active, all-ready (with ≥1 row)→ready, otherwise empty. */
+/** Compute the stack health summary from the projection rows. Delegates to
+ *  the surface-neutral `deriveStackViewModel` (the single canonical
+ *  bucketing) + `deriveHealth(counts, 'web')` (the named web policy), then
+ *  folds the ViewModel's discrete `stoppedRows` into this adapter's `ready`
+ *  field — preserving the web GraphQL stopped→ready contract. The fold lives
+ *  HERE, in the web adapter, not in the shared ViewModel, so the TUI policy
+ *  is unaffected. `active` counts rows mid-flight (acquiring/stopping);
+ *  `waiting` counts rows that have not started (pending). Overall `health`
+ *  is `failed`→blocked, any-active→active, all-(ready|stopped) (with ≥1
+ *  row)→ready, otherwise empty. */
 export const computeHealthSummary = (rows: ReadonlyArray<Row>): HealthSummarySource => {
-	let ready = 0;
-	let active = 0;
-	let failed = 0;
-	let waiting = 0;
-	for (const row of rows) {
-		switch (row.status) {
-			case 'ready':
-			case 'done':
-			case 'stopped':
-				ready += 1;
-				break;
-			case 'acquiring':
-			case 'stopping':
-				active += 1;
-				break;
-			case 'failed':
-				failed += 1;
-				break;
-			case 'pending':
-				waiting += 1;
-				break;
-		}
-	}
-	const total = rows.length;
-	const health: Health =
-		failed > 0
-			? 'blocked'
-			: active > 0
-				? 'active'
-				: total > 0 && ready === total
-					? 'ready'
-					: 'empty';
-	return { total, ready, active, failed, waiting, health };
+	const vm = deriveStackViewModel({
+		rows,
+		endpoints: [],
+		accounts: [],
+		packages: [],
+		errors: [],
+	});
+	const health: Health = deriveHealth(vm, 'web');
+	return {
+		total: vm.total,
+		// Web GraphQL contract: `stopped` rows count toward `ready`.
+		ready: vm.readyRows + vm.stoppedRows,
+		active: vm.activeRows,
+		failed: vm.failedRows,
+		waiting: vm.waitingRows,
+		health,
+	};
 };
 
 const readSnapshot = (
@@ -370,6 +365,9 @@ export const DeepbookInfo = builder.objectRef<DashboardDeepbookInfo>('DeepbookIn
 		marketMakerRunning: t.exposeBoolean('marketMakerRunning'),
 		serverUrl: t.exposeString('serverUrl', { nullable: true }),
 		indexerUrl: t.exposeString('indexerUrl', { nullable: true }),
+		// Fail-loud: non-null when a required field failed to narrow off the
+		// opaque resolved value (schema drift surfaced, not silently degraded).
+		narrowingFault: t.exposeString('narrowingFault', { nullable: true }),
 	}),
 });
 
@@ -392,6 +390,8 @@ export const SealInfo = builder.objectRef<DashboardSealInfo>('SealInfo').impleme
 		keyServerUrl: t.exposeString('keyServerUrl'),
 		keyServers: t.field({ type: [SealKeyServer], resolve: (s) => s.keyServers }),
 		threshold: t.exposeInt('threshold'),
+		// Fail-loud: non-null when a required field failed to narrow.
+		narrowingFault: t.exposeString('narrowingFault', { nullable: true }),
 	}),
 });
 
@@ -406,6 +406,8 @@ export const CoinCap = builder.objectRef<DashboardCoinCap>('CoinCap').implement(
 		source: t.field({ type: 'String', resolve: (c) => c.source }),
 		treasuryCapId: t.exposeString('treasuryCapId', { nullable: true }),
 		packageId: t.exposeString('packageId', { nullable: true }),
+		// Fail-loud: non-null when a required field failed to narrow.
+		narrowingFault: t.exposeString('narrowingFault', { nullable: true }),
 	}),
 });
 

@@ -64,6 +64,11 @@ const commands = [
 				value: 'tui|plain|silent',
 				description: 'Select the attached renderer.',
 			},
+			{
+				name: 'warm',
+				description:
+					'Warm boot: restore a fingerprinted baseline snapshot when inputs are unchanged, else cold-boot and capture one.',
+			},
 		],
 	},
 	{

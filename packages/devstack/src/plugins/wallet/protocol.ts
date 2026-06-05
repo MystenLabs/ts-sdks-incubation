@@ -9,10 +9,9 @@
 // Distilled-doc opportunity (15-wallet.md "Acyclic-edge duplication"):
 // the duplication exists because devstack peer-deps on dev-wallet (for
 // codegen output) and a reverse edge would close a workspace cycle.
-// Per the task's architecture-revision flag: the long-term fix is to
-// hoist this file into a third tiny package (e.g.
-// `@mysten-incubation/devstack-wallet-protocol`) consumed by BOTH
-// sides. See `## Architecture-doc revisions` in the report.
+// The long-term fix is to hoist this file into a third tiny package
+// (e.g. `@mysten-incubation/devstack-wallet-protocol`) consumed by BOTH
+// sides.
 //
 // Canonical envelope choice (15-wallet.md "Asymmetric sign-response
 // field names" + "Dual field-name acceptance"):
@@ -23,9 +22,8 @@
 //     names; never `txBytes` / `suiSignature`).
 //
 // This mirrors `@mysten/sui`'s `Signer.signTransaction` /
-// `signPersonalMessage` return shape exactly, eliminating the asymmetry
-// the legacy server carried. Per the memory note "no compat for
-// never-cases" — devstack is unreleased, no migration burden.
+// `signPersonalMessage` return shape exactly, so the request/response
+// field names stay symmetric.
 //
 // Effect v4 Schema is the validator. Each request/response is a
 // Schema.Struct; handlers `Schema.decodeUnknown(...)` the body and

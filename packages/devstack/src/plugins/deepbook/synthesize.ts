@@ -52,27 +52,7 @@ const DEFAULT_DEEP_SUI_POOL = {
 	seedBaseAmount: 1_000_000_000n,
 	seedQuoteAmount: 10_000_000_000n,
 	whitelisted: true,
-	stablePool: false,
 } as const;
-
-export interface SynthesizedLocalDeepbook {
-	readonly publisher: AccountMemberAlias;
-	readonly package: DeepbookPackageMember;
-	readonly pools: readonly [DeepbookPoolSpec];
-	readonly pyth: PythOptions;
-	readonly deepTreasuryIdKey: 'deepTreasuryId';
-}
-
-/** Explicit pieces the caller already supplied. Synthesis fills ONLY the gaps,
- *  building the defaults RELATIVE to these so a partial override
- *  (e.g. explicit `package` + `publisher`, omitted `pools`) does not fabricate
- *  a hidden duplicate package / pyth and does not seed the default pool with a
- *  phantom DEEP coin type. */
-export interface SynthesisOverrides {
-	readonly publisher?: AccountMemberAlias;
-	readonly package?: DeepbookPackageMember;
-	readonly pyth?: PythOptions;
-}
 
 /** Collision-resistant member-id segment for a named instance.
  *
@@ -103,8 +83,17 @@ const synthSuffix = (name: string): string => {
  *  coin when one was given. */
 export const synthesizeLocalDeepbook = (
 	name: string,
-	overrides: SynthesisOverrides = {},
-): SynthesizedLocalDeepbook => {
+	// Explicit pieces the caller already supplied. Synthesis fills ONLY the gaps,
+	// building the defaults RELATIVE to these so a partial override (e.g. explicit
+	// `package` + `publisher`, omitted `pools`) does not fabricate a hidden
+	// duplicate package / pyth and does not seed the default pool with a phantom
+	// DEEP coin type.
+	overrides: {
+		readonly publisher?: AccountMemberAlias;
+		readonly package?: DeepbookPackageMember;
+		readonly pyth?: PythOptions;
+	} = {},
+) => {
 	const suffix = synthSuffix(name);
 
 	const publisher =
@@ -144,7 +133,6 @@ export const synthesizeLocalDeepbook = (
 		lotSize: DEFAULT_DEEP_SUI_POOL.lotSize,
 		minSize: DEFAULT_DEEP_SUI_POOL.minSize,
 		whitelisted: DEFAULT_DEEP_SUI_POOL.whitelisted,
-		stablePool: DEFAULT_DEEP_SUI_POOL.stablePool,
 		base: { key: 'DEEP', coin: deep },
 		quote: { key: 'SUI', coin: suiCoin },
 		seed: {
@@ -194,8 +182,7 @@ export const synthesizeLocalDeepbook = (
 	return {
 		publisher,
 		package: deepbookPackage,
-		pools: [pool],
+		pools: [pool] as const,
 		pyth,
-		deepTreasuryIdKey: 'deepTreasuryId',
 	};
 };

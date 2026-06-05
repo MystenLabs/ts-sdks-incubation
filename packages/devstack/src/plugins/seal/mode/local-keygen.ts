@@ -44,7 +44,6 @@ import { Effect, FileSystem, Path, Schema, type Scope } from 'effect';
 
 import { decodeJsonText } from '../../../substrate/runtime/runtime-decode.ts';
 
-import type { ChainId } from '../../../substrate/brand.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { ContainerRuntime, ImageRef } from '../../../contracts/container-runtime.ts';
@@ -80,8 +79,8 @@ import { versionedDocSchema } from '../../../substrate/versioned-doc-schema.ts';
 // Options (factory-time)
 // ---------------------------------------------------------------------------
 
-/** Options the local-keygen mode accepts. Mirrors v3
- *  `SealLocalKeygenOptions` (07-seal.md §"Configuration"). The
+/** Options the local-keygen mode accepts (07-seal.md
+ *  §"Configuration"). The
  *  barrel (`index.ts`) folds the typed `SealLocalKeygenOptions`
  *  surface into this internal shape after default resolution. */
 export interface LocalKeygenOptions {
@@ -142,7 +141,7 @@ export interface LocalKeygenDeps {
 	readonly sdk: SealSuiSdk;
 	readonly buildImage?: ImageRef;
 	readonly chainProbe: ChainProbe<SealObjectProbeKey>;
-	readonly chain: ChainId;
+	readonly chain: string;
 	/** Per-stack on-disk dir under `runtime/seal/`. Host path for the
 	 *  config yaml + master-key env-file. */
 	readonly servicePath: string;

@@ -37,6 +37,7 @@ export interface GlobalFlags {
 	readonly configPath: string | undefined;
 	readonly network: string | undefined;
 	readonly renderer: CliRendererMode | undefined;
+	readonly warm?: boolean;
 	readonly dryRun: boolean;
 	readonly confirm: ConfirmPolicy;
 	/** Verbosity bump; primarily affects logger filter. */
@@ -58,8 +59,6 @@ export const ENV_VARS = {
 	NETWORK: 'DEVSTACK_NETWORK',
 	NO_COLOR: 'NO_COLOR',
 } as const;
-
-export type EnvVarName = (typeof ENV_VARS)[keyof typeof ENV_VARS];
 
 // -----------------------------------------------------------------------------
 // Subcommand-flag helpers

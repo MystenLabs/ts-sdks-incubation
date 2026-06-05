@@ -6,11 +6,12 @@ import { describe, expect, it } from 'vitest';
 
 import { definePlugin } from '../../src/api/define-plugin.ts';
 import type { SnapshotableDecl } from '../../src/contracts/snapshotable.ts';
+import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import type {
 	SnapshotCatalogEntry,
 	SnapshotMetadata,
 } from '../../src/orchestrators/snapshot/index.ts';
-import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
+import { IdentityContext, StackPathsService } from '../../src/substrate/runtime/paths.ts';
 import { runBoot } from './boot-config-impl.ts';
 
 const snapshotDecl: SnapshotableDecl = {
@@ -25,8 +26,12 @@ const snapshotSmokePlugin = definePlugin({
 	id: 'snapshot-smoke',
 	role: 'service' as const,
 	section: 'service',
-	start: () => Effect.succeed({ ready: true as const }),
-	capabilities: [snapshotDecl] as const,
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
+			ctx.snapshotExtra(snapshotDecl);
+			return { ready: true as const };
+		}),
 });
 
 const stack = {
@@ -40,28 +45,27 @@ const hostTreePlugin = definePlugin({
 	section: 'service',
 	start: () =>
 		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			const paths = yield* StackPathsService;
+			const identity = yield* IdentityContext;
 			const dir = join(paths.stackRoot, 'snapshot-host-tree');
 			const file = join(dir, 'payload.txt');
 			mkdirSync(dir, { recursive: true });
 			writeFileSync(file, 'original contents\n');
-			return { dir, file };
-		}),
-	capabilities: ({ runtime }) =>
-		[
-			{
-				kind: 'snapshotable' as const,
+			ctx.snapshotExtra({
+				kind: 'snapshotable',
 				subtrees: ['snapshot-host-tree'],
 				managedContainers: [],
-				missingTolerance: 'fatal' as const,
+				missingTolerance: 'fatal',
 				preRestore: Effect.succeed({
 					kind: 'snapshot-host-tree' as const,
-					app: runtime.identity.app,
-					stack: runtime.identity.stack,
-					network: runtime.chain,
+					app: identity.app,
+					stack: identity.stack,
+					network: identity.chain,
 				}),
-			},
-		] as const,
+			});
+			return { dir, file };
+		}),
 });
 
 const hostTreeStack = {

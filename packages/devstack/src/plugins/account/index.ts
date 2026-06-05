@@ -27,11 +27,12 @@
 // emit a `log.appended` event the first time the promotion fires
 // (see `funding.ts`).
 //
-// The plugin emits THREE capability decls + an error-tag contribution:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs) plus an
+// error-tag contribution:
 //
-//   1. Snapshotable        — secret-material subtree (ephemeral only).
-//   2. Codegenable         — `account-map` bindings (name → address).
-//   3. StrategyContributor — per-stack `account:<name>` registry entry.
+//   1. `ctx.snapshotExtra` — secret-material subtree (ephemeral only).
+//   2. `ctx.codegen`       — `account-map` bindings (name → address).
+//   3. `ctx.provides`      — per-stack `account:<name>` registry entry.
 //
 // Plus `errorContributions: [{ errorTags: ACCOUNT_ERROR_TAGS }]` —
 // harvested by the supervisor into the FormatterRegistry so the
@@ -42,12 +43,13 @@ import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { suiResource, SuiSpans } from '../sui/index.ts';
 
 import { AccountSpans } from './spans.ts';
 
-import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
+import { makeAccountCodegen } from './codegen.ts';
 import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
 import {
 	SUI_FULL_COIN_TYPE,
@@ -198,6 +200,17 @@ const fundingAmountToBigInt = (
 const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
 	coin.symbol ?? coin.fullCoinType.split('::').at(-1) ?? coin.fullCoinType;
 
+// ---------------------------------------------------------------------------
+// Capability emission — dynamic (POST-acquire). Receives the resolved
+// `AccountValue` + the identity so snapshot + codegen + registry + projection
+// decls reference the REAL address (and identity app/stack) — the static form
+// would force placeholder values for fields only known at acquire time.
+//
+// The account `start` emits its four contributions inline — snapshot →
+// codegen → registry → projection — directly via the typed `ctx` verbs,
+// AFTER resolving the value. The decl shapes + emit ORDER are load-bearing.
+// ---------------------------------------------------------------------------
+
 export const account = <const N extends string, const Funding extends AccountFunding = readonly []>(
 	name: N,
 	opts?: AccountOptions<Funding>,
@@ -240,8 +253,11 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// `done`.
 		role: 'task',
 		section: 'account',
+		// `deps` auto-infers from the resolved `dependsOn`; `ctx` arrives
+		// via the `PluginContext` service.
 		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui, ...resolvedDeps] = deps;
 				const resolvedCoinValues = resolvedDeps.slice(
 					0,
@@ -306,44 +322,55 @@ export const account = <const N extends string, const Funding extends AccountFun
 						),
 					projectedFunding,
 				};
-				return yield* acquireAccount(opts2, acquireCtx);
+				const resolved = yield* acquireAccount(opts2, acquireCtx);
+
+				// Emit the resolved account's contributions inline, in order:
+				// snapshot → codegen → registry → projection. `resolved` is the
+				// just-acquired `AccountValue`; `identity` (from
+				// `IdentityContext`) supplies the snapshot's pre-restore guard
+				// app/stack; the variant kind is `opts2.kind`. The registry +
+				// projection decls share one `realEntry` so the registered
+				// strategy and the published event agree byte-for-byte.
+				const realEntry: AccountRegistryEntry = {
+					name,
+					address: resolved.address,
+					scheme: resolved.scheme,
+					source: resolved.source,
+					funding: fundingProjectionForResult(resolved.funding),
+				};
+				ctx.snapshotExtra(
+					makeAccountSnapshotable({
+						accountName: name,
+						variant: opts2.kind,
+						app: identity.app,
+						stack: identity.stack,
+					}),
+				);
+				ctx.codegen(
+					makeAccountCodegen<N>({
+						name,
+						resolved: {
+							name,
+							address: resolved.address,
+							scheme: resolved.scheme,
+							source: resolved.source,
+						},
+					}),
+				);
+				ctx.provides(
+					makeAccountRegistryContribution<N>(
+						realEntry as AccountRegistryEntry & { readonly name: N },
+					),
+				);
+				ctx.publish(
+					makeAccountProjectionContribution<N>(
+						realEntry as AccountRegistryEntry & { readonly name: N },
+					),
+				);
+
+				return resolved;
 			}),
-		// Dynamic capability factory — receives the resolved
-		// `AccountValue` + acquire context AFTER `acquire` succeeds.
-		// Lets snapshot + codegen + registry decls reference the
-		// REAL address (and identity app/stack) — the static form
-		// would force placeholder values for fields only known at
-		// acquire time.
 		errorContributions: accountErrorContributions,
-		capabilities: ({ value: resolved, runtime: acquireCtx2 }) => {
-			const realEntry: AccountRegistryEntry = {
-				name,
-				address: resolved.address,
-				scheme: resolved.scheme,
-				source: resolved.source,
-				funding: fundingProjectionForResult(resolved.funding),
-			};
-			const bindings: AccountBindings = {
-				name,
-				address: resolved.address,
-				scheme: resolved.scheme,
-				source: resolved.source,
-			};
-			const snapshot = makeAccountSnapshotable({
-				accountName: name,
-				variant: opts2.kind,
-				app: acquireCtx2.identity.app,
-				stack: acquireCtx2.identity.stack,
-			});
-			const codegen = makeAccountCodegen<N>({ name, resolved: bindings });
-			const registry = makeAccountRegistryContribution<N>(
-				realEntry as AccountRegistryEntry & { readonly name: N },
-			);
-			const projection = makeAccountProjectionContribution<N>(
-				realEntry as AccountRegistryEntry & { readonly name: N },
-			);
-			return [snapshot, codegen, registry, projection] as const;
-		},
 	});
 };
 

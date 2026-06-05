@@ -12,7 +12,6 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { strategyContributor } from '../../src/api/define-capabilities.ts';
 import type {
 	StrategyContributorDecl,
 	StrategyFor,
@@ -78,20 +77,5 @@ describe('contracts/strategy-contributor — structural pins', () => {
 		// Unknown keys narrow to `never` — assignment fails at the type level.
 		const _missing: StrategyFor<Caps, 'coinType:MISSING'> = undefined as never;
 		void _missing;
-	});
-
-	it('`define-capabilities.ts` helper round-trips and preserves narrow `Key`', () => {
-		const decl = strategyContributor({
-			capabilityKey: 'gate:funds-ready' as const,
-			strategy: { waitFundsReady: () => undefined },
-			autoMounted: false,
-			priority: 10,
-		});
-		expect(decl.kind).toBe('strategy-contributor');
-		expect(decl.capabilityKey).toBe('gate:funds-ready');
-		expect(decl.autoMounted).toBe(false);
-		expect(decl.priority).toBe(10);
-		const narrowed: 'gate:funds-ready' = decl.capabilityKey;
-		expect(narrowed).toBe('gate:funds-ready');
 	});
 });

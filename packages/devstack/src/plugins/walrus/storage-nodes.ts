@@ -117,8 +117,8 @@ export interface StorageNodesAcquired {
  *  var and the per-node `--ip` pin compute from one source. */
 export const WALRUS_NODE_IP_BASE = 10;
 
-/** Compute the public hostname for one storage node. Mirrors
- *  v3's `routerHostname(identity, 'walrus-node-' + i)` shape
+/** Compute the public hostname for one storage node — the
+ *  `routerHostname(identity, 'walrus-node-' + i)` shape
  *  (06-walrus.md §"Routes registered"). Main stack omits the stack
  *  segment; non-main inserts it after the service label. */
 export const computePublicHostname = (app: string, stack: string, nodeIndex: number): string => {
@@ -148,6 +148,45 @@ export const buildWalrusNetworkName = (app: string, stack: string, walrusName: s
 
 /** Per-node TCP ready-probe interval. */
 const NODE_READY_PROBE_INTERVAL_MS = 500;
+
+/** Walrus storage-node REST health endpoint (TLS disabled — plain HTTP
+ *  behind the router; see images/walrus/deploy-walrus.sh which rebinds
+ *  `rest_api_address` on 0.0.0.0 and sets `disable_tls: true`). The node
+ *  serves `GET /v1/health` once its API listener binds; the JSON body's
+ *  `nodeStatus` field reports the committee-sync state. */
+const NODE_HEALTH_PATH = '/v1/health';
+
+/** Recovery / not-yet-serving markers in a `/v1/health` body. A node that
+ *  just recreated (fresh `docker run` from a committed/restored image — the
+ *  snapshot capture/restore resume) comes back up and reports a recovery
+ *  status while it re-syncs its committee/epoch; writing a blob to it before
+ *  it catches up fails the write quorum with "Too many failures while
+ *  writing blob to nodes". The boot ready-gate blocks until NONE of these
+ *  markers is present so the node is genuinely serving. */
+const NODE_RECOVERY_MARKERS: ReadonlyArray<RegExp> = [
+	/"nodeStatus"\s*:\s*"Recovery/i,
+	/"nodeStatus"\s*:\s*"Standby"/i,
+	/"nodeStatus"\s*:\s*"Starting"/i,
+	/"isInRecovery"\s*:\s*true/i,
+	/"inRecovery"\s*:\s*true/i,
+];
+
+/** Classify a `/v1/health` 2xx body as write-ready. Biased toward NOT
+ *  false-negativing the boot (a too-strict classifier would time the boot
+ *  out on a field-name change upstream): a node whose health endpoint
+ *  returns 2xx is treated as serving UNLESS the body explicitly reports a
+ *  recovery / standby / starting status. The explicit `Active` serving
+ *  status is the fast-path. This gates EVERY acquire path (up / restart /
+ *  restore-converge / capture-resume) on write-readiness, not just
+ *  process-up — the snapshot survival-matrix fix. */
+const isWriteReadyHealthBody = (body: string): boolean => {
+	const trimmed = body.trim();
+	if (/"nodeStatus"\s*:\s*"Active"/i.test(trimmed)) return true;
+	// Empty body from a 2xx with no payload: the listener answered but gave
+	// no status — treat as not-yet-ready so the gate keeps polling briefly.
+	if (trimmed.length === 0) return false;
+	return !NODE_RECOVERY_MARKERS.some((marker) => marker.test(trimmed));
+};
 
 /** Start the N-node committee.
  *
@@ -304,14 +343,32 @@ export const startStorageNodes = (
 					});
 				const handle: ContainerHandle = yield* Scope.provide(ensureNode, nodeStopScope);
 
-				// TCP ready probe. We exec a tiny `nc`-style probe inside
-				// the container against its own listener — proves the
-				// in-container HTTP server bound and is accepting before
-				// declaring ready. `exec` only fails on daemon-level
-				// errors; a non-zero exit code is treated as "retry"
-				// (the same policy postgres uses for `pg_isready`).
+				// WRITE-READY gate. A two-stage probe execed inside the
+				// container against its own listener:
+				//
+				//   1. TCP `nc -z` — proves the in-container REST server bound
+				//      and is accepting connections (process-up).
+				//   2. HTTP `GET /v1/health` — proves the node finished
+				//      re-syncing its committee/epoch and reports a SERVING
+				//      `nodeStatus` (write-ready). A node that just recreated
+				//      (the snapshot capture/restore resume = fresh `docker run`
+				//      from a committed/restored image) binds its port quickly
+				//      but stays in recovery for a while; writing a blob before
+				//      it is serving fails the write quorum with "Too many
+				//      failures while writing blob to nodes". Gating on
+				//      write-readiness HERE (in the boot ready-gate) means every
+				//      acquire path — up / restart / restore-converge /
+				//      capture-resume — inherits it, fixing the snapshot survival
+				//      matrix without a bespoke per-flow wait.
+				//
+				// `exec` only fails on daemon-level errors; a non-zero exit code
+				// (port not yet bound, health not yet serving) is treated as
+				// "retry" (the same policy postgres uses for `pg_isready`). The
+				// health body is captured to stdout and classified by
+				// `isWriteReadyHealthBody`; a not-yet-serving status surfaces as
+				// `ready:false` so the gate keeps polling until the deadline.
 				yield* setCurrentPluginPhase(
-					`waiting for storage-node-${i} on 127.0.0.1:${spec.containerApiPort}`,
+					`waiting for storage-node-${i} write-readiness on 127.0.0.1:${spec.containerApiPort}`,
 				);
 				yield* waitForProbe({
 					label: `walrus.storage-node.${i}`,
@@ -322,22 +379,40 @@ export const startStorageNodes = (
 							.exec(handle, [
 								'sh',
 								'-c',
-								// busybox-style portable probe: open TCP, write
-								// nothing, exit. `nc -z` is the common form.
-								`nc -z 127.0.0.1 ${spec.containerApiPort} || exit 1`,
+								// Stage 1: TCP bind check (busybox-portable). Stage 2:
+								// fetch /v1/health and print the body to stdout so the
+								// result classifier can read `nodeStatus`. `curl -fs`
+								// fails (non-zero) until the REST server returns 2xx.
+								`nc -z 127.0.0.1 ${spec.containerApiPort} || exit 1; ` +
+									`curl -fs http://127.0.0.1:${spec.containerApiPort}${NODE_HEALTH_PATH} || exit 1`,
 							])
-							.pipe(Effect.map(exitCodeProbeResult)),
+							.pipe(
+								Effect.map((result) => {
+									// Non-zero exit → not ready (port unbound / health
+									// not serving yet). Exit 0 → classify the health body
+									// for write-readiness; a not-yet-serving status keeps
+									// the gate polling.
+									if (result.exitCode !== 0) return exitCodeProbeResult(result);
+									if (isWriteReadyHealthBody(result.stdout)) return true;
+									return {
+										ready: false as const,
+										detail: { nodeStatus: 'not-serving', body: result.stdout.slice(0, 256) },
+									};
+								}),
+							),
 				}).pipe(
 					Effect.mapError((cause) => {
 						if (cause instanceof ProbeTimeoutError) {
 							return walrusPluginError(
 								'storage-node',
-								`storage-node-${i} never became ready within ${Duration.toMillis(readyTimeout)}ms ` +
-									`(container=${containerName}, probe=127.0.0.1:${spec.containerApiPort}, ` +
+								`storage-node-${i} never became write-ready within ${Duration.toMillis(readyTimeout)}ms ` +
+									`(container=${containerName}, probe=127.0.0.1:${spec.containerApiPort}${NODE_HEALTH_PATH}, ` +
 									`publicUrl=http://${publicHostname}:${WALRUS_ROUTER_PORT}). ` +
-									`The container was created, but walrus-node did not bind its API port. ` +
-									`Check the storage-node container logs for the faucet, WAL exchange, or ` +
-									`walrus-node run step that stalled.`,
+									`The container was created, but walrus-node did not bind its API port or did not ` +
+									`finish re-syncing its committee/epoch to a serving nodeStatus (a node recreated from ` +
+									`a committed/restored snapshot image must catch up before it accepts blob writes). ` +
+									`Check the storage-node container logs for the faucet, WAL exchange, committee ` +
+									`recovery, or walrus-node run step that stalled.`,
 								{ cause: cause.lastError ?? cause.lastNotReady ?? cause },
 							);
 						}

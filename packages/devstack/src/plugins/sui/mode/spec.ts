@@ -24,8 +24,13 @@ export interface SuiCommonOptions {
 	readonly readyTimeout?: Duration.Duration;
 }
 
-/** Local container mode — in-stack validator + faucet + GraphQL +
- *  postgres indexer. */
+/** Local container mode — in-stack validator + faucet + GraphQL. GraphQL,
+ *  its indexer, and a Postgres are ON BY DEFAULT: the sui plugin OWNS a
+ *  postgres sidecar container (labelled under sui) and auto-creates its
+ *  `sui_indexer` DB, so a bare `sui()` boots the full GraphQL surface with
+ *  no cross-plugin wiring. Two escape hatches: `indexer: false` opts out
+ *  (RPC + faucet only, no sidecar), and `indexerDb` points GraphQL at a
+ *  Postgres the caller already runs (no sidecar). */
 export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly mode: 'local';
 	/** Image override — `{pull}` skips the build; `{build}` uses
@@ -33,8 +38,26 @@ export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly image?:
 		| { readonly pull: string }
 		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
-	/** Sui binary version (default in mode/local.ts). */
+	/** Effectively DEAD for the default path: local mode now bases on the
+	 *  pinned `mysten/sui-tools` image, not a versioned tarball, so
+	 *  `resolveImage` ignores this field for the vendored build. Kept as a
+	 *  public option (it could be threaded into a custom `{build}`
+	 *  Dockerfile's build args) but currently has no in-repo reader. */
 	readonly version?: string;
+	/** GraphQL/indexer/Postgres on-off. Default `true` — sui owns a
+	 *  postgres sidecar and runs `--with-graphql` against it. `false` ⇒
+	 *  RPC + faucet only, no sidecar, no GraphQL. */
+	readonly indexer?: boolean;
+	/** BYO indexer Postgres (value-based escape hatch). When set, GraphQL
+	 *  reads from the caller's own DB and NO sidecar is provisioned. `url`
+	 *  is a PostgreSQL DSN reachable from the validator on `network`;
+	 *  `database` (default `'sui_indexer'`) is appended to the DSN if it
+	 *  carries no path segment. */
+	readonly indexerDb?: {
+		readonly url: string;
+		readonly network: string;
+		readonly database?: string;
+	};
 	/** Optional direct host port mapping keyed by container port. When
 	 *  supplied, the mapping is exact: Sui does not reassign missing
 	 *  or busy host ports through the PortBroker. Omit this field to

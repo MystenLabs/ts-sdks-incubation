@@ -88,6 +88,9 @@ describe('connect-four boots end-to-end', () => {
 			'account/bob#5',
 			'wallet#6',
 			'host-service/app#7',
+			// example config composes `dashboard()` as the final member
+			// (examples/connect-four/devstack.config.ts) — reaches ready as #8.
+			'dashboard#8',
 		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);

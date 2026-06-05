@@ -70,6 +70,10 @@ export interface DashboardDeepbookInfo {
 	readonly marketMakerRunning: boolean;
 	readonly serverUrl: string | null;
 	readonly indexerUrl: string | null;
+	/** Non-null when one or more required fields failed to narrow off the
+	 *  opaque resolved value (fail-loud: schema drift surfaced to the caller
+	 *  instead of silently degrading). */
+	readonly narrowingFault: string | null;
 }
 
 export interface DashboardSealKeyServer {
@@ -85,6 +89,9 @@ export interface DashboardSealInfo {
 	readonly keyServers: ReadonlyArray<DashboardSealKeyServer>;
 	/** Threshold = number of registered key-server configs. */
 	readonly threshold: number;
+	/** Non-null when one or more required fields failed to narrow off the
+	 *  opaque resolved value (fail-loud). */
+	readonly narrowingFault: string | null;
 }
 
 /** A coin's treasury-cap id (drives the Mint action) + addressing facts. */
@@ -96,6 +103,9 @@ export interface DashboardCoinCap {
 	readonly source: 'registry' | 'on-chain' | 'builtin';
 	readonly treasuryCapId: string | null;
 	readonly packageId: string | null;
+	/** Non-null when one or more required fields failed to narrow off the
+	 *  opaque resolved value (fail-loud). */
+	readonly narrowingFault: string | null;
 }
 
 /** Input for the dashboard mint ACTION. `amountBaseUnits` is the raw
@@ -133,14 +143,13 @@ export interface DashboardFundInput {
 }
 
 /** Outcome of a dashboard fund ACTION. The in-process funding strategies
- *  return `void` (not a digest), so `digest` is always `null` here — kept
- *  for shape-parity with `DashboardMintResult`. `ok:true` means the
- *  strategy's `request(...)` completed (the faucet POST landed / the swap
- *  executed on-chain); `detail` carries the reason on failure. */
+ *  return `void` (not a digest), so the result carries only `ok`/`detail`.
+ *  `ok:true` means the strategy's `request(...)` completed (the faucet POST
+ *  landed / the swap executed on-chain); `detail` carries the reason on
+ *  failure. */
 export interface DashboardFundResult {
 	readonly ok: boolean;
 	readonly detail: string;
-	readonly digest: string | null;
 }
 
 /** One coin the dashboard faucet can actually fund, with whether the
@@ -368,10 +377,99 @@ const causeDetail = (cause: unknown): string => {
 const faucetCauseDetail = causeDetail;
 const fundingCauseDetail = causeDetail;
 
-const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
-const strReq = (v: unknown): string => (typeof v === 'string' ? v : '');
-const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+// -----------------------------------------------------------------------------
+// Fail-aware structural narrowing
+//
+// The substrate hands us opaque `unknown` resolved values. We still narrow
+// through shallow structural shapes, but instead of SILENTLY degrading a
+// missing/wrong-typed required field to ''/0 (which hid integration-seam
+// drift), the `req*` readers ACCUMULATE a typed narrowing fault into a
+// per-shaping-call collector. The fault is threaded into the GraphQL-visible
+// result (`narrowingFault` / `detail`) so consumers SEE the drift — WITHOUT
+// ever throwing (the dashboard's `E = never` surface semantic is preserved).
+// `opt*` readers stay quiet: they are for genuinely-optional fields.
+// -----------------------------------------------------------------------------
+
+/** Mutable per-call sink for structural-narrowing faults. */
+type FaultSink = Array<string>;
+
+const newFaults = (): FaultSink => [];
+
+/** Collapse accumulated faults into a single nullable detail string for the
+ *  GraphQL-visible result. `null` when nothing drifted. */
+const faultDetail = (faults: FaultSink): string | null =>
+	faults.length === 0 ? null : faults.join('; ');
+
+/** Describe why a value failed to narrow to the expected type — distinguishing
+ *  'absent' from 'present but wrong type'. */
+const typeFault = (field: string, expected: string, v: unknown): string => {
+	if (v === undefined || v === null) return `${field}: missing (expected ${expected})`;
+	return `${field}: expected ${expected}, got ${typeof v}`;
+};
+
+/** Required string. On mismatch records a fault and returns '' so the panel
+ *  still renders a (degraded) cell. */
+const reqStr = (v: unknown, field: string, faults: FaultSink): string => {
+	if (typeof v === 'string') return v;
+	faults.push(typeFault(field, 'string', v));
+	return '';
+};
+
+/** Required finite number. On mismatch records a fault and returns the safe
+ *  display fallback (`fallback`, default 0). */
+const reqNum = (v: unknown, field: string, faults: FaultSink, fallback = 0): number => {
+	if (typeof v === 'number' && Number.isFinite(v)) return v;
+	faults.push(typeFault(field, 'number', v));
+	return fallback;
+};
+
+/** Allow-list enum narrow. Records a fault for an out-of-enum value while
+ *  still returning a safe display fallback so the panel renders. */
+const narrowEnum = <T extends string>(
+	raw: unknown,
+	allowed: ReadonlyArray<T>,
+	field: string,
+	faults: FaultSink,
+	fallback: T,
+): T => {
+	if (typeof raw === 'string' && (allowed as ReadonlyArray<string>).includes(raw)) return raw as T;
+	faults.push(
+		raw === undefined || raw === null
+			? `${field}: missing (expected one of ${allowed.join('|')})`
+			: `${field}: '${String(raw)}' not in ${allowed.join('|')}`,
+	);
+	return fallback;
+};
+
+// Genuinely-optional readers — silent by design (absent is a valid state).
+const optStr = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+const optNum = (v: unknown): number | null =>
+	typeof v === 'number' && Number.isFinite(v) ? v : null;
 const bool = (v: unknown): boolean => v === true;
+
+/** Narrow a postgres resolved value's five fields in ONE place — the single
+ *  fail-loud enforcement point shared by `parsePgStats`, `unavailablePgStats`,
+ *  and the `postgresStats` exec setup. `database`/`host` use `reqStr`,
+ *  `port` uses `reqNum`; `user`/`name` are required-with-fallback (they drive
+ *  the exec role/auth, so a missing value is a real fault, not a silent
+ *  'postgres'). */
+interface NarrowedPostgres {
+	readonly database: string;
+	readonly host: string;
+	readonly port: number;
+	readonly pgUser: string;
+	readonly role: string;
+	readonly plainUrl: string;
+}
+
+const narrowPostgres = (pg: PostgresShape, faults: FaultSink): NarrowedPostgres => {
+	const database = reqStr((pg.databases ?? [])[0], 'postgres.database', faults) || 'postgres';
+	const host = reqStr(pg.networkAlias, 'postgres.networkAlias', faults) || 'postgres';
+	const port = reqNum(pg.port, 'postgres.port', faults, 5432);
+	const pgUser = reqStr(pg.user, 'postgres.user', faults) || 'postgres';
+	const role = reqStr(pg.name, 'postgres.name', faults) || 'postgres';
+	return { database, host, port, pgUser, role, plainUrl: `postgres://${host}:${port}` };
+};
 
 /** Filter the generic resolved values down to those whose resource id
  *  matches a predicate, in graph order. Returns the `{ pluginKey, value }`
@@ -402,19 +500,25 @@ const PG_STATS_SQL = `SELECT json_build_object(
   ), '[]'::json)
 )`;
 
+/** Compose the narrowing-fault prefix into a detail string so the (already
+ *  present) postgres `detail` channel carries fail-loud narrowing faults
+ *  alongside any exec/parse detail — no new top-level failure invented. */
+const withFaultDetail = (faults: FaultSink, detail: string | null): string | null => {
+	const fault = faultDetail(faults);
+	if (fault === null) return detail;
+	return detail === null ? `narrowing: ${fault}` : `narrowing: ${fault}; ${detail}`;
+};
+
 const parsePgStats = (
 	pluginKey: string,
-	pg: PostgresShape,
+	pg: NarrowedPostgres,
+	faults: FaultSink,
 	stdout: string,
 ): DashboardPostgresStats => {
-	const database = strReq((pg.databases ?? [])[0]) || 'postgres';
-	const host = str(pg.networkAlias) ?? 'postgres';
-	const port = num(pg.port) ?? 5432;
-	const plainUrl = `postgres://${host}:${port}`;
 	const base = {
 		pluginKey,
-		database,
-		plainUrl,
+		database: pg.database,
+		plainUrl: pg.plainUrl,
 	} as const;
 	try {
 		const trimmed = stdout.trim();
@@ -431,16 +535,16 @@ const parsePgStats = (
 		const tables: DashboardPostgresTable[] = (parsed.tables ?? []).map((t) => ({
 			schema: t.schema ?? 'public',
 			name: t.name ?? '',
-			rowEstimate: num(t.row_estimate) ?? 0,
-			totalBytes: num(t.total_bytes) ?? 0,
+			rowEstimate: optNum(t.row_estimate) ?? 0,
+			totalBytes: optNum(t.total_bytes) ?? 0,
 		}));
 		return {
 			...base,
-			databaseBytes: num(parsed.db_bytes) ?? 0,
-			connectionCount: num(parsed.connections) ?? 0,
+			databaseBytes: optNum(parsed.db_bytes) ?? 0,
+			connectionCount: optNum(parsed.connections) ?? 0,
 			tables,
 			available: true,
-			detail: null,
+			detail: withFaultDetail(faults, null),
 		};
 	} catch (cause) {
 		return {
@@ -449,30 +553,26 @@ const parsePgStats = (
 			connectionCount: 0,
 			tables: [],
 			available: false,
-			detail: `failed to parse psql output: ${String(cause)}`,
+			detail: withFaultDetail(faults, `failed to parse psql output: ${String(cause)}`),
 		};
 	}
 };
 
 const unavailablePgStats = (
 	pluginKey: string,
-	pg: PostgresShape,
+	pg: NarrowedPostgres,
+	faults: FaultSink,
 	detail: string,
-): DashboardPostgresStats => {
-	const database = strReq((pg.databases ?? [])[0]) || 'postgres';
-	const host = str(pg.networkAlias) ?? 'postgres';
-	const port = num(pg.port) ?? 5432;
-	return {
-		pluginKey,
-		database,
-		plainUrl: `postgres://${host}:${port}`,
-		databaseBytes: 0,
-		connectionCount: 0,
-		tables: [],
-		available: false,
-		detail,
-	};
-};
+): DashboardPostgresStats => ({
+	pluginKey,
+	database: pg.database,
+	plainUrl: pg.plainUrl,
+	databaseBytes: 0,
+	connectionCount: 0,
+	tables: [],
+	available: false,
+	detail: withFaultDetail(faults, detail),
+});
 
 // -----------------------------------------------------------------------------
 // Builder
@@ -521,27 +621,33 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			matching(values, (id) => id.startsWith('deepbook/')).map(
 				({ pluginKey, value }): DashboardDeepbookInfo => {
 					const v = value as DeepbookShape;
-					const modeRaw = v.mode;
-					const dbMode =
-						modeRaw === 'override' ? 'override' : modeRaw === 'known' ? 'known' : 'local';
+					const faults = newFaults();
+					const dbMode = narrowEnum(
+						v.mode,
+						['local', 'override', 'known'] as const,
+						'deepbook.mode',
+						faults,
+						'local',
+					);
 					return {
 						pluginKey,
 						name: pluginKey.replace(/^deepbook:/, ''),
 						mode: dbMode,
-						chain: strReq(v.chain),
-						packageId: strReq(v.packageId),
-						registryId: strReq(v.registryId),
-						adminCapId: str(v.adminCapId),
-						deepTreasuryId: str(v.deepTreasuryId),
-						pools: (v.pools ?? []).map((p) => ({
-							name: strReq(p.name),
-							poolId: strReq(p.poolId),
-							baseCoinType: strReq(p.baseCoinType),
-							quoteCoinType: strReq(p.quoteCoinType),
+						chain: reqStr(v.chain, 'deepbook.chain', faults),
+						packageId: reqStr(v.packageId, 'deepbook.packageId', faults),
+						registryId: reqStr(v.registryId, 'deepbook.registryId', faults),
+						adminCapId: optStr(v.adminCapId),
+						deepTreasuryId: optStr(v.deepTreasuryId),
+						pools: (v.pools ?? []).map((p, i) => ({
+							name: reqStr(p.name, `deepbook.pools[${i}].name`, faults),
+							poolId: reqStr(p.poolId, `deepbook.pools[${i}].poolId`, faults),
+							baseCoinType: reqStr(p.baseCoinType, `deepbook.pools[${i}].baseCoinType`, faults),
+							quoteCoinType: reqStr(p.quoteCoinType, `deepbook.pools[${i}].quoteCoinType`, faults),
 						})),
 						marketMakerRunning: bool(v.marketMakerRunning),
-						serverUrl: str(v.serverUrl),
-						indexerUrl: str(v.indexerUrl),
+						serverUrl: optStr(v.serverUrl),
+						indexerUrl: optStr(v.indexerUrl),
+						narrowingFault: faultDetail(faults),
 					};
 				},
 			),
@@ -553,19 +659,26 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			matching(values, (id) => id.startsWith('seal:')).map(
 				({ pluginKey, value }): DashboardSealInfo => {
 					const v = value as SealShape;
-					const sealMode =
-						v.mode === 'live' ? 'live' : v.mode === 'fork-known' ? 'fork-known' : 'local-keygen';
-					const keyServers = (v.serverConfigs ?? []).map((c) => ({
-						objectId: strReq(c.objectId),
-						weight: num(c.weight) ?? 1,
+					const faults = newFaults();
+					const sealMode = narrowEnum(
+						v.mode,
+						['local-keygen', 'live', 'fork-known'] as const,
+						'seal.mode',
+						faults,
+						'local-keygen',
+					);
+					const keyServers = (v.serverConfigs ?? []).map((c, i) => ({
+						objectId: reqStr(c.objectId, `seal.serverConfigs[${i}].objectId`, faults),
+						weight: optNum(c.weight) ?? 1,
 					}));
 					return {
 						pluginKey,
 						mode: sealMode,
-						objectId: strReq(v.objectId),
-						keyServerUrl: strReq(v.keyServerUrl),
+						objectId: reqStr(v.objectId, 'seal.objectId', faults),
+						keyServerUrl: reqStr(v.keyServerUrl, 'seal.keyServerUrl', faults),
 						keyServers,
 						threshold: keyServers.length,
+						narrowingFault: faultDetail(faults),
 					};
 				},
 			),
@@ -577,16 +690,23 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			matching(values, (id) => id.startsWith('coin:')).map(
 				({ pluginKey, value }): DashboardCoinCap => {
 					const v = value as CoinShape;
-					const source =
-						v.source === 'registry' ? 'registry' : v.source === 'builtin' ? 'builtin' : 'on-chain';
+					const faults = newFaults();
+					const source = narrowEnum(
+						v.source,
+						['registry', 'on-chain', 'builtin'] as const,
+						'coin.source',
+						faults,
+						'on-chain',
+					);
 					return {
 						pluginKey,
-						symbol: str(v.symbol),
-						fullCoinType: strReq(v.fullCoinType),
-						decimals: num(v.decimals) ?? 0,
+						symbol: optStr(v.symbol),
+						fullCoinType: reqStr(v.fullCoinType, 'coin.fullCoinType', faults),
+						decimals: reqNum(v.decimals, 'coin.decimals', faults, 0),
 						source,
-						treasuryCapId: str(v.treasuryCapId),
-						packageId: str(v.packageId),
+						treasuryCapId: optStr(v.treasuryCapId),
+						packageId: optStr(v.packageId),
+						narrowingFault: faultDetail(faults),
 					};
 				},
 			),
@@ -628,16 +748,27 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			// Locate the resolved coin whose fullCoinType matches. Match on the
 			// resolved value's `fullCoinType` (the stable on-chain type), not the
 			// resource-id prefix, so callers pass the same `coinType` the
-			// `coinCaps` query surfaced.
+			// `coinCaps` query surfaced. Read `fullCoinType` fail-loud so a coin
+			// value missing/empty `fullCoinType` names the REAL cause (a drifted
+			// resolved shape) rather than collapsing into the generic
+			// 'no resolved coin found' reject.
 			const values = yield* control.resolvedValues;
-			const match = matching(values, (id) => id.startsWith('coin:'))
-				.map(({ value }) => value as CoinShape)
-				.find((v) => strReq(v.fullCoinType) === input.coinType);
+			const candidates = matching(values, (id) => id.startsWith('coin:')).map(
+				({ value }) => value as CoinShape,
+			);
+			const matchFaults = newFaults();
+			const match = candidates.find(
+				(v) => reqStr(v.fullCoinType, 'coin.fullCoinType', matchFaults) === input.coinType,
+			);
 
 			if (match === undefined) {
+				const fault = faultDetail(matchFaults);
 				return {
 					ok: false,
-					detail: `no resolved coin found for type '${input.coinType}'`,
+					detail:
+						fault === null
+							? `no resolved coin found for type '${input.coinType}'`
+							: `no resolved coin found for type '${input.coinType}' (${fault})`,
 					digest: null,
 				} satisfies DashboardMintResult;
 			}
@@ -709,7 +840,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 	const readChainId = control.resolvedValues.pipe(
 		Effect.map((values) => {
 			const sui = matching(values, (id) => id === 'sui')[0];
-			return sui === undefined ? null : str((sui.value as SuiShape).chain);
+			return sui === undefined ? null : optStr((sui.value as SuiShape).chain);
 		}),
 	);
 
@@ -763,14 +894,12 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				return {
 					ok: false,
 					detail: `invalid recipient '${input.recipient}': expected a 0x-prefixed Sui address`,
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 			if (strategyRegistry === null) {
 				return {
 					ok: false,
 					detail: 'funding unavailable: no strategy registry wired',
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -786,7 +915,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					return {
 						ok: false,
 						detail: 'cannot fund SUI: no resolved sui plugin / chain id in this stack',
-						digest: null,
 					} satisfies DashboardFundResult;
 				}
 				const key = faucetCapabilityKeyFor(chain);
@@ -797,7 +925,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					return {
 						ok: false,
 						detail: `no SUI faucet strategy registered for chain '${chain}'`,
-						digest: null,
 					} satisfies DashboardFundResult;
 				}
 				// `amount` is nominal — the standard faucet grant is fixed and
@@ -809,21 +936,18 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 						(): DashboardFundResult => ({
 							ok: true,
 							detail: `requested SUI for ${recipient} (fixed-amount faucet grant)`,
-							digest: null,
 						}),
 					),
 					Effect.catch((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `SUI faucet request failed: ${faucetCauseDetail(cause)}`,
-							digest: null,
 						}),
 					),
 					Effect.catchCause((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `SUI faucet request crashed: ${String(cause)}`,
-							digest: null,
 						}),
 					),
 				);
@@ -835,7 +959,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				return {
 					ok: false,
 					detail: `invalid amountBaseUnits '${input.amountBaseUnits ?? ''}': expected a positive integer string`,
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -849,7 +972,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					detail:
 						`no funding strategy registered for coin '${coinType}' — ` +
 						'WAL needs the walrus plugin (with an exchange) and DEEP needs the deepbook plugin',
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -857,7 +979,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			const values = yield* control.resolvedValues;
 			const account = matching(values, (id) => id.startsWith('account/'))
 				.map(({ value }) => value as AccountShape)
-				.find((v) => str(v.address) === recipient);
+				.find((v) => optStr(v.address) === recipient);
 
 			// Account-spending strategies (WAL/DEEP) swap the recipient's OWN SUI,
 			// so the recipient must BE a resolved account with a signer. Mint-style
@@ -870,7 +992,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					detail:
 						`coin '${coinType}' is funded by an account-signed swap, but '${recipient}' ` +
 						'is not a resolved account in this stack — fund a configured account (the swap spends its SUI)',
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -885,21 +1006,18 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 						(): DashboardFundResult => ({
 							ok: true,
 							detail: `funded ${amount} base units of ${coinType} to ${recipient}`,
-							digest: null,
 						}),
 					),
 					Effect.catch((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `${coinSymbolFromType(coinType)} funding failed: ${fundingCauseDetail(cause)}`,
-							digest: null,
 						}),
 					),
 					Effect.catchCause((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `${coinSymbolFromType(coinType)} funding crashed: ${String(cause)}`,
-							digest: null,
 						}),
 					),
 				);
@@ -911,31 +1029,31 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 		if (instances.length === 0) return [];
 		const out: DashboardPostgresStats[] = [];
 		for (const { pluginKey, value } of instances) {
-			const pg = value as PostgresShape;
+			// ONE postgres narrow (single fail-loud enforcement point). The
+			// accumulated faults ride into every result via the `detail` channel.
+			const faults = newFaults();
+			const pg = narrowPostgres(value as PostgresShape, faults);
 			if (containerRuntime === null) {
-				out.push(unavailablePgStats(pluginKey, pg, 'container runtime unavailable'));
+				out.push(unavailablePgStats(pluginKey, pg, faults, 'container runtime unavailable'));
 				continue;
 			}
-			const database = strReq((pg.databases ?? [])[0]) || 'postgres';
-			const pgUser = str(pg.user) ?? 'postgres';
-			const role = str(pg.name) ?? 'postgres';
 			const probe = Effect.gen(function* () {
 				const handles = yield* containerRuntime.inspectByLabels({
 					app: String(identity.app),
 					stack: String(identity.stack),
 					plugin: 'postgres',
-					role,
+					role: pg.role,
 				});
 				const running = handles.find((h) => h.status === 'running') ?? handles[0];
 				if (running === undefined) {
-					return unavailablePgStats(pluginKey, pg, 'no running postgres container found');
+					return unavailablePgStats(pluginKey, pg, faults, 'no running postgres container found');
 				}
 				const result = yield* containerRuntime.exec(running, [
 					'psql',
 					'-U',
-					pgUser,
+					pg.pgUser,
 					'-d',
-					database,
+					pg.database,
 					'-tAc',
 					PG_STATS_SQL,
 				]);
@@ -943,14 +1061,15 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					return unavailablePgStats(
 						pluginKey,
 						pg,
+						faults,
 						`psql exited ${result.exitCode}: ${result.stderr.trim().slice(0, 200)}`,
 					);
 				}
-				return parsePgStats(pluginKey, pg, result.stdout);
+				return parsePgStats(pluginKey, pg, faults, result.stdout);
 			});
 			const stats = yield* probe.pipe(
 				Effect.catchCause((cause) =>
-					Effect.succeed(unavailablePgStats(pluginKey, pg, String(cause))),
+					Effect.succeed(unavailablePgStats(pluginKey, pg, faults, String(cause))),
 				),
 			);
 			out.push(stats);
@@ -981,5 +1100,5 @@ export const emptyDashboardDomain: DashboardDomain = {
 	postgresStats: Effect.succeed([]),
 	mintCoin: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
 	fundableCoins: Effect.succeed([]),
-	fundAccount: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
+	fundAccount: () => Effect.succeed({ ok: false, detail: 'unavailable' }),
 };

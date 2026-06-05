@@ -114,7 +114,7 @@ describe('cli/main event-stream decoder', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured');
+								yield* subscriber.publishReply(record.id, { kind: 'ack', detail: 'captured' });
 							}),
 						),
 					);

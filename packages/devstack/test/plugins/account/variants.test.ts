@@ -5,8 +5,15 @@ import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import { withTempRootAsync } from '../../helpers/with-temp-root.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
-import { account } from '../../../src/plugins/account/index.ts';
+import {
+	account,
+	fundingProjectionForResult,
+	type AccountRegistryEntry,
+} from '../../../src/plugins/account/index.ts';
+import { makeAccountRegistryContribution } from '../../../src/plugins/account/registry.ts';
+import { emitContributions } from '../../../src/substrate/plugin-ctx.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
 import { DEEPBOOK_TESTNET_DEEP_COIN_TYPE, deepbook } from '../../../src/plugins/deepbook/index.ts';
 import { generateEd25519Keypair } from '../../../src/plugins/account/keypair.ts';
@@ -16,8 +23,6 @@ import {
 	type AccountValue,
 	validateAccountName,
 } from '../../../src/plugins/account/service.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { AcquireContext } from '../../../src/substrate/plugin.ts';
 import { resolveEnvVariant } from '../../../src/plugins/account/variants/env.ts';
 import { resolveEphemeralVariant } from '../../../src/plugins/account/variants/ephemeral.ts';
 import { resolveInlineVariant } from '../../../src/plugins/account/variants/inline.ts';
@@ -48,33 +53,40 @@ const fakeResolvedAccount = {
 	signPersonalMessage: null,
 } as unknown as AccountValue;
 
-const fakeAcquireContext: AcquireContext = {
-	identity: {
-		app: appName('account-test'),
-		stack: stackName('main'),
-		chain: chainId('sui:local'),
-	},
-	chain: chainId('sui:local'),
-	runtimeRoot: '/tmp/devstack-account-test',
-};
-
+// Account emits its contributions INLINE from `start` via the typed `ctx`
+// verbs. The funding projection asserted here flows through the registry
+// strategy-contributor decl: `start` builds a `realEntry` whose `funding`
+// is `fundingProjectionForResult(resolved.funding)`, then feeds
+// `makeAccountRegistryContribution(realEntry)` into the shared
+// `emitContributions` router. This helper rebuilds that exact decl from a
+// resolved value and reads the `account:`-keyed contribution back out of a
+// decl-capturing fake ctx — exactly the projection `start` emits.
+//
+// `member` is still constructed via `account(...)` at every call site (so
+// name-validation + the factory body still run); its `id` (`account/<name>`)
+// supplies the literal account name for the resolved value.
 const registryFundingFor = (
 	member: ReturnType<typeof account>,
 	funding: AccountValue['funding'] = fakeResolvedAccount.funding,
 ) => {
-	if (typeof member.capabilities !== 'function') {
-		throw new Error('expected account capabilities factory');
-	}
-	const decls = member.capabilities({ ...fakeResolvedAccount, funding }, fakeAcquireContext);
-	const registry = decls.find(
-		(decl) =>
-			decl.kind === 'strategy-contributor' &&
-			decl.capabilityKey.startsWith('account:') &&
-			'funding' in decl.strategy,
+	const name = member.id.slice('account/'.length);
+	const resolved = { ...fakeResolvedAccount, name, funding } as AccountValue;
+	const realEntry: AccountRegistryEntry = {
+		name,
+		address: resolved.address,
+		scheme: resolved.scheme,
+		source: resolved.source,
+		funding: fundingProjectionForResult(resolved.funding),
+	};
+	const { ctx, captured } = makeTestPluginCtx();
+	emitContributions(ctx, [
+		makeAccountRegistryContribution(realEntry as AccountRegistryEntry & { readonly name: string }),
+	]);
+	const registry = captured.provides.find(
+		(decl) => decl.capabilityKey.startsWith('account:') && 'funding' in (decl.strategy as object),
 	);
 	if (registry === undefined) throw new Error('missing account registry contribution');
-	if (registry.kind !== 'strategy-contributor') throw new Error('missing account strategy');
-	return registry.strategy.funding;
+	return (registry.strategy as AccountRegistryEntry).funding;
 };
 
 describe('account name validation', () => {
@@ -316,7 +328,7 @@ describe('account impersonation variant', () => {
 		const ctx: AccountAcquireContext = {
 			sui: {
 				mode: 'fork',
-				chain: chainId('sui:mainnet-fork'),
+				chain: 'sui:mainnet-fork',
 				sdk: {
 					core: {
 						getObject: () => Promise.reject(new Error('unused')),

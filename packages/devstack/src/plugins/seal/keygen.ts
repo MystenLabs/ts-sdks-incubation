@@ -19,7 +19,7 @@ import { sealError, type SealError } from './errors.ts';
 import { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
-// Constants — mirror v3 (`seal/internal.ts:115-149`)
+// Constants
 // ---------------------------------------------------------------------------
 
 /** Entrypoint binary inside the seal image. */
@@ -43,11 +43,11 @@ const KEYGEN_TIMEOUT_MS = 30_000;
 // PersistedBlsKeypair — the cache-stored shape
 // ---------------------------------------------------------------------------
 
-/** Two hex blobs round-tripped through the substrate StateStore. The
- *  master key is the secret; the public key is on-chain in the
- *  registered `KeyServer` object. Distilled-doc §"Persistence model"
- *  + §Hard requirements #5 — chainId is folded into the cache key by
- *  the ArtifactPublisher substrate. */
+/** Two hex blobs round-tripped through the substrate's content-addressed
+ *  cache (via the ArtifactPublisher). The master key is the secret; the
+ *  public key is on-chain in the registered `KeyServer` object.
+ *  Distilled-doc §"Persistence model" + §Hard requirements #5 — chainId
+ *  is folded into the cache key by the ArtifactPublisher substrate. */
 export interface PersistedBlsKeypair {
 	readonly masterKey: string;
 	readonly publicKey: string;
@@ -58,7 +58,7 @@ export interface PersistedBlsKeypair {
 // ---------------------------------------------------------------------------
 
 /** Case-insensitive line-level pattern matching any `master[_-]?key`
- *  mention. Mirrors v3's `MASTER_KEY_LINE_RE` (`seal/internal.ts:1343`). */
+ *  mention. */
 const MASTER_KEY_LINE_RE = /^.*master[_\- ]?key.*$/gim;
 
 /** Defense-in-depth: any contiguous hex run of 64+ chars is treated as

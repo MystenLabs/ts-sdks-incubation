@@ -109,9 +109,8 @@ const buildRuntimeDiscoverOpts = (
 ): DiscoverManifestPathOptions => {
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
 	// Shared ladder: option > DEVSTACK_RUNTIME_ROOT > DEVSTACK_STATE_DIR
-	// > '.devstack'. This surface previously read only DEVSTACK_STATE_DIR
-	// and silently ignored DEVSTACK_RUNTIME_ROOT — routing through
-	// `resolveDiscoveryEnv` aligns it with the vitest + runtime surfaces.
+	// > '.devstack'. Routing through `resolveDiscoveryEnv` keeps this
+	// surface aligned with the vitest + runtime surfaces.
 	const { stack, stateDir } = resolveDiscoveryEnv(env, {
 		...(options.stack !== undefined ? { stack: options.stack } : {}),
 		...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),

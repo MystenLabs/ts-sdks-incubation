@@ -46,6 +46,7 @@ import {
 	DaemonUnreachable,
 	type DockerRuntimeError,
 	ForeignDockerResource,
+	ImageNotFound,
 	RecreateRefused,
 } from './errors.ts';
 import { dockerInspectAndDecode } from './inspect-and-decode.ts';
@@ -198,18 +199,18 @@ export const decideRunAction = (
 	if (!configMatches) {
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'config-mismatch' }, policy);
 	}
+	// The only unclean exit the engine acts on is SIGKILL/137 (the
+	// unclean-shutdown signal, architecture §G1 / §13). `on-failure`:
+	// recreate. `never`: refuse. `on-config-change`: resume. Every other
+	// exit — clean (0/130) or any other non-137 code — falls through to
+	// resume its persisted writable layer (no recreate signal).
 	if (facts.lifecycle.exitCode === 137) {
-		// Unclean shutdown — see architecture §G1 / §13.
-		// `on-failure`: recreate. `never`: refuse. `on-config-change`:
-		// resume — caller wants stopped container kept until config
-		// changes, even if the prior exit was unclean.
 		if (policy === 'on-failure') {
 			return { kind: 'recreate', id: facts.id, reason: 'unclean-shutdown' };
 		}
 		if (policy === 'never') {
 			return { kind: 'refuse', reason: 'unclean-shutdown' };
 		}
-		return { kind: 'resume', id: facts.id };
 	}
 	return { kind: 'resume', id: facts.id };
 };
@@ -653,15 +654,75 @@ const startAndAdopt = (
 		);
 	});
 
+/** `docker run` create with a single `imageRef`. The typed
+ *  `ImageNotFound` (from `wrapCreateError`) is propagated as-is so the
+ *  caller can decide whether a digest fallback is available. */
+const createWithImageRef = (
+	spec: EnsureContainerSpec,
+	cycle: number,
+	imageRef: string,
+): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const args = createArgv(spec, cycle, imageRef);
+		const created = yield* dockerRun('run', args).pipe(Effect.mapError(wrapCreateError(spec.name)));
+		return created.stdout.trim();
+	});
+
 const freshCreate = (
 	spec: EnsureContainerSpec,
 	cycle: number,
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const args = createArgv(spec, cycle, spec.image.tag ?? spec.image.digest);
-		const created = yield* dockerRun('run', args).pipe(Effect.mapError(wrapCreateError(spec.name)));
-		return created.stdout.trim();
+		// Tag-first: `docker run` resolves a human tag when present, else
+		// the content-addressed digest. `digest` is always present on an
+		// `ImageRef`; `tag` is optional.
+		const taggedRef = spec.image.tag ?? spec.image.digest;
+		const digestRef = spec.image.digest;
+		return yield* createWithImageRef(spec, cycle, taggedRef).pipe(
+			// Image-not-found on create means `docker run` tried an implicit
+			// registry pull because the local-only ref wasn't present (an
+			// interrupted restore left the target un-promoted, or a built
+			// image was GC'd). A dangling restored image still resolves by
+			// DIGEST unless pruned, so retry with the digest when it differs
+			// from the tag we just tried. If that also misses (or there is no
+			// distinct digest to try), surface a clear, actionable error.
+			Effect.catchTag('ImageNotFound', (notFound) => {
+				if (digestRef === taggedRef) {
+					return Effect.fail(missingImageError(spec, taggedRef));
+				}
+				return createWithImageRef(spec, cycle, digestRef).pipe(
+					Effect.catchTag('ImageNotFound', () =>
+						Effect.fail(missingImageError(spec, taggedRef, digestRef, notFound)),
+					),
+				);
+			}),
+		);
 	});
+
+/** Clear, actionable failure when neither the tagged nor digest ref
+ *  could be created because the image is absent locally. Names the
+ *  missing image and points at restore so an operator knows the fix is
+ *  re-running restore (which re-promotes / re-loads the image) rather
+ *  than a generic create failure. */
+const missingImageError = (
+	spec: EnsureContainerSpec,
+	taggedRef: string,
+	digestRef?: string,
+	cause?: ImageNotFound,
+): ContainerCreateFailed => {
+	const tried =
+		digestRef !== undefined && digestRef !== taggedRef
+			? `tag '${taggedRef}' and digest '${digestRef}'`
+			: `image '${taggedRef}'`;
+	const causeDetail = cause === undefined ? '' : ` (${cause.detail})`;
+	return new ContainerCreateFailed({
+		name: spec.name,
+		stderr:
+			`required image is not present locally — tried ${tried}${causeDetail}. ` +
+			'Re-run restore to re-promote / re-load the target image before booting.',
+		exitCode: undefined,
+	});
+};
 
 const resumeStart = (
 	name: string,
@@ -953,7 +1014,7 @@ export const ensureContainer = (
 		// `DaemonUnreachable` envelope (substrate→docker channel needs
 		// ONE bridging shape per the DockerRuntimeError union) but the
 		// `op` / `detail` fields keep the original tag visible. A truly
-		// unknown cause falls through to the legacy generic mapping.
+		// unknown cause falls through to the generic fallback mapping.
 		const mapSubstrateClaimError = <A, R>(
 			eff: Effect.Effect<A, RosterError | StackLockError, R>,
 		): Effect.Effect<A, DockerRuntimeError, R> =>

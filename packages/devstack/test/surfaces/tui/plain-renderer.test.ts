@@ -155,15 +155,15 @@ describe('plain-renderer formatters', () => {
 	});
 
 	it('formats engine.orchestrator.dispatchFailed as a WARN line carrying the cause discriminator', () => {
-		// Observability regression: a non-fatal capability sink (e.g.
-		// `routable`) rejecting leaves the plugin `ready`, so this WARN line
-		// is the operator's only signal that RPC/wallet routing is dead. It
-		// must render above INFO and name the failing sink + cause `_tag`.
+		// Observability regression: a non-fatal routing/contribution sink
+		// (e.g. `routable`) rejecting leaves the plugin `ready`, so this WARN
+		// line is the operator's only signal that RPC/wallet routing is dead.
+		// It must render above INFO and name the failing sink + cause `_tag`.
 		const line = formatEventLine({
 			tag: 'engine.orchestrator.dispatchFailed',
 			pluginKey: pluginKey('sui'),
 			kind: 'routable',
-			message: "capability sink 'routable' failed",
+			message: "routing/contribution sink 'routable' failed",
 			causeType: 'RouterBootFailed',
 			at: STATIC_AT,
 		});
@@ -172,7 +172,7 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('key=sui');
 		expect(line).toContain('kind=routable');
 		expect(line).toContain('causeType=RouterBootFailed');
-		expect(line).toContain('summary="capability sink \'routable\' failed"');
+		expect(line).toContain('summary="routing/contribution sink \'routable\' failed"');
 	});
 
 	it('omits causeType on dispatchFailed when the cause is untagged', () => {

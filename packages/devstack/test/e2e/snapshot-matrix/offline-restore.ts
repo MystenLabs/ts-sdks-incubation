@@ -19,7 +19,7 @@ import {
 	type RestoreParticipant,
 	type SnapshotMetadata,
 } from '../../../src/orchestrators/snapshot/index.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 
 /** Each plugin that contributed an identity slice to the snapshot becomes a
@@ -41,7 +41,7 @@ export const restoreSnapshotOffline = async (params: {
 	const identity: Identity = {
 		app: appName(params.app),
 		stack: stackName(params.stack),
-		chain: chainId(params.network),
+		chain: params.network,
 	};
 	const program = Effect.gen(function* () {
 		const snapshot = yield* SnapshotOrchestratorService;

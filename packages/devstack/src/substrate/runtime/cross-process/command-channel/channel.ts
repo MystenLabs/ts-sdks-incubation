@@ -239,21 +239,29 @@ export interface CommandChannelSubscriberOptions {
 	readonly pollMillis?: number;
 }
 
+/** One correlated reply to a published command. `ack` carries an
+ *  optional `detail` + structured `payload`; `error` adds the required
+ *  human `message`. The two share `publishReply` (below) — the wire
+ *  `EventRecord` schema is unchanged (kind `'ack'` / `'error'`). */
+export type CommandReply =
+	| { readonly kind: 'ack'; readonly detail?: string; readonly payload?: unknown }
+	| {
+			readonly kind: 'error';
+			readonly message: string;
+			readonly detail?: string;
+			readonly payload?: unknown;
+	  };
+
 /** Tail incoming commands. The supervisor wires its event hub through
  *  `publishEvent` so engine events appear on the events file. */
 export interface CommandChannelSubscriber {
 	readonly commands: Stream.Stream<CommandRecord, CommandChannelError, Scope.Scope>;
 	readonly publishEvent: (event: unknown) => Effect.Effect<void, CommandChannelError>;
-	readonly ack: (
+	/** Append a correlated `ack` / `error` reply for command `correlatesTo`.
+	 *  Collapses the former `ack(...)` / `fail(...)` pair into one verb. */
+	readonly publishReply: (
 		correlatesTo: string,
-		detail?: string,
-		payload?: unknown,
-	) => Effect.Effect<void, CommandChannelError>;
-	readonly fail: (
-		correlatesTo: string,
-		message: string,
-		detail?: string,
-		payload?: unknown,
+		reply: CommandReply,
 	) => Effect.Effect<void, CommandChannelError>;
 }
 
@@ -304,43 +312,35 @@ export const makeCommandChannelSubscriber = (
 				});
 			});
 
-		const ack = (
+		const publishReply = (
 			correlatesTo: string,
-			detail?: string,
-			payload?: unknown,
+			reply: CommandReply,
 		): Effect.Effect<void, CommandChannelError> =>
 			Effect.gen(function* () {
 				const seq = yield* nextSubSeq(state);
-				yield* writeEvent({
-					protocol: COMMAND_CHANNEL_PROTOCOL_VERSION,
-					seq,
-					at: Date.now(),
-					kind: 'ack',
-					correlatesTo,
-					...(detail !== undefined ? { detail } : {}),
-					...(payload !== undefined ? { payload } : {}),
-				});
+				yield* writeEvent(
+					reply.kind === 'ack'
+						? {
+								protocol: COMMAND_CHANNEL_PROTOCOL_VERSION,
+								seq,
+								at: Date.now(),
+								kind: 'ack',
+								correlatesTo,
+								...(reply.detail !== undefined ? { detail: reply.detail } : {}),
+								...(reply.payload !== undefined ? { payload: reply.payload } : {}),
+							}
+						: {
+								protocol: COMMAND_CHANNEL_PROTOCOL_VERSION,
+								seq,
+								at: Date.now(),
+								kind: 'error',
+								correlatesTo,
+								message: reply.message,
+								...(reply.detail !== undefined ? { detail: reply.detail } : {}),
+								...(reply.payload !== undefined ? { payload: reply.payload } : {}),
+							},
+				);
 			});
 
-		const fail = (
-			correlatesTo: string,
-			message: string,
-			detail?: string,
-			payload?: unknown,
-		): Effect.Effect<void, CommandChannelError> =>
-			Effect.gen(function* () {
-				const seq = yield* nextSubSeq(state);
-				yield* writeEvent({
-					protocol: COMMAND_CHANNEL_PROTOCOL_VERSION,
-					seq,
-					at: Date.now(),
-					kind: 'error',
-					correlatesTo,
-					message,
-					...(detail !== undefined ? { detail } : {}),
-					...(payload !== undefined ? { payload } : {}),
-				});
-			});
-
-		return { commands, publishEvent, ack, fail };
+		return { commands, publishEvent, publishReply };
 	});

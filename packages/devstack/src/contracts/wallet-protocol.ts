@@ -30,10 +30,7 @@
 /**
  * Canonical path constants under the `/api/v1/devstack/*` prefix.
  *
- * Distilled-doc note (15-wallet.md "Fork-control routes declared but
- * unimplemented"): the legacy server declared four `FORK_*` path
- * constants whose handlers never landed. Per "no compat for never-
- * cases", we drop them from the wire protocol entirely — when the
+ * The wire protocol carries no fork-control (`FORK_*`) routes. When the
  * fork-control surface is wired, those routes will be added (and the
  * dev-wallet adapter shipped together). No half-done stubs.
  */
@@ -76,7 +73,7 @@ export const WALLET_TOKEN_HEX_LENGTH = 32 as const;
  *  the manifest under `endpoints['wallet-app']`; downstream consumers
  *  (codegen, TUI, doctor) read it by this key.
  *
- *  Stable across rewrite + legacy so existing consumers don't break. */
+ *  A stable key so downstream consumers don't break. */
 export const WALLET_ENDPOINT_NAME = 'wallet-app' as const;
 
 /** Conventional short endpoint key for the wallet plugin. Matches the

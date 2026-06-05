@@ -1,7 +1,7 @@
 // Atomic write primitive — ONE canonical implementation.
 //
 // Architecture § "What's collapsed" — three tempfile+rename impls
-// (atomic-write, state-store, global registry) collapse to one. This
+// (atomic-write, cache, global registry) collapse to one. This
 // is that one.
 //
 // Contract:
@@ -18,10 +18,10 @@
 //
 // Two surfaces:
 //   - `atomicWriteFile` / `atomicWriteJson` — Effect/FileSystem-based,
-//     used by every async write site (manifest, state-store, cache).
+//     used by every async write site (manifest, cache).
 //   - `atomicWriteFileSync` / `atomicWriteJsonSync` — node:fs-sync,
-//     used by the cross-process modules (roster, snapshot-reservation,
-//     stack-lock) that hold `stack.lock` and must keep their critical
+//     used by the cross-process modules (roster, stack-lock) that hold
+//     `stack.lock` and must keep their critical
 //     section non-yielding. Substrate-fix-plan #11 tracks unifying
 //     these onto Effect FS once we lift the cross-process modules off
 //     `node:fs`; until then both surfaces share THIS file (and only
@@ -31,7 +31,7 @@
 //   - fsync the parent directory. Linux's man fsync(2) suggests it
 //     for full durability after rename(); the Effect platform layer
 //     does not expose dir-fsync. Documented limitation — recoverable
-//     on crash because the state-store rewrites on every change and
+//     on crash because every on-disk artifact rewrites on change and
 //     cache misses re-produce.
 
 import {
@@ -52,8 +52,7 @@ import { selfPid } from './cross-process/self-pid.ts';
 import { AtomicWriteFailed } from './errors.ts';
 
 /** 8-hex tempfile suffix. `crypto.randomUUID()` is collision-safe under
- *  parallel callers within the same pid — replaces the
- *  `Math.random()`-based suffix flagged in STYLE_GUIDE §17. */
+ *  parallel callers within the same pid. */
 const tempSuffix = (): string => randomUUID().replace(/-/g, '').slice(0, 8);
 
 const failStage =
@@ -204,7 +203,7 @@ const unlinkBestEffort = (path: string): void => {
  *
  * Used inside `Effect.try` by the cross-process modules; the caller
  * maps the thrown error to a typed plugin/runtime error
- * (`RosterIoError` / `SnapshotReservationIoError` / etc.).
+ * (`RosterIoError` / `StackLockIoError` / etc.).
  */
 export const atomicWriteFileSync = (
 	path: string,

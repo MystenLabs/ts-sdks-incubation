@@ -173,6 +173,7 @@ interface ConfigFlags extends IdentityFlags {
 
 interface UpFlags extends ConfigFlags {
 	readonly renderer?: CliRendererMode;
+	readonly warm?: boolean;
 }
 
 interface DestructiveFlags extends IdentityFlags {
@@ -316,6 +317,7 @@ const makeGlobalFlags = (
 		configPath: optionalEnv(flags.config, ctx.env, ENV_VARS.CONFIG_PATH),
 		network,
 		renderer: flags.renderer,
+		warm: flags.warm,
 		dryRun: flags.dryRun === true,
 		confirm: {
 			assumeYes: flags.yes === true,
@@ -465,6 +467,9 @@ const upCommand = buildCommand<UpFlags, [], DevstackCliContext>({
 				placeholder: 'tui|plain|silent',
 				brief: 'Select the attached renderer',
 			},
+			warm: boolFlag(
+				'Warm boot: restore a fingerprinted baseline snapshot when inputs are unchanged, else cold-boot and capture one',
+			),
 		},
 	},
 	docs: {

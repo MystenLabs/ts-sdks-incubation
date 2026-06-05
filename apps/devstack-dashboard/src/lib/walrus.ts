@@ -29,15 +29,9 @@
 
 import { graphql, type ResultOf } from '@mysten/sui/graphql/schema';
 import type { PackageProjection } from './types.ts';
-import { isoToMillis, suiGraphqlClient, suiGraphqlUrl } from './sui-graphql.ts';
+import { isoToMillis, suiGraphqlClient } from './sui-graphql.ts';
 
 // --- Endpoint + package resolution ------------------------------------------
-
-/**
- * The stack's Sui GraphQL base URL (the `graphql` endpoint), or null. Re-exported
- * from the shared Sui-GraphQL helper so Walrus call sites keep importing it here.
- */
-export const walrusGraphqlUrl = suiGraphqlUrl;
 
 /**
  * The deployed Walrus Move package id, read from the projection's packages. The
@@ -64,8 +58,6 @@ const asNumber = (v: unknown): number | null => {
 	return null;
 };
 
-const asBool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
-
 // --- Recent blobs -----------------------------------------------------------
 
 /** A recent Walrus blob, assembled from its register/certify transactions. */
@@ -82,14 +74,10 @@ export interface RecentBlob {
 	readonly endEpoch: number | null;
 	/** Whether a `BlobCertified` event was seen for this blob. */
 	readonly certified: boolean;
-	/** Whether the blob was registered as deletable. */
-	readonly deletable: boolean | null;
 	/** Newest register/certify tx timestamp (epoch-millis), for "when". */
 	readonly timestampMs: number | null;
 	/** Newest register/certify transaction digest, for an explorer link. */
 	readonly digest: string | null;
-	/** Sender of the newest register/certify tx. */
-	readonly sender: string | null;
 }
 
 // `last: N` returns the most recent N matching transactions (oldest→newest);
@@ -103,9 +91,6 @@ const RECENT_BLOBS_QUERY = graphql(`
 		transactions(last: $limit, filter: { function: $fn }) {
 			nodes {
 				digest
-				sender {
-					address
-				}
 				effects {
 					timestamp
 					events {
@@ -136,10 +121,8 @@ interface BlobAcc {
 	registeredEpoch: number | null;
 	endEpoch: number | null;
 	certified: boolean;
-	deletable: boolean | null;
 	timestampMs: number | null;
 	digest: string | null;
-	sender: string | null;
 }
 
 const newest = (a: number | null, b: number | null): boolean =>
@@ -169,25 +152,21 @@ const foldTx = (
 			registeredEpoch: null,
 			endEpoch: null,
 			certified: false,
-			deletable: null,
 			timestampMs: null,
 			digest: null,
-			sender: null,
 		};
 		cur.objectId = cur.objectId ?? asString(json.object_id);
 		cur.endEpoch = asNumber(json.end_epoch) ?? cur.endEpoch;
-		cur.deletable = cur.deletable ?? asBool(json.deletable);
 		if (kind === 'register') {
 			cur.size = asNumber(json.size) ?? cur.size;
 			cur.registeredEpoch = asNumber(json.epoch) ?? cur.registeredEpoch;
 		} else {
 			cur.certified = true;
 		}
-		// Track the newest tx so "when"/digest/sender reflect the latest activity.
+		// Track the newest tx so "when"/digest reflect the latest activity.
 		if (newest(cur.timestampMs, ts)) {
 			cur.timestampMs = ts;
 			cur.digest = tx.digest ?? cur.digest;
-			cur.sender = tx.sender?.address ?? cur.sender;
 		}
 		acc.set(blobId, cur);
 	}

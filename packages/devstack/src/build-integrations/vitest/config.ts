@@ -18,9 +18,9 @@
 //   - `typecheck: true` opts INTO vitest's typecheck pass (off by
 //     default — apps typically run `tsc` separately).
 //   - `threads: 'single' | 'multi'` picks `pool: 'threads'` and toggles
-//     `fileParallelism` (vitest 4: top-level `fileParallelism: false`
-//     replaces the v3 `poolOptions.threads.singleThread`) for
-//     stack-shared-state suites that can't safely parallelize.
+//     `fileParallelism` (vitest 4 uses a top-level
+//     `fileParallelism: false`) for stack-shared-state suites that
+//     can't safely parallelize.
 //   - Caller-provided `test` fields win over the preset's defaults.
 //
 // No I/O happens at config-build time (per architecture § Lifecycle

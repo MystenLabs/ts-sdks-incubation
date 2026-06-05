@@ -6,13 +6,13 @@ import type {
 	EnsureContainerSpec,
 } from '../../../src/contracts/container-runtime.ts';
 import { bootPostgresService } from '../../../src/plugins/postgres/service.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 
 const identity: Identity = {
 	app: appName('private-content'),
 	stack: stackName('main'),
-	chain: chainId('sui:local'),
+	chain: 'sui:local',
 };
 
 const FAKE_STACK_ROOT = '/tmp/fake-test-stack-root';

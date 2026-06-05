@@ -13,7 +13,7 @@
 //     declare their per-mode factories once; the helper hands back a
 //     callable namespace that does the narrowing.
 
-import type { NetworkConfig, NetworkMode } from '../substrate/network.ts';
+import type { NetworkConfig, NetworkMode } from '../plugins/sui/network-config.ts';
 
 /** A factories record keyed by network mode. Each branch is an
  *  arbitrary record of factory functions. */

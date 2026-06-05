@@ -5,7 +5,8 @@
 //      renderers see a complete baseline.
 //   2. Resolve the dep graph + boot the registry.
 //   3. Build the substrate-wiring bag: logger overlay, runtime root,
-//      CapabilitySinks service (caller-pre-built or substrate-default).
+//      FormatterRegistry (caller-pre-built or substrate-default), and the
+//      closed contribution dispatcher.
 //   4. Compose the `SupervisorState` record (one bag passed to every
 //      module).
 //   5. Build `runInitialAcquire` — the deferred initial-acquire body.
@@ -19,6 +20,7 @@ import {
 	Deferred,
 	Effect,
 	Exit,
+	type Fiber,
 	Layer,
 	Queue,
 	Ref,
@@ -33,10 +35,13 @@ import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { AccountProjection, SubscribableState } from '../../projection.ts';
 import {
-	CapabilitySinksService,
-	layerCapabilitySinksDefault,
-	type OrchestratorSinks,
-} from '../capability-sinks/index.ts';
+	FormatterRegistryService,
+	layerFormatterRegistry,
+} from '../observability/formatter-registry.ts';
+import {
+	noopContributionDispatcher,
+	type ContributionDispatcher,
+} from './contribution-dispatcher.ts';
 import {
 	Logger,
 	LogStore,
@@ -55,7 +60,6 @@ import {
 	buildWatchIndex,
 	exactPrefixMatch,
 	installSignalHandler,
-	planFullDrain,
 	resolveGraph,
 	type PluginRegistry,
 	type ResolvedGraph,
@@ -72,15 +76,15 @@ import {
 } from './errors.ts';
 import {
 	allReadyOrTerminal,
+	type BackgroundTaskSlot,
 	type QueuedCommand,
-	type SnapshotCaptureTaskState,
-	type StackRestartTaskState,
 	type SupervisorCommandHandler,
 	type SupervisorPostAcquireHook,
 	type SupervisorState,
 } from './state.ts';
 import type { SupervisedStack } from './types.ts';
 import { teardownKeys } from './teardown.ts';
+import { plan } from '../reconcile/graph.ts';
 import {
 	buildTransitionEmitter,
 	noopLogger,
@@ -91,7 +95,7 @@ import {
 
 const loggerAccess = OptionalService(Logger);
 const runtimeRootAccess = OptionalService(RuntimeRoot);
-const sinksAccess = OptionalService(CapabilitySinksService);
+const formatterRegistryAccess = OptionalService(FormatterRegistryService);
 
 export interface SupervisorHandle {
 	readonly identity: Identity;
@@ -163,17 +167,18 @@ const pendingAccountProjection = (
  * plugin's R-channel narrows to `Scope.Scope` (then to `never` after
  * the per-plugin Scope is provided).
  *
- * `CapabilitySinksService` extension (ARCHITECTURE.md § Plugin-author
- * extension via Layer composition): if the caller layers a
- * `CapabilitySinksService` into `pluginContext`, the supervisor
- * harvests through THAT instance instead of building its own.
+ * Contribution dispatch: the supervisor replays each plugin's
+ * buffered ctx contributions through the closed `dispatcher`
+ * (snapshotable/routable/codegenable/projection/strategy-contributor).
+ * Production callers pass `buildProductionContributionDispatcher(...)`;
+ * bare smoke tests omit it and get the no-op dispatcher.
  */
 export const startSupervisor = (
 	stack: SupervisedStack,
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	pluginContext: Context.Context<never> = Context.empty(),
-	sinks: OrchestratorSinks = [],
+	dispatcher: ContributionDispatcher = noopContributionDispatcher,
 	commandHandler?: SupervisorCommandHandler,
 	postAcquireHook?: SupervisorPostAcquireHook,
 	options: SupervisorStartupOptions = {},
@@ -228,10 +233,15 @@ export const startSupervisor = (
 		const hub = yield* Queue.unbounded<EngineEvent>();
 		const commands = yield* Queue.unbounded<EngineCommand>();
 		const queuedCommands = yield* Queue.unbounded<QueuedCommand>();
-		const stackRestartTask = yield* Ref.make<StackRestartTaskState>({ tag: 'idle' });
-		const stackRestartSeq = yield* Ref.make(0);
-		const snapshotCaptureTask = yield* Ref.make<SnapshotCaptureTaskState>({ tag: 'idle' });
-		const snapshotCaptureSeq = yield* Ref.make(0);
+		// Background-task fiber slot: the live stack-restart fiber (or `null`
+		// when idle). The fiber IS the running state — see `BackgroundTaskSlot`.
+		// Forked into `supervisorScope` (below) via `Effect.forkIn`, interrupted
+		// via `Fiber.interrupt`. (Snapshot capture/restore run inline in the
+		// command loop now — the bounce — so they have no forked slot.)
+		const stackRestartTask: BackgroundTaskSlot = yield* Ref.make<Fiber.Fiber<
+			void,
+			never
+		> | null>(null);
 		const shutdownLatch = yield* Ref.make(false);
 		const shutdownComplete = yield* Deferred.make<void>();
 		const initialAcquireStarted = yield* Ref.make(false);
@@ -261,14 +271,24 @@ export const startSupervisor = (
 		const traced = <A, E, R>(eff: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
 			Effect.provideService(eff, Tracer.Tracer, spanStore.tracer);
 
-		// Submit a command to the command-loop and AWAIT its real exit.
-		// Offers a *submitted* command (carrying a completion deferred) so the
-		// single command-loop consumer runs the command in-band and signals
-		// the exit back here. Used both by the `SupervisorHandle.runCommand`
-		// programmable surface AND the in-process control plane (the dashboard
-		// restore path), so a destructive command like `snapshot.restore` —
-		// which removes live managed containers then re-acquires — never races
-		// the live supervisor out-of-band. Re-fails with the handler's cause.
+		// The control-plane command verbs, both offering onto the SAME
+		// `queuedCommands` seam the single command-loop consumer drains —
+		// distinguished only by the QueuedCommand kind:
+		//   - `publishCommand` — fire-and-forget; offers a `fire-and-forget`
+		//     QueuedCommand and returns immediately.
+		//   - `submitCommand` — offers a `submitted` QueuedCommand carrying a
+		//     completion deferred, then AWAITs the real exit. So a destructive
+		//     command like `snapshot.restore` (which removes live managed
+		//     containers then re-acquires) runs in-band with the loop, never
+		//     racing the live supervisor out-of-band. Re-fails with the
+		//     handler's cause.
+		// (Both feed `queuedCommands`, NOT the public `commands` queue + bridge —
+		// that queue stays for the signal handler and cross-process callers.)
+		const publishCommand = (command: EngineCommand): Effect.Effect<void> =>
+			Effect.asVoid(Queue.offer(queuedCommands, { kind: 'fire-and-forget', command })).pipe(
+				Effect.withSpan('lifecycle.supervisor.publishCommand'),
+				traced,
+			);
 		const submitCommand = (command: EngineCommand): Effect.Effect<void, unknown> =>
 			Effect.gen(function* () {
 				const completion = yield* Deferred.make<Exit.Exit<void, unknown>>();
@@ -304,6 +324,22 @@ export const startSupervisor = (
 			spanStore,
 		});
 
+		// Resolve the FormatterRegistry for this stack. The supervisor feeds
+		// each plugin's static `errorContributions` field directly into it
+		// from `acquire-node`.
+		// Two paths:
+		//   (a) the caller layered a `FormatterRegistryService` into
+		//       `pluginContext` (CLI / e2e do, so the cascade formatter
+		//       downstream reads the same instance) — use THAT.
+		//   (b) bare path — build the substrate default on the SURROUNDING
+		//       (supervisor) scope so it lives for the supervisor's lifetime.
+		const formatterRegistry = yield* formatterRegistryAccess.readEffect(
+			pluginContext,
+			Effect.gen(function* () {
+				return Context.get(yield* Layer.build(layerFormatterRegistry), FormatterRegistryService);
+			}),
+		);
+
 		const pluginRuntimeContext = pluginContext.pipe(
 			Context.add(Logger, Logger.of(logger)),
 			// Observability stores + the recording Tracer. The Tracer is an
@@ -315,6 +351,9 @@ export const startSupervisor = (
 			Context.add(LogStore, LogStore.of(logStore)),
 			Context.add(SpanStore, SpanStore.of(spanStore)),
 			Context.add(Tracer.Tracer, spanStore.tracer),
+			// The formatter registry the supervisor folds plugin
+			// `errorContributions` into during acquire.
+			Context.add(FormatterRegistryService, formatterRegistry),
 			// Expose the control plane (live projection + fire-and-forget
 			// command dispatch + the plugin-domain accessor surface) to
 			// in-process surfaces like the dashboard plugin. Reads the same
@@ -323,7 +362,7 @@ export const startSupervisor = (
 				ControlPlaneService,
 				ControlPlaneService.of({
 					state,
-					publishCommand: (command) => Effect.asVoid(Queue.offer(commands, command)),
+					publishCommand,
 					submitCommand,
 					domain: controlPlaneDomain,
 				}),
@@ -359,13 +398,14 @@ export const startSupervisor = (
 			}));
 		}
 
-		// Extract `RuntimeRoot` from the plugin context — needed to
-		// build the `AcquireContext` handed to dynamic capability
-		// factories. Fallback to '' for bare smoke tests that don't
-		// wire RuntimeRoot; emit a logWarning when that path fires so
-		// production-style misconfigurations are visible (plugins
-		// computing `${runtimeRoot}/foo` would otherwise silently
-		// resolve to host-filesystem root).
+		// Extract `RuntimeRoot` from the plugin context — recorded on
+		// `SupervisorState.runtimeRoot` and read by the post-acquire hook
+		// + background tasks (NOT threaded into the acquire path, which is
+		// name-blind). Fallback to '' for bare smoke tests that don't wire
+		// RuntimeRoot; emit a logWarning when that path fires so
+		// production-style misconfigurations are visible (plugins computing
+		// `${runtimeRoot}/foo` would otherwise silently resolve to
+		// host-filesystem root).
 		const runtimeRootResolved = runtimeRootAccess.read(pluginContext, { root: '' });
 		if (runtimeRootResolved.root === '') {
 			yield* Effect.logWarning(
@@ -374,31 +414,6 @@ export const startSupervisor = (
 			);
 		}
 		const runtimeRoot = runtimeRootResolved.root;
-
-		// Resolve the CapabilitySinks registry for this stack. Two paths:
-		//
-		//   (a) Plugin-author / orchestrator pre-built path: the caller
-		//       layered a `CapabilitySinksService` into `pluginContext`
-		//       (typically by composing `layerCapabilitySinksDefault(...)`
-		//       PLUS one or more custom-sink Layers). The supervisor
-		//       harvests through THAT instance, so custom sinks
-		//       registered by plugin authors actually fire.
-		//
-		//   (b) Bare path: no service in context — the supervisor builds
-		//       the substrate default with the orchestrator sinks passed
-		//       in. `Layer.build` opens the layer's resources on the
-		//       SURROUNDING scope (the supervisor's), so the sinks +
-		//       formatter registry live for the supervisor's lifetime
-		//       and reap on its scope close.
-		const sinksService = yield* sinksAccess.readEffect(
-			pluginRuntimeContext,
-			Effect.gen(function* () {
-				return Context.get(
-					yield* Layer.build(layerCapabilitySinksDefault(sinks)),
-					CapabilitySinksService,
-				);
-			}),
-		);
 
 		const enableCommandLoop = options.commandLoop !== false;
 		if (enableCommandLoop) {
@@ -421,14 +436,12 @@ export const startSupervisor = (
 			ref: state,
 			hub,
 			queuedCommands,
+			supervisorScope,
 			stackRestartTask,
-			stackRestartSeq,
-			snapshotCaptureTask,
-			snapshotCaptureSeq,
 			shutdownLatch,
 			shutdownComplete,
 			pluginContext: pluginRuntimeContext,
-			sinks: sinksService,
+			dispatcher,
 			logger,
 			identity,
 			runtimeRoot,
@@ -446,10 +459,9 @@ export const startSupervisor = (
 				state,
 				hub,
 				pluginRuntimeContext,
-				sinksService,
+				dispatcher,
 				logger,
 				identity,
-				runtimeRoot,
 			);
 			if (yield* Ref.get(shutdownLatch)) return;
 			const initialReady = yield* allReadyOrTerminal(graph, registry);
@@ -501,8 +513,11 @@ export const startSupervisor = (
 		yield* Effect.addFinalizer(() =>
 			traced(
 				Effect.gen(function* () {
-					const plan = planFullDrain(graph);
-					yield* teardownKeys(graph, registry, plan.teardownOrder).pipe(
+					const fullDrain = plan(graph, {
+						kind: 'graph-keys',
+						keys: [...graph.nodes.keys()],
+					});
+					yield* teardownKeys(graph, registry, fullDrain.teardownOrder).pipe(
 						Effect.catch(() => Effect.void),
 					);
 				}),
@@ -550,7 +565,7 @@ export const supervise = (
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	pluginContext: Context.Context<never> = Context.empty(),
-	sinks: OrchestratorSinks = [],
+	dispatcher: ContributionDispatcher = noopContributionDispatcher,
 	commandHandler?: SupervisorCommandHandler,
 	postAcquireHook?: SupervisorPostAcquireHook,
 ): Effect.Effect<SupervisorHandle, SupervisorError, Scope.Scope> =>
@@ -560,7 +575,7 @@ export const supervise = (
 			identity,
 			state,
 			pluginContext,
-			sinks,
+			dispatcher,
 			commandHandler,
 			postAcquireHook,
 			{ commandLoop: true },

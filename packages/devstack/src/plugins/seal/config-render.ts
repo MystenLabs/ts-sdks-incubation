@@ -36,10 +36,9 @@ export interface SealKeyServerConfigInputs {
 	readonly nodeUrl: string;
 	/** On-chain `KeyServer` object id (from register). */
 	readonly keyServerObjectId: string;
-	/** Optional ts-sdk version requirement override. Default is the
-	 *  pin distilled from v3 (`'>=0.4.5'`); v2 plans expose this so
-	 *  consumers running older `@mysten/seal` aren't silently
-	 *  rejected. Distilled-doc opportunity #8. */
+	/** Optional ts-sdk version requirement override. Default pin is
+	 *  `'>=0.4.5'`; exposing this lets consumers running older
+	 *  `@mysten/seal` avoid being silently rejected. */
 	readonly tsSdkVersionRequirement?: string;
 }
 

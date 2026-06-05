@@ -44,8 +44,8 @@ import {
 	type StaleNetworkEndpoint,
 } from '../../runtime/docker/index.ts';
 import {
-	layerLivenessProbeScope,
 	LivenessProbeScope,
+	makeReaper,
 	readRoster,
 } from '../../substrate/runtime/cross-process/index.ts';
 import { PER_APP_SHARED_STACK } from '../../substrate/runtime/managed-container.ts';
@@ -259,45 +259,56 @@ const routerStackForContainer = (
  *  itself). Promoting `app` into the stack-state path is an
  *  architectural change that must update all of those call sites in
  *  lockstep — out of scope for this orchestrator. */
+// The cross-stack lifecycle-prune sweep and the docker boot-time orphan
+// sweep are the two "reapers" that consult per-stack liveness. They both
+// run each pass under a FRESH `LivenessProbeScope`; that wiring lives in
+// the shared `makeReaper` combinator (`liveness.ts`) so the
+// `LivenessProbeScope` + `checkHolderLiveness` plumbing has ONE home. The
+// orchestration here is unchanged — same `(app, stack)` grouping, same
+// L4-user-command trigger, same per-stack roster probe.
+const reaper = makeReaper('orchestrator.lifecycle-prune');
+
 const livePidsForStack = (
 	runtimeRoot: string,
 	stack: string,
 ): Effect.Effect<ReadonlyArray<number>> => {
 	const rosterFile = joinPath(runtimeRoot, 'stacks', stack, 'roster.json');
 	if (!existsSync(rosterFile)) return Effect.succeed([]);
-	// Yield a fresh `LivenessProbeScope` so a recycled-PID corner case
-	// (multiple holders sharing one pid in the same roster) forks the OS
-	// liveness probe once per pid across this scan.
-	return Effect.gen(function* () {
-		const doc = yield* readRoster(rosterFile).pipe(
-			logDebugAndFallback(null, 'lifecycle-prune: roster read failed; treating as empty', {
-				rosterFile,
-			}),
-		);
-		if (doc === null) return [];
-		const probe = yield* LivenessProbeScope;
-		const pids: Array<number> = [];
-		for (const holder of doc.holders) {
-			const live = yield* probe
-				.probeHolderLiveness(holder)
-				.pipe(
-					logDebugAndFallback(
-						'alive' as const,
-						'lifecycle-prune: liveness check failed; assuming alive',
-						{ pid: holder.pid },
-					),
-				);
-			if (live === 'alive') pids.push(holder.pid);
-		}
-		return pids;
-	}).pipe(Effect.provide(layerLivenessProbeScope));
+	// Run under a fresh `LivenessProbeScope` (via the shared reaper) so a
+	// recycled-PID corner case (multiple holders sharing one pid in the
+	// same roster) forks the OS liveness probe once per pid across this
+	// scan.
+	return reaper.withLivenessSweepScope(
+		Effect.gen(function* () {
+			const doc = yield* readRoster(rosterFile).pipe(
+				logDebugAndFallback(null, 'lifecycle-prune: roster read failed; treating as empty', {
+					rosterFile,
+				}),
+			);
+			if (doc === null) return [];
+			const probe = yield* LivenessProbeScope;
+			const pids: Array<number> = [];
+			for (const holder of doc.holders) {
+				const live = yield* probe
+					.probeHolderLiveness(holder)
+					.pipe(
+						logDebugAndFallback(
+							'alive' as const,
+							'lifecycle-prune: liveness check failed; assuming alive',
+							{ pid: holder.pid },
+						),
+					);
+				if (live === 'alive') pids.push(holder.pid);
+			}
+			return pids;
+		}),
+	);
 };
 
 /** True when the group is one of the two shared shapes the
  *  orchestrator knows about: `_per-app_` (cross-stack-per-app shared)
- *  or the router-singleton (`ROUTER_SHARED_APP`). Surfaces consult
- *  this instead of recomputing the predicate. */
-export const isSharedLifecyclePruneGroup = (app: string, stack: string): boolean =>
+ *  or the router-singleton (`ROUTER_SHARED_APP`). */
+const isSharedGroup = (app: string, stack: string): boolean =>
 	stack === PER_APP_SHARED_STACK || app === ROUTER_SHARED_APP;
 
 const sharedKindFor = (app: string, stack: string): SharedGroupKind | null => {
@@ -313,9 +324,8 @@ export const isRouterLifecyclePruneGroup = (
 	group: Pick<LifecyclePruneGroup, 'app' | 'stack'>,
 ): boolean => group.app === ROUTER_SHARED_APP && group.stack.startsWith(`${ROUTER_SHARED_APP}-`);
 
-// Internal aliases for back-compat call sites in this file.
+// Internal alias for back-compat call sites in this file.
 const isRouterGroup = isRouterLifecyclePruneGroup;
-const isSharedGroup = isSharedLifecyclePruneGroup;
 
 /** Label-tuple match for the `removeDevstack*` sweepers — router-shared
  *  resources stamp `{app: ROUTER_SHARED_APP, stack: <profile-name>}`

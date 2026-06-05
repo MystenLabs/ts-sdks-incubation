@@ -5,8 +5,8 @@
 // returns `null` (logged as a warning); the discovery pipeline keeps
 // going. The next supervisor cycle picks the missing record up.
 //
-// Per-attempt timeout 5s, ONE retry at 250ms backoff (matches the v3
-// `RETRY_SCHEDULE` exactly — distilled-doc 13-coin.md §Configuration).
+// Per-attempt timeout 5s, ONE retry at 250ms backoff (distilled-doc
+// 13-coin.md §Configuration).
 //
 // In-process per-Layer-invocation cache keyed by fullCoinType. The
 // fullCoinType folds the packageId, so a fresh chain (new genesis)
@@ -25,8 +25,8 @@ import { CoinSpans } from './spans.ts';
 /** Per-attempt timeout (5 seconds) — distilled-doc invariant. */
 export const METADATA_FETCH_TIMEOUT_MS = 5_000;
 
-/** Retry schedule — ONE retry at 250ms backoff. Matches the v3
- *  `RETRY_SCHEDULE` (250ms spaced, bounded to one retry). */
+/** Retry schedule — ONE retry at 250ms backoff (250ms spaced, bounded
+ *  to one retry). */
 export const METADATA_RETRY_SCHEDULE = makeSpacedRetrySchedule(250, 1);
 
 /** On-chain CoinMetadata projection — narrowed to the columns the

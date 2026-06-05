@@ -17,6 +17,7 @@ import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
 import { IdentityContext, RuntimeRoot } from '../../substrate/runtime/paths.ts';
 import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 
 import {
 	HOST_SERVICE_ERROR_TAGS,
@@ -76,6 +77,7 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 		keepAliveOnRestore: true,
 		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const portBroker = yield* PortBrokerService;
 				const logger = yield* Logger;
 				const currentPlugin = yield* CurrentPluginKey;
@@ -136,17 +138,21 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 					label: `host-service:${normalized.serviceName}.start`,
 					run: prepared.start,
 				});
+				// Emit the routable endpoint inline. The decl reads
+				// `value.{endpointName,name,port}` off the resolved
+				// `HostServiceValue` (`prepared.value` here), emitted BEFORE
+				// returning it. `ctx.endpoint` returns void and buffers the
+				// decl for the supervisor's post-start replay.
+				ctx.endpoint(
+					makeHostServiceRoutable({
+						endpointName: prepared.value.endpointName,
+						serviceName: prepared.value.name,
+						port: prepared.value.port,
+					}),
+				);
 				return prepared.value;
 			}),
 		errorContributions: hostServiceErrorContributions,
-		capabilities: ({ value }) =>
-			[
-				makeHostServiceRoutable({
-					endpointName: value.endpointName,
-					serviceName: value.name,
-					port: value.port,
-				}),
-			] as const,
 	});
 };
 

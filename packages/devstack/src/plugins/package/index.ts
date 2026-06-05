@@ -26,26 +26,25 @@ import { Effect } from 'effect';
 import { projection } from '../../api/define-capabilities.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
+import type { Contribution } from '../../substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';
-import {
-	makeLocalPackagePublishedDecl,
-	pickCreatedByType,
-	type LocalPackagePublishOutput,
-} from './publish-output.ts';
+import { pickCreatedByType, type LocalPackagePublishOutput } from './publish-output.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
+import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import type { ChainId } from '../../substrate/brand.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import {
+	CoinRegistryService,
+	discoverCoinsFromPublish,
+	type CoinRecord,
+	type CoinRegistry,
+} from '../coin/index.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
-import {
-	makeKnownCodegenable,
-	makeLocalCodegenable,
-	type PackageNetworks,
-} from './codegen.ts';
+import { makeKnownCodegenable, makeLocalCodegenable, type PackageNetworks } from './codegen.ts';
 import { makePublishExecutor } from './publish-executor.ts';
 import { bootPackageService, type PackageMode } from './service.ts';
 import {
@@ -270,8 +269,11 @@ const buildLocalPlugin = <
 			],
 			cascade: true,
 		},
+		// `deps` auto-infers the resolved `{ sui, publisher }` dependency
+		// object; `ctx` arrives via the `PluginContext` service.
 		start: ({ sui, publisher: publisherAccount }) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				// Substrate-context primitives: ArtifactPublisher
 				// is provided by the supervisor's pluginContext;
 				// ChainProbe is looked up via the StrategyRegistry
@@ -283,9 +285,16 @@ const buildLocalPlugin = <
 				// via `PackageRegistryService`, so cross-plugin lookups
 				// stay consistent and warm-restart verify can use the
 				// previous packageId as a hint.
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;
+				// The per-stack CoinRegistry — same instance every plugin in
+				// the stack yields via `CoinRegistryService` (the boot wiring
+				// adds it to the plugin context via
+				// `extendBuiltInPluginContext`). Local publish folds its
+				// discovered coins into it directly (was the orchestrator's
+				// `publishResultSink`).
+				const coinRegistry = yield* CoinRegistryService;
 				// ContainerRuntime + the Sui plugin's resolved image feed
 				// `runMoveBuild`'s path-(b) (`docker run --rm`) build path.
 				// Sui surfaces `buildImage` on its resolved client; modes
@@ -326,10 +335,24 @@ const buildLocalPlugin = <
 					publisher: publisherAccount,
 					publishResult: output,
 				};
+				// Emit the resolved package's contributions inline via the
+				// shared `emitContributions` router. `projected` is the
+				// just-resolved local value; `makeLocalCapabilities` builds the
+				// ordered decl list (snapshot, codegen, registry, projection).
+				emitContributions(ctx, makeLocalCapabilities(name, opts, projected));
+				// Part 2 (custom-kind re-home): on a fresh publish, fold the
+				// output's coins into the per-stack CoinRegistry DIRECTLY (was
+				// the orchestrator's `publishResultSink` consuming the now-
+				// dead `LOCAL_PACKAGE_PUBLISHED` decl). `output` is null on a
+				// cache hit (verify path), so discovery is skipped then — the
+				// registry was already populated on the fresh-publish run that
+				// seeded the cache.
+				if (output !== null) {
+					yield* discoverPublishedCoins(coinRegistry, name, projected.packageId, output);
+				}
 				return projected;
 			}),
 		errorContributions: packageErrorContributions,
-		capabilities: ({ value, runtime }) => makeLocalCapabilities(name, opts, value, runtime.chain),
 	});
 };
 
@@ -344,7 +367,8 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		section: 'package',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
-				const publisher = yield* ArtifactPublisherService;
+				const ctx = yield* PluginContext;
+				const publisher = yield* CacheService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;
 				const mode = {
@@ -355,6 +379,11 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 					mvrOverride: opts.mvrPlaceholder,
 				} satisfies PackageMode;
 				const { resolved } = yield* bootPackageService(publisher, probe, registry, mode);
+				// Emit the resolved package's contributions inline via the
+				// shared `emitContributions` router. `makeKnownCapabilities`
+				// builds the ordered decl list (snapshot, codegen, registry,
+				// projection).
+				emitContributions(ctx, makeKnownCapabilities(name, opts, resolved));
 				// Known mode never publishes — no output to walk, so
 				// the coin-discovery hook is skipped here. Users who
 				// want coin records for a knownPackage point a
@@ -365,16 +394,25 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 				return resolved;
 			}),
 		errorContributions: packageErrorContributions,
-		capabilities: ({ value }) => makeKnownCapabilities(name, opts, value),
 	});
 };
+
+// ---------------------------------------------------------------------------
+// Capability builders — pure helpers returning the ordered decl list.
+//
+// The package `start` bodies feed these into the shared `emitContributions`
+// router after resolving the value. Decl shapes + emit ORDER are load-bearing.
+//
+// NOTE: the LOCAL builder does NOT append a custom published-coin decl.
+// Coin discovery runs DIRECTLY in the local `start` body (see
+// `discoverPublishedCoins`); appending a decl here would double-discover.
+// ---------------------------------------------------------------------------
 
 const makeLocalCapabilities = (
 	name: string,
 	opts: { readonly excludeFromCodegen?: boolean; readonly networks?: PackageNetworks },
 	resolved: LocalPackageResolved,
-	chain: ChainId,
-) => {
+): ReadonlyArray<Contribution> => {
 	// Snapshot + codegen lift their typed fields off the resolved
 	// publish (real packageId + captured object ids). The static-form
 	// placeholders are gone.
@@ -417,29 +455,14 @@ const makeLocalCapabilities = (
 		strategy: projection,
 		autoMounted: true,
 	};
-	return [
-		snap,
-		codegen,
-		registryContribution,
-		makePackageProjectionContribution(projection),
-		...(resolved.publishResult === null
-			? []
-			: [
-					makeLocalPackagePublishedDecl({
-						packageName: name,
-						packageId: resolved.packageId,
-						chain,
-						output: resolved.publishResult,
-					}),
-				]),
-	] as const;
+	return [snap, codegen, registryContribution, makePackageProjectionContribution(projection)];
 };
 
 const makeKnownCapabilities = (
 	name: string,
 	opts: KnownPackageOptions,
 	resolved: KnownPackageResolved,
-) => {
+): ReadonlyArray<Contribution> => {
 	const snap: SnapshotableDecl = makeSnapshotable(name, `known:${resolved.packageId}`);
 	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable(
 		{
@@ -468,13 +491,48 @@ const makeKnownCapabilities = (
 		strategy: projection,
 		autoMounted: true,
 	};
-	return [
-		snap,
-		codegen,
-		registryContribution,
-		makePackageProjectionContribution(projection),
-	] as const;
+	return [snap, codegen, registryContribution, makePackageProjectionContribution(projection)];
 };
+
+/** Fold a fresh local-package publish output into the per-stack
+ *  `CoinRegistry`. Lifted VERBATIM from the orchestrator's former
+ *  `publishResultSink` (orchestrators/boot.ts): the same
+ *  `discoverCoinsFromPublish` walk + the same `CoinRecord` projection
+ *  (including the publisher-owns-cap gate on `treasuryCapId`).
+ *
+ *  Re-homing this into the local `start` body — AFTER the publish output
+ *  is known, BEFORE `start` returns — preserves discovery timing: the
+ *  coin plugin `dependsOn` package, so it acquires only after package
+ *  readies, by which point the registry is already populated. The
+ *  previous decl-driven sink ran at the same point in the lifecycle
+ *  (post-`start` dispatch), so consumers see no ordering change. */
+export const discoverPublishedCoins = (
+	coinRegistry: CoinRegistry,
+	packageName: string,
+	packageId: string,
+	output: LocalPackagePublishOutput,
+): Effect.Effect<void> =>
+	Effect.gen(function* () {
+		for (const discovered of discoverCoinsFromPublish(output)) {
+			const record: CoinRecord = {
+				key: (discovered.symbol ?? discovered.witness).toLowerCase(),
+				type: discovered.fullCoinType,
+				witness: discovered.witness,
+				moduleName: discovered.moduleName,
+				decimals: discovered.decimals ?? 0,
+				...(discovered.symbol === undefined ? {} : { symbol: discovered.symbol }),
+				...(discovered.displayName === undefined ? {} : { displayName: discovered.displayName }),
+				...(discovered.iconUrl === undefined ? {} : { iconUrl: discovered.iconUrl }),
+				...(!discovered.publisherOwnsCap || discovered.treasuryCapId === undefined
+					? {}
+					: { treasuryCapId: discovered.treasuryCapId }),
+				...(discovered.metadataId === undefined ? {} : { metadataId: discovered.metadataId }),
+				packageId,
+				publishingPackageName: packageName,
+			};
+			yield* coinRegistry.register(record);
+		}
+	});
 
 // ---------------------------------------------------------------------------
 // Public factories

@@ -25,19 +25,6 @@ import { Effect, Exit, FileSystem, Schema, Stream } from 'effect';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import {
-	makePendingMarkerDocument,
-	pendingMarkerPath,
-	RestorePendingMarkerIoError,
-	removePendingMarker as removePendingMarkerIo,
-	rewritePendingMarkerContainers,
-	writePendingMarker as writePendingMarkerIo,
-	RESTORE_PENDING_FILE_NAME,
-	RestorePendingDocumentSchema,
-	SNAPSHOT_RESTORE_PENDING_VERSION,
-	type RestorePendingContainer,
-	type RestorePendingDocument,
-} from './pending-marker.ts';
-import {
 	HostTreeTarError,
 	untarHostTree,
 	validateHostTreeTarEntries,
@@ -47,7 +34,7 @@ import {
 	ContributionDocSchema,
 	containerImagesBundlePath,
 	contributionPath,
-	DEPLOY_CACHE_NAMESPACES,
+	deployCacheSubtreeRelPaths,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	type SnapshotId,
@@ -59,13 +46,15 @@ import {
 	isSafeSnapshotRelativePath,
 	parseSnapshotId,
 } from './descriptor.ts';
-import { verifyArtifactIntegrity } from './integrity.ts';
-import { makePhaseFailer } from './phase-error.ts';
 import {
-	readSnapshotStateDocument,
-	writeSnapshotStateDocument,
-	type SnapshotStateDocumentError,
-} from './state-document.ts';
+	makeTarReaderState,
+	processTarChunk,
+	finishTarReader,
+	skipEntry,
+	stopScan,
+	type TarEntry,
+} from '../../substrate/runtime/tar/reader.ts';
+import { makePhaseFailer } from './phase-error.ts';
 import {
 	mergeContributions,
 	runIdentityGuard,
@@ -76,10 +65,13 @@ import {
 	type SnapshotRuntimeIdentity,
 } from './identity-guard.ts';
 import {
-	stageAndSwap,
 	type StageAndSwapError,
 	type StageAndSwapPreservedPath,
 } from '../../substrate/runtime/stage-and-swap/index.ts';
+import {
+	executeFsPlan,
+	type ReconcileFsOp,
+} from '../../substrate/runtime/reconcile/index.ts';
 import {
 	COMMAND_CHANNEL_COMMANDS_FILE_NAME,
 	COMMAND_CHANNEL_EVENTS_FILE_NAME,
@@ -90,6 +82,8 @@ import {
 	readImageBundleTags,
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
+import { verifyArtifactIntegrity } from './integrity.ts';
+import { clearRestoreSentinel, writeRestoreSentinel } from './interrupted-restore.ts';
 import { CACHE_DIR_NAME, SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
@@ -105,21 +99,18 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'read-meta',
 			'meta-corrupt',
 			'meta-absent',
-			'read-state',
 			'read-contribution',
 			'read-integrity',
 			'verify-integrity',
 			'preflight',
+			'cache-missing',
 			'pre-restore-hook',
 			'untar-host-tree',
 			'load-image',
 			'retag-image',
-			'expand-state',
 			'post-restore-hook',
 			'pre-cleanup',
-			'write-restore-pending',
-			'read-restore-pending',
-			'clear-restore-pending',
+			'resume',
 			'missing-subtree-fatal',
 		]),
 		plugin: Schema.optional(Schema.String),
@@ -141,25 +132,6 @@ const failImageBundleTagScan =
 	(phase: RestorePhaseError['phase'], plugin?: string) =>
 	(cause: ImageBundleTagScanError): Effect.Effect<never, RestorePhaseError> =>
 		Effect.fail(new RestorePhaseError({ phase, plugin, detail: cause.detail, cause }));
-
-/** Project a `SnapshotStateDocumentError` onto a `RestorePhaseError`,
- *  branching by `kind` so a phase classifier never inspects message
- *  substrings. */
-const failStateDocument =
-	(
-		readPhase: RestorePhaseError['phase'],
-		writePhase: RestorePhaseError['phase'],
-		plugin?: string,
-	) =>
-	(err: SnapshotStateDocumentError): Effect.Effect<never, RestorePhaseError> =>
-		Effect.fail(
-			new RestorePhaseError({
-				phase: err.kind === 'write' ? writePhase : readPhase,
-				plugin,
-				detail: err.detail,
-				cause: err.cause,
-			}),
-		);
 
 // -----------------------------------------------------------------------------
 // Participants — what restore needs from each plugin
@@ -287,46 +259,34 @@ const removeCapturedContainers = (
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.remove-containers'));
 
 // -----------------------------------------------------------------------------
-// Post-publish Docker finalization recovery marker.
+// Post-publish Docker image finalization.
 // -----------------------------------------------------------------------------
 //
-// Recovery contract: see `pending-marker.ts` and `recover-pending.ts`.
-// Restore writes the marker BEFORE the atomic swap, rewrites it after
-// each successful promote in `promoteStagedImages` so a mid-loop
-// crash leaves the marker reflecting exactly which images still need
-// retagging, and clears it once every entry has been promoted. The
-// supervise startup hook re-runs the recovery scanner before any
-// plugin acquire.
-
-// Re-export the marker shapes restored from the dedicated module so
-// downstream tests + the recovery scanner continue to import from
-// the snapshot orchestrator barrel.
-export {
-	RESTORE_PENDING_FILE_NAME,
-	RestorePendingDocumentSchema,
-	SNAPSHOT_RESTORE_PENDING_VERSION,
-	type RestorePendingDocument,
-};
+// After the atomic swap, each staged image is re-tagged to its
+// captured target name (`promoteStagedImages`) and the original
+// captured containers are removed. The IMAGE resumption contract needs
+// no scanner: the staged image is left at its TARGET name, so on the
+// next boot the supervisor's image-match adoption (`decideRunAction` in
+// `runtime/docker/container.ts`) finds the image locally by name and
+// `docker run`s it without scanning or re-tagging — the resumption
+// contract is carried by the image name itself.
+//
+// The one gap the image-name contract does NOT cover is a hard kill
+// (SIGKILL / power-loss) landing BETWEEN the atomic swap and the end of
+// this promotion+removal handoff: the swap published a new tree but the
+// images are only PARTIALLY promoted, and `Effect.uninterruptible` does
+// not survive a SIGKILL so the cleanup finalizer never runs. The
+// interrupted-restore sentinel (`interrupted-restore.ts`) closes exactly
+// that gap — it rides the swap into the live root and is cleared the
+// instant this handoff completes, so the next boot's
+// `recoverInterruptedRestore` resumes a still-pending one and a clean
+// restore leaves nothing behind.
 
 interface StagedContainerImage {
 	readonly captured: CapturedContainer;
 	readonly stagedRef: ImageRef;
 	readonly stagedImageTag: string;
 }
-
-const stagedImageToPendingEntry = (image: StagedContainerImage): RestorePendingContainer => ({
-	plugin: image.captured.plugin,
-	role: image.captured.role,
-	targetImageName: image.captured.imageName,
-	stagedImageTag: image.stagedImageTag,
-	// The digest is the loaded image's content-addressed identity
-	// (carried through `stageLoadedImage` from `loadImageBundle`'s
-	// docker-load output). Persisting it in the marker lets the
-	// recovery scanner re-tag from the digest as a fallback when both
-	// `targetImageName` and `stagedImageTag` have been pruned out of
-	// the daemon between crash and restart.
-	digest: image.stagedRef.digest,
-});
 
 const loadedBundleTags = (bundle: { readonly refs: ReadonlyArray<ImageRef> }): Set<string> => {
 	const tags = new Set<string>();
@@ -337,84 +297,6 @@ const loadedBundleTags = (bundle: { readonly refs: ReadonlyArray<ImageRef> }): S
 };
 
 const mintRestoreStagingTag = (): string => `devstack-snapshot:restore-${mintRandomSuffix(24)}`;
-
-const mapMarkerIoError =
-	(phase: RestorePhaseError['phase']) =>
-	(err: RestorePendingMarkerIoError): Effect.Effect<never, RestorePhaseError> =>
-		Effect.fail(new RestorePhaseError({ phase, detail: err.detail, cause: err.cause }));
-
-const writeRestorePendingMarker = (args: {
-	readonly runtimeRoot: string;
-	readonly meta: SnapshotMetadata;
-	readonly artifactDir: string;
-	readonly stagedImages: ReadonlyArray<StagedContainerImage>;
-}): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> => {
-	if (args.stagedImages.length === 0) return Effect.void;
-	const doc = makePendingMarkerDocument({
-		meta: args.meta,
-		artifactDir: args.artifactDir,
-		containers: args.stagedImages.map(stagedImageToPendingEntry),
-	});
-	return writePendingMarkerIo(args.runtimeRoot, doc).pipe(
-		Effect.catchTag(
-			'SnapshotRestorePendingMarkerIoError',
-			mapMarkerIoError('write-restore-pending'),
-		),
-	);
-};
-
-const rewriteRestorePendingMarker = (
-	runtimeRoot: string,
-	doc: RestorePendingDocument,
-	stillPending: ReadonlyArray<RestorePendingContainer>,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
-	writePendingMarkerIo(runtimeRoot, rewritePendingMarkerContainers(doc, stillPending)).pipe(
-		Effect.catchTag(
-			'SnapshotRestorePendingMarkerIoError',
-			mapMarkerIoError('write-restore-pending'),
-		),
-	);
-
-const clearRestorePendingMarker = (
-	runtimeRoot: string,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
-	removePendingMarkerIo(runtimeRoot).pipe(
-		Effect.catchTag(
-			'SnapshotRestorePendingMarkerIoError',
-			mapMarkerIoError('clear-restore-pending'),
-		),
-	);
-
-const readRestorePendingMarker = (
-	runtimeRoot: string,
-): Effect.Effect<RestorePendingDocument | null, RestorePhaseError, FileSystem.FileSystem> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-		const path = pendingMarkerPath(runtimeRoot);
-		const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
-		if (!exists) return null;
-		const text = yield* fs
-			.readFileString(path)
-			.pipe(Effect.catch(failPhase('read-restore-pending', `read ${RESTORE_PENDING_FILE_NAME}`)));
-		const raw = yield* parseJsonText(text, {
-			source: path,
-			mkError: (issue) =>
-				new RestorePhaseError({
-					phase: 'read-restore-pending',
-					detail: `${RESTORE_PENDING_FILE_NAME} is not valid JSON`,
-					cause: issue.cause,
-				}),
-		});
-		return yield* decodeUnknown(RestorePendingDocumentSchema, raw, {
-			source: path,
-			mkError: (issue) =>
-				new RestorePhaseError({
-					phase: 'read-restore-pending',
-					detail: `${RESTORE_PENDING_FILE_NAME} failed schema decode`,
-					cause: issue.cause,
-				}),
-		});
-	});
 
 // -----------------------------------------------------------------------------
 // Artifact preflight — no destructive cleanup until required files are present.
@@ -557,16 +439,6 @@ const preflightArtifact = (
 		for (const pluginKey of meta.participants) {
 			yield* preflightContributionDoc(pluginKey, artifactDir);
 		}
-		const statePath = `${artifactDir}/${SnapshotLayout.stateFile}`;
-		const stateExists = yield* fs.exists(statePath).pipe(Effect.catch(() => Effect.succeed(false)));
-		if (stateExists) {
-			yield* readSnapshotStateDocument(statePath).pipe(
-				Effect.catchTag(
-					'SnapshotStateDocumentError',
-					failStateDocument('read-state', 'expand-state'),
-				),
-			);
-		}
 		if (meta.hostTreeIncluded) {
 			const tarPath = `${artifactDir}/${SnapshotLayout.hostTreeTar}`;
 			yield* requireReadableNonEmptyFile(tarPath, 'untar-host-tree', 'host-tree tar is required');
@@ -708,22 +580,20 @@ const cleanupRestoreStagingImages = (
 		{ concurrency: 'unbounded' },
 	).pipe(Effect.asVoid);
 
-/** Promote each staged image to its recorded name, rewriting the
- *  on-disk pending marker after each successful tag. If the loop
- *  fails mid-way the marker reflects exactly which images are still
- *  pending (the failed entry + every entry not yet attempted), so
- *  the supervise-startup `recoverPendingRestore` only has to retry
- *  the remaining set — no scanning Docker for "which targets exist
- *  already?" required. */
+/** Promote each staged image to its recorded TARGET name. The target
+ *  name is the original image name the supervisor used for the
+ *  container, so leaving the staged image at that name lets the next
+ *  boot's image-match adoption (`decideRunAction`) find it locally and
+ *  `docker run` it — no scanner, no on-disk marker. A mid-loop failure
+ *  promotes a prefix of the images; the inner staging-cleanup scope
+ *  prunes the un-promoted staging refs, and a re-run of restore re-stages
+ *  and re-promotes from the snapshot artifact. */
 const promoteStagedImages = (
 	images: ReadonlyArray<StagedContainerImage>,
 	runtime: ContainerRuntime,
-	runtimeStackRoot: string,
-	pendingDoc: RestorePendingDocument | null,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
+): Effect.Effect<void, RestorePhaseError> =>
 	Effect.gen(function* () {
-		for (let i = 0; i < images.length; i += 1) {
-			const image = images[i]!;
+		for (const image of images) {
 			yield* runtime
 				.tagImage(image.stagedRef, image.captured.imageName, {
 					removeSourceAfterTag: true,
@@ -737,15 +607,6 @@ const promoteStagedImages = (
 						),
 					),
 				);
-			// Rewrite the marker with only the still-pending entries
-			// (everything we haven't promoted yet). The final entry's
-			// rewrite leaves an empty `containers: []` marker on disk;
-			// `clearRestorePendingMarker` removes the file shortly
-			// after this function returns.
-			if (pendingDoc !== null) {
-				const stillPending = images.slice(i + 1).map(stagedImageToPendingEntry);
-				yield* rewriteRestorePendingMarker(runtimeStackRoot, pendingDoc, stillPending);
-			}
 		}
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.promote-images'));
 
@@ -782,34 +643,154 @@ const restoreHostTree = (
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.host-tree'));
 
 const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
-	{ relativePath: SNAPSHOTS_DIR_NAME, kind: 'directory' },
-	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME, kind: 'file' },
-	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME, kind: 'file' },
-	{ relativePath: 'roster.json', kind: 'file' },
-	{ relativePath: 'container-claims.json', kind: 'file' },
-	{ relativePath: 'snapshot.reservation', kind: 'file' },
-	// Deploy/mint caches. The snapshot CAPTURES these (DEPLOY_CACHE_NAMESPACES in
-	// descriptor.ts, tarred in capture.ts), and that captured copy — untarred into
-	// staging, consistent with the restored chain — WINS (`overwrite: false`).
-	// This live-side entry is only a FALLBACK: it carries the deploy ids forward
-	// when staging doesn't already have them (e.g. a `snapshot → wipe → restore`
-	// where the captured copy IS present, or a pre-capture snapshot where it is
-	// not). Either way the post-restore boot REUSES the deploy instead of
-	// re-running it with fresh ids (which would orphan every pre-snapshot object).
-	// The generic per-call `cache/entry` is NOT a deploy namespace and stays
-	// dropped (restore.test.ts pins that rollback).
-	...DEPLOY_CACHE_NAMESPACES.map(
-		(namespace): StageAndSwapPreservedPath => ({
-			relativePath: `${CACHE_DIR_NAME}/${namespace}`,
-			kind: 'directory',
-			// The snapshot-CAPTURED copy (untarred into staging) wins; only fall
-			// back to the live copy when staging doesn't carry it (e.g. a snapshot
-			// taken before deploy-cache capture existed). Avoids clobbering the
-			// snapshot-consistent id with a possibly-drifted live one.
-			overwrite: false,
-		}),
-	),
+	{ relativePath: SNAPSHOTS_DIR_NAME },
+	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME },
+	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME },
+	{ relativePath: 'roster.json' },
+	{ relativePath: 'container-claims.json' },
+	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES) are DELIBERATELY ABSENT from
+	// this preserve list. The snapshot's host-tree tar now CARRIES `cache/<ns>`
+	// (see `deployCacheSubtreeRelPaths` in descriptor.ts + capture's gather), so
+	// the restore untars the snapshot's cache into the swapped tree — that copy
+	// is the SOLE source on restore (no preserve-from-live, so no double-store
+	// drift). On a same-machine rollback the snapshot's (older) ids are the
+	// correct rollback target; on a CROSS-MACHINE restore (a fresh runner with an
+	// empty live cache) the snapshot populates the cache from nothing. Either way
+	// the post-restore boot REUSES the deploy rather than re-running it with fresh
+	// ids (which would orphan every pre-snapshot object). The generic per-call
+	// `cache/entry` is not a deploy namespace and is not captured, so it stays
+	// dropped on restore (restore.test.ts pins that rollback); a hard reset that
+	// wipes the live cache after restore re-deploys with fresh ids, surfaced LOUD
+	// by the matrix probe's fail-loud assertion.
 ];
+
+// -----------------------------------------------------------------------------
+// Cache-existence preflight — fail-closed BEFORE any mutation.
+// -----------------------------------------------------------------------------
+
+/** The deploy-cache subtree relPaths (`cache/<ns>`) the snapshot RECORDS as
+ *  captured in its metadata. Capture tars a namespace only if it existed on disk
+ *  (`missingTolerance: 'fine'`) and writes `meta.subtrees` AFTER a successful
+ *  tar, so a relPath here means "this snapshot intended to carry this cache
+ *  namespace". A disabled-plugin namespace (e.g. `cache/deepbook` in a
+ *  deepbook-less stack) is simply absent from the list, so the preflight never
+ *  over-requires it. */
+const recordedDeployCacheRelPaths = (meta: SnapshotMetadata): ReadonlyArray<string> => {
+	const expected = new Set(deployCacheSubtreeRelPaths(CACHE_DIR_NAME));
+	const recorded: string[] = [];
+	for (const subtree of meta.subtrees) {
+		if (expected.has(subtree.relPath)) recorded.push(subtree.relPath);
+	}
+	return recorded;
+};
+
+/** Stream the host-tree tar and collect which of `expectedRelPaths` physically
+ *  appear as an entry prefix. An entry path `cache/<ns>/<chain>/<hash>.json`
+ *  (or the bare `cache/<ns>/` directory) marks `cache/<ns>` present. Read-only:
+ *  bodies are skipped, never buffered. */
+const scanHostTreeCacheRelPaths = (
+	artifactDir: string,
+	expectedRelPaths: ReadonlyArray<string>,
+): Effect.Effect<ReadonlySet<string>, RestorePhaseError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const tarPath = `${artifactDir}/${SnapshotLayout.hostTreeTar}`;
+		const present = new Set<string>();
+		const state = makeTarReaderState();
+		const matchEntry = (entryPath: string): void => {
+			for (const rel of expectedRelPaths) {
+				if (present.has(rel)) continue;
+				if (entryPath === rel || entryPath.startsWith(`${rel}/`)) present.add(rel);
+			}
+		};
+		const hooks = {
+			onEntry: (entry: TarEntry) => {
+				matchEntry(entry.path);
+				// Stop as soon as every expected namespace is found — the host-tree
+				// tar can be large (walrus blobs, the seal vault), and capture tars
+				// the deploy cache FIRST, so the answer settles in the leading
+				// entries. `stopScan` flips `state.stopped`; the `takeWhile` below
+				// then halts the stream so the trailing blob bytes are never read.
+				return present.size === expectedRelPaths.length ? stopScan() : skipEntry();
+			},
+			onExtendedError: (detail: string): RestorePhaseError =>
+				new RestorePhaseError({ phase: 'cache-missing', detail }),
+		} as const;
+		const tarStream = fs.stream(tarPath).pipe(
+			Stream.mapError(
+				(cause): RestorePhaseError =>
+					new RestorePhaseError({
+						phase: 'cache-missing',
+						detail: `read host-tree tar failed at ${tarPath}`,
+						cause,
+					}),
+			),
+			// Stop pulling chunks once the reader signalled `stop` (all namespaces
+			// found) — genuinely terminates the disk read, not just the parse.
+			Stream.takeWhile(() => !state.stopped),
+		);
+		yield* Stream.runForEach(tarStream, (chunk) => {
+			const error = processTarChunk(state, chunk, hooks);
+			return error === null ? Effect.void : Effect.fail(error);
+		});
+		const finalError = finishTarReader(
+			state,
+			(detail): RestorePhaseError => new RestorePhaseError({ phase: 'cache-missing', detail }),
+		);
+		if (finalError !== null) return yield* Effect.fail(finalError);
+		return present;
+	});
+
+/**
+ * The SNAPSHOT's host-tree `cache/<DEPLOY_CACHE_NAMESPACES>` is the SOLE source
+ * of the on-chain deploy/mint ids on restore (capture tars `cache/<ns>` into the
+ * artifact; restore untars it and does NOT preserve-from-live — see
+ * LIVE_RESTORE_PRESERVED_PATHS). So the cache check is against the SNAPSHOT, not
+ * the live stack — which is exactly what makes a CROSS-MACHINE restore work: a
+ * fresh runner has an empty live cache, and the snapshot supplies the ids.
+ *
+ * Refuse (fail-closed, BEFORE any mutation, matching the identity-guard posture)
+ * if the snapshot's cache is NOT self-contained: every deploy-cache namespace
+ * the metadata RECORDS as captured must be physically present in the host-tree
+ * tar. A partial loss (metadata claims `cache/<ns>` but the tar lacks it — a
+ * corrupted/tampered artifact) would let the post-restore boot re-deploy that
+ * namespace with FRESH ids and orphan its pre-snapshot objects. Requiring ALL
+ * recorded namespaces (not just ANY one) is the FIX over the prior "any one dir
+ * present" check, which passed a partial cache and re-minted the rest.
+ *
+ * A snapshot that records NO deploy-cache subtrees (a genuine pre-deploy /
+ * empty-stack capture) has nothing to verify and passes — there are no minted
+ * ids to lose. The matrix's hard-reset phase asserts the loud re-deploy on a
+ * post-restore live-cache wipe.
+ */
+const requireSnapshotDeployCache = (
+	meta: SnapshotMetadata,
+	artifactDir: string,
+): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const recorded = recordedDeployCacheRelPaths(meta);
+		if (recorded.length === 0) return;
+		if (!meta.hostTreeIncluded) {
+			return yield* failRestore(
+				'cache-missing',
+				`snapshot metadata records deploy-cache subtrees (${recorded.join(', ')}) but the ` +
+					`artifact carries no host-tree tar. The snapshot's cache is the SOLE source of the ` +
+					`on-chain deploy/mint ids restore reuses; restoring without it would let the next boot ` +
+					`re-deploy with FRESH ids and orphan every pre-snapshot object. Refusing.`,
+			);
+		}
+		const present = yield* scanHostTreeCacheRelPaths(artifactDir, recorded);
+		const missing = recorded.filter((rel) => !present.has(rel));
+		if (missing.length > 0) {
+			return yield* failRestore(
+				'cache-missing',
+				`snapshot host-tree is missing deploy-cache namespaces it recorded as captured ` +
+					`(${missing.join(', ')}). The snapshot's cache is the SOLE source of the on-chain ` +
+					`deploy/mint ids restore reuses; a partial cache would let the next boot re-deploy the ` +
+					`missing namespaces with FRESH ids and orphan their pre-snapshot objects. Refusing.`,
+			);
+		}
+	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.cache-preflight'));
 
 // -----------------------------------------------------------------------------
 // Top-level restore — bracketed-atomic via stage-and-swap.
@@ -824,33 +805,53 @@ export interface RestoreInputs {
 	readonly participants: ReadonlyArray<RestoreParticipant>;
 	readonly runtime: ContainerRuntime;
 	readonly runtimeIdentity: SnapshotRuntimeIdentity;
+	// RESUME is intentionally NOT a field here. `runRestore` performs the
+	// destructive swap+load+hard-rm UNDER `stack.lock` (held by the caller).
+	// The resume re-converges the stack, and each plugin's re-acquire takes
+	// `stack.lock` for its container claim — a non-reentrant O_EXCL lock — so
+	// running the resume inside this function (under the lock) self-deadlocks.
+	// The orchestrator (`service.ts`) therefore runs the injected resume AFTER
+	// the lock scope closes; `runRestore` owns only the locked half of the
+	// bounce. NEVER `docker start` — the resume is recreate-from-restored-image.
 }
 
 /**
- * Run the full restore. Bracketed-atomic via `stageAndSwap` at the
- * runtime-root level — external watchers never observe a half-restored
- * tree.
+ * Run the full restore. Routed through the unified reconcile as an
+ * ORDERED 4-step body — restore is NOT a single converge target
+ * but a destructive ordered pair around an fs swap:
  *
- * Order:
- *   1. Read meta.json (refuse if absent / corrupt — no mutation).
- *   2. Run identity-guard against runtime metadata and merged plugin
- *      contributions (refuse on any disagreement — no mutation).
- *   3. Pre-restore hooks (per-plugin validation; soft errors).
- *   4. Stage:
- *      - Untar host-tree into staging.
- *      - Copy state.json into staging.
- *      - Re-read contribution docs.
- *      - Load image bundles and stage verified snapshot tags.
- *      - Write a restore-pending marker into the staged root.
- *   5. Atomic swap staging → runtime root, preserving live command /
- *      event channel files and other explicit runtime-control files.
- *   6. Promote staged images to recorded refs, then remove captured
- *      managed containers by label. If this fails, the pending marker
- *      remains in the restored root for diagnosis/recovery.
- *   7. Post-restore hooks.
+ *   step0  — PRECONDITION: identity-guard, FAIL-CLOSED BEFORE ANY MUTATION.
+ *            The runtime-identity guard + merged plugin-contribution guard
+ *            complete BEFORE the first mutation (the docker load/tag inside
+ *            the swap-tree build). On mismatch the sweep / load / tag spies
+ *            stay EMPTY — zero mutations (restore.test `:214/:263`). Keep
+ *            the pure meta read → guard → only then mutate ordering.
+ *   step1  — fsPlan `swap-tree(untar)`: a single-op `ReconcileFsPlan` run
+ *            through `executeFsPlan`, which publishes the new tree via the
+ *            UNCHANGED `stageAndSwap`. The build untars the host-tree +
+ *            loads/stages the committed image bundle into staging; the
+ *            atomic swap preserves the RESTORE preserve list
+ *            (`LIVE_RESTORE_PRESERVED_PATHS` — per-namespace live cache +
+ *            control files, a restore-direction constant, NOT wipe's
+ *            wholesale predicate). Promote staged
+ *            images to their captured TARGET names is the swap step's
+ *            docker tail.
+ *   step2 R1 — HARD container removal (target = absent, label scope,
+ *            policy-independent, unconditional, claim-bypassing) via
+ *            `removeManagedContainers`. STRICTLY before R2. Never expressed
+ *            as flip-image-and-let-decideRunAction-recreate (guardrail
+ *            §3.6).
+ *   step2 R2 — CONVERGE (recreate-from-fresh): NOT in `runRestore`. R1
+ *            removed the containers, so the NEXT acquire (the live
+ *            supervisor's `doSelectiveRestart`, itself routed through
+ *            `reconcileGraph`, or the offline CLI's next-boot acquire) sees
+ *            facts:null → fresh → creates from the RESTORED images. Verb is
+ *            recreate-from-fresh, NOT adopt.
  *
- * The caller is responsible for `acquireReservation`; restore supplies
- * the runtime-control publish lock to `stageAndSwap`.
+ * Bracketed-atomic at the runtime-root level — external watchers never
+ * observe a half-restored tree. The caller holds `stack.lock` for the
+ * bounded snapshot window; restore supplies the runtime-control publish lock
+ * to the swap-tree op.
  */
 export const runRestore = (
 	inputs: RestoreInputs,
@@ -865,12 +866,21 @@ export const runRestore = (
 			'devstack.snapshot.artifact': inputs.artifactDir,
 		});
 
-		// 1. Authoritative meta read.
+		// Authoritative meta read (PURE — no mutation), then re-verify the
+		// artifact's per-file SHA-256 integrity before any mutation. The
+		// artifact is being RESTORED here, so `integrity.json` is re-hashed
+		// and compared file-by-file: a missing record fails at
+		// `read-integrity`, a hash/file-list disagreement at
+		// `verify-integrity` — both fail-closed before the host-tree untar,
+		// docker load, or container replacement.
 		const meta = yield* readMeta(inputs.artifactDir, inputs.snapshotId);
 		yield* verifyIntegrity(inputs.artifactDir);
 
-		// 2. Identity guard — compare the metadata's runtime identity
-		//    and plugin-contributed identity. FAIL-CLOSED before any mutation.
+		// step0 — PRECONDITION: identity guard, FAIL-CLOSED before the FIRST
+		//    mutation. Compare the metadata's runtime identity and the merged
+		//    plugin-contributed identity; on disagreement restore refuses
+		//    HERE, before the swap-tree build's docker load/tag runs (guardrail
+		//    §3.2; restore.test sweep/load/tag === [] on mismatch).
 		yield* runRuntimeIdentityGuard(
 			{ app: meta.app, stack: meta.stack, network: meta.network },
 			inputs.runtimeIdentity,
@@ -883,8 +893,20 @@ export const runRestore = (
 		const live = yield* mergeContributions(liveContributions);
 		yield* runIdentityGuard(meta.identity, live);
 
-		// 3. Plugin-level preRestore hooks (run AFTER identity-guard so
-		//    a mismatch refuses without ever calling them).
+		// step0b — cache-existence preflight, ALSO fail-closed before any
+		//    mutation. The SNAPSHOT's host-tree cache is the SOLE source of the
+		//    on-chain ids restore reuses (capture tars it; restore untars it and
+		//    does NOT preserve-from-live). Refuse (`cache-missing`) if the
+		//    snapshot is not self-contained — any recorded deploy-cache namespace
+		//    missing from the tar — rather than let the next boot re-deploy that
+		//    namespace with fresh ids. Checked against the SNAPSHOT (not the live
+		//    stack), so a cross-machine restore onto an empty live cache passes.
+		yield* requireSnapshotDeployCache(meta, inputs.artifactDir);
+
+		// Plugin-level preRestore hooks (run AFTER identity-guard so a
+		// mismatch refuses without ever calling them). Pre-restore validation
+		// is read-only / soft; the FIRST mutation is still the docker load/tag
+		// inside the swap-tree build below.
 		for (const participant of inputs.participants) {
 			if (participant.preRestore) {
 				yield* participant.preRestore.pipe(
@@ -895,22 +917,22 @@ export const runRestore = (
 
 		yield* preflightArtifact(meta, inputs.artifactDir);
 
-		// 4. Stage filesystem content and non-destructive Docker image
-		//    refs; atomic swap on success, then promote staged images and
-		//    clear the recovery marker. The inner `Effect.scoped` keeps
-		//    `cleanupRestoreStagingImages` armed across BOTH the
-		//    stage-and-swap build phase AND the post-swap Docker handoff
-		//    (promote → remove containers → clear marker). The handoff
-		//    flag flips only after `clearRestorePendingMarker` returns,
-		//    so a mid-handoff failure (e.g. promotion of image N of M
-		//    refuses) leaves the swapped tree carrying the pending
-		//    marker (re-supervise can detect the broken handoff) AND
-		//    has the inner scope clean the still-tagged staging refs so
-		//    Docker is not littered with orphan `devstack-snapshot:restore-*`
-		//    tags. The post-publish three-step sequence runs under
-		//    `Effect.uninterruptible` so an outer interrupt cannot
-		//    arrive between promote and the marker clear and tear the
-		//    handoff state.
+		// steps 1 + 2 (R1) — staged file content + docker handoff, inside one
+		// `Effect.scoped` that keeps `cleanupRestoreStagingImages` armed across
+		// BOTH the swap-tree build phase AND the post-swap docker handoff
+		// (promote → remove captured containers). The handoff flag flips only
+		// after `removeCapturedContainers` returns, so a mid-handoff failure
+		// has the inner scope clean the still-tagged staging refs so Docker is
+		// not littered with orphan `devstack-snapshot:restore-*` tags. The
+		// post-publish sequence runs under `Effect.uninterruptible` so an outer
+		// Effect-level interrupt cannot arrive mid-handoff and tear the state.
+		// `promoteStagedImages` leaves each image at its captured TARGET name,
+		// so R2 (the next acquire's image-match recreate-from-fresh) re-runs the
+		// deploy from the local image with no scanner. `Effect.uninterruptible`
+		// does NOT survive a SIGKILL, though — the interrupted-restore sentinel
+		// (written into the staged tree, riding the swap into the live root, and
+		// cleared the instant this handoff completes) is the durable breadcrumb
+		// that lets the next boot resume a hard-kill-mid-promotion.
 		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const stagedImages: StagedContainerImage[] = [];
@@ -920,134 +942,149 @@ export const runRestore = (
 						? cleanupRestoreStagingImages(inputs.runtime, stagedImages)
 						: Effect.void,
 				);
-				yield* stageAndSwap({
-					targetPath: inputs.runtimeStackRoot,
-					stagingPath: inputs.runtimeStagingPath,
-					backupPath: inputs.runtimeBackupPath,
-					preserveFromTarget: LIVE_RESTORE_PRESERVED_PATHS,
-					publishLockPath: runtimeControlLockPathForStackRoot(inputs.runtimeStackRoot),
-					build: Effect.gen(function* () {
-						// 4a. Untar host-tree into staging.
-						if (meta.hostTreeIncluded) {
-							yield* restoreHostTree(inputs.artifactDir, inputs.runtimeStagingPath);
-						}
-						// 4b. Copy state.json into staging.
-						const fs = yield* FileSystem.FileSystem;
-						const srcState = `${inputs.artifactDir}/${SnapshotLayout.stateFile}`;
-						const stateExists = yield* fs
-							.exists(srcState)
-							.pipe(Effect.catch(() => Effect.succeed(false)));
-						if (stateExists) {
-							const stateDoc = yield* readSnapshotStateDocument(srcState).pipe(
-								Effect.catchTag(
-									'SnapshotStateDocumentError',
-									failStateDocument('read-state', 'expand-state'),
-								),
-							);
-							yield* writeSnapshotStateDocument(
-								`${inputs.runtimeStagingPath}/${SnapshotLayout.stateFile}`,
-								stateDoc,
-							).pipe(
-								Effect.catchTag(
-									'SnapshotStateDocumentError',
-									failStateDocument('expand-state', 'expand-state'),
-								),
-							);
-						}
-						// 4c. Read each contribution doc — the participants'
-						//      post-restore hooks may want this; we surface it
-						//      via the participant's own state-store reads after
-						//      the swap lands.
-						for (const pluginKey of meta.participants) {
-							const path = `${inputs.artifactDir}/${contributionPath(pluginKey)}`;
-							const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
-							if (!exists) {
-								return yield* Effect.fail(
-									new RestorePhaseError({
-										phase: 'read-contribution',
-										plugin: pluginKey,
-										detail: `contribution doc absent at ${path}`,
-									}),
-								);
-							}
-						}
-						// 4d. Load + tag committed images under restore-staging
-						//     refs only after all artifact expansion/copy work
-						//     has succeeded. The Docker save manifest must match
-						//     snapshot metadata exactly before docker load mutates
-						//     the daemon; loaded refs then supply the real digest
-						//     used for staging tags.
-						const expectedTagsByBundle = expectedSnapshotTagsByBundle(meta.containers);
-						const loadedRefsBySnapshotTag = new Map<string, ImageRef>();
-						for (const [tarPath, expectedTags] of expectedTagsByBundle) {
-							const loadedRefs = yield* loadImageBundle(
-								tarPath,
-								inputs.artifactDir,
-								inputs.runtime,
-								expectedTags,
-							);
-							for (const [tag, ref] of loadedRefs) {
-								loadedRefsBySnapshotTag.set(tag, ref);
-							}
-						}
-						for (const captured of meta.containers) {
-							const loadedRef = loadedRefsBySnapshotTag.get(captured.snapshotTag);
-							if (loadedRef === undefined) {
-								return yield* failRestore(
-									'load-image',
-									`container image bundle did not return loaded ref for ${captured.snapshotTag}`,
-									captured.plugin,
-								);
-							}
-							yield* stageLoadedImage(captured, loadedRef, inputs.runtime, (image) =>
-								Effect.sync(() => {
-									stagedImages.push(image);
+
+				// step1 — fsPlan `swap-tree(untar)`: the build untars the
+				//   host-tree + loads/stages the committed image bundle into
+				//   staging; the unchanged `stageAndSwap` (assembled by the
+				//   executor from the op) publishes it atomically, preserving the
+				//   RESTORE preserve list. The build's success value (the staged
+				//   refs) is captured via the `stagedImages` closure above, so
+				//   the fs-plan result is the empty default — the build value
+				//   never threads back through the op vocabulary.
+				const swapBuild = Effect.gen(function* () {
+					// Untar host-tree into staging.
+					if (meta.hostTreeIncluded) {
+						yield* restoreHostTree(inputs.artifactDir, inputs.runtimeStagingPath);
+					}
+					const fs = yield* FileSystem.FileSystem;
+					// Confirm each contribution doc is present — the
+					// participants' post-restore hooks read fresh state after
+					// the swap lands.
+					for (const pluginKey of meta.participants) {
+						const path = `${inputs.artifactDir}/${contributionPath(pluginKey)}`;
+						const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
+						if (!exists) {
+							return yield* Effect.fail(
+								new RestorePhaseError({
+									phase: 'read-contribution',
+									plugin: pluginKey,
+									detail: `contribution doc absent at ${path}`,
 								}),
 							);
 						}
-						yield* writeRestorePendingMarker({
-							runtimeRoot: inputs.runtimeStagingPath,
-							meta,
-							artifactDir: inputs.artifactDir,
-							stagedImages,
-						});
-						return stagedImages;
-					}),
+					}
+					// Load + tag committed images under restore-staging refs
+					// only after all artifact expansion/copy work has
+					// succeeded. The Docker save manifest must match snapshot
+					// metadata exactly before docker load mutates the daemon;
+					// loaded refs then supply the real digest used for staging
+					// tags.
+					const expectedTagsByBundle = expectedSnapshotTagsByBundle(meta.containers);
+					const loadedRefsBySnapshotTag = new Map<string, ImageRef>();
+					for (const [tarPath, expectedTags] of expectedTagsByBundle) {
+						const loadedRefs = yield* loadImageBundle(
+							tarPath,
+							inputs.artifactDir,
+							inputs.runtime,
+							expectedTags,
+						);
+						for (const [tag, ref] of loadedRefs) {
+							loadedRefsBySnapshotTag.set(tag, ref);
+						}
+					}
+					for (const captured of meta.containers) {
+						const loadedRef = loadedRefsBySnapshotTag.get(captured.snapshotTag);
+						if (loadedRef === undefined) {
+							return yield* failRestore(
+								'load-image',
+								`container image bundle did not return loaded ref for ${captured.snapshotTag}`,
+								captured.plugin,
+							);
+						}
+						yield* stageLoadedImage(captured, loadedRef, inputs.runtime, (image) =>
+							Effect.sync(() => {
+								stagedImages.push(image);
+							}),
+						);
+					}
+					// Write the interrupted-restore sentinel into the STAGED tree
+					// root so it RIDES the atomic stage-and-swap into the live
+					// runtime root (the swap is a `rename(staging → stackRoot)`, so
+					// the sentinel is published atomically WITH the new tree — there
+					// is no pre-swap window where it could be observed early or lost).
+					// The clear on the success path below removes it the instant the
+					// promotion+removal handoff completes; a hard kill AFTER the swap
+					// but mid-promotion leaves it live for the next boot's
+					// `recoverInterruptedRestore` to resume. Best-effort: a write
+					// failure is logged, not fatal (it only widens the already-
+					// existing unrecoverable window).
+					yield* writeRestoreSentinel(inputs.runtimeStagingPath, {
+						snapshotId: inputs.snapshotId,
+						artifactDir: inputs.artifactDir,
+					});
+					return stagedImages;
 				});
 
-				// 5. Docker finalization happens after filesystem publish.
-				//    Promote → remove captured containers → clear marker, all
-				//    inside the staging-cleanup scope. The pending marker
-				//    landed in the swapped runtime root as part of the
-				//    stage-and-swap; `promoteStagedImages` rewrites it after
-				//    each successful tag so a mid-loop crash leaves the
-				//    marker reflecting exactly which images still need
-				//    retagging — `recoverPendingRestore` on the next
-				//    supervise picks up the breadcrumb. Uninterruptible so
-				//    an outer interrupt cannot tear the handoff between
-				//    promote and `clearRestorePendingMarker`.
+				const swapTree: ReconcileFsOp<RestorePhaseError | StageAndSwapError> = {
+					op: 'swap-tree',
+					targetPath: inputs.runtimeStackRoot,
+					stagingPath: inputs.runtimeStagingPath,
+					backupPath: inputs.runtimeBackupPath,
+					buildEffect: swapBuild,
+					// RESTORE-DIRECTION preserve constant — per-namespace live
+					// cache + control files, NOT wipe's wholesale predicate.
+					preserveFromTarget: LIVE_RESTORE_PRESERVED_PATHS,
+					publishLockPath: runtimeControlLockPathForStackRoot(inputs.runtimeStackRoot),
+					// Identity pass-through — restore keeps `StageAndSwapError`
+					// in its own public signature (behavior-preserving), so the
+					// executor never invents an error tag for it.
+					onSwapError: (cause) => Effect.fail(cause),
+				};
+
+				yield* executeFsPlan<RestorePhaseError | StageAndSwapError>({ ops: [swapTree] });
+
+				// step2 R1 — HARD container removal (target = absent, label
+				//   scope, policy-INDEPENDENT, unconditional, claim-bypassing)
+				//   via `removeManagedContainers`, plus the swap step's docker
+				//   tail (promote staged images to their captured TARGET names).
+				//   Inside the staging-cleanup scope, uninterruptible so an
+				//   outer interrupt cannot tear the handoff between promote and
+				//   container removal. Each promoted image is left at its
+				//   captured TARGET name, so R2 (the next acquire's image-match
+				//   recreate-from-fresh) re-runs the deploy from the local image
+				//   — no scanner. R1 is STRICTLY before R2 (R2 runs in the
+				//   caller's converge after `runRestore` returns), and is NEVER
+				//   expressed as flip-image-and-let-decideRunAction-recreate.
+				//   The interrupted-restore sentinel (written into the staged tree
+				//   above, now live after the swap) is the durable breadcrumb a
+				//   hard kill BETWEEN the swap and this handoff completing leaves
+				//   behind; it is cleared the instant the handoff finishes below.
 				if (stagedImages.length > 0) {
-					const pendingDocAfterSwap = yield* readRestorePendingMarker(inputs.runtimeStackRoot);
 					yield* Effect.uninterruptible(
 						Effect.gen(function* () {
-							yield* promoteStagedImages(
-								stagedImages,
-								inputs.runtime,
-								inputs.runtimeStackRoot,
-								pendingDocAfterSwap,
-							);
+							yield* promoteStagedImages(stagedImages, inputs.runtime);
 							yield* removeCapturedContainers(meta, inputs.runtime, inputs.runtimeIdentity);
-							yield* clearRestorePendingMarker(inputs.runtimeStackRoot);
 							recoveryHandoffComplete = true;
 						}),
 					);
 				} else {
 					recoveryHandoffComplete = true;
 				}
+
+				// Success path: the promotion+removal handoff is complete, so the
+				// interrupted-restore sentinel has served its purpose — clear it
+				// from the LIVE runtime root (it rode the swap in) so the next boot
+				// reads no sentinel and never loops. A hard kill that lands AFTER
+				// `recoveryHandoffComplete = true` but BEFORE this clear is benign:
+				// re-running the restore on the next boot is idempotent (re-stages
+				// from the preserved artifact, re-promotes to the same TARGET
+				// names, re-removes the already-absent containers), then clears the
+				// sentinel. Idempotent (`force: true`), best-effort.
+				yield* clearRestoreSentinel(inputs.runtimeStackRoot);
 			}),
 		);
 
-		// 6. Post-restore hooks (after the swap lands so plugins read
+		// Post-restore hooks (after the swap lands so plugins read
 		//    fresh state from the runtime root).
 		for (const participant of inputs.participants) {
 			if (participant.postRestore) {
@@ -1056,6 +1093,16 @@ export const runRestore = (
 				);
 			}
 		}
+
+		// RESUME = recreate-from-restored-image + wait-write-ready. The R1
+		// hard-rm above made the containers facts:null → the resume's converge
+		// sees them missing and recreates fresh from the restored images (whose
+		// names were re-tagged to the captured TARGET names), inheriting walrus's
+		// write-ready ready-gate. The resume is NOT run here: it must execute with
+		// `stack.lock` RELEASED (its per-plugin container claims re-take the lock),
+		// so the orchestrator (`service.ts`) runs the injected resume AFTER this
+		// function's lock scope closes. OMITTED entirely on the offline restore
+		// (the next boot is the resume). NEVER `docker start`.
 
 		return meta;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore'));

@@ -30,7 +30,7 @@ import type {
 	TaggedImageRef,
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
-import { chainId, contentHash } from '../../substrate/brand.ts';
+import { contentHash } from '../../substrate/brand.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -309,8 +309,8 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				// Owner identity flows through as `--label` flags on
 				// `docker build`, making the resulting image visible to
 				// label-driven prune. Labels are metadata, NOT part of
-				// the cache key — a previously-unlabelled cached image
-				// stays a cache hit (the legacy cleanup script reaps it).
+				// the cache key — an unlabelled cached image stays a cache
+				// hit, and label-driven prune reaps it.
 				const ownerLabels =
 					effectiveCtx.owner !== undefined
 						? expectedImageOwnershipLabels(effectiveCtx.owner)
@@ -326,7 +326,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 					},
 					{
 						namespace: 'runtime-docker-build',
-						chain: chainId('n/a'),
+						chain: 'n/a',
 						contentHash: contentHash(hash),
 					},
 				).pipe(
@@ -397,6 +397,13 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 													: 'exited') as ContainerHandle['status'],
 									ips: [],
 									...(facts?.ports !== undefined ? { ports: facts.ports } : {}),
+									// Surface the inspected exit code whenever Docker
+									// supplied a `State` (running / exited-0 → `0`; only an
+									// omitted-`State` inspect leaves `exitCode` null →
+									// `lastExitCode` absent) so callers can gate on a
+									// SIGKILL/OOM `137` crash-recreate — the signal sui's
+									// indexer-db sidecar resets on.
+									...(facts?.exitCode != null ? { lastExitCode: facts.exitCode } : {}),
 								}),
 							),
 						),

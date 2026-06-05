@@ -11,11 +11,6 @@
 // resolved-account view (sans signing closures, which stay scoped
 // to the acquire body's lifetime; consumers ask the Account tag
 // directly when they need to sign).
-//
-// Distilled-doc opportunity: today's `publishAccount(...)` writes
-// into an engine-singleton registry. The redesign moves it onto the
-// capability-decl surface so the substrate orchestrates dedup-by-
-// name and last-write-wins without an engine import.
 
 import { projection } from '../../api/define-capabilities.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';

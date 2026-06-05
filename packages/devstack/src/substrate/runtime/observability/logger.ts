@@ -4,8 +4,7 @@
 // span/annotation conventions, cause walker (shared with renderers,
 // not duplicated)".
 //
-// Replaces the ad-hoc `appendTagLog` shape on the legacy `EngineHandle`
-// with a typed Service. Plugins acquire a `Logger` and publish lines;
+// A typed Service for per-tag logging. Plugins acquire a `Logger` and publish lines;
 // the substrate keeps each line in a bounded per-tag ring buffer and
 // mirrors it into Effect's structured logging via `Effect.log*`.
 // Operator-level lines are also projected into the typed event stream
@@ -16,7 +15,7 @@
 // reads are snapshot-consistent. Cross-process atomicity (when the
 // same log lands in two devstack processes via a shared file)
 // is delegated to the cross-process lock primitive in
-// `../cross-process/lock.ts`.
+// `../cross-process/stack-lock.ts`.
 
 import { Context, Effect, Layer, Ref } from 'effect';
 

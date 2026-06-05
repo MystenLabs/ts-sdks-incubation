@@ -11,7 +11,7 @@ import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import { DEFAULT_DISCOVERY_STACK } from '../../../src/build-integrations/runtime/resolve-discovery-env.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	DEFAULT_STACK,
@@ -24,7 +24,7 @@ import {
 const identity = (stack: string): Identity => ({
 	app: appName('my-app'),
 	stack: stackName(stack),
-	chain: chainId('sui:localnet'),
+	chain: 'sui:localnet',
 });
 
 describe('renderUrl', () => {

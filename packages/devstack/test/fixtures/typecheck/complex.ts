@@ -5,7 +5,6 @@
 //   2. using a mode-incompatible factory.
 
 import {
-	chainId,
 	defineDevstack,
 	defineDevstackWith,
 	defineModeNamespace,
@@ -54,7 +53,7 @@ const cluster = defineModeNamespace({
 // Local-mode stack: keyval service + cluster service (local factory).
 // The cluster service depends on the `keyval` resource — the keyval service provides it.
 
-const localNetwork: NetworkConfig<'local'> = { mode: 'local', chain: chainId('demo:local') };
+const localNetwork: NetworkConfig<'local'> = { mode: 'local', chain: 'demo:local' };
 
 export const localStack = defineDevstackWith(
 	{ network: localNetwork, stackName: 'complex-local' },
@@ -69,6 +68,14 @@ export const flatLocalStack = defineDevstack({
 });
 
 const suiExternal = sui({ mode: 'local-rpc', rpcUrl: 'http://127.0.0.1:9000' });
+
+// Local-mode escape hatches typecheck without a postgres provider in the
+// stack (sui owns its indexer DB; there is no cross-plugin dependency).
+export const _suiIndexerOff = sui({ mode: 'local', indexer: false });
+export const _suiByoIndexer = sui({
+	mode: 'local',
+	indexerDb: { url: 'postgres://u:p@db:5432', network: 'my-net' },
+});
 const resourceRefConsumer = definePlugin({
 	id: 'resource-ref-consumer',
 	dependsOn: { sui: suiExternal },
@@ -104,7 +111,7 @@ export const missingDep = defineDevstack({
 
 const forkNetwork: NetworkConfig<'fork'> = {
 	mode: 'fork',
-	chain: chainId('demo:fork@1'),
+	chain: 'demo:fork@1',
 	checkpoint: '1',
 };
 

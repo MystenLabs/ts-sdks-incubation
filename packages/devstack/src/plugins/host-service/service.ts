@@ -758,14 +758,10 @@ const startHostProcess = (
 			return yield* Effect.failCause(readinessExit.cause);
 		}
 
-		// Post-readiness observers. These previously used `void
-		// promise.then(() => Effect.runPromise(...))` which could fire
-		// AFTER the surrounding Scope had already closed (running logger
-		// effects outside any scope, with `.catch(() => {})` swallowing
-		// any failures). Fork into the Scope via `Effect.forkScoped` so
-		// that scope-close interrupts the observer fiber cleanly — the
-		// finalizer flips `shuttingDown` first, so expected-exit cases
-		// still no-op as before. These observers are registered after the
+		// Post-readiness observers. Fork into the Scope via
+		// `Effect.forkScoped` so that scope-close interrupts the observer
+		// fiber cleanly — the finalizer flips `shuttingDown` first, so
+		// expected-exit cases no-op. These observers are registered after the
 		// terminator finalizer, so on scope close they are interrupted before
 		// it runs; their `Effect.promise` waits are interruptible, so they
 		// unwind cleanly without waiting on the child to exit.

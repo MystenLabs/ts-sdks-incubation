@@ -12,10 +12,8 @@
 //         shape — a given field is null only when THAT specific URL
 //         is unresolved (registry default + explicit override both
 //         absent). The plugin's projection step publishes each tag
-//         when its own URL is present; a missing publisher URL no
-//         longer suppresses an available proxy/aggregator URL. (The
-//         earlier all-or-nothing gate that nullified all three when
-//         any single URL was missing was removed.)
+//         when its own URL is present; a missing publisher URL does
+//         not suppress an available proxy/aggregator URL.
 //   - 16: throw synchronously when `nodes` is missing for a
 //         registered network. Testnet has 100+ nodes that the
 //         `@mysten/walrus` SDK fetches dynamically; pinning them
@@ -65,8 +63,8 @@ export interface KnownDeploymentBootResult {
 }
 
 /** Known-deployment registry — baked-in record per network. The
- *  values here mirror v3's `knownDeployments.walrus.{testnet,
- *  mainnet}` entries. Devnet has no canonical record today. */
+ *  values here are the `knownDeployments.walrus.{testnet, mainnet}`
+ *  entries. Devnet has no canonical record today. */
 const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 	Record<
 		WalrusKnownNetwork,

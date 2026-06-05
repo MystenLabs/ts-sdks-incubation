@@ -67,12 +67,3 @@ export const applyLifecycleFact = (row: Row, delta: LifecycleFactDelta): Row => 
 		? { selectiveRestartHighlight: delta.selectiveRestartHighlight }
 		: {}),
 });
-
-/** Reconstruct the closed `LifecycleFact` shape from a `Row`. Used by
- *  diagnostic surfaces that want the typed fact instead of the wider
- *  display Row. */
-export const factFromRow = (row: Row): LifecycleFact => ({
-	status: row.status,
-	phase: row.phase,
-	selectiveRestartHighlight: row.selectiveRestartHighlight,
-});

@@ -22,8 +22,7 @@
 //   6. Cross-filesystem fallback (`EXDEV` from rename) logs and falls
 //      back to copy-then-rm — the architecture's documented exception.
 //
-// Discipline carried verbatim from the legacy `engine/snapshot/stage-
-// and-swap.ts` (distilled §17).
+// Atomic stage-and-swap discipline (distilled §17).
 
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 
@@ -66,7 +65,6 @@ export class StageAndSwapError extends Schema.TaggedErrorClass<StageAndSwapError
 
 export interface StageAndSwapPreservedPath {
 	readonly relativePath: string;
-	readonly kind: 'file' | 'directory';
 	/** When `false`, the backed-up live copy is preserved into staging ONLY if
 	 *  staging does not already carry the path — so a value the build already
 	 *  placed there (e.g. a deploy cache untarred from the snapshot's host-tree)

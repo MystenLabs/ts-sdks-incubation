@@ -21,8 +21,8 @@
 // `api/define-devstack.ts`.
 //
 // Note: this is a COMPOSE-TIME hook, distinct from the runtime
-// `CapabilitySinks` harvest path. Capability sinks dispatch
-// contributions AFTER plugin acquire; expanders run BEFORE the
+// contribution-dispatch path (the ContributionDispatcher). Contribution
+// dispatch fires AFTER plugin acquire; expanders run BEFORE the
 // supervisor sees the member list at all. Both surfaces are
 // substrate-owned but they fire at different times.
 

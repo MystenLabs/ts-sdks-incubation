@@ -5,14 +5,7 @@
 // missing the test framework skips via the spawn-failure surfacing
 // path.
 
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	statSync,
-	writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Exit, Stream } from 'effect';
@@ -106,6 +99,22 @@ const tarWithExtendedPathOverride = (
 		tarContentBlocks(contentBytes),
 		Buffer.alloc(1024),
 	]);
+};
+
+// A symlink entry (typeflag '2') whose link target escapes the
+// extraction root via `..`. The validator must reject the entry on its
+// link target even though the entry name itself is benign.
+const tarWithMaliciousLinkTarget = (entryName: string, linkTarget: string): Buffer => {
+	const header = tarHeaderBlock(entryName, '2', 0);
+	header.write(linkTarget, 157, 'utf8');
+	// Recompute checksum after writing the link name (the helper's
+	// checksum predated the linkname write).
+	header.fill(0x20, 148, 156);
+	const checksum = header.reduce((sum, byte) => sum + byte, 0);
+	header.write(checksum.toString(8).padStart(6, '0'), 148, 'ascii');
+	header[154] = 0;
+	header[155] = 0x20;
+	return Buffer.concat([header, Buffer.alloc(1024)]);
 };
 
 describe('tarHostTree + untarHostTree', () => {
@@ -235,6 +244,28 @@ describe('tarHostTree + untarHostTree', () => {
 					expect(existsSync(escaped)).toBe(false);
 				}),
 			),
+	);
+
+	it.effect('rejects a symlink entry whose link target escapes the extraction root', () =>
+		withTempRoot('host-tree-tar-test', (root) =>
+			Effect.gen(function* () {
+				const dst = join(root, 'target');
+				mkdirSync(dst, { recursive: true });
+				const archive = tarWithMaliciousLinkTarget('link', '../../escape');
+				const source = Stream.fromIterable([archive.subarray(0, 200), archive.subarray(200)]);
+
+				const exit = yield* Effect.exit(Effect.scoped(untarHostTree(source, { target: dst })));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(HostTreeTarError);
+					expect(error.value.stage).toBe('entry-validation');
+					expect(error.value.detail).toContain('unsafe tar link target');
+				}
+			}),
+		),
 	);
 
 	it.effect('empty relPaths list fails with stage: "no-subtrees"', () =>

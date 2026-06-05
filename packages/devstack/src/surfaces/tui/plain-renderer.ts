@@ -120,10 +120,11 @@ const levelForEvent = (event: EngineEvent): 'INFO' | 'WARN' | 'ERROR' => {
 			return event.error.severity === 'fatal' || event.error.severity === 'error'
 				? 'ERROR'
 				: 'WARN';
-		// A broken orchestrator capability sink leaves the plugin `ready`
-		// (non-fatal by design — see dispatch-contributions.ts), so this
-		// is the operator's ONLY signal that e.g. RPC/wallet routing is
-		// dead. It must not render as a routine INFO line.
+		// A failed buffered contribution replayed through the
+		// `ContributionDispatcher` leaves the plugin `ready` (non-fatal by
+		// design — see `dispatchBufferedContributions` in acquire-node.ts),
+		// so this is the operator's ONLY signal that e.g. RPC/wallet routing
+		// is dead. It must not render as a routine INFO line.
 		case 'engine.orchestrator.dispatchFailed':
 			return 'WARN';
 		default:
@@ -245,17 +246,6 @@ const payloadFor = (event: EngineEvent): string => {
 				mode: 'hard-kill',
 				signal: event.signal,
 				exitCode: event.exitCode,
-			});
-		case 'snapshot.captureStarted':
-			return kv({ snapshotId: event.snapshotId, name: event.name });
-		case 'snapshot.captureProgress':
-			return kv({
-				snapshotId: event.snapshotId,
-				name: event.name,
-				phase: event.phase,
-				detail: event.detail,
-				paused: event.pausedContainers,
-				total: event.totalContainers,
 			});
 		case 'snapshot.captureSkipped':
 			return kv({ reason: event.reason });

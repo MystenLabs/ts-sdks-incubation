@@ -5,7 +5,7 @@
 // `ArtifactPublisher` + on-disk `Cache` substrate primitives):
 //
 //   - Cold boot: body runs exactly once; receipt is written to the
-//     state-store under `cache/action/<chain>/<hash>.json`.
+//     on-disk cache under `cache/action/<chain>/<hash>.json`.
 //   - Warm boot (same runtime root): cache hit; body does NOT run
 //     again; receipt is surfaced from the cached payload.
 //
@@ -18,7 +18,7 @@
 // Why not boot the full `connect-four` stack? The connect-four stack composes
 // `sui()`, which spawns a docker validator. The action's caching
 // discipline is INDEPENDENT of the chain (the artifact publisher substrate consults
-// `state.json` + the chain-probe; the chain-probe itself is the
+// the on-disk cache + the chain-probe; the chain-probe itself is the
 // load-bearing dependency, NOT the running container). The stub
 // chain-probe here pins the cache discipline without depending on a
 // clean docker environment.
@@ -37,18 +37,14 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
+import { appName, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 import {
 	layerIdentity,
 	layerRuntimeRoot,
 	layerStackPaths,
 } from '../../src/substrate/runtime/paths.ts';
-import { layerCache } from '../../src/substrate/runtime/cache/index.ts';
-import {
-	ArtifactPublisherService,
-	layerArtifactPublisher,
-} from '../../src/substrate/runtime/artifact-publisher/index.ts';
+import { CacheService, layerCache } from '../../src/substrate/runtime/cache/index.ts';
 import { layerStrategyRegistry } from '../../src/substrate/runtime/strategy-registry/index.ts';
 import type { ChainProbe } from '../../src/contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../../src/plugins/sui/chain-probe.ts';
@@ -59,7 +55,7 @@ const CHAIN = 'sui:e2e-action-test';
 const identity: Identity = {
 	app: appName('e2e-action'),
 	stack: stackName('main'),
-	chain: chainId(CHAIN),
+	chain: CHAIN,
 };
 
 // `mkdtempSync` at module top-level (rather than per-`it`) because
@@ -81,8 +77,7 @@ const platformBase = Layer.mergeAll(
 );
 
 const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(platformBase));
-const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
-const substrateLayers = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
+const substrateLayers = layerCache.pipe(Layer.provideMerge(withStackPaths));
 
 /** Construct a fake chain-probe that resolves transaction digests to a
  *  `{digest}` shape on hit, `null` on miss. The test seeds a known
@@ -114,7 +109,7 @@ const runOnce = (
 	digest: string,
 ): Effect.Effect<{ bodyRuns: number; digest: string }, unknown, never> =>
 	Effect.gen(function* () {
-		const publisher = yield* ArtifactPublisherService;
+		const publisher = yield* CacheService;
 		const probe = makeFakeChainProbe([digest]);
 
 		const body: Effect.Effect<ActionReceipt, never> = Effect.gen(function* () {
@@ -129,7 +124,7 @@ const runOnce = (
 		const result = yield* Effect.scoped(
 			bootActionService(publisher, probe, {
 				actionName: 'e2e-test-action',
-				chainId: chainId(CHAIN),
+				chainId: CHAIN,
 				staticDiscriminator: {
 					actionName: 'e2e-test-action',
 					dependencyResourceIds: ['account/alice', 'package:connect_four'],

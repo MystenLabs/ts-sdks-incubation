@@ -22,11 +22,12 @@
 import { Context, Effect, Queue, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
 import type { EngineCommand, EngineEvent } from '../../../../src/substrate/events.ts';
 import type { Identity } from '../../../../src/substrate/identity.ts';
 import {
 	makeProjectionRef,
+	noopContributionDispatcher,
 	startSupervisor,
 	type SupervisedStack,
 } from '../../../../src/substrate/runtime/index.ts';
@@ -36,7 +37,7 @@ import { definePlugin } from '../../../../src/substrate/plugin.ts';
 const identity: Identity = {
 	app: appName('snapshot-restore-test-app'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 // A command handler standing in for the injected snapshot L3 handler.
@@ -85,7 +86,7 @@ describe('supervisor snapshot.restore command path', () => {
 						identity,
 						state,
 						Context.empty(),
-						[],
+						noopContributionDispatcher,
 						makeRestoreHandler(),
 					);
 					yield* startup.runInitialAcquire;
@@ -105,49 +106,51 @@ describe('supervisor snapshot.restore command path', () => {
 		}),
 	);
 
-	it.effect('FAILS the submitted command when the post-restore re-acquire leaves a row failed', () =>
-		Effect.gen(function* () {
-			// Succeeds on the INITIAL acquire, fails on every RE-acquire — so
-			// the restore drain + re-acquire leaves it `failed`.
-			const starts = yield* Ref.make(0);
-			const flaky = definePlugin({
-				id: 'test:flaky',
-				role: 'service' as const,
-				section: 'service',
-				start: (): Effect.Effect<{ readonly ok: true }, 'reacquire-boom'> =>
+	it.effect(
+		'FAILS the submitted command when the post-restore re-acquire leaves a row failed',
+		() =>
+			Effect.gen(function* () {
+				// Succeeds on the INITIAL acquire, fails on every RE-acquire — so
+				// the restore drain + re-acquire leaves it `failed`.
+				const starts = yield* Ref.make(0);
+				const flaky = definePlugin({
+					id: 'test:flaky',
+					role: 'service' as const,
+					section: 'service',
+					start: (): Effect.Effect<{ readonly ok: true }, 'reacquire-boom'> =>
+						Effect.gen(function* () {
+							const n = yield* Ref.updateAndGet(starts, (x) => x + 1);
+							if (n > 1) return yield* Effect.fail('reacquire-boom' as const);
+							return { ok: true as const };
+						}),
+				});
+				const stack: SupervisedStack = { _tag: 'Stack', members: [flaky], options: {} };
+				const state = yield* makeProjectionRef();
+
+				yield* Effect.scoped(
 					Effect.gen(function* () {
-						const n = yield* Ref.updateAndGet(starts, (x) => x + 1);
-						if (n > 1) return yield* Effect.fail('reacquire-boom' as const);
-						return { ok: true as const };
+						const startup = yield* startSupervisor(
+							stack,
+							identity,
+							state,
+							Context.empty(),
+							noopContributionDispatcher,
+							makeRestoreHandler(),
+						);
+						yield* startup.runInitialAcquire;
+						yield* startup.handle.registry.awaitReady(pluginKey('test:flaky#0'));
+
+						const exit = yield* submitRestore(startup.handle, 'good');
+
+						// Valid snapshot, but the re-acquire failed -> command FAILS.
+						expect(exit._tag).toBe('Failure');
+						// The flaky plugin is in fact `failed` after re-acquire.
+						expect(yield* startup.handle.registry.getStatus(pluginKey('test:flaky#0'))).toBe(
+							'failed',
+						);
 					}),
-			});
-			const stack: SupervisedStack = { _tag: 'Stack', members: [flaky], options: {} };
-			const state = yield* makeProjectionRef();
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const startup = yield* startSupervisor(
-						stack,
-						identity,
-						state,
-						Context.empty(),
-						[],
-						makeRestoreHandler(),
-					);
-					yield* startup.runInitialAcquire;
-					yield* startup.handle.registry.awaitReady(pluginKey('test:flaky#0'));
-
-					const exit = yield* submitRestore(startup.handle, 'good');
-
-					// Valid snapshot, but the re-acquire failed -> command FAILS.
-					expect(exit._tag).toBe('Failure');
-					// The flaky plugin is in fact `failed` after re-acquire.
-					expect(yield* startup.handle.registry.getStatus(pluginKey('test:flaky#0'))).toBe(
-						'failed',
-					);
-				}),
-			);
-		}),
+				);
+			}),
 	);
 
 	it.effect('SUCCEEDS, re-acquiring every service and settling the phase to running', () =>
@@ -173,7 +176,7 @@ describe('supervisor snapshot.restore command path', () => {
 						identity,
 						state,
 						Context.empty(),
-						[],
+						noopContributionDispatcher,
 						makeRestoreHandler(),
 					);
 					yield* startup.runInitialAcquire;
@@ -219,7 +222,7 @@ describe('supervisor snapshot.restore command path', () => {
 						identity,
 						state,
 						Context.empty(),
-						[],
+						noopContributionDispatcher,
 						makeRestoreHandler(),
 					);
 					yield* startup.runInitialAcquire;
@@ -257,7 +260,7 @@ describe('supervisor snapshot.restore command path', () => {
 						identity,
 						state,
 						Context.empty(),
-						[],
+						noopContributionDispatcher,
 						makeRestoreHandler(),
 					);
 					yield* startup.runInitialAcquire;

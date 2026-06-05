@@ -23,7 +23,7 @@
 import { Context, Effect, Layer, Scope } from 'effect';
 
 import type { PluginErrorContribution } from '../../plugin.ts';
-import { makeScopedMultimap } from '../scoped-multimap/index.ts';
+import { makeScopedMultimap } from '../scoped-registry/index.ts';
 import {
 	emptyFormatterRegistry,
 	type FormatterRegistry,
@@ -42,8 +42,6 @@ export interface FormatterRegistryShape {
 	/** Snapshot the live registry as an immutable `FormatterRegistry`
 	 *  the cascade formatter consumes. */
 	readonly snapshot: Effect.Effect<FormatterRegistry>;
-	/** Diagnostic: list every tag the registry currently tracks. */
-	readonly tags: Effect.Effect<ReadonlyArray<string>>;
 }
 
 export class FormatterRegistryService extends Context.Service<
@@ -54,7 +52,8 @@ export class FormatterRegistryService extends Context.Service<
 /** Layer constructing the per-stack formatter registry. Stateful;
  *  the substrate provides one per supervisor scope.
  *
- *  Storage is the shared scoped-multimap keyed by tag. The per-entry
+ *  Storage is the shared scoped-registry multimap surface keyed by tag.
+ *  The per-entry
  *  value is the (optional) formatter — the registry may track a tag
  *  with NO formatter (default rendering is enough), so `null` is a
  *  legitimate value and the seq still tracks the registration. */
@@ -85,10 +84,10 @@ export const layerFormatterRegistry: Layer.Layer<FormatterRegistryService> = Lay
 			if (current.size === 0) return emptyFormatterRegistry;
 			const out = new Map<string, TagFormatter>();
 			for (const [tag, entries] of current) {
-				// Last registration wins on the formatter slot — tags
-				// without a custom formatter are still tracked so callers
-				// can introspect via `tags()` even when no override is
-				// registered.
+				// Last registration wins on the formatter slot — a tag
+				// registered without a custom formatter is dropped from the
+				// snapshot (the cascade-formatter falls back to default
+				// rendering for it).
 				let chosen: TagFormatter | null = null;
 				let chosenSeq = -1;
 				for (const e of entries) {
@@ -102,8 +101,6 @@ export const layerFormatterRegistry: Layer.Layer<FormatterRegistryService> = Lay
 			return out as FormatterRegistry;
 		});
 
-		const tags: Effect.Effect<ReadonlyArray<string>> = store.keys;
-
-		return FormatterRegistryService.of({ register, snapshot, tags });
+		return FormatterRegistryService.of({ register, snapshot });
 	}),
 );

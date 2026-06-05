@@ -16,9 +16,7 @@
 //     "Three tempfile+rename impls → one atomic-write primitive").
 //   - Validates the envelope against `ManifestEnvelopeSchema` on read.
 //   - Pins `manifestVersion` so future-proofing migrations have a
-//     compatibility seam. The pinned version is `1` for the post-
-//     rewrite envelope. (The old devstack used unversioned manifests
-//     plus a hash field; the rewrite's clean break is `version 1`.)
+//     compatibility seam. The pinned version is `1`.
 //
 // Discipline: zero service names. The writer iterates `pluginKey`-
 // indexed contributions and copies the bytes through. The schema
@@ -200,8 +198,7 @@ export const buildEnvelope = (
  * Serialize and write the envelope at `path` atomically. Routes
  * through the canonical `atomicWriteFile` primitive (mkdir-parent →
  * O_EXCL temp → write → fsync → rename), so the manifest writer
- * shares ONE owner of the tempfile dance with the state-store and
- * cache.
+ * shares ONE owner of the tempfile dance with the cache.
  */
 export const writeManifest = (
 	envelope: ManifestEnvelope,

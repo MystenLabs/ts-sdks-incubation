@@ -50,40 +50,40 @@ describe('sui makeSnapshotable — identity guard', () => {
 		// same `sui:localnet` as the in-container validator), different
 		// mode. The folded `mode` key forces the identity strings apart so
 		// the guard refuses before any destructive mutation.
-		const containerLocal = identityOf('local', 'app', 'main', 'sui:localnet');
-		const externalRpc = identityOf('local-rpc', 'app', 'main', 'sui:localnet');
+		const containerLocal = identityOf('local', 'app', 'main', 'sui:localnet', true);
+		const externalRpc = identityOf('local-rpc', 'app', 'main', 'sui:localnet', false);
 		expect(containerLocal).not.toBe(externalRpc);
 	});
 
 	it('accepts a restore within the same mode at the same chain id (local → local)', () => {
-		const a = identityOf('local', 'app', 'main', 'sui:localnet');
-		const b = identityOf('local', 'app', 'main', 'sui:localnet');
+		const a = identityOf('local', 'app', 'main', 'sui:localnet', true);
+		const b = identityOf('local', 'app', 'main', 'sui:localnet', true);
 		expect(a).toBe(b);
 	});
 
 	it('accepts a restore within the same mode at the same chain id (local-rpc → local-rpc)', () => {
-		const a = identityOf('local-rpc', 'app', 'main', 'sui:localnet');
-		const b = identityOf('local-rpc', 'app', 'main', 'sui:localnet');
+		const a = identityOf('local-rpc', 'app', 'main', 'sui:localnet', false);
+		const b = identityOf('local-rpc', 'app', 'main', 'sui:localnet', false);
 		expect(a).toBe(b);
 	});
 
 	it('refuses across every distinct mode pair at one shared chain id', () => {
 		const chain = 'sui:localnet';
 		const modes = ['local', 'local-rpc', 'live', 'fork'] as const;
-		const strings = modes.map((mode) => identityOf(mode, 'app', 'main', chain));
+		const strings = modes.map((mode) => identityOf(mode, 'app', 'main', chain, true));
 		// Every mode produces a distinct identity string at the same chain.
 		expect(new Set(strings).size).toBe(modes.length);
 	});
 
 	it('still refuses on a genuine chain-id mismatch within one mode', () => {
-		const localnet = identityOf('local', 'app', 'main', 'sui:localnet');
-		const testnet = identityOf('local', 'app', 'main', 'sui:testnet');
+		const localnet = identityOf('local', 'app', 'main', 'sui:localnet', true);
+		const testnet = identityOf('local', 'app', 'main', 'sui:testnet', true);
 		expect(localnet).not.toBe(testnet);
 	});
 
 	it('every mode tags the record with kind "sui-chain" and its own mode', () => {
 		for (const mode of ['local', 'local-rpc', 'live', 'fork'] as const) {
-			const decl = makeSnapshotable(mode, 'app', 'main', 'sui:localnet');
+			const decl = makeSnapshotable(mode, 'app', 'main', 'sui:localnet', true);
 			const record = Effect.runSync(decl.preRestore!);
 			expect(record.kind).toBe('sui-chain');
 			expect(record.mode).toBe(mode);

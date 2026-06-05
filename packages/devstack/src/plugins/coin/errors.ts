@@ -1,12 +1,8 @@
 // Coin plugin — typed errors.
 //
-// Distilled-doc finding (13-coin.md Pain point #8 "No CoinError tag at
-// all"): the v3 coin module reused `PublishError` for mint failures
-// and surfaced `CoinNotFoundError` / `CoinAmbiguousError` only on the
-// factory path. The redesign unifies coin-side failures into a SINGLE
-// tagged error with a CLOSED phase set so downstream `catchTag`
-// callers can distinguish "not in registry" from "mint failed" from
-// "cap missing".
+// Coin-side failures unify into a SINGLE tagged error with a CLOSED
+// phase set so downstream `catchTag` callers can distinguish "not in
+// registry" from "mint failed" from "cap missing".
 //
 // Effect v4: plain interface + `_tag` literal discriminator (no
 // subclassing). Mirrors the Account plugin's split shape and the

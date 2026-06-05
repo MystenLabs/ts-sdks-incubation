@@ -18,9 +18,7 @@ import {
 	type AccountFundingRequest,
 	type AccountFundingStrategy,
 } from '../account/index.ts';
-import type { SuiSdkShim } from '../sui/index.ts';
-import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
-import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
+import { formatExecutedFailure, signAndDispatch, type SuiSdkShim } from '../sui/index.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
 import { DeepbookSpans } from './spans.ts';

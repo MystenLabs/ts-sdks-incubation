@@ -3,7 +3,7 @@
 import { Effect, type Scope } from 'effect';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import type { ContentHash } from '../../substrate/brand.ts';
 import {
 	hashMoveSources as hashMoveSourcesNeutral,
 	runMoveBuild as runMoveBuildNeutral,
@@ -11,27 +11,16 @@ import {
 	type BuildOutput,
 	type MoveBuildError,
 	type MoveBuildContainer,
-} from '../../substrate/runtime/sui-move-build/index.ts';
-import type { ChainBuildContainer } from '../sui/index.ts';
+	type ChainBuildContainer,
+} from '../sui/index.ts';
 import { publishError, type PublishError } from './errors.ts';
 
-export {
-	containerInnerScript,
-	extractTrailingJson,
-	parseBuildOutput,
-	stripPinnedSections,
-	type MoveBuildContainer,
-	type MoveBuildError,
-	type MoveBuildPhase,
-	type MoveBuildInput,
-	type MoveBuildOutput,
-} from '../../substrate/runtime/sui-move-build/index.ts';
 export type { BuildOutput };
 
 export interface BuildInputs {
 	readonly sourcePath: string;
 	readonly packageName: string;
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	readonly buildContainer?: ChainBuildContainer;
 	readonly runtime?: ContainerRuntime;
 	readonly buildImage?: ImageRef;
@@ -60,7 +49,6 @@ export const runMoveBuild = (
 	runMoveBuildNeutral({
 		sourcePath: inputs.sourcePath,
 		packageName: inputs.packageName,
-		chainId: inputs.chainId,
 		...(inputs.buildContainer !== undefined
 			? { buildContainer: inputs.buildContainer satisfies MoveBuildContainer }
 			: {}),

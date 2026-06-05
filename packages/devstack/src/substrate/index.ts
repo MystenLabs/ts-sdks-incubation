@@ -6,13 +6,11 @@
 
 export {
 	appName,
-	chainId,
 	contentHash,
 	endpointKey,
 	stackName,
 	type AppName,
 	type Brand,
-	type ChainId,
 	type ContentHash,
 	type EndpointKey,
 	type StackName,
@@ -30,10 +28,4 @@ export {
 	type ManifestExtrasContext,
 	type ManifestExtrasInput,
 } from './manifest.ts';
-export type {
-	DefaultNetwork,
-	DevstackNetworkModeRegistry,
-	NetworkConfig,
-	NetworkMode,
-} from './network.ts';
 export type { DevstackOptions } from './options.ts';

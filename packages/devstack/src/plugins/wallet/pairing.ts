@@ -65,8 +65,9 @@ export const mintToken = (): Effect.Effect<PairingToken> =>
 // ----------------------------------------------------------------------
 
 /** Resolve the on-disk token path under a state root. The state root
- *  is supplied by the substrate's identity / state-store config; this
- *  helper centralises the layout convention.
+ *  is the substrate path resolver's per-stack `StackPathsService.stackRoot`
+ *  (derived from the runtime root + identity); this helper centralises
+ *  the layout convention.
  *
  *  Convention: `<stateRoot>/wallet/token` — one token per stack, lives
  *  alongside other per-stack runtime artifacts. */
@@ -238,8 +239,7 @@ const TOKEN_REDACTION_RULE: RedactionRule = {
  * see the unredacted pair URL anyway, but this exists for callers that
  * accidentally pass `pairUrl` straight into a log line.
  *
- * Distilled-doc opportunity (15-wallet.md): the legacy redactor only
- * covered `#token=`. This regex covers BOTH the fragment form and a
+ * This regex covers BOTH the fragment form (`#token=`) and a
  * hypothetical query form so a future config change doesn't silently
  * leak.
  */

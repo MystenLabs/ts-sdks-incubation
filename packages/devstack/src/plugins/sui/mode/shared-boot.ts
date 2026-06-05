@@ -26,7 +26,6 @@ import { Duration, Effect, SynchronizedRef, type Scope } from 'effect';
 import type { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
-import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
 import {
@@ -49,8 +48,8 @@ import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady }
 export const DEFAULT_CHAIN_ID_TIMEOUT = Duration.seconds(30);
 
 /** Fetch the chain identifier off a constructed grpc client. The
- *  result is the bare string that downstream cache layers fold into
- *  their state-store keys. */
+ *  result is the bare string that the substrate's content-addressed
+ *  cache folds into its keys (`(namespace, chainId, contentHash)`). */
 export const fetchChainId = (
 	sdkClient: SuiGrpcClient,
 	opts?: { readonly timeout?: Duration.Duration; readonly span?: string },
@@ -95,8 +94,7 @@ export const fetchChainId = (
 
 /** Per-attempt and total budget for the `waitForTransactionsReady`
  *  retry loop. The 2 s spacing matches the upstream sui-faucet's
- *  internal cadence; the 90 s ceiling matches the v3 service's
- *  documented wall-clock. */
+ *  internal cadence; the 90 s ceiling is the wall-clock budget. */
 const FUNDS_READY_RETRY_SPACING = Duration.seconds(2);
 const FUNDS_READY_TIMEOUT = Duration.seconds(90);
 
@@ -237,10 +235,9 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
  *  `fork: null` discriminator is invariant for non-fork modes; the
  *  fork builder constructs its own client with the admin surface.
  *
- *  `chain` is accepted as a bare string and branded to `ChainId` at
- *  this single boundary — every consumer downstream reads the
- *  branded shape so capability-key constructors (`chainProbe…`,
- *  `faucet…`) accept it without a cast.
+ *  `chain` is a plain string value — every consumer downstream reads
+ *  it directly and capability-key constructors (`chainProbe…`,
+ *  `faucet…`) key on the string.
  *
  *  Returns an `Effect` on the `SuiConfigError` channel: the empty-chain
  *  guard must surface as a typed, `catchTag`-able failure. Calling it
@@ -302,7 +299,7 @@ export const assembleSuiClient = (parts: {
 				graphqlUrl:
 					parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
 			},
-			chain: brandChainId(chain),
+			chain,
 			waitForTransactionsReady: parts.waitForTransactionsReady,
 			chainProbe,
 			fork: null,
@@ -312,10 +309,9 @@ export const assembleSuiClient = (parts: {
 	});
 
 /** Shape the resolved network record the boot builders all hand
- *  back. The substrate-network mapping is uniform per mode. Brands
- *  the raw chain string at this boundary so consumers downstream
- *  (codegen, capabilities, walrus/seal deps) read a `ChainId` and
- *  don't re-wrap. */
+ *  back. The substrate-network mapping is uniform per mode. The raw
+ *  chain string flows through verbatim — consumers downstream (codegen,
+ *  capabilities, walrus/seal deps) read it as a plain string value. */
 export const makeResolvedNetwork = (parts: {
 	readonly mode: ResolvedSuiNetwork['mode'];
 	readonly chain: string;
@@ -327,7 +323,7 @@ export const makeResolvedNetwork = (parts: {
 	readonly forkUpstream?: ResolvedSuiNetwork['forkUpstream'];
 }): ResolvedSuiNetwork => ({
 	mode: parts.mode,
-	chain: brandChainId(parts.chain),
+	chain: parts.chain,
 	rpc: parts.rpc,
 	source: parts.source,
 	...(parts.faucet !== undefined ? { faucet: parts.faucet } : {}),

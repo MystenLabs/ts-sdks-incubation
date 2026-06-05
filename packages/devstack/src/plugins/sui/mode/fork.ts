@@ -28,7 +28,7 @@ import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/prob
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
-import { extractExecuteDigest } from '../../../substrate/runtime/sui-execute/index.ts';
+import { extractExecuteDigest } from '../exec/index.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -39,7 +39,7 @@ import {
 	FORK_IMPERSONATION_GAS_BUDGET,
 	verifyForkImpersonationSender,
 } from '../fork-transaction.ts';
-import { DEFAULT_SUI_CLI_VERSION } from '../../../substrate/runtime/sui-move-build/index.ts';
+import { DEFAULT_SUI_CLI_VERSION } from '../move/index.ts';
 import type { ForkAdminSurface, SuiClient } from './shared.ts';
 import { toDockerHostGatewayUrl } from './shared.ts';
 import {
@@ -56,27 +56,17 @@ export const DEFAULT_FORK_READY_TIMEOUT = Duration.seconds(180);
 /** Default Sui repository revision used by the bundled `sui-fork` image build. */
 export const DEFAULT_SUI_FORK_REV = '62ee6ada958cd61b3c8a4466dd33c9aba3cdff8a';
 
-/** Published prebuilt `sui-fork` image to pull instead of compiling from
- *  source. `undefined` until CI publishes one (e.g. `ghcr.io/mysten/sui-fork:<rev>`);
- *  overridable per-run via `DEVSTACK_SUI_FORK_IMAGE`. When set and the
- *  runtime can pull, `resolveForkImage` tries it first and falls back to a
- *  source build, sparing users the ~10-minute cold compile. */
-export const DEFAULT_FORK_IMAGE_REF: string | undefined = undefined;
-
-/** Env var that overrides {@link DEFAULT_FORK_IMAGE_REF} for a single run. */
+/** Env var that supplies a prebuilt `sui-fork` image to pull for a single
+ *  run (e.g. `ghcr.io/mysten/sui-fork:<rev>`). When set and the runtime can
+ *  pull, `resolveForkImage` tries it first and falls back to a source build,
+ *  sparing users the ~10-minute cold compile. No prebuilt default ships
+ *  today, so absent this env var the fork always builds from source. */
 export const FORK_IMAGE_ENV_VAR = 'DEVSTACK_SUI_FORK_IMAGE';
 
 const prebuiltForkImageRef = (): string | undefined => {
 	const fromEnv = process.env[FORK_IMAGE_ENV_VAR]?.trim();
-	return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : DEFAULT_FORK_IMAGE_REF;
+	return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : undefined;
 };
-
-/** Map upstream literal to the canonical "live" chain id known by wallet-standard / MVR. */
-export const FORK_UPSTREAM_TO_KNOWN_NETWORK = {
-	mainnet: 'sui:mainnet',
-	testnet: 'sui:testnet',
-	devnet: 'sui:devnet',
-} as const;
 
 export const DEFAULT_FORK_HOST_RPC_PORT = 51002;
 export const FORK_VALIDATOR_STOP_GRACE_SECONDS = 30;

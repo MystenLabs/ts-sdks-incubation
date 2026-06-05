@@ -7,7 +7,6 @@ import { deepbook } from '@mysten-incubation/devstack';
 import type { PluginContribution, PluginModule } from './contribution.js';
 
 export const deepbookModule: PluginModule = {
-	id: 'deepbook',
 	setup(): PluginContribution {
 		const dex = deepbook();
 		return { after: [dex] };

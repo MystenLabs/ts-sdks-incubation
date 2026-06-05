@@ -41,7 +41,10 @@ import { fileURLToPath } from 'node:url';
 
 import type { ContainerHandle, ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
-import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import {
+	ensureManagedContainer,
+	sanitizeAlias,
+} from '../../substrate/runtime/managed-container.ts';
 import {
 	credentialedUrl,
 	plainUrl,
@@ -88,8 +91,7 @@ export interface Postgres {
 }
 
 /** Service options. Defaults track distilled-doc recommendations:
- *  postgres 17-alpine is the latest LTS-stable at the time of writing
- *  (one major up from the v3 service's 16-alpine pin). */
+ *  postgres 17-alpine is the latest LTS-stable at the time of writing. */
 export interface PostgresServiceOptions {
 	readonly name?: string;
 	readonly version?: string;
@@ -99,9 +101,8 @@ export interface PostgresServiceOptions {
 	readonly hostPort?: number;
 	readonly extraNetworks?: ReadonlyArray<string>;
 	readonly readyTimeoutMs?: number;
-	/** WAL-flush budget on `docker stop`. Default 20s (matches the
-	 *  sui-indexer-db sidecar in v3). 10s (docker default) risks
-	 *  SIGKILL on busy DBs → recovery mode on next boot. */
+	/** WAL-flush budget on `docker stop`. Default 20s. 10s (docker
+	 *  default) risks SIGKILL on busy DBs → recovery mode on next boot. */
 	readonly stopGraceSeconds?: number;
 }
 
@@ -155,7 +156,24 @@ export const derivePassword = (app: string, stack: string, stackRoot: string): s
 	return `pg-${body}-${fingerprint}`;
 };
 
-const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
+/** Sidecar password — derived from `(app, stack, role)`, deliberately WITHOUT
+ *  `stackRoot`. A sibling-owned sidecar's PGDATA rides the OWNER's snapshot and
+ *  its committed layer is aliased onto the content-addressed `devstack-build:*`
+ *  build tag, so the persisted password must stay invariant for as long as that
+ *  image/snapshot does — across runs of the same `(app, stack)`, regardless of
+ *  the (per-run, possibly-tmpdir) runtime root. A `stackRoot`-folded password
+ *  would churn per run and stop matching the persisted PGDATA, failing auth on
+ *  reuse/restore. `role` keeps two sidecars of the same stack distinct. The
+ *  per-checkout isolation `stackRoot` buys for user-declared, host-port-published
+ *  `postgres()` does not apply: the sidecar publishes no host port. */
+export const deriveSidecarPassword = (app: string, stack: string, role: string): string => {
+	const body = (app + stack + role).replace(/[^a-zA-Z0-9]/g, '');
+	const fingerprint = createHash('sha256')
+		.update(`${app}\x1f${stack}\x1f${role}`)
+		.digest('hex')
+		.slice(0, 8);
+	return `pg-${body}-${fingerprint}`;
+};
 
 /** Resolve user-supplied options against defaults + identity-derived
  *  values. Pure; safe to call before the Effect body runs. */
@@ -236,17 +254,19 @@ const resolveImageContextPath = (): string => {
  *  field for the cause walker. */
 const containerExec = (runtime: ContainerRuntime, handle: ContainerHandle): ContainerExec => ({
 	run: (argv) =>
-		runtime.exec(handle, argv).pipe(
-			Effect.catch((err) =>
-				Effect.fail(
-					postgresPluginError(
-						'container-start',
-						`runtime.exec failed: ${err.reason} — ${err.detail}`,
-						err,
+		runtime
+			.exec(handle, argv)
+			.pipe(
+				Effect.catch((err) =>
+					Effect.fail(
+						postgresPluginError(
+							'container-start',
+							`runtime.exec failed: ${err.reason} — ${err.detail}`,
+							err,
+						),
 					),
 				),
 			),
-		),
 });
 
 /** Boot the postgres service. The barrel composes this with the
@@ -414,3 +434,156 @@ export const bootPostgresService = (
  *  busy-DB SIGKILL → recovery-mode on next boot. */
 export const stopGrace = (resolved: ResolvedPostgresOptions): Duration.Duration =>
 	Duration.seconds(resolved.stopGraceSeconds);
+
+/** Sidecar boot — a postgres container OWNED by a sibling plugin (not a
+ *  user-declared `postgres(...)`). Reuses every postgres internal but
+ *  lets the caller pin the container's network, in-network alias, role
+ *  label, and database. Currently the sui plugin's GraphQL-indexer DB.
+ *
+ *  The container is stamped with the CALLER's plugin label (via the
+ *  `labels` form of `ensureManagedContainer`) so the owning plugin's
+ *  snapshotable captures it under the owner's `(plugin, role)` tuple —
+ *  NOT under `plugin:'postgres'`. The vendored image's owner labels stay
+ *  `plugin:'postgres',role:'db'` (cosmetic — image builds are shared by
+ *  digest, not labels). */
+export const bootPostgresSidecar = (
+	runtime: ContainerRuntime,
+	identity: Identity,
+	stackRoot: string,
+	opts: {
+		readonly network: string;
+		readonly alias: string;
+		readonly role: string;
+		readonly database: string;
+		readonly version?: string;
+		/** Opaque caller-owned fingerprint stamped as the sidecar's
+		 *  `devstack.config-hash` label. With `recreate: 'on-config-change'`
+		 *  a mismatch recreates the container — for a mount-less PGDATA-in-
+		 *  writable-layer sidecar that means an EMPTY DB (reset); a match
+		 *  resumes (rows preserved). The sui plugin keys this off the
+		 *  validator's chain identity so a re-genesis resets the indexer DB
+		 *  natively via `decideRunAction`, no marker/dropdb machinery. */
+		readonly configHash?: string;
+	},
+): Effect.Effect<
+	{ readonly handle: Postgres; readonly containerHandle: ContainerHandle },
+	PostgresPluginError | PostgresConfigError | PostgresConnectionTimeout | DatabaseCreateFailed,
+	Scope.Scope
+> =>
+	Effect.gen(function* () {
+		const resolved = yield* Effect.try({
+			try: () =>
+				resolveOptions(identity, stackRoot, {
+					name: opts.role,
+					databases: [opts.database],
+					// `(app, stack, role)`-only password — NOT stackRoot-folded (see
+					// `deriveSidecarPassword`). The sidecar's PGDATA (with the password
+					// baked at first init) rides the owner's snapshot / collapses onto
+					// the content-addressed build tag, so it outlives any one runtime
+					// root; a stackRoot-folded credential churns per run and stops
+					// matching the persisted dir → `FATAL: password authentication
+					// failed` (the validator's embedded indexer dies).
+					password: deriveSidecarPassword(identity.app, identity.stack, opts.role),
+					...(opts.version !== undefined ? { version: opts.version } : {}),
+				}),
+			catch: (cause) => cause as PostgresConfigError,
+		});
+
+		// 1. Ensure the caller-pinned network (the sui validator joins it).
+		yield* runtime
+			.ensureNetwork({ name: opts.network, app: identity.app, stack: identity.stack })
+			.pipe(
+				Effect.catch((cause) =>
+					Effect.fail(
+						postgresPluginError(
+							'network-create',
+							`failed to ensure postgres sidecar network '${opts.network}'`,
+							cause,
+						),
+					),
+				),
+			);
+
+		// 2. Ensure the vendored PGDATA-relocated image (shared by digest;
+		//    owner labels stay plugin:'postgres',role:'db', cosmetic).
+		const imageRef = yield* runtime
+			.ensureImage({
+				contextPath: resolveImageContextPath(),
+				dockerfile: 'Dockerfile',
+				buildArgs: { POSTGRES_VERSION: resolved.version },
+				owner: { app: identity.app, stack: identity.stack, plugin: 'postgres', role: 'db' },
+			})
+			.pipe(
+				Effect.catch((cause) =>
+					Effect.fail(
+						postgresPluginError(
+							'image-build',
+							`failed to build postgres sidecar image (${resolved.version})`,
+							cause,
+						),
+					),
+				),
+			);
+
+		// 3. Start the container under the OWNER's label tuple (the
+		//    `labels` form stamps `plugin:opts.role`'s plugin/role exactly,
+		//    NOT plugin:'postgres'), so the owner's snapshotable finds it.
+		const containerName = `${identity.app}-${identity.stack}-${opts.role}`;
+		const containerHandle = yield* ensureManagedContainer({
+			runtime,
+			labels: { app: identity.app, stack: identity.stack, plugin: 'sui', role: opts.role },
+			spec: {
+				name: containerName,
+				image: imageRef,
+				recreate: 'on-config-change',
+				...(opts.configHash !== undefined ? { configHash: opts.configHash } : {}),
+				env: {
+					POSTGRES_USER: resolved.user,
+					POSTGRES_PASSWORD: resolved.password,
+					POSTGRES_DB: opts.database,
+				},
+				stopGraceSeconds: resolved.stopGraceSeconds,
+				networkAttach: [{ name: opts.network, aliases: [opts.alias] }],
+			},
+			mapError: (cause) =>
+				postgresPluginError(
+					'container-start',
+					`failed to start postgres sidecar container '${opts.role}'`,
+					cause,
+				),
+		});
+
+		// 4. Probe readiness, then ensure the database idempotently.
+		const exec = containerExec(runtime, containerHandle);
+		yield* awaitReady(exec, resolved.user, opts.database, resolved.readyTimeoutMs);
+		yield* ensureDatabases(exec, resolved.user, resolved.databases);
+
+		// 5. Resolve the handle. Siblings dial the in-network ALIAS (stable
+		//    across parallel stacks), not the per-stack container DNS name.
+		const parts: PostgresConnectionParts = {
+			user: resolved.user,
+			password: resolved.password,
+			host: containerName,
+			port: POSTGRES_PORT,
+		};
+		const endpoint = credentialedUrl(parts);
+		const handle: Postgres = {
+			name: resolved.name,
+			user: resolved.user,
+			password: resolved.password,
+			host: containerName,
+			port: POSTGRES_PORT,
+			databases: resolved.databases,
+			endpoint,
+			plainEndpoint: plainUrl(containerName, POSTGRES_PORT),
+			url: (db) => withDatabase(endpoint, db),
+			containerNetwork: opts.network,
+			networkAlias: opts.alias,
+		};
+
+		return { handle, containerHandle };
+	}).pipe(
+		Effect.withSpan('devstack.plugin.postgres.sidecar.boot', {
+			attributes: { [PostgresSpans.name]: opts.role },
+		}),
+	);

@@ -15,7 +15,8 @@
 import { Effect, Schema } from 'effect';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { AccountFundingRequest, AccountFundingStrategy } from '../account/index.ts';
+import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
+import type { AccountFundingStrategy } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import type { WalExchangeProbeKey } from './wal-swap.ts';
 import { swapAccountSuiForWal, type WalExchangeHandle, type WalSwapSdk } from './wal-swap.ts';
@@ -112,8 +113,23 @@ export const walFaucetStrategyKey = <FullCoinType extends string>(
 	fullCoinType: FullCoinType,
 ): `coinType:${FullCoinType}` => `coinType:${fullCoinType}` as const;
 
-/** Per-request shape — the shared account funding request. */
-export type WalFaucetRequest = AccountFundingRequest;
+/** The WAL faucet strategy-contributor decl, keyed by the resolved WAL
+ *  full coin type. Emitted inline from the local-mode walrus `start` (only
+ *  when both a faucet strategy and a coin type resolved). Kept here next to
+ *  the strategy + key so the contribution shape lives with its content.
+ *
+ *  `fullCoinType` is a plain `string` because the resolved value's
+ *  `walCoinType` carries that width — `walFaucetStrategyKey` is generic and
+ *  stamps it into the `coinType:` key verbatim. */
+export const makeWalFaucetContribution = (
+	strategy: WalFaucetStrategy,
+	fullCoinType: string,
+): StrategyContributorDecl<`coinType:${string}`, WalFaucetStrategy> => ({
+	kind: 'strategy-contributor',
+	capabilityKey: walFaucetStrategyKey(fullCoinType),
+	strategy,
+	autoMounted: true,
+});
 
 /** Faucet strategy value — closed over the WAL exchange's object id.
  *  The requesting account signs the swap through the shared account

@@ -15,7 +15,6 @@
 import { Effect, Exit } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { chainId } from '../../../../src/substrate/brand.ts';
 import {
 	StrategyRegistryService,
 	chainKeyedStrategyFor,
@@ -40,7 +39,7 @@ describe('chainKeyedStrategyFor', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const registry = yield* StrategyRegistryService;
-				const chain = chainId('sui:localnet');
+				const chain = 'sui:localnet';
 				const strategy = stubStrategy();
 				yield* registry.register(`${FAUCET_PREFIX}:${chain}`, strategy);
 
@@ -53,7 +52,7 @@ describe('chainKeyedStrategyFor', () => {
 	it.effect('fails with StrategyNotFoundError when no strategy is registered', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
-				const chain = chainId('sui:absent');
+				const chain = 'sui:absent';
 				const exit = yield* Effect.exit(chainKeyedStrategyFor<StubStrategy>(FAUCET_PREFIX, chain));
 				expect(Exit.isFailure(exit)).toBe(true);
 				const err = Exit.findErrorOption(exit);
@@ -70,8 +69,8 @@ describe('chainKeyedStrategyFor', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const registry = yield* StrategyRegistryService;
-				const chainA = chainId('sui:a');
-				const chainB = chainId('sui:b');
+				const chainA = 'sui:a';
+				const chainB = 'sui:b';
 				const stratA = stubStrategy();
 				const stratB = stubStrategy();
 				yield* registry.register(`${FAUCET_PREFIX}:${chainA}`, stratA);
@@ -87,7 +86,7 @@ describe('chainKeyedStrategyFor', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const registry = yield* StrategyRegistryService;
-				const chain = chainId('sui:localnet');
+				const chain = 'sui:localnet';
 				const faucetStrategy = stubStrategy();
 				const customStrategy = stubStrategy();
 				yield* registry.register(`${FAUCET_PREFIX}:${chain}`, faucetStrategy);

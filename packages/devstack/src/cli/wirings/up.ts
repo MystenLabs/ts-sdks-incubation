@@ -12,6 +12,7 @@
 // renderer already emits in non-TTY mode. The sibling `apply` verb (no
 // TUI) uses `Logger.consolePretty()` because its consumer is CI.
 
+import { readFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 
 import { Cause, Effect, Exit, FileSystem, Logger, Queue, Ref, Scope, Stream } from 'effect';
@@ -37,19 +38,19 @@ import {
 	DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
 	runLifecyclePrune,
 } from '../../orchestrators/lifecycle-prune/index.ts';
-import { superviseStackEffect } from '../../orchestrators/run.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
-} from '../../orchestrators/runtime-composition.ts';
-import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../../orchestrators/built-in-plugin-layers.ts';
+	superviseStackEffect,
+} from '../../orchestrators/boot.ts';
 import {
-	captureSnapshot,
+	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
 } from '../../orchestrators/snapshot/index.ts';
+import { computeWarmFingerprint } from '../../orchestrators/warm/fingerprint.ts';
+import { runWarmCapture, runWarmRestore } from '../../orchestrators/warm/hooks.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -99,30 +100,17 @@ const makeSnapshotCommandHandler = (params: {
 	readonly fs: FileSystem.FileSystem;
 	readonly runtimeRoot: string;
 }): SupervisorCommandHandler => {
-	return (cmd, handlerCtx) => {
+	return (cmd) => {
 		switch (cmd.tag) {
 			case 'snapshot.capture':
-				return captureSnapshot({
-					snapshotId: cmd.snapshotId,
-					name: cmd.name,
-					onProgress: (progress) =>
-						handlerCtx.publish({
-							tag: 'snapshot.captureProgress',
-							...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
-							...(cmd.name === undefined ? {} : { name: cmd.name }),
-							phase: progress.phase,
-							...(progress.detail === undefined ? {} : { detail: progress.detail }),
-							...(progress.pausedContainers === undefined
-								? {}
-								: { pausedContainers: progress.pausedContainers }),
-							...(progress.totalContainers === undefined
-								? {}
-								: { totalContainers: progress.totalContainers }),
-							at: Date.now(),
-						}),
-				}).pipe(
-					Effect.provideService(SnapshotOrchestratorService, params.snapshot),
-					Effect.provideService(FileSystem.FileSystem, params.fs),
+				// The L3 capture is the bounce's gather → stop → commit → retag
+				// → hard-rm half; the RESUME (recreate + wait-write-ready) is the
+				// command-loop's converge after this handler succeeds (it owns the
+				// graph), mirroring restore. So no `resume` is injected here.
+				return provideFileSystem(
+					params.fs,
+					params.snapshot.capture({ id: cmd.snapshotId, ...(cmd.name === undefined ? {} : { label: cmd.name }) }),
+				).pipe(
 					Effect.map((meta) => [
 						{
 							tag: 'snapshot.captured',
@@ -214,8 +202,8 @@ interface PendingSnapshotCapture {
 /** Detect snapshot-capture completion events on the published stream
  *  so we can ack/fail the originating `snapshot.capture` command with
  *  a structured payload (snapshot metadata on success; failure summary
- *  on failure). Drops the legacy tail-fiber on the CLI side — the
- *  `summary` is now surfaced through `awaitCompletion`'s reply.payload. */
+ *  on failure). The `summary` is surfaced through `awaitCompletion`'s
+ *  reply.payload. */
 const snapshotCaptureAckFromEvent = (
 	event: unknown,
 ): { readonly snapshotId: string; readonly payload: SnapshotCaptureAckPayload } | null => {
@@ -307,7 +295,11 @@ const installCommandChannelBridge = (params: {
 					Effect.gen(function* () {
 						if (!isEngineCommand(record.command)) {
 							yield* subscriber
-								.fail(record.id, 'invalid command', 'command payload did not match EngineCommand')
+								.publishReply(record.id, {
+									kind: 'error',
+									message: 'invalid command',
+									detail: 'command payload did not match EngineCommand',
+								})
 								.pipe(Effect.catch(() => Effect.void));
 							return;
 						}
@@ -322,17 +314,17 @@ const installCommandChannelBridge = (params: {
 							if (cmd.snapshotId === undefined) {
 								// Without a snapshotId we cannot correlate the completion
 								// event back to this command record. Fall through to the
-								// legacy auto-ack path — the CLI side mints an id today, so
+								// plain auto-ack path — the CLI side mints an id, so
 								// this branch is defensive.
 								yield* params.handle.runCommand(cmd).pipe(
-									Effect.andThen(subscriber.ack(record.id)),
+									Effect.andThen(subscriber.publishReply(record.id, { kind: 'ack' })),
 									Effect.catchCause((cause) =>
 										subscriber
-											.fail(
-												record.id,
-												'command failed',
-												Cause.pretty(cause as Cause.Cause<unknown>),
-											)
+											.publishReply(record.id, {
+												kind: 'error',
+												message: 'command failed',
+												detail: Cause.pretty(cause as Cause.Cause<unknown>),
+											})
 											.pipe(Effect.catch(() => Effect.void)),
 									),
 								);
@@ -358,11 +350,11 @@ const installCommandChannelBridge = (params: {
 											return next;
 										});
 										yield* subscriber
-											.fail(
-												record.id,
-												'command failed',
-												Cause.pretty(cause as Cause.Cause<unknown>),
-											)
+											.publishReply(record.id, {
+												kind: 'error',
+												message: 'command failed',
+												detail: Cause.pretty(cause as Cause.Cause<unknown>),
+											})
 											.pipe(Effect.catch(() => Effect.void));
 									}),
 								),
@@ -370,10 +362,14 @@ const installCommandChannelBridge = (params: {
 							return;
 						}
 						yield* params.handle.runCommand(cmd).pipe(
-							Effect.andThen(subscriber.ack(record.id)),
+							Effect.andThen(subscriber.publishReply(record.id, { kind: 'ack' })),
 							Effect.catchCause((cause) =>
 								subscriber
-									.fail(record.id, 'command failed', Cause.pretty(cause as Cause.Cause<unknown>))
+									.publishReply(record.id, {
+										kind: 'error',
+										message: 'command failed',
+										detail: Cause.pretty(cause as Cause.Cause<unknown>),
+									})
 									.pipe(Effect.catch(() => Effect.void)),
 							),
 						);
@@ -429,29 +425,33 @@ const installCommandChannelBridge = (params: {
 				if (pending === null) return;
 				if (ackFromEvent.payload.kind === 'captured') {
 					yield* subscriber
-						.ack(pending.commandId, 'captured', ackFromEvent.payload)
+						.publishReply(pending.commandId, {
+							kind: 'ack',
+							detail: 'captured',
+							payload: ackFromEvent.payload,
+						})
 						.pipe(Effect.catch(() => Effect.void));
 					return;
 				}
 				if (ackFromEvent.payload.kind === 'failed') {
 					yield* subscriber
-						.fail(
-							pending.commandId,
-							'snapshot capture failed',
-							ackFromEvent.payload.summary,
-							ackFromEvent.payload,
-						)
+						.publishReply(pending.commandId, {
+							kind: 'error',
+							message: 'snapshot capture failed',
+							detail: ackFromEvent.payload.summary,
+							payload: ackFromEvent.payload,
+						})
 						.pipe(Effect.catch(() => Effect.void));
 					return;
 				}
 				// skipped
 				yield* subscriber
-					.fail(
-						pending.commandId,
-						'snapshot capture skipped',
-						ackFromEvent.payload.reason,
-						ackFromEvent.payload,
-					)
+					.publishReply(pending.commandId, {
+						kind: 'error',
+						message: 'snapshot capture skipped',
+						detail: ackFromEvent.payload.reason,
+						payload: ackFromEvent.payload,
+					})
 					.pipe(Effect.catch(() => Effect.void));
 			});
 
@@ -475,6 +475,7 @@ export const runUpLive = (
 	options: {
 		readonly renderer: GlobalFlags['renderer'];
 		readonly stdoutIsTty: boolean;
+		readonly warm?: boolean;
 	},
 ): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
@@ -498,6 +499,27 @@ export const runUpLive = (
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
 
 		const appRoot = dirname(loaded.resolvedConfigPath);
+		const resolvedConfigPath = loaded.resolvedConfigPath;
+		// Warm boot-cache toggle: the CLI `--warm` flag (tri-state from
+		// main.ts) wins over the config's `defineDevstack({ warm })`; default
+		// off. When off, every warm hook below is skipped (zero behavior
+		// change). Evaluated AFTER the config loads so the config option is
+		// visible.
+		const warmEnabled = options.warm ?? stack.options.warm ?? false;
+		// devstack version — a fingerprint signal (an SDK upgrade must
+		// invalidate a stale baseline). Reuses the `surfaces/cli/index.ts`
+		// `readFileSync(new URL('../../../package.json'))` pattern, relative
+		// to THIS file. Defensive: a missing/garbled package.json degrades to
+		// a sentinel rather than wedging boot — only consumed under `--warm`.
+		const devstackVersion = ((): string => {
+			try {
+				const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
+				const pkg = JSON.parse(raw) as { readonly version?: unknown };
+				return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+			} catch {
+				return '0.0.0';
+			}
+		})();
 		const rendererMode = resolveUpRendererMode({
 			cliRenderer: options.renderer,
 			stackRenderer: stack.options.renderer,
@@ -514,12 +536,20 @@ export const runUpLive = (
 			const state = yield* makeProjectionRef();
 			const snapshot = yield* SnapshotOrchestratorService;
 			const fs = yield* FileSystem.FileSystem;
+			// Warm-baseline state shared between the two boot hooks:
+			// `beforeInitialAcquire` (warm-restore) sets `warmRestored` when it
+			// restores the baseline and records the computed `warmFingerprint`;
+			// `withinScope` (baseline-capture) reads both to decide whether to
+			// capture, and reuses the fingerprint for the sidecar write. Both
+			// Refs live in this scope so the two closures observe the same cells.
+			const warmRestored = yield* Ref.make(false);
+			const warmFingerprint = yield* Ref.make<string | null>(null);
 			const snapshotCommandHandler = makeSnapshotCommandHandler({
 				snapshot,
 				fs,
 				runtimeRoot: effectiveIdentity.runtimeRoot,
 			});
-			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+			const contributionDispatcher = yield* buildProductionContributionDispatcher();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
@@ -528,40 +558,47 @@ export const runUpLive = (
 				identityValue,
 				state,
 				{
-					orchestratorSinks,
+					contributionDispatcher,
 					commandHandler: snapshotCommandHandler,
 					postAcquireHook,
 					extendContext: extendBuiltInPluginContext,
 					beforeInitialAcquire: (handle) =>
 						Effect.gen(function* () {
 							const stackPaths = yield* StackPathsService;
-							// Reconcile any half-promoted snapshot restore from a
-							// prior supervise (process hard-killed mid `tagImage`
-							// loop, Docker daemon outage, etc.) BEFORE any plugin
-							// acquire fires. The scanner is idempotent and a no-op
-							// when no marker is present; partial recovery surfaces
-							// via the returned summary's `stillPending` list which
-							// we log so the operator can investigate.
-							const recovery = yield* snapshot.recoverPendingRestore.pipe(
-								Effect.tapCause((cause) =>
-									Effect.sync(() => {
-										process.stderr.write(
-											`snapshot recovery scan failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-										);
+							// Resume any restore interrupted by a hard kill / power-loss
+							// between the atomic swap and the end of the image-promotion
+							// handoff (the interrupted-restore sentinel rode the swap into
+							// the live root and was never cleared). Runs BEFORE any plugin
+							// acquire so a half-promoted image set is reconciled before any
+							// L2 lookup observes the runtime root. No-op when the sentinel
+							// is absent (the clean-boot case); idempotent re-run of restore
+							// when present.
+							yield* recoverInterruptedRestore({
+								liveRoot: stackPaths.stackRoot,
+								restoreSnapshot: (id) => snapshot.restore({ id }),
+							});
+							// WARM-RESTORE. Gated on `--warm`. The hit/miss/stale
+							// decision (recompute fingerprint → match sidecar + artifact
+							// → restore IN PLACE of a cold boot, NO `resume`; else drop a
+							// stale baseline and fall through to cold) lives in
+							// `runWarmRestore`, dependency-injected so production and the
+							// e2e harness drive the identical path. It never fails (wraps
+							// itself in catch→log→continue), so a warm failure can't wedge
+							// boot — it degrades to cold.
+							if (warmEnabled) {
+								yield* runWarmRestore({
+									snapshot,
+									fs,
+									stackRoot: stackPaths.stackRoot,
+									computeFingerprint: computeWarmFingerprint({
+										stack,
+										appRoot,
+										configPath: resolvedConfigPath,
+										devstackVersion,
 									}),
-								),
-								Effect.catch(() => Effect.succeed(null)),
-							);
-							if (recovery && !recovery.noMarker) {
-								const summary = `snapshot.recover-pending: inspected=${recovery.inspected} recovered=${recovery.recovered} stillPending=${recovery.stillPending.length} markerCleared=${recovery.markerCleared}`;
-								process.stderr.write(`${summary}\n`);
-								if (recovery.stillPending.length > 0) {
-									for (const entry of recovery.stillPending) {
-										process.stderr.write(
-											`  pending: ${entry.targetImageName} ← ${entry.stagedImageTag} (${entry.plugin}/${entry.role})\n`,
-										);
-									}
-								}
+									warmRestoredRef: warmRestored,
+									warmFingerprintRef: warmFingerprint,
+								});
 							}
 							const commandChannel = yield* installCommandChannelBridge({
 								stackRoot: stackPaths.stackRoot,
@@ -603,8 +640,39 @@ export const runUpLive = (
 								),
 							);
 						}),
+					// BASELINE-CAPTURE. `withinScope` fires ONCE, only when the
+					// stack came fully up (boot.ts runs it after the booted race
+					// wins, never on shutdown). Capture the warm baseline UNLESS
+					// this boot was itself a warm restore (no point re-capturing an
+					// identical tree). NO `resume` — the stack is already live, so
+					// `capture`'s post-publish bounce re-converges it in place. Any
+					// failure is swallowed (log + continue): a warm-capture failure
+					// must not fail an otherwise-successful `up`.
+					withinScope: () =>
+						Effect.gen(function* () {
+							if (!warmEnabled) return;
+							const stackPaths = yield* StackPathsService;
+							// Capture the baseline + write the sidecar UNLESS this boot
+							// was itself a warm restore. The gate + capture + sidecar
+							// write live in `runWarmCapture` (the same effect the e2e
+							// harness runs); it swallows its own failure so a warm
+							// capture failure never fails an otherwise-successful `up`.
+							yield* runWarmCapture({
+								snapshot,
+								fs,
+								stackRoot: stackPaths.stackRoot,
+								computeFingerprint: computeWarmFingerprint({
+									stack,
+									appRoot,
+									configPath: resolvedConfigPath,
+									devstackVersion,
+								}),
+								warmRestoredRef: warmRestored,
+								warmFingerprintRef: warmFingerprint,
+							});
+						}),
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
+			).pipe(Effect.provide(layerBuiltInPluginRuntime));
 		});
 
 		// `Effect.matchCauseEffect` projects the inner program's

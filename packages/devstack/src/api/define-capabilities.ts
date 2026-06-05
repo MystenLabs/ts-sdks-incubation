@@ -1,61 +1,15 @@
-// Typed capability helpers. Plugin authors return plain capability
-// arrays from `definePlugin({ capabilities })`; these helpers add the
-// discriminant while preserving narrow payload types.
+// Typed contribution-decl authoring helpers.
+//
+// Plugin authors emit contributions inline from `start` via the typed
+// `ctx` verbs (`ctx.codegen`/`ctx.endpoint`/`ctx.snapshotExtra`/
+// `ctx.publish`/`ctx.provides`). This helper builds the payload-shaped
+// decl `ctx.publish` accepts, stamping the `kind` discriminant while
+// preserving narrow payload types. `projection` is the one helper with
+// live plugin-author call sites; the remaining contribution kinds
+// (codegenable / routable / snapshotable / strategy-contributor) are
+// built inline by the built-in plugins as object literals.
 
-import type {
-	CapabilityDecl,
-	CapabilityKind,
-	CapabilityPayloadFor,
-	ExactCapabilityPayload,
-} from '../contracts/capability-decl.ts';
-import type { CodegenableDecl } from '../contracts/codegenable.ts';
 import type { ProjectionDecl, ProjectionEvent } from '../contracts/projection.ts';
-import type { RoutableDecl } from '../contracts/routable.ts';
-import type { SnapshotableDecl } from '../contracts/snapshotable.ts';
-import type { StrategyContributorDecl } from '../contracts/strategy-contributor.ts';
-import type {
-	CapabilitySink,
-	ContributionKind,
-	HarvestContext,
-} from '../substrate/runtime/capability-sinks/service.ts';
-import type { Effect, Scope } from 'effect';
-
-export const capability = <
-	const Kind extends string,
-	const Data extends CapabilityPayloadFor<Kind>,
->(
-	kind: Kind,
-	data: Data & ExactCapabilityPayload<Kind, Data>,
-): CapabilityDecl<Kind> & Readonly<Data> =>
-	({
-		...data,
-		kind,
-	}) as CapabilityDecl<Kind> & Readonly<Data>;
-
-export const defineCapability =
-	<const Kind extends string>(kind: Kind) =>
-	<const Data extends CapabilityPayloadFor<Kind>>(
-		data: Data & ExactCapabilityPayload<Kind, Data>,
-	) =>
-		capability<Kind, Data>(kind, data);
-
-export const codegenable = <const Emitter extends string>(
-	decl: Omit<CodegenableDecl<Emitter>, 'kind'>,
-): CodegenableDecl<Emitter> => capability('codegenable', decl);
-
-export const snapshotable = (decl: Omit<SnapshotableDecl, 'kind'>): SnapshotableDecl =>
-	capability('snapshotable', decl);
-
-// Distributive `Omit` so the discriminated `RoutableHttpDecl | RoutableTcpDecl`
-// preserves per-variant fields (notably `cors`, which lives on HTTP only).
-type RoutableDeclInput = RoutableDecl extends infer T
-	? T extends RoutableDecl
-		? Omit<T, 'kind'>
-		: never
-	: never;
-
-export const routable = (decl: RoutableDeclInput): RoutableDecl =>
-	capability('routable', decl) as RoutableDecl;
 
 /** Build a `ProjectionDecl` envelope from a `{kind, key, payload}`
  *  shorthand. Stamps `tag: 'projection.updated'` and (when `at` is
@@ -70,8 +24,9 @@ export const projection = (
 		| (Omit<ProjectionEvent, 'tag' | 'at'> & { readonly at?: number })
 		| Omit<ProjectionDecl, 'kind'>,
 ): ProjectionDecl => {
-	if ('event' in input) return capability('projection', input);
-	return capability('projection', {
+	if ('event' in input) return { ...input, kind: 'projection' };
+	return {
+		kind: 'projection',
 		event: {
 			tag: 'projection.updated',
 			kind: input.kind,
@@ -79,19 +34,5 @@ export const projection = (
 			payload: input.payload,
 			at: input.at ?? Date.now(),
 		},
-	});
+	};
 };
-
-export const strategyContributor = <const Key extends string, Strategy>(
-	decl: Omit<StrategyContributorDecl<Key, Strategy>, 'kind'>,
-): StrategyContributorDecl<Key, Strategy> => capability('strategy-contributor', decl);
-
-export const capabilitySink = <
-	const Kind extends ContributionKind,
-	Decl extends Kind extends CapabilityKind
-		? Extract<CapabilityDecl, { readonly kind: Kind }>
-		: Readonly<{ readonly kind: Kind } & object>,
->(
-	kind: Kind,
-	accept: (decl: Decl, ctx: HarvestContext) => Effect.Effect<void, never, Scope.Scope>,
-): CapabilitySink<Kind, Decl> => ({ kind, accept });

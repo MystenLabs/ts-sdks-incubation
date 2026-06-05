@@ -13,12 +13,13 @@
 //     back to whatever stale value preserves invariants (e.g. the
 //     projection update reducer keeps `state.lastEvent.at` on miss).
 //   - `eventAt` (UI consumers): wraps `eventAtOrNull` with a `Date.now()`
-//     fallback so log rendering always gets a number. Removing the
-//     historical dequeue-time fallback was load-bearing — under
-//     back-pressure (a queued event flushed late from the dispatcher)
-//     it back-dated or forward-dated the log entry, producing apparent
-//     event-time reordering in the rendered log. Pinning to the
-//     producer's record preserves the ordering tests assert.
+//     fallback so log rendering always gets a number. It pins to the
+//     producer's record rather than a dequeue-time stamp: under back-
+//     pressure (a queued event flushed late from the dispatcher) a
+//     dequeue-time stamp would back-date or forward-date the log entry,
+//     producing apparent event-time reordering in the rendered log.
+//     Pinning to the producer's record preserves the ordering tests
+//     assert.
 
 import type { EngineEvent } from './events.ts';
 
@@ -42,8 +43,6 @@ export const eventAtOrNull = (event: EngineEvent): number | null => {
 		case 'restart.requested':
 		case 'restart.completed':
 		case 'shutdown.escalated':
-		case 'snapshot.captureStarted':
-		case 'snapshot.captureProgress':
 		case 'snapshot.captureSkipped':
 		case 'snapshot.captureFailed':
 		case 'snapshot.captured':

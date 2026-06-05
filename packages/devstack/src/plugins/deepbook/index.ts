@@ -16,19 +16,19 @@
 //                                     fork networks; wraps an already-
 //                                     deployed canonical instance).
 //
-// Capability decls emitted:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs):
 //
 //   Local mode:
-//     1. snapshotable        — `deepbook/<name>` subtree.
-//     2. codegenable         — `deepbook-network` bindings.
+//     1. `ctx.snapshotExtra` — `deepbook/<name>` subtree.
+//     2. `ctx.codegen`       — `deepbook-network` bindings.
 //
 //   Override mode:
-//     1. snapshotable        — identity guard only.
-//     2. codegenable         — `deepbook-network` bindings.
+//     1. `ctx.snapshotExtra` — identity guard only.
+//     2. `ctx.codegen`       — `deepbook-network` bindings.
 //
 //   Known mode:
-//     1. snapshotable        — identity guard only.
-//     2. codegenable         — `deepbook-network` bindings (mode='known').
+//     1. `ctx.snapshotExtra` — identity guard only.
+//     2. `ctx.codegen`       — `deepbook-network` bindings (mode='known').
 //
 // Resource id: `deepbook/<name>`. Plugin key: `deepbook:<name>`.
 
@@ -37,9 +37,9 @@ import { Effect } from 'effect';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceValueOf } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
 import { suiResource } from '../sui/index.ts';
@@ -445,8 +445,12 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
+		// `deps` auto-infers the resolved `[sui]` tuple from the
+		// `[suiResource] as const` dependency. `ctx` arrives via the
+		// `PluginContext` service.
 		start: (deps) =>
-			Effect.sync(() => {
+			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui] = deps;
 				const chain = opts.chain ?? sui.chain;
 				const resolved: DeepbookResolved = {
@@ -464,25 +468,26 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 					marketMakerRunning: false,
 					deepFundingStrategy: null,
 				};
+				// Emit contributions inline: snapshot -> codegen. `resolved` is
+				// the just-computed value; `snap` is the override-mode
+				// identity-guard snapshotable in scope. No DEEP funding.
+				const bindings: DeepbookBindings = {
+					name,
+					chain: resolved.chain,
+					packageId: resolved.packageId,
+					registryId: resolved.registryId,
+					adminCapId: resolved.adminCapId,
+					deepTreasuryId: resolved.deepTreasuryId,
+					pools: [],
+					pyth: null,
+					margin: null,
+					serverUrl: null,
+					indexerUrl: null,
+				};
+				ctx.snapshotExtra(snap);
+				ctx.codegen(makeDeepbookCodegenable(bindings));
 				return resolved;
 			}),
-		capabilities: ({ value: resolved }) => {
-			const bindings: DeepbookBindings = {
-				name,
-				chain: resolved.chain,
-				packageId: resolved.packageId,
-				registryId: resolved.registryId,
-				adminCapId: resolved.adminCapId,
-				deepTreasuryId: resolved.deepTreasuryId,
-				pools: [],
-				pyth: null,
-				margin: null,
-				serverUrl: null,
-				indexerUrl: null,
-			};
-			const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(bindings);
-			return [snap, codegen] as const;
-		},
 		errorContributions: deepbookErrorContributions,
 	});
 };
@@ -535,7 +540,7 @@ const resolveLocalOptions = (
 		package: opts.package ?? synth.package,
 		pools: opts.pools ?? synth.pools,
 		pyth: opts.pyth ?? synth.pyth,
-		deepTreasuryIdKey: opts.deepTreasuryIdKey ?? synth.deepTreasuryIdKey,
+		deepTreasuryIdKey: opts.deepTreasuryIdKey ?? 'deepTreasuryId',
 	} as ResolvedLocalOptions;
 };
 
@@ -580,8 +585,13 @@ const buildLocalPlugin = <
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
+		// `deps` auto-infers from the runtime-built `dependsOn`; it
+		// resolves to a heterogeneous tuple the body re-narrows via the
+		// `as unknown as` cast below. `ctx` arrives via the
+		// `PluginContext` service.
 		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui, publisher, deepbookPackage, ...extraValues] = deps as unknown as readonly [
 					ResourceValueOf<typeof suiResource>,
 					AccountValue,
@@ -629,7 +639,7 @@ const buildLocalPlugin = <
 					}
 				}
 				const poolSpecs = yield* resolvePoolSpecs(opts.pools, coinValuesByRefId);
-				const artifactPublisher = yield* ArtifactPublisherService;
+				const artifactPublisher = yield* CacheService;
 				yield* setCurrentPluginPhase(
 					opts.pyth === undefined ? 'creating pools' : 'initializing Pyth feeds',
 				);
@@ -680,6 +690,45 @@ const buildLocalPlugin = <
 					marketMakerRunning: seedResults.length > 0,
 					deepFundingStrategy: null,
 				};
+				// Emit contributions inline: snapshot -> codegen. `resolved` is
+				// the just-computed value; the snapshotable is the local-mode
+				// `deepbook/<name>` subtree. No DEEP funding (null in local).
+				const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
+				const bindings: DeepbookBindings = {
+					name,
+					chain: resolved.chain,
+					packageId: resolved.packageId,
+					registryId: resolved.registryId,
+					adminCapId: resolved.adminCapId,
+					deepTreasuryId: resolved.deepTreasuryId,
+					pools: resolved.pools.map((p) => ({
+						name: p.name,
+						poolId: p.poolId,
+						base: p.base,
+						quote: p.quote,
+						baseCoinType: p.baseCoinType,
+						quoteCoinType: p.quoteCoinType,
+					})),
+					pyth: resolved.pyth
+						? {
+								packageId: resolved.pyth.packageId,
+								stateId: resolved.pyth.stateId,
+								wormholeStateId: resolved.pyth.wormholeStateId,
+								feeds: resolved.pyth.feeds.map((feed) => ({
+									symbol: feed.symbol,
+									feedId: feed.feedId,
+									priceInfoObjectId: feed.priceInfoObjectId,
+									price: feed.price.toString(),
+									expo: feed.expo,
+								})),
+							}
+						: null,
+					margin: resolved.margin,
+					serverUrl: resolved.serverUrl,
+					indexerUrl: resolved.indexerUrl,
+				};
+				ctx.snapshotExtra(snap);
+				ctx.codegen(makeDeepbookCodegenable(bindings));
 				return resolved;
 			}).pipe(
 				// The body's aggregate E channel includes substrate Effects
@@ -697,44 +746,6 @@ const buildLocalPlugin = <
 					}),
 				),
 			),
-		capabilities: ({ value: resolved }) => {
-			const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
-			const bindings: DeepbookBindings = {
-				name,
-				chain: resolved.chain,
-				packageId: resolved.packageId,
-				registryId: resolved.registryId,
-				adminCapId: resolved.adminCapId,
-				deepTreasuryId: resolved.deepTreasuryId,
-				pools: resolved.pools.map((p) => ({
-					name: p.name,
-					poolId: p.poolId,
-					base: p.base,
-					quote: p.quote,
-					baseCoinType: p.baseCoinType,
-					quoteCoinType: p.quoteCoinType,
-				})),
-				pyth: resolved.pyth
-					? {
-							packageId: resolved.pyth.packageId,
-							stateId: resolved.pyth.stateId,
-							wormholeStateId: resolved.pyth.wormholeStateId,
-							feeds: resolved.pyth.feeds.map((feed) => ({
-								symbol: feed.symbol,
-								feedId: feed.feedId,
-								priceInfoObjectId: feed.priceInfoObjectId,
-								price: feed.price.toString(),
-								expo: feed.expo,
-							})),
-						}
-					: null,
-				margin: resolved.margin,
-				serverUrl: resolved.serverUrl,
-				indexerUrl: resolved.indexerUrl,
-			};
-			const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(bindings);
-			return [snap, codegen] as const;
-		},
 		errorContributions: deepbookErrorContributions,
 	});
 };
@@ -761,10 +772,9 @@ function buildLocalPluginPublic<
  *  the plugin and attached to the runtime `dependsOn` (so the stack closure
  *  pulls them in), while the STATIC closure stays `[sui]` — the app declares
  *  only `sui()` + `deepbook()`. */
-type DeepbookSynthesizedMember = Omit<
-	ReturnType<typeof buildLocalPlugin>,
-	'dependsOn'
-> & { readonly dependsOn: readonly [typeof suiResource] };
+type DeepbookSynthesizedMember = Omit<ReturnType<typeof buildLocalPlugin>, 'dependsOn'> & {
+	readonly dependsOn: readonly [typeof suiResource];
+};
 
 /** Options for a synthesized local DeepBook (everything optional). */
 export interface DeepbookSynthesizedOptions extends DeepbookCommonOptions {
@@ -776,9 +786,7 @@ export interface DeepbookSynthesizedOptions extends DeepbookCommonOptions {
 	readonly deepTreasuryIdKey?: string;
 }
 
-const buildSynthesizedLocalPlugin = (
-	opts: DeepbookSynthesizedOptions,
-): DeepbookSynthesizedMember =>
+const buildSynthesizedLocalPlugin = (opts: DeepbookSynthesizedOptions): DeepbookSynthesizedMember =>
 	// Runtime is the full local plugin (synthesis happens in
 	// `resolveLocalOptions`); only the declared closure type is narrowed.
 	buildLocalPlugin(
@@ -815,8 +823,12 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
+		// `deps` auto-infers the resolved `[sui]` tuple from the
+		// `[suiResource] as const` dependency. `ctx` arrives via the
+		// `PluginContext` service.
 		start: (deps) =>
-			Effect.sync(() => {
+			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui] = deps;
 				const chain = opts.chain ?? known?.chain ?? sui.chain;
 				const resolved: DeepbookResolved = {
@@ -837,41 +849,44 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 							? makeDeepbookDeepFundingStrategy({ suiSdk: sui.sdk })
 							: null,
 				};
+				// Emit contributions inline: snapshot -> codegen -> (optional
+				// DEEP funding strategy). `resolved` is the just-computed value;
+				// `snap` is the known-mode identity-guard snapshotable in scope.
+				// The DEEP funding contributor is emitted only when
+				// `resolved.deepFundingStrategy` is non-null.
+				const bindings: DeepbookBindings = {
+					name,
+					chain: resolved.chain,
+					packageId: resolved.packageId,
+					registryId: resolved.registryId,
+					adminCapId: null,
+					deepTreasuryId: resolved.deepTreasuryId,
+					pools: [],
+					pyth: resolved.pyth
+						? {
+								packageId: resolved.pyth.packageId,
+								stateId: resolved.pyth.stateId,
+								wormholeStateId: resolved.pyth.wormholeStateId,
+								feeds: resolved.pyth.feeds.map((feed) => ({
+									symbol: feed.symbol,
+									feedId: feed.feedId,
+									priceInfoObjectId: feed.priceInfoObjectId,
+									price: feed.price.toString(),
+									expo: feed.expo,
+								})),
+							}
+						: null,
+					margin: null,
+					serverUrl: null,
+					indexerUrl: null,
+				};
+				ctx.snapshotExtra(snap);
+				ctx.codegen(makeDeepbookCodegenable(bindings));
+				if (resolved.deepFundingStrategy != null) {
+					ctx.provides(makeDeepbookDeepFundingContribution(resolved.deepFundingStrategy));
+				}
 				return resolved;
 			}),
-		capabilities: ({ value: resolved }) => {
-			const bindings: DeepbookBindings = {
-				name,
-				chain: resolved.chain,
-				packageId: resolved.packageId,
-				registryId: resolved.registryId,
-				adminCapId: null,
-				deepTreasuryId: resolved.deepTreasuryId,
-				pools: [],
-				pyth: resolved.pyth
-					? {
-							packageId: resolved.pyth.packageId,
-							stateId: resolved.pyth.stateId,
-							wormholeStateId: resolved.pyth.wormholeStateId,
-							feeds: resolved.pyth.feeds.map((feed) => ({
-								symbol: feed.symbol,
-								feedId: feed.feedId,
-								priceInfoObjectId: feed.priceInfoObjectId,
-								price: feed.price.toString(),
-								expo: feed.expo,
-							})),
-						}
-					: null,
-				margin: null,
-				serverUrl: null,
-				indexerUrl: null,
-			};
-			const deepFunding =
-				resolved.deepFundingStrategy === null
-					? []
-					: [makeDeepbookDeepFundingContribution(resolved.deepFundingStrategy)];
-			return [snap, makeDeepbookCodegenable(bindings), ...deepFunding] as const;
-		},
 		errorContributions: deepbookErrorContributions,
 	});
 };
@@ -1000,9 +1015,12 @@ export function deepbookCore<
 					localOpts as DeepbookSynthesizedOptions,
 				) as unknown as DeepbookLocalMember<Publisher, Package, Pools, Pyth>;
 			}
-			return buildLocalPluginPublic(
-				localOpts,
-			) as DeepbookLocalMember<Publisher, Package, Pools, Pyth>;
+			return buildLocalPluginPublic(localOpts) as DeepbookLocalMember<
+				Publisher,
+				Package,
+				Pools,
+				Pyth
+			>;
 		}
 		case 'override':
 			return buildOverridePlugin(resolved);
@@ -1056,10 +1074,6 @@ export { deepbookCore as deepbook };
 export {
 	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
 	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
-	makeDeepbookDeepFundingContribution,
-	makeDeepbookDeepFundingStrategy,
-	type DeepbookDeepFundingStrategy,
-	type DeepbookDeepFundingStrategyOptions,
 } from './faucet-strategy.ts';
 export {
 	DEEPBOOK_ERROR_TAGS,
@@ -1085,4 +1099,3 @@ export {
 	SUI_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
 } from './types.ts';
-export { DeepbookSpans } from './spans.ts';

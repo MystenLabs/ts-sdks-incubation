@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -13,9 +14,10 @@ import type {
 } from '../../../src/contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import {
+	CACHE_DIR_NAME,
+	DEPLOY_CACHE_NAMESPACES,
 	IdentityEmptyError,
 	IdentityMismatchError,
-	RESTORE_PENDING_FILE_NAME,
 	RestorePhaseError,
 	runRestore,
 	SNAPSHOT_CONTRIBUTION_VERSION,
@@ -100,6 +102,34 @@ const tarWithSingleEntry = (entryPath: string): Buffer => {
 	header.write('00000000000', 124, 'ascii');
 	header[156] = '0'.charCodeAt(0);
 	return Buffer.concat([header, Buffer.alloc(1024)]);
+};
+
+/** Build a checksum-less ustar archive with one or more entries. Sufficient for
+ *  the JS tar READER (it parses path/size/typeflag and never verifies the
+ *  checksum or magic), so it drives the host-tree cache-namespace scan in the
+ *  preflight. NOT valid enough for system `tar -x` (which DOES check the
+ *  checksum) — extraction tests build a real archive via spawn('tar'). Each
+ *  entry is either a zero-size path or `{ path, body }` for a regular file. */
+const tarWithEntries = (entries: ReadonlyArray<string | { path: string; body: string }>): Buffer => {
+	const blocks: Buffer[] = [];
+	for (const entry of entries) {
+		const path = typeof entry === 'string' ? entry : entry.path;
+		const body = typeof entry === 'string' ? '' : entry.body;
+		const bodyBytes = Buffer.from(body, 'utf8');
+		const header = Buffer.alloc(512);
+		header.write(path, 0, 'utf8');
+		header.write(bodyBytes.length.toString(8).padStart(11, '0'), 124, 'ascii');
+		header[156] = '0'.charCodeAt(0);
+		blocks.push(header);
+		if (bodyBytes.length > 0) {
+			const padded = Buffer.alloc(Math.ceil(bodyBytes.length / 512) * 512);
+			bodyBytes.copy(padded);
+			blocks.push(padded);
+		}
+	}
+	// Two trailing zero blocks mark end-of-archive.
+	blocks.push(Buffer.alloc(1024));
+	return Buffer.concat(blocks);
 };
 
 const runtimeStub = (
@@ -189,6 +219,14 @@ const runtimeStub = (
 	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
 });
 
+/** Seed a live deploy-cache namespace under a runtime-stack root so the
+ *  PR#1 cache-existence preflight (fail-closed when the sole source of the
+ *  on-chain ids is gone) is satisfied. The dedicated `cache-missing` test
+ *  below deliberately does NOT call this. */
+const seedDeployCacheAt = (stackRoot: string): void => {
+	mkdirSync(join(stackRoot, CACHE_DIR_NAME, DEPLOY_CACHE_NAMESPACES[0]!), { recursive: true });
+};
+
 const runRestoreExit = (
 	root: string,
 	meta: SnapshotMetadata,
@@ -197,6 +235,7 @@ const runRestoreExit = (
 	runtime: ContainerRuntime = runtimeStub(sweepCalls),
 ) =>
 	Effect.gen(function* () {
+		seedDeployCacheAt(join(root, 'runtime-stack'));
 		const artifactDir = writeArtifact(root, meta);
 		yield* writeArtifactIntegrity(artifactDir);
 		return yield* Effect.exit(
@@ -523,64 +562,7 @@ describe('snapshot restore safety', () => {
 		),
 	);
 
-	it.effect('refuses snapshot state docs with unknown versions before restore cleanup', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const meta = metadata();
-				const artifactDir = writeArtifact(root, meta);
-				writeFileSync(
-					join(artifactDir, SnapshotLayout.stateFile),
-					JSON.stringify({ version: 999, plugins: {} }),
-				);
-
-				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls).pipe(
-					Effect.provide(NodeFileSystem.layer),
-				);
-
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('read-state');
-					}
-				}
-				expect(sweepCalls).toEqual([]);
-				expect(existsSync(join(root, 'runtime-stack'))).toBe(false);
-			}),
-		),
-	);
-
-	it.effect('refuses corrupt snapshot state docs before restore cleanup', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const meta = metadata();
-				const artifactDir = writeArtifact(root, meta);
-				writeFileSync(join(artifactDir, SnapshotLayout.stateFile), '{not json');
-
-				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls).pipe(
-					Effect.provide(NodeFileSystem.layer),
-				);
-
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('read-state');
-					}
-				}
-				expect(sweepCalls).toEqual([]);
-				expect(existsSync(join(root, 'runtime-stack'))).toBe(false);
-			}),
-		),
-	);
-
-	it.effect('preserves only runtime-control paths and drops plugin-owned wallet state', () =>
+	it.effect('preserves only runtime-control paths and drops plugin-owned + live cache state', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
 				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
@@ -592,12 +574,19 @@ describe('snapshot restore safety', () => {
 				writeFileSync(join(stackRoot, COMMAND_CHANNEL_EVENTS_FILE_NAME), 'event-log\n');
 				writeFileSync(join(stackRoot, 'roster.json'), '{"version":1,"holders":[]}\n');
 				writeFileSync(join(stackRoot, 'container-claims.json'), '{"version":1,"claims":[]}\n');
-				writeFileSync(join(stackRoot, 'snapshot.reservation'), '{"creatorPid":1}\n');
 				mkdirSync(join(stackRoot, 'wallet'), { recursive: true });
 				writeFileSync(walletTokenPath, '0123456789abcdef0123456789abcdef');
 				writeFileSync(join(stackRoot, 'wallet', 'session'), 'drop');
-				mkdirSync(join(stackRoot, 'cache'), { recursive: true });
-				writeFileSync(join(stackRoot, 'cache', 'entry'), 'cache');
+				// Self-contained snapshots: the deploy cache rides the snapshot's
+				// host-tree, NOT preserved-from-live. This snapshot carries NO
+				// host-tree (hostTreeIncluded: false), so the swap drops the LIVE
+				// cache entirely — including the deploy namespace and the generic
+				// per-call `cache/entry`. (When the snapshot DOES carry the cache,
+				// the untarred copy lands in staging — see the cross-machine test.)
+				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+				mkdirSync(join(stackRoot, CACHE_DIR_NAME, deployNs), { recursive: true });
+				writeFileSync(join(stackRoot, CACHE_DIR_NAME, deployNs, 'ids.json'), 'deploy-ids');
+				writeFileSync(join(stackRoot, CACHE_DIR_NAME, 'entry'), 'cache');
 				writeFileSync(join(stackRoot, 'unrelated-runtime-state'), 'drop');
 				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
@@ -627,16 +616,182 @@ describe('snapshot restore safety', () => {
 				expect(readFileSync(join(stackRoot, 'container-claims.json'), 'utf8')).toBe(
 					'{"version":1,"claims":[]}\n',
 				);
-				expect(readFileSync(join(stackRoot, 'snapshot.reservation'), 'utf8')).toBe(
-					'{"creatorPid":1}\n',
-				);
+				// The LIVE deploy cache is NOT preserved from live — the snapshot is
+				// the sole source, and this snapshot carries none, so it is dropped.
+				expect(existsSync(join(stackRoot, CACHE_DIR_NAME, deployNs))).toBe(false);
 				expect(existsSync(walletTokenPath)).toBe(false);
 				expect(existsSync(join(stackRoot, 'wallet', 'session'))).toBe(false);
 				expect(existsSync(join(stackRoot, 'snapshots', meta.id, SnapshotLayout.metaFile))).toBe(
 					true,
 				);
-				expect(existsSync(join(stackRoot, 'cache', 'entry'))).toBe(false);
+				// The generic per-call cache entry is dropped too.
+				expect(existsSync(join(stackRoot, CACHE_DIR_NAME, 'entry'))).toBe(false);
 				expect(existsSync(join(stackRoot, 'unrelated-runtime-state'))).toBe(false);
+			}),
+		),
+	);
+
+	// The SNAPSHOT's host-tree cache is the SOLE source of the on-chain ids on
+	// restore (self-contained snapshots). If the metadata RECORDS a deploy-cache
+	// subtree but the host-tree tar is MISSING it (a partial/corrupt artifact),
+	// restore must REFUSE with a typed `cache-missing` error BEFORE any mutation
+	// rather than let the next boot re-deploy that namespace with fresh ids and
+	// orphan its pre-snapshot objects. Checked against the SNAPSHOT, not the live
+	// stack — so a cross-machine restore onto an empty live cache is unaffected.
+	it.effect('refuses with cache-missing when the snapshot host-tree omits a recorded cache ns', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+				// Metadata claims the snapshot captured `cache/<ns>`...
+				const meta = metadata({
+					containers: [capturedContainer()],
+					hostTreeIncluded: true,
+					subtrees: [
+						{
+							plugin: '__deploy-cache__',
+							relPath: `${CACHE_DIR_NAME}/${deployNs}`,
+							missingTolerance: 'fine',
+							secretMaterial: false,
+						},
+					],
+				});
+				const artifactDir = writeArtifact(join(root, 'runtime-stack'), meta);
+				writeImageBundle(artifactDir);
+				// ...but the host-tree tar carries an UNRELATED entry, not the cache.
+				writeFileSync(
+					join(artifactDir, SnapshotLayout.hostTreeTar),
+					tarWithEntries(['postgres/data/x']),
+				);
+				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
+
+				const exit = yield* Effect.exit(
+					runRestore({
+						snapshotId: snapshotIdFromString(meta.id),
+						artifactDir,
+						runtimeStackRoot: join(root, 'runtime-stack'),
+						runtimeStagingPath: join(root, 'runtime-stack.staging'),
+						runtimeBackupPath: join(root, 'runtime-stack.bak'),
+						participants: restoreIdentityParticipants(),
+						runtime: runtimeStub(sweepCalls),
+						runtimeIdentity,
+					}),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('cache-missing');
+					}
+				}
+				// Fail-closed BEFORE any mutation — no container sweep ran.
+				expect(sweepCalls).toEqual([]);
+			}),
+		),
+	);
+
+	// The positive companion: when the snapshot's host-tree CARRIES every
+	// deploy-cache namespace its metadata records, the preflight passes and the
+	// snapshot's cache is untarred into the swapped tree (sole source). Mirrors a
+	// CROSS-MACHINE restore — the live stack has NO cache; the snapshot supplies
+	// the ids.
+	it.effect('restores the deploy cache from the snapshot host-tree (cross-machine)', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const stackRoot = join(root, 'runtime-stack');
+				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+				const cacheRel = `${CACHE_DIR_NAME}/${deployNs}/local/ids.json`;
+				const meta = metadata({
+					hostTreeIncluded: true,
+					subtrees: [
+						{
+							plugin: '__deploy-cache__',
+							relPath: `${CACHE_DIR_NAME}/${deployNs}`,
+							missingTolerance: 'fine',
+							secretMaterial: false,
+						},
+					],
+				});
+				const artifactDir = writeArtifact(stackRoot, meta);
+				// Build a REAL host-tree tar (valid checksum so system `tar -x`
+				// extracts it) carrying the deploy-cache namespace, mirroring what
+				// capture's `tarHostTree` produces.
+				const srcDir = join(root, 'host-tree-src');
+				mkdirSync(join(srcDir, CACHE_DIR_NAME, deployNs, 'local'), { recursive: true });
+				writeFileSync(join(srcDir, cacheRel), 'snapshot-deploy-ids');
+				const tarResult = spawnSync(
+					'tar',
+					['-c', '-f', join(artifactDir, SnapshotLayout.hostTreeTar), '-C', srcDir, '-p', cacheRel],
+					{ encoding: 'utf8' },
+				);
+				expect(tarResult.status, tarResult.stderr).toBe(0);
+				// The live stack has NO cache at all — a fresh-runner shape.
+				expect(existsSync(join(stackRoot, CACHE_DIR_NAME))).toBe(false);
+				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
+
+				const exit = yield* Effect.exit(
+					runRestore({
+						snapshotId: snapshotIdFromString(meta.id),
+						artifactDir,
+						runtimeStackRoot: stackRoot,
+						runtimeStagingPath: join(root, 'runtime-stack.staging'),
+						runtimeBackupPath: join(root, 'runtime-stack.bak'),
+						participants: restoreIdentityParticipants(),
+						runtime: runtimeStub(sweepCalls),
+						runtimeIdentity,
+					}),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// The cache came from the snapshot, not from any live copy.
+				expect(readFileSync(join(stackRoot, cacheRel), 'utf8')).toBe('snapshot-deploy-ids');
+			}),
+		),
+	);
+
+	it.effect('verifies artifact integrity before loading images or replacing containers', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const meta = metadata({
+					containers: [capturedContainer()],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				const imageTarPath = join(artifactDir, imageBundlePath);
+				writeFileSync(imageTarPath, Buffer.from([1, 2, 3]));
+				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
+				writeFileSync(imageTarPath, Buffer.from([9, 9, 9]));
+
+				const exit = yield* Effect.exit(
+					runRestore({
+						snapshotId: snapshotIdFromString(meta.id),
+						artifactDir,
+						runtimeStackRoot: join(root, 'runtime-stack'),
+						runtimeStagingPath: join(root, 'runtime-stack.staging'),
+						runtimeBackupPath: join(root, 'runtime-stack.bak'),
+						participants: restoreIdentityParticipants(),
+						runtime: runtimeStub(sweepCalls, { events }),
+						runtimeIdentity,
+					}),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('verify-integrity');
+					}
+				}
+				expect(events).toEqual([]);
+				expect(sweepCalls).toEqual([]);
 			}),
 		),
 	);
@@ -650,6 +805,8 @@ describe('snapshot restore safety', () => {
 					const stackRoot = join(root, 'runtime-stack');
 					const meta = metadata();
 					const artifactDir = writeArtifact(stackRoot, meta);
+					seedDeployCacheAt(stackRoot);
+					yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 					const paths = commandChannelPaths(stackRoot);
 					const preRestorePublisher = yield* makeCommandChannelPublisher(paths);
 					const preRestoreSubscriber = yield* makeCommandChannelSubscriber(paths);
@@ -686,7 +843,6 @@ describe('snapshot restore safety', () => {
 						{ startImmediately: true },
 					);
 					yield* Effect.sleep('30 millis');
-					yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
 					const exit = yield* Effect.exit(
 						runRestore({
@@ -953,49 +1109,6 @@ describe('snapshot restore safety', () => {
 		),
 	);
 
-	it.effect('verifies artifact integrity before loading images or replacing containers', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const events: string[] = [];
-				const meta = metadata({
-					containers: [capturedContainer()],
-				});
-				const artifactDir = writeArtifact(root, meta);
-				writeImageBundle(artifactDir);
-				const imageTarPath = join(artifactDir, imageBundlePath);
-				writeFileSync(imageTarPath, Buffer.from([1, 2, 3]));
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
-				writeFileSync(imageTarPath, Buffer.from([9, 9, 9]));
-
-				const exit = yield* Effect.exit(
-					runRestore({
-						snapshotId: snapshotIdFromString(meta.id),
-						artifactDir,
-						runtimeStackRoot: join(root, 'runtime-stack'),
-						runtimeStagingPath: join(root, 'runtime-stack.staging'),
-						runtimeBackupPath: join(root, 'runtime-stack.bak'),
-						participants: restoreIdentityParticipants(),
-						runtime: runtimeStub(sweepCalls, { events }),
-						runtimeIdentity,
-					}),
-				).pipe(Effect.provide(NodeFileSystem.layer));
-
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('verify-integrity');
-					}
-				}
-				expect(events).toEqual([]);
-				expect(sweepCalls).toEqual([]);
-			}),
-		),
-	);
-
 	it.effect('cleans restore-staging image refs when a staging tag fails', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
@@ -1155,11 +1268,12 @@ describe('snapshot restore safety', () => {
 				});
 				const artifactDir = writeArtifact(root, meta);
 				writeImageBundle(artifactDir);
+				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 				mkdirSync(stackRoot, { recursive: true });
+				seedDeployCacheAt(stackRoot);
 				writeFileSync(join(stackRoot, 'live-state'), 'old');
 				mkdirSync(backupPath, { recursive: true });
 				writeFileSync(join(backupPath, 'blocks-backup-rename'), 'occupied');
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
 				const exit = yield* Effect.exit(
 					runRestore({
@@ -1188,89 +1302,72 @@ describe('snapshot restore safety', () => {
 				expect(events).not.toContain(`tag:${imageName}`);
 				expect(sweepCalls).toEqual([]);
 				expect(readFileSync(join(stackRoot, 'live-state'), 'utf8')).toBe('old');
-				expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(false);
 			}),
 		),
 	);
 
-	it.effect('leaves a restore-pending marker when post-publish image promotion fails', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const events: string[] = [];
-				const stackRoot = join(root, 'runtime-stack');
-				const imageName = 'devstack-build:postgres-original';
-				const meta = metadata({
-					containers: [
-						capturedContainer({
-							imageName,
-						}),
-					],
-				});
-				const artifactDir = writeArtifact(root, meta);
-				writeImageBundle(artifactDir);
-				const finalTagError: ContainerRuntimeError = {
-					_tag: 'ContainerRuntimeError',
-					reason: 'image-tag-failed',
-					detail: 'final tag refused',
-				};
-				const runtime = runtimeStub(sweepCalls, {
-					events,
-					tagErrorFor: (newTag) => (newTag === imageName ? finalTagError : undefined),
-				});
+	it.effect(
+		'fails loud and writes no recovery marker when post-publish image promotion fails',
+		() =>
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+					const events: string[] = [];
+					const stackRoot = join(root, 'runtime-stack');
+					const imageName = 'devstack-build:postgres-original';
+					const meta = metadata({
+						containers: [
+							capturedContainer({
+								imageName,
+							}),
+						],
+					});
+					const artifactDir = writeArtifact(root, meta);
+					writeImageBundle(artifactDir);
+					const finalTagError: ContainerRuntimeError = {
+						_tag: 'ContainerRuntimeError',
+						reason: 'image-tag-failed',
+						detail: 'final tag refused',
+					};
+					const runtime = runtimeStub(sweepCalls, {
+						events,
+						tagErrorFor: (newTag) => (newTag === imageName ? finalTagError : undefined),
+					});
 
-				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
-					Effect.provide(NodeFileSystem.layer),
-				);
+					const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+						Effect.provide(NodeFileSystem.layer),
+					);
 
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('retag-image');
+					expect(Exit.isFailure(exit)).toBe(true);
+					const error = Exit.findErrorOption(exit);
+					expect(error._tag).toBe('Some');
+					if (error._tag === 'Some') {
+						expect(error.value).toBeInstanceOf(RestorePhaseError);
+						if (error.value._tag === 'SnapshotRestorePhaseError') {
+							expect(error.value.phase).toBe('retag-image');
+						}
 					}
-				}
-				// load → tag staging → tag target (fails) → finalizer
-				// removes the staging tag so Docker is not littered with
-				// orphan restore-* refs.
-				expect(events).toHaveLength(4);
-				expect(events[0]).toBe('load');
-				expect(events[1]?.startsWith('tag:devstack-snapshot:restore-')).toBe(true);
-				expect(events[2]).toBe(`tag:${imageName}`);
-				const stagingTag = events[1]!.slice('tag:'.length);
-				expect(events[3]).toBe(`remove-image:${stagingTag}`);
-				expect(sweepCalls).toEqual([]);
-				const pending = JSON.parse(
-					readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
-				) as {
-					readonly version: number;
-					readonly snapshotId: string;
-					readonly containers: ReadonlyArray<{
-						readonly plugin: string;
-						readonly role: string;
-						readonly targetImageName: string;
-						readonly stagedImageTag: string;
-						readonly digest: string;
-					}>;
-				};
-				expect(pending.version).toBe(2);
-				expect(pending.snapshotId).toBe(meta.id);
-				expect(pending.containers).toEqual([
-					{
-						plugin: 'postgres',
-						role: 'db',
-						targetImageName: imageName,
-						stagedImageTag: stagingTag,
-						digest: 'sha256:loaded-postgres-db',
-					},
-				]);
-			}),
-		),
+					// Promotion re-tags the staged image to its TARGET name —
+					// the resumption contract is carried by the image name
+					// itself (the next boot's image-match adoption finds it
+					// locally), NOT by an on-disk marker. load → tag staging →
+					// tag target (fails) → finalizer removes the staging tag so
+					// Docker is not littered with orphan restore-* refs.
+					expect(events).toHaveLength(4);
+					expect(events[0]).toBe('load');
+					expect(events[1]?.startsWith('tag:devstack-snapshot:restore-')).toBe(true);
+					expect(events[2]).toBe(`tag:${imageName}`);
+					const stagingTag = events[1]!.slice('tag:'.length);
+					expect(events[3]).toBe(`remove-image:${stagingTag}`);
+					expect(sweepCalls).toEqual([]);
+					// No crash-recovery marker is ever written — the subsystem
+					// was deleted in Stage D2.
+					expect(existsSync(join(stackRoot, 'snapshot.restore-pending.json'))).toBe(false);
+				}),
+			),
 	);
 
-	it.effect('keeps pending marker and clears orphan staging tags when mid-promote fails', () =>
+	it.effect('clears orphan staging tags and writes no marker when mid-promote fails', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
 				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
@@ -1332,33 +1429,12 @@ describe('snapshot restore safety', () => {
 					}
 				}
 
-				// Re-supervise breadcrumb: the swapped tree still carries
-				// the pending marker (we never reached clearRestorePendingMarker).
-				// `promoteStagedImages` rewrites the marker after each
-				// successful tag so the post-failure marker carries ONLY
-				// the still-pending entries — `db` was tagged successfully,
-				// `worker` failed, so only `worker` should remain pending.
-				// The next supervise calls `recoverPendingRestore` which
-				// only has to retry `worker`.
-				const pending = JSON.parse(
-					readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
-				) as {
-					readonly version: number;
-					readonly snapshotId: string;
-					readonly containers: ReadonlyArray<{
-						readonly plugin: string;
-						readonly role: string;
-						readonly targetImageName: string;
-						readonly stagedImageTag: string;
-						readonly digest: string;
-					}>;
-				};
-				expect(pending.version).toBe(2);
-				expect(pending.snapshotId).toBe(meta.id);
-				expect(pending.containers).toHaveLength(1);
-				expect(pending.containers[0]?.role).toBe('worker');
-				expect(pending.containers[0]?.targetImageName).toBe(workerImageName);
-				expect(pending.containers[0]?.digest).toBe('sha256:loaded-postgres-worker');
+				// No crash-recovery marker is written — the subsystem was
+				// deleted in Stage D2. The first image (`db`) was already
+				// promoted to its TARGET name before `worker` failed, so on a
+				// re-run of restore the next boot's image-match adoption picks
+				// up whatever landed; there is no on-disk breadcrumb to parse.
+				expect(existsSync(join(stackRoot, 'snapshot.restore-pending.json'))).toBe(false);
 
 				// Container removal never runs once promotion fails.
 				expect(sweepCalls).toEqual([]);
@@ -1515,7 +1591,6 @@ describe('snapshot restore safety', () => {
 							opts: { removeSourceAfterTag: true },
 						},
 					]);
-					expect(existsSync(join(root, 'runtime-stack', RESTORE_PENDING_FILE_NAME))).toBe(false);
 				}),
 			),
 	);

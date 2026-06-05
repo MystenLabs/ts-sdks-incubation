@@ -13,8 +13,8 @@
 //                   need).
 //
 // Best-effort cache writes (distilled-doc Invariant 2): the mint
-// already settled on chain; a state-store IO defect just means the
-// next supervisor cycle re-mints. Don't let a StateStore failure
+// already settled on chain; a cache IO defect just means the
+// next supervisor cycle re-mints. Don't let a cache-write failure
 // roll back the mint.
 //
 // Substrate constraint: the `ArtifactPublisher.publish` shape
@@ -24,7 +24,7 @@
 import { Effect, Schema, type Scope } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import type { ContentHash } from '../../substrate/brand.ts';
 import { contentHash as brandContentHash } from '../../substrate/brand.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 import {
@@ -34,10 +34,10 @@ import {
 } from '../../primitives/artifact-publisher.ts';
 import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
-import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
-import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import {
 	buildForkImpersonationTransactionBytes,
+	formatExecutedFailure,
+	signAndDispatch,
 	type ClientWithCoreApi,
 	type ForkImpersonationGasClient,
 } from '../sui/index.ts';
@@ -59,7 +59,7 @@ import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
  *  `TxResult` (which adds `effects` + `balanceChanges` — fields the
  *  mint produce body does not surface). The shape is structurally
  *  compatible — Account's `signAndExecute` widens to this surface. */
-export type MintSignAndExecuteResult =
+type MintSignAndExecuteResult =
 	| {
 			readonly $kind: 'Transaction';
 			readonly Transaction: {
@@ -75,7 +75,7 @@ export type MintSignAndExecuteResult =
 			};
 	  };
 
-export interface MintTransactionSigner {
+interface MintTransactionSigner {
 	readonly signAndExecute: (
 		tx: Uint8Array,
 	) => Effect.Effect<
@@ -266,7 +266,7 @@ const isCreatedObjectChange = (raw: unknown): raw is CreatedObjectChange => {
  *  we project it directly to `MintResult`. */
 export const performMint = (
 	publisher: ArtifactPublisher,
-	chain: ChainId,
+	chain: string,
 	signer: MintSigner,
 	sdk: MintSdkShim,
 	inputs: MintInputs,
@@ -336,11 +336,7 @@ export const performMint = (
 							//    sui-fork binary has no simulate_transaction); other modes
 							//    use the SDK resolver, which fills gas + object versions.
 							return sdk.forkMode === true
-								? yield* buildForkImpersonationTransactionBytes(
-										tx,
-										signer.address,
-										sdk.core,
-									).pipe(
+								? yield* buildForkImpersonationTransactionBytes(tx, signer.address, sdk.core).pipe(
 										Effect.mapError(
 											(cause): ArtifactPublishError =>
 												artifactPublishError(

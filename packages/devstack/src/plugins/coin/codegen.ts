@@ -17,9 +17,9 @@
 // caps tuple, finds the Coin-emitted contributions, and emits ONE
 // `coins.ts` referencing every entry.
 //
-// Per-coin shape mirrors the v3 `CoinEntry` (manifest schema) sans
-// the `sdkCoin` runtime projection — that lives in the SDK adapter
-// at codegen time, not in the binding shape.
+// Per-coin shape carries the manifest `CoinEntry` fields sans the
+// `sdkCoin` runtime projection — that lives in the SDK adapter at
+// codegen time, not in the binding shape.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 

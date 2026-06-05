@@ -1,10 +1,8 @@
 // Typed errors for the Codegen orchestrator.
 //
-// Architecture §6 (Codegenable) failure-mode taxonomy + distilled-doc
-// §"Refine the `CodegenError` phase taxonomy". Today's v3 collapsed
-// "emitter-collision at acquire", "binary shell-out failure", and
-// "pure render failure" into a single tag; the rewrite keeps them
-// separate so callers can `catchTag` on each.
+// A phase-tagged failure-mode taxonomy: "emitter-collision at acquire",
+// "binary shell-out failure", and "pure render failure" each get a
+// separate tag so callers can `catchTag` on each.
 //
 // Phase tags inside each error name the lifecycle step that failed
 // (resolve → emit → render → write → bindings → finalize) so error

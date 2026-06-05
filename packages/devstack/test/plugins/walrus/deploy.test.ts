@@ -24,7 +24,7 @@ import {
 	type CachedDeployState,
 	type DeployInputs,
 } from '../../../src/plugins/walrus/deploy.ts';
-import { chainId, contentHash } from '../../../src/substrate/brand.ts';
+import { contentHash } from '../../../src/substrate/brand.ts';
 
 const unusedRuntimeMethod = () => Effect.die('not used');
 
@@ -62,7 +62,7 @@ const deployInputs = (
 	const stackRoot = outputDirHostPath.replace(/\/walrus\/[^/]+\/deploy$/u, '');
 	return {
 		walrusName: 'walrus',
-		chainId: chainId('sui:localnet'),
+		chainId: 'sui:localnet',
 		contentHash: contentHash('walrus-test'),
 		outputDirHostPath,
 		stackRoot,

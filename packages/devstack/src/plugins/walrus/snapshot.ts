@@ -4,8 +4,8 @@
 // §"Hard requirements" item 7):
 //   - `runtime/walrus/<name>/deploy/` MUST ride the snapshot tar.
 //     It holds storage-node private keys + per-node configs that
-//     `walrus-deploy` wrote; without them, a state-store entry that
-//     says "walrus is already deployed" cannot be honored on resume.
+//     `walrus-deploy` wrote; without them, a cached "walrus is already
+//     deployed" artifact cannot be honored on resume.
 //   - Local cluster: N storage-node containers' writable layers
 //     hold RocksDB at `/var/walrus/storage` — managed-containers
 //     declaration; runtime adapter pauses then `docker commit`.

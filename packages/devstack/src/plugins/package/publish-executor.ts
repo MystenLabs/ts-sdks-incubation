@@ -35,17 +35,18 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import type { AccountValue, TxResult } from '../account/index.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import type { ChainId } from '../../substrate/brand.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
-import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
-import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
-import { buildForkImpersonationTransactionBytes } from '../sui/index.ts';
+import {
+	buildForkImpersonationTransactionBytes,
+	formatExecutedFailure,
+	signAndDispatch,
+	type SuiSdkShim,
+} from '../sui/index.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
 import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
 import { publishError, type PublishError } from './errors.ts';
 import type { PublishExecutor } from './mode-local.ts';
 import { PackageSpans } from './spans.ts';
-import type { SuiSdkShim } from '../sui/index.ts';
 
 const shouldHydrateCreatedObject = (change: PackagePublishObjectChange): boolean =>
 	change.type === 'created' &&
@@ -191,7 +192,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 	}: {
 		readonly sourcePath: string;
 		readonly packageName: string;
-		readonly chainId: ChainId;
+		readonly chainId: string;
 	}): Effect.Effect<BuildOutput, PublishError, Scope.Scope> =>
 		runMoveBuild({
 			sourcePath,
@@ -223,9 +224,8 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			// UpgradeCap` — `key + store`, NO `drop`). The Move VM refuses
 			// transactions that leave such values unused
 			// (`UnusedValueWithoutDrop`); we MUST transfer the cap to a
-			// concrete owner. Convention (matches v3 + dev-wallet's
-			// MintNFT demo): transfer to the publisher account so the
-			// stack-owner retains upgrade authority.
+			// concrete owner. Convention: transfer to the publisher account
+			// so the stack-owner retains upgrade authority.
 			const tx = new Transaction();
 			tx.setSender(inputs.account.address);
 			const upgradeCapArg = tx.publish({
@@ -276,7 +276,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 										packageName,
 										message:
 											`Transaction.build failed for package '${packageName}': ` +
-											(formatUnknownError(cause)),
+											formatUnknownError(cause),
 										cause,
 									}),
 							}),
@@ -286,9 +286,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 						packageName,
 						message:
 							`account.signAndExecute failed for publisher '${inputs.account.name}' ` +
-							`(address=${inputs.account.address}): ${
-								formatUnknownError(cause)
-							}`,
+							`(address=${inputs.account.address}): ${formatUnknownError(cause)}`,
 						cause,
 					}),
 				onFailed: (failure) =>

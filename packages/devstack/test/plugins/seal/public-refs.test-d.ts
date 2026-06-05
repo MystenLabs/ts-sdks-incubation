@@ -6,14 +6,13 @@ import {
 	type SealKeyManager,
 	type SealResolved,
 } from '../../../src/plugins/seal/index.ts';
-import { chainId } from '../../../src/substrate/brand.ts';
-import type { NetworkConfig } from '../../../src/substrate/network.ts';
+import type { NetworkConfig } from '../../../src/plugins/sui/network-config.ts';
 import type { ResourceValueOf } from '../../../src/substrate/plugin.ts';
 
-const localNet: NetworkConfig<'local'> = { mode: 'local', chain: chainId('sui:localnet') };
+const localNet: NetworkConfig<'local'> = { mode: 'local', chain: 'sui:localnet' };
 const forkNet: NetworkConfig<'fork'> = {
 	mode: 'fork',
-	chain: chainId('sui:testnet-fork'),
+	chain: 'sui:testnet-fork',
 	checkpoint: '1',
 };
 

@@ -2,10 +2,8 @@ import { Effect, Schema } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
-import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import type { AccountValue } from '../account/index.ts';
-import type { SuiSdkShim } from '../sui/index.ts';
+import { formatExecutedFailure, signAndDispatch, type SuiSdkShim } from '../sui/index.ts';
 import { SUI_FULL_COIN_TYPE } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { WalrusSpans } from './spans.ts';
@@ -34,10 +32,7 @@ export type WalSwapSdk = Pick<SuiSdkShim, 'client'> & {
 /** Read the account's SUI balance (best-effort). Returns `null` if the
  *  RPC throws or the response shape is unexpected — the pre-flight is
  *  a hint, not a hard gate. */
-const readSuiBalance = (
-	sdk: WalSwapSdk,
-	owner: string,
-): Effect.Effect<bigint | null, never> =>
+const readSuiBalance = (sdk: WalSwapSdk, owner: string): Effect.Effect<bigint | null, never> =>
 	Effect.promise(async () => {
 		try {
 			const response = await sdk.core.getBalance({ owner, coinType: SUI_FULL_COIN_TYPE });

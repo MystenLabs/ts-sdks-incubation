@@ -1,7 +1,6 @@
 // Docker runtime — typed error envelopes.
 //
-// Architecture inverts the legacy "stderr-pattern wording" coupling:
-// the public surface speaks in typed errors (`ImageNotFound`,
+// The public surface speaks in typed errors (`ImageNotFound`,
 // `BuildFailed`, …); raw `CaptureError`s from the subprocess seam
 // are translated by `wrap.ts` into these envelopes.
 //

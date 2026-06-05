@@ -9,7 +9,7 @@
 
 import { isPlugin, type AnyPlugin } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
-import type { NetworkConfig, NetworkMode } from '../substrate/network.ts';
+import type { NetworkConfig, NetworkMode } from '../plugins/sui/network-config.ts';
 import type { __MissingProvidersError, MissingProviders } from '../substrate/plugin.ts';
 import { defineDevstack, type ComposedMembers, type Stack } from './define-devstack.ts';
 

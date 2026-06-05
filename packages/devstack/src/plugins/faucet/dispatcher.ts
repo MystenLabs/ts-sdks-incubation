@@ -42,9 +42,9 @@ export const faucetCapabilityKey = <ChainId extends string>(
  *
  * The generic contract lives in `contracts/faucet-strategy.ts` and
  * is parameterised over the strategy's error channel. The faucet
- * plugin narrows the alias to its tagged-error union so existing
- * dispatcher consumers (the strategy registry, request retry shim)
- * see the historical type unchanged.
+ * plugin narrows the alias to its tagged-error union so dispatcher
+ * consumers (the strategy registry, request retry shim) see a stable
+ * type.
  *
  * `amount` is the chain-native smallest unit (MIST for SUI). Some
  * backends (the local sui-faucet binary) grant a fixed amount per

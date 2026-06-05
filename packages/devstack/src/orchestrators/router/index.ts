@@ -76,11 +76,9 @@ export {
 	layerDockerUpstreamResolver,
 	layerRouterConfigLiteral,
 	layerRouterService,
-	routesStream,
 	RouterConfig,
 	RouterService,
 	UpstreamResolverService,
-	type EndpointUrl,
 	type RouterConfigShape,
 	type RouterServiceShape,
 } from './service.ts';

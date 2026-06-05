@@ -2,10 +2,9 @@
 //
 // Covers the L2 `CoinRegistry` wrapper that sits on top of the
 // generic `ScopedRefMap<CoinKey, CoinRecord>` substrate primitive:
-// register, lookup-by-symbol (case-insensitive), lookup-by-witness
-// (package-scoped), lookup-by-type (exact full-coin-type), list, and
-// scope-bound lifecycle (each Layer build materializes an
-// independent registry).
+// register, lookup-by-witness (package-scoped), lookup-by-type
+// (exact full-coin-type), list, and scope-bound lifecycle (each
+// Layer build materializes an independent registry).
 
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
@@ -51,74 +50,6 @@ describe('plugins/coin/registry', () => {
 			const registry = yield* CoinRegistryService;
 			const found = yield* registry.byType('0xnope::foo::FOO');
 			expect(found).toBeNull();
-		}).pipe(Effect.provide(layerCoinRegistry)),
-	);
-
-	it.effect('bySymbol finds matches case-insensitively', () =>
-		Effect.gen(function* () {
-			const registry = yield* CoinRegistryService;
-			yield* registry.register(
-				makeRecord({
-					type: '0xabc::usdc::USDC',
-					key: 'usdc',
-					witness: 'usdc',
-					moduleName: 'usdc',
-					symbol: 'USDC',
-				}),
-			);
-			yield* registry.register(
-				makeRecord({
-					type: '0xdef::weth::WETH',
-					key: 'weth',
-					witness: 'weth',
-					moduleName: 'weth',
-					symbol: 'WETH',
-				}),
-			);
-			const upper = yield* registry.bySymbol('USDC');
-			const lower = yield* registry.bySymbol('usdc');
-			const mixed = yield* registry.bySymbol('UsDc');
-			expect(upper.map((r) => r.type)).toEqual(['0xabc::usdc::USDC']);
-			expect(lower.map((r) => r.type)).toEqual(['0xabc::usdc::USDC']);
-			expect(mixed.map((r) => r.type)).toEqual(['0xabc::usdc::USDC']);
-		}).pipe(Effect.provide(layerCoinRegistry)),
-	);
-
-	it.effect('bySymbol matches either the registry key or the display symbol', () =>
-		Effect.gen(function* () {
-			const registry = yield* CoinRegistryService;
-			// Two records: one indexed by witness (`mock_usdc`), one by a
-			// distinct display symbol (`MOCK_USDC`). bySymbol must find
-			// the record under either form.
-			yield* registry.register(
-				makeRecord({
-					type: '0xabc::mock_usdc::MOCK_USDC',
-					key: 'mock_usdc',
-					witness: 'mock_usdc',
-					moduleName: 'mock_usdc',
-					symbol: 'MOCK_USDC',
-				}),
-			);
-			const byWitness = yield* registry.bySymbol('mock_usdc');
-			const bySymbolForm = yield* registry.bySymbol('mock_usdc');
-			expect(byWitness.map((r) => r.type)).toEqual(['0xabc::mock_usdc::MOCK_USDC']);
-			expect(bySymbolForm.map((r) => r.type)).toEqual(['0xabc::mock_usdc::MOCK_USDC']);
-		}).pipe(Effect.provide(layerCoinRegistry)),
-	);
-
-	it.effect('bySymbol returns empty when no record matches', () =>
-		Effect.gen(function* () {
-			const registry = yield* CoinRegistryService;
-			yield* registry.register(
-				makeRecord({
-					type: '0xabc::usdc::USDC',
-					key: 'usdc',
-					witness: 'usdc',
-					symbol: 'USDC',
-				}),
-			);
-			const none = yield* registry.bySymbol('ghost');
-			expect(none).toEqual([]);
 		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 

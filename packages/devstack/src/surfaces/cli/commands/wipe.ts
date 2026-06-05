@@ -26,8 +26,8 @@ export type { WipeTargets } from '../../../orchestrators/snapshot/index.ts';
 export interface WipeDeps {
 	readonly wipe: () => Effect.Effect<void, unknown>;
 	/** Read-only enumeration of the concrete targets a real wipe would
-	 *  remove (containers, network/volume label scope, state file, the
-	 *  on-disk stack tree). Drives `--dry-run`. Optional so a deps
+	 *  remove (containers, network/volume label scope, the on-disk stack
+	 *  tree). Drives `--dry-run`. Optional so a deps
 	 *  builder that cannot enumerate (or a test fixture) still works —
 	 *  the dry-run then falls back to a generic preview line. */
 	readonly plan?: () => Effect.Effect<WipeTargets, unknown>;
@@ -36,8 +36,8 @@ export interface WipeDeps {
 
 /** Human-readable preview of what a real wipe would delete. Mirrors the
  *  orchestrator's teardown order (containers → networks/volumes →
- *  state.json → runtime tree) so the operator reads the plan in the same
- *  sequence the wipe executes. */
+ *  runtime tree) so the operator reads the plan in the same sequence the
+ *  wipe executes. */
 const dryRunLines = (targets: WipeTargets): ReadonlyArray<string> => {
 	const lines: Array<string> = [`[dry-run] would wipe ${targets.app}/${targets.stack}:`];
 	if (targets.containers.length > 0) {
@@ -52,7 +52,6 @@ const dryRunLines = (targets: WipeTargets): ReadonlyArray<string> => {
 	lines.push(
 		`  volumes: all managed (label devstack.app=${targets.volumeLabelMatch.app},devstack.stack=${targets.volumeLabelMatch.stack})`,
 	);
-	lines.push(`  state file: ${targets.stateFile}`);
 	if (targets.onDiskPaths.length > 0) {
 		lines.push(`  on-disk (${targets.onDiskPaths.length}):`);
 		for (const path of targets.onDiskPaths) lines.push(`    - ${path}`);

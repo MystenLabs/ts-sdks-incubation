@@ -28,7 +28,6 @@ import {
 	leaseKey,
 } from '../../../src/substrate/runtime/lease-broker/index.ts';
 import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-registry/index.ts';
-import { chainId } from '../../../src/substrate/brand.ts';
 import {
 	acquireAccount,
 	type AccountAcquireContext,
@@ -109,7 +108,7 @@ const stubSuiSdk = (): SuiSdkShim => ({
 });
 
 const ctx: AccountAcquireContext = {
-	sui: { mode: 'local', chain: chainId('sui:localnet'), sdk: stubSuiSdk() },
+	sui: { mode: 'local', chain: 'sui:localnet', sdk: stubSuiSdk() },
 	runtimeRoot: '/tmp/devstack-rewrite-test',
 	app: 'test-app',
 	stack: 'test-stack',

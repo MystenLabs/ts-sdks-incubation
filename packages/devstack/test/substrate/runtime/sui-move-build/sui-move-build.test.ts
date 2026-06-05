@@ -16,7 +16,7 @@ import {
 	runMoveBuild,
 	scrubLocksHost,
 	stripPinnedSections,
-} from '../../../../src/substrate/runtime/sui-move-build/index.ts';
+} from '../../../../src/plugins/sui/move/index.ts';
 
 const unusedRuntimeMethod = () => Effect.die('not used');
 
@@ -304,7 +304,6 @@ describe('sui-move-build helpers', () => {
 				const result = yield* runMoveBuild({
 					sourcePath,
 					packageName: 'vault',
-					chainId: 'localnet',
 					runtime,
 					buildImage: { digest: 'sha256:sui' },
 				});

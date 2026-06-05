@@ -27,16 +27,7 @@ export {
 
 // --- Plugin authoring helpers -------------------------------------------
 
-export {
-	capability,
-	capabilitySink,
-	codegenable,
-	defineCapability,
-	projection,
-	routable,
-	snapshotable,
-	strategyContributor,
-} from './api/define-capabilities.ts';
+export { projection } from './api/define-capabilities.ts';
 export {
 	defineId,
 	definePlugin,
@@ -54,6 +45,7 @@ export {
 	type ResourceValueOf,
 } from './api/define-plugin.ts';
 export { pluginErrorContributions } from './api/plugin-errors.ts';
+export { PluginContext, type PluginCtx } from './substrate/plugin-ctx.ts';
 export {
 	DEFAULT_DEVSTACK_NETWORK,
 	DEFAULT_STACK_NAME,
@@ -100,13 +92,6 @@ export {
 // --- Contract types plugin authors emit decls of ------------------------
 
 export type {
-	CapabilityDecl,
-	CapabilityKind,
-	CapabilityPayloadFor,
-	DevstackCapabilityRegistry,
-	ExactCapabilityPayload,
-} from './contracts/capability-decl.ts';
-export type {
 	CodegenableDecl,
 	CodegenEmitContext,
 	CodegenEmitDone,
@@ -140,12 +125,17 @@ export type { Renderer, RendererError } from './contracts/renderer.ts';
 export type { LifecycleStatus, PhaseNarration, PluginRole } from './substrate/lifecycle.ts';
 
 // --- Network + options --------------------------------------------------
+//
+// `NetworkConfig`/`NetworkMode`/`DevstackNetworkModeRegistry` are a
+// SUI-PLUGIN domain concept (see plugins/sui/network-config.ts), not a
+// substrate primitive. Re-exported here for the authoring surface
+// (`defineDevstackWith` / `suiFor`).
 
 export type {
 	NetworkConfig,
 	NetworkMode,
 	DevstackNetworkModeRegistry,
-} from './substrate/network.ts';
+} from './plugins/sui/network-config.ts';
 export type { DevstackOptions } from './substrate/options.ts';
 export type {
 	ManifestExtras,
@@ -159,13 +149,11 @@ export { IdentityContext } from './substrate/runtime/paths.ts';
 
 export {
 	appName,
-	chainId,
 	contentHash,
 	endpointKey,
 	stackName,
 	type AppName,
 	type Brand,
-	type ChainId,
 	type ContentHash,
 	type EndpointKey,
 	type StackName,

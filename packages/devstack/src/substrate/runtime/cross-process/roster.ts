@@ -21,10 +21,7 @@ import {
 } from '../../cross-process.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { versionedDocSchema } from '../../versioned-doc-schema.ts';
-import {
-	readVersionedDocumentSync,
-	writeVersionedDocumentSync,
-} from '../../versioned-doc-sync.ts';
+import { readVersionedDocumentSync, writeVersionedDocumentSync } from '../../versioned-doc-sync.ts';
 import { selfPid } from './self-pid.ts';
 import { acquireStackLock } from './stack-lock.ts';
 import {
@@ -76,7 +73,7 @@ export const readRoster = (path: string): Effect.Effect<RosterDocument, RosterEr
 /** Atomic write: route through the canonical sync primitive. The
  *  roster's mutations are all under `stack.lock`, so the non-yielding
  *  sync surface is correct here — and it shares ONE owner of the
- *  tempfile dance with state-store, cache, and manifest. */
+ *  tempfile dance with cache and manifest. */
 const atomicWriteRoster = (path: string, doc: RosterDocument): Effect.Effect<void, RosterIoError> =>
 	writeVersionedDocumentSync(path, doc, ROSTER_DOC_ERRORS);
 
@@ -461,9 +458,7 @@ const isContainerClaimLive = (
  *  the same pid is probed at most once across this pass — even when
  *  multiple claims by the same pid sit in the ledger. The scope's
  *  cache is private to this call (provided via `Effect.provide`). */
-const liveContainerClaims = (
-	doc: ContainerClaimDocument,
-): Effect.Effect<ContainerClaimDocument> =>
+const liveContainerClaims = (doc: ContainerClaimDocument): Effect.Effect<ContainerClaimDocument> =>
 	Effect.gen(function* () {
 		const probe = yield* LivenessProbeScope;
 		const ownHost = nodeHostname();
@@ -536,9 +531,7 @@ export const addClaim = (
 			const ownStartTime = processStartTime(ownPid) ?? undefined;
 			const ownHost = nodeHostname();
 			if (
-				live.claims.some((c) =>
-					isOwnContainerClaim(c, containerKey, ownPid, ownHost, ownStartTime),
-				)
+				live.claims.some((c) => isOwnContainerClaim(c, containerKey, ownPid, ownHost, ownStartTime))
 			) {
 				if (live.claims.length !== current.claims.length) yield* writeClaims(path, live);
 				return;

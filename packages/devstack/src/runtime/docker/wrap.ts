@@ -1,8 +1,7 @@
 // Subprocess-capture → typed docker-error translation.
 //
-// Architecture inverts the legacy "stderr-pattern wording" coupling:
-// instead of every plugin staring at stderr substrings, we classify
-// in ONE place and surface typed errors. Plugins consume typed errors
+// Instead of every plugin staring at stderr substrings, classification
+// happens in ONE place and surfaces typed errors. Plugins consume typed errors
 // (`ImageNotFound`, `BuildFailed`, …) and never see raw stderr text
 // outside the error envelope's `detail` field.
 //
@@ -78,11 +77,21 @@ export const isNetworkAlreadyExistsStderr = (stderr: string): boolean =>
 export const isNetworkAddressPoolExhaustedStderr = (stderr: string): boolean =>
 	/all predefined address pools have been fully subnetted/i.test(stderr);
 
-/** Image not found — pull or inspect against an unknown ref. */
+/** Image not found — pull or inspect against an unknown ref. Also
+ *  covers the implicit-pull-on-create case: `docker run` against a
+ *  local-only image name that isn't present (an interrupted restore
+ *  left the target image un-promoted, or a locally-built image was
+ *  GC'd) tries an implicit registry pull and fails with `Unable to
+ *  find image '<ref>' locally` followed by a `manifest unknown` /
+ *  `pull access denied` line. Matching these here lets `wrapCreateError`
+ *  surface a typed, recoverable `ImageNotFound` instead of an opaque
+ *  fatal `ContainerCreateFailed`. */
 export const isImageNotFoundStderr = (stderr: string): boolean =>
 	/pull access denied/i.test(stderr) ||
 	/manifest .* not found/i.test(stderr) ||
+	/manifest unknown/i.test(stderr) ||
 	/repository .* not found/i.test(stderr) ||
+	/Unable to find image/i.test(stderr) ||
 	/No such image/i.test(stderr);
 
 /** Image missing — classifier for `docker image rm` / `docker tag`
@@ -185,6 +194,17 @@ export const wrapCreateError =
 				stderr: err.stderr,
 				exitCode: err.exitCode,
 			});
+		}
+		if (isImageNotFoundStderr(err.stderr)) {
+			// `docker run` against a local-only image name that isn't
+			// present tries an implicit registry pull and fails. This is
+			// RECOVERABLE (the dangling restored image still resolves by
+			// digest, or restore can be re-run) — surface it typed so the
+			// create path can try the digest fallback instead of a fatal
+			// `ContainerCreateFailed`. `ref` carries the create name as the
+			// best available identifier; the create caller knows the
+			// concrete tag/digest it attempted.
+			return new ImageNotFound({ ref: name, detail: 'create target image not present locally' });
 		}
 		return new ContainerCreateFailed({ name, stderr: err.stderr, exitCode: err.exitCode });
 	};

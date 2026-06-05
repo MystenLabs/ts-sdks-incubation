@@ -12,7 +12,6 @@
 import { describe, expect, it } from 'vitest';
 import { Effect, Schema } from 'effect';
 
-import { chainId } from '../../src/substrate/brand.ts';
 import {
 	chainProbeCapabilityKey,
 	type ChainProbe,
@@ -22,8 +21,8 @@ import {
 
 describe('contracts/chain-probe — structural pins', () => {
 	it('`chainProbeCapabilityKey(chain)` mints `chain-probe:<chain>`', () => {
-		expect(chainProbeCapabilityKey(chainId('sui:testnet'))).toBe('chain-probe:sui:testnet');
-		expect(chainProbeCapabilityKey(chainId('sui:local'))).toBe('chain-probe:sui:local');
+		expect(chainProbeCapabilityKey('sui:testnet')).toBe('chain-probe:sui:testnet');
+		expect(chainProbeCapabilityKey('sui:local')).toBe('chain-probe:sui:local');
 	});
 
 	it('`ChainProbeMode` is the closed `"lenient" | "strict"` union', () => {

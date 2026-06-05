@@ -9,22 +9,21 @@ import { bcs } from '@mysten/sui/bcs';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 
-import { chainId as brandChainId } from '../../substrate/brand.ts';
 import {
 	artifactPublishError,
 	type ArtifactPublishError,
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
-import type { SuiSdkShim } from '../sui/index.ts';
 import type { CoinValue } from '../coin/index.ts';
-import type { ResolvedSigner } from '../../substrate/runtime/sui-execute/index.ts';
 import {
+	currentLedgerObjectRef,
 	executeSuiTx,
 	formatExecutedFailure,
 	isSuiStaleObjectVersionError,
-} from '../../substrate/runtime/sui-execute/index.ts';
-import { currentLedgerObjectRef } from '../../substrate/runtime/sui-ledger/object-ref.ts';
+	type ResolvedSigner,
+	type SuiSdkShim,
+} from '../sui/index.ts';
 import { probeManyLenient } from '../../substrate/runtime/probes.ts';
 import {
 	makeSpacedRetrySchedule,
@@ -338,7 +337,7 @@ export const createDeepbookPools = (
 			CachedDeepbookPoolsResult
 		>(publisher, {
 			namespace: 'deepbook/pools',
-			chain: brandChainId(chain),
+			chain,
 			contentHash: poolInputsHash(pkg, signer, pools),
 			verify: (cached) => buildVerifyProbe(sdk, cached),
 			produce: Effect.gen(function* () {
@@ -687,119 +686,119 @@ export const seedDeepbookPools = (
 				CachedDeepbookSeedResult
 			>(publisher, {
 				namespace: `deepbook/seed/${spec.name}`,
-				chain: brandChainId(chain),
+				chain,
 				contentHash: seedInputsHash(pkg, signer, spec, pool),
 				verify: (cached) => buildSeedVerifyProbe(sdk, cached),
 				produce: Effect.gen(function* () {
-						yield* requestSeedFunding(
-							spec.baseFundingStrategy,
-							signer,
-							pool.baseCoinType,
-							seed.baseAmount,
-						);
-						yield* requestSeedFunding(
-							spec.quoteFundingStrategy,
-							signer,
-							pool.quoteCoinType,
-							seed.quoteAmount,
-						);
+					yield* requestSeedFunding(
+						spec.baseFundingStrategy,
+						signer,
+						pool.baseCoinType,
+						seed.baseAmount,
+					);
+					yield* requestSeedFunding(
+						spec.quoteFundingStrategy,
+						signer,
+						pool.quoteCoinType,
+						seed.quoteAmount,
+					);
 
-						const result = yield* executeSuiTxWithStaleObjectRetry({
-							client: sdk.client,
-							signer,
-							build: async () => {
-								const tx = new Transaction();
-								tx.setSender(signer.address);
-								await setExplicitSeedGasPayment(tx, sdk, signer, seedSuiDepositAmount(pool, seed));
-								const registry = await sharedObject(tx, sdk, pkg.registryId, true);
-								const poolObject = await sharedObject(tx, sdk, pool.poolId, true);
-								const balanceManager = tx.moveCall({
-									target: `${pkg.packageId}::balance_manager::new`,
-									arguments: [],
-								});
+					const result = yield* executeSuiTxWithStaleObjectRetry({
+						client: sdk.client,
+						signer,
+						build: async () => {
+							const tx = new Transaction();
+							tx.setSender(signer.address);
+							await setExplicitSeedGasPayment(tx, sdk, signer, seedSuiDepositAmount(pool, seed));
+							const registry = await sharedObject(tx, sdk, pkg.registryId, true);
+							const poolObject = await sharedObject(tx, sdk, pool.poolId, true);
+							const balanceManager = tx.moveCall({
+								target: `${pkg.packageId}::balance_manager::new`,
+								arguments: [],
+							});
+							tx.moveCall({
+								target: `${pkg.packageId}::balance_manager::register_balance_manager`,
+								arguments: [balanceManager, registry],
+							});
+							await depositIntoBalanceManager(
+								tx,
+								sdk,
+								signer,
+								pkg,
+								balanceManager,
+								pool.baseCoinType,
+								seed.baseAmount,
+							);
+							await depositIntoBalanceManager(
+								tx,
+								sdk,
+								signer,
+								pkg,
+								balanceManager,
+								pool.quoteCoinType,
+								seed.quoteAmount,
+							);
+
+							const tradeProof = tx.moveCall({
+								target: `${pkg.packageId}::balance_manager::generate_proof_as_owner`,
+								arguments: [balanceManager],
+							});
+							for (const [index, order] of seed.orders.entries()) {
 								tx.moveCall({
-									target: `${pkg.packageId}::balance_manager::register_balance_manager`,
-									arguments: [balanceManager, registry],
+									target: `${pkg.packageId}::pool::place_limit_order`,
+									typeArguments: [pool.baseCoinType, pool.quoteCoinType],
+									arguments: [
+										poolObject,
+										balanceManager,
+										tradeProof,
+										tx.pure.u64(order.clientOrderId ?? BigInt(index + 1)),
+										tx.pure.u8(ORDER_TYPE_POST_ONLY),
+										tx.pure.u8(SELF_MATCHING_CANCEL_TAKER),
+										tx.pure.u64(order.price),
+										tx.pure.u64(order.quantity),
+										tx.pure.bool(order.side === 'bid'),
+										tx.pure.bool(order.payWithDeep ?? false),
+										tx.pure.u64(MAX_TIMESTAMP),
+										tx.object.clock(),
+									],
 								});
-								await depositIntoBalanceManager(
-									tx,
-									sdk,
-									signer,
-									pkg,
-									balanceManager,
-									pool.baseCoinType,
-									seed.baseAmount,
-								);
-								await depositIntoBalanceManager(
-									tx,
-									sdk,
-									signer,
-									pkg,
-									balanceManager,
-									pool.quoteCoinType,
-									seed.quoteAmount,
-								);
-
-								const tradeProof = tx.moveCall({
-									target: `${pkg.packageId}::balance_manager::generate_proof_as_owner`,
-									arguments: [balanceManager],
-								});
-								for (const [index, order] of seed.orders.entries()) {
-									tx.moveCall({
-										target: `${pkg.packageId}::pool::place_limit_order`,
-										typeArguments: [pool.baseCoinType, pool.quoteCoinType],
-										arguments: [
-											poolObject,
-											balanceManager,
-											tradeProof,
-											tx.pure.u64(order.clientOrderId ?? BigInt(index + 1)),
-											tx.pure.u8(ORDER_TYPE_POST_ONLY),
-											tx.pure.u8(SELF_MATCHING_CANCEL_TAKER),
-											tx.pure.u64(order.price),
-											tx.pure.u64(order.quantity),
-											tx.pure.bool(order.side === 'bid'),
-											tx.pure.bool(order.payWithDeep ?? false),
-											tx.pure.u64(MAX_TIMESTAMP),
-											tx.object.clock(),
-										],
-									});
-								}
-								tx.transferObjects([balanceManager], signer.address);
-								return tx.build({ client: sdk.client });
-							},
-						}).pipe(
-							Effect.mapError(
-								(err): ArtifactPublishError =>
-									artifactPublishError(
-										'produce-failed',
-										`deepbook seed transaction failed for pool '${spec.name}': ${err.message}`,
-									),
+							}
+							tx.transferObjects([balanceManager], signer.address);
+							return tx.build({ client: sdk.client });
+						},
+					}).pipe(
+						Effect.mapError(
+							(err): ArtifactPublishError =>
+								artifactPublishError(
+									'produce-failed',
+									`deepbook seed transaction failed for pool '${spec.name}': ${err.message}`,
+								),
+						),
+					);
+					if (result.$kind === 'FailedTransaction') {
+						return yield* Effect.fail(
+							artifactPublishError(
+								'produce-failed',
+								`deepbook seed transaction on-chain execution failed for pool '${spec.name}' ` +
+									formatExecutedFailure(result.FailedTransaction),
 							),
 						);
-						if (result.$kind === 'FailedTransaction') {
-							return yield* Effect.fail(
-								artifactPublishError(
-									'produce-failed',
-									`deepbook seed transaction on-chain execution failed for pool '${spec.name}' ` +
-										formatExecutedFailure(result.FailedTransaction),
-								),
-							);
-						}
-						const receipt = result.Transaction;
+					}
+					const receipt = result.Transaction;
 
-						const balanceManagerId = pickCreatedBalanceManager(receipt.objectChanges);
-						if (balanceManagerId === null) {
-							return yield* Effect.fail(
-								artifactPublishError(
-									'produce-failed',
-									`deepbook seed BalanceManager not found in objectChanges ` +
-										`(digest=${receipt.digest}).`,
-								),
-							);
-						}
-						return { poolName: spec.name, balanceManagerId, digest: receipt.digest };
-					}),
-				}).pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
+					const balanceManagerId = pickCreatedBalanceManager(receipt.objectChanges);
+					if (balanceManagerId === null) {
+						return yield* Effect.fail(
+							artifactPublishError(
+								'produce-failed',
+								`deepbook seed BalanceManager not found in objectChanges ` +
+									`(digest=${receipt.digest}).`,
+							),
+						);
+					}
+					return { poolName: spec.name, balanceManagerId, digest: receipt.digest };
+				}),
+			}).pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
 
 			seeded.push(result);
 		}

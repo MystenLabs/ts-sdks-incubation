@@ -1,6 +1,6 @@
 // signAndDispatch — focused unit tests for the substrate-side
 // boilerplate compactor at
-// `src/substrate/runtime/sui-execute/sign-and-dispatch.ts`.
+// `src/plugins/sui/exec/sign-and-dispatch.ts`.
 //
 // What this pins:
 //
@@ -29,7 +29,7 @@ import {
 	type SignAndDispatchResult,
 	type SignAndDispatchSigner,
 	type TransactionSignerSource,
-} from '../../../../src/substrate/runtime/sui-execute/sign-and-dispatch.ts';
+} from '../../../../src/plugins/sui/exec/sign-and-dispatch.ts';
 
 // ---------------------------------------------------------------------------
 // Test-only error tags — match the real plugin pattern (callers wrap

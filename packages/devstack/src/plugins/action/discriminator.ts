@@ -16,13 +16,13 @@
 //                      callback `(ctx, deps) => Effect<string>`
 //                      receiving action helpers and resolved deps
 //                      shaped by `dependsOn`. The callback form re-runs
-//                      on EVERY acquire (hit OR miss) — mirrors v3's `cacheKey:
-//                      Effect<string>` semantics (16-action.md
+//                      on EVERY acquire (hit OR miss) — a
+//                      `cacheKey: Effect<string>` (16-action.md
 //                      invariant 5/6).
 //
 // The dynamic discriminator covers the common case where the action's
 // idempotency hinges on a value not known until upstream resolution
-// completes. The v3 example: `cacheKey: Effect.gen(function* () {
+// completes, e.g. `cacheKey: Effect.gen(function* () {
 // const pkg = yield* connectFour; return pkg.packageId; })`.
 
 import type { Effect } from 'effect';
@@ -37,8 +37,8 @@ export interface StaticDiscriminator {
 	/** Symbolic action name. */
 	readonly actionName: string;
 	/** Resource-id literals of every entry in `dependsOn`, in declaration
-	 *  order. Reordering MUST invalidate the cache (this is the v3
-	 *  behavior — `needs.map(n => n.key)` was folded in order). */
+	 *  order. Reordering MUST invalidate the cache (`needs.map(n => n.key)`
+	 *  is folded in order). */
 	readonly dependencyResourceIds: ReadonlyArray<string>;
 }
 

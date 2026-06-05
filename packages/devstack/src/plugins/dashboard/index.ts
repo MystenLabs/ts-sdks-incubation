@@ -12,6 +12,7 @@
 
 import { Effect } from 'effect';
 import { type AnyPlugin, definePlugin, resource } from '../../api/define-plugin.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
@@ -83,6 +84,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 		keepAliveOnRestore: true,
 		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const portBroker = yield* PortBrokerService;
 				const control = yield* ControlPlaneService;
 				const identity = yield* IdentityContext;
@@ -174,14 +176,21 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 						),
 				});
 
-				return { url: server.url, localPort: allocated.port } satisfies DashboardValue;
+				const resolved = { url: server.url, localPort: allocated.port } satisfies DashboardValue;
+
+				// Emit the Routable via the ctx verb before returning.
+				// `value.localPort` is this resolved `localPort`;
+				// `runtime.identity.app`/`.stack` is the `identity` this
+				// `start` already holds from `IdentityContext`.
+				ctx.endpoint(
+					makeDashboardRoutable({
+						app: identity.app,
+						stack: identity.stack,
+						port: resolved.localPort,
+					}),
+				);
+
+				return resolved;
 			}),
-		capabilities: ({ value, runtime }) => [
-			makeDashboardRoutable({
-				app: runtime.identity.app,
-				stack: runtime.identity.stack,
-				port: value.localPort,
-			}),
-		],
 	});
 }

@@ -89,17 +89,6 @@ export const eventLogLineFromEvent = (
 				scopeColor: 'white',
 				message: `shutdown hard-kill escalated by ${event.signal} (exit ${event.exitCode})`,
 			});
-		case 'snapshot.captureStarted':
-			return line({
-				id,
-				level: 'info',
-				at,
-				scope: 'Snapshot',
-				scopeColor: 'blueBright',
-				message: event.name === undefined ? 'capture started' : `capture started for ${event.name}`,
-			});
-		case 'snapshot.captureProgress':
-			return null;
 		case 'snapshot.captureSkipped':
 			return line({
 				id,
@@ -143,13 +132,14 @@ export const eventLogLineFromEvent = (
 				message: `restored ${event.snapshotId}`,
 			});
 		case 'engine.orchestrator.dispatchFailed':
-			// A capability sink (e.g. `routable`) rejected, but the plugin is
-			// left `ready` on purpose (non-fatal sink — see
-			// dispatch-contributions.ts). Previously suppressed here, which
-			// meant a live-dashboard operator saw a green stack with dead
-			// RPC/wallet routing. Surface it as a warning so the failure is
-			// visible; lead with the cause `_tag` when present so the line
-			// names WHICH orchestrator broke.
+			// A buffered contribution (e.g. `routable`) failed when the
+			// supervisor replayed it through the `ContributionDispatcher`, but
+			// the plugin is left `ready` on purpose (non-fatal dispatch — see
+			// `dispatchBufferedContributions` in acquire-node.ts). Previously
+			// suppressed here, which meant a live-dashboard operator saw a
+			// green stack with dead RPC/wallet routing. Surface it as a
+			// warning so the failure is visible; lead with the cause `_tag`
+			// when present so the line names WHICH orchestrator broke.
 			return line({
 				id,
 				level: 'warn',

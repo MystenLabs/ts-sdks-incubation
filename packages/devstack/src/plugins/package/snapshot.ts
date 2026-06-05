@@ -6,10 +6,10 @@
 // re-confirms."
 //
 // The Package plugin OWNS the publishMove cache entries in the
-// StateStore — those land under the substrate's runtime-dir root
-// at `state-store/<plugin-key>/...` and are auto-captured by the
-// substrate without an explicit subtree decl. We declare a
-// `missingTolerance: 'fine'` shape because:
+// substrate's content-addressed cache — those land under the per-stack
+// runtime root at `cache/<namespace>/<chainId>/...` and are auto-captured
+// by the substrate's cache subtree without an explicit subtree decl. We
+// declare a `missingTolerance: 'fine'` shape because:
 //
 //   - A restored stack with a missing cache entry simply re-publishes
 //     (cache miss). No data loss.

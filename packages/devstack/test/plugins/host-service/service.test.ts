@@ -7,7 +7,7 @@ import { describe, expect, it } from '@effect/vitest';
 import { Deferred, Effect, Exit, Fiber, Option, type Scope } from 'effect';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
-import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import { Logger, type LoggerShape } from '../../../src/substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import { IdentityContext, RuntimeRoot } from '../../../src/substrate/runtime/paths.ts';
@@ -35,6 +35,7 @@ import {
 	layerPostAcquireTasks,
 	PostAcquireTasksService,
 } from '../../../src/substrate/runtime/post-acquire-tasks.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 class FakeChild extends EventEmitter implements HostProcessChild {
 	readonly stdout = new PassThrough();
@@ -444,9 +445,11 @@ describe('acquireHostService', () => {
 			ready: { kind: 'log', pattern: 'ready', timeoutMs: 5_000 },
 		});
 
+		const { provide, captured } = makeTestPluginCtx();
+
 		return Effect.scoped(
 			Effect.gen(function* () {
-				const start = member.start(undefined).pipe(
+				const start = provide(member.start(undefined)).pipe(
 					Effect.provideService(PortBrokerService, broker),
 					Effect.provideService(Logger, fakeLogger),
 					Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
@@ -456,7 +459,7 @@ describe('acquireHostService', () => {
 					Effect.provideService(IdentityContext, {
 						app: appName('host-service-test'),
 						stack: stackName('host-service-test'),
-						chain: chainId('localnet'),
+						chain: 'localnet',
 					}),
 					Effect.provideService(RuntimeRoot, { root: '/tmp/host-service-test-root' }),
 				) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
@@ -472,6 +475,16 @@ describe('acquireHostService', () => {
 				expect(value.port).toBe(6173);
 				expect(allocations).toEqual([
 					{ owner: 'host-service:frontend', preferredPort: 5170, probeHost: '0.0.0.0' },
+				]);
+				// Stage B P2: the routable endpoint is now emitted INLINE from
+				// `start` via `ctx.endpoint` (formerly the `capabilities`
+				// closure), built from the resolved `HostServiceValue` fields.
+				expect(captured.endpoint).toEqual([
+					makeHostServiceRoutable({
+						endpointName: value.endpointName,
+						serviceName: value.name,
+						port: value.port,
+					}),
 				]);
 				const postAcquireTasks = yield* PostAcquireTasksService;
 				yield* postAcquireTasks.runAll;

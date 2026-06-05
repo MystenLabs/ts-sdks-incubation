@@ -116,8 +116,149 @@ export interface DashboardSummary {
 	readonly accountCount: number;
 	readonly packageCount: number;
 	readonly errorCount: number;
-	readonly health: 'ready' | 'active' | 'blocked' | 'empty';
+	readonly health: HealthState;
 }
+
+// -----------------------------------------------------------------------------
+// Surface-neutral stack ViewModel — the single canonical bucketing
+// -----------------------------------------------------------------------------
+
+/**
+ * The one canonical health-derived enum. The same four states are shared
+ * by both surface policies; only the *bucketing rules* differ (see
+ * `deriveHealth`).
+ */
+export type HealthState = 'ready' | 'active' | 'blocked' | 'empty';
+
+/**
+ * Surface-neutral roll-up of a projection snapshot. ONE canonical
+ * bucketing that every surface (TUI dashboard, web GraphQL
+ * `StackState.summary`, CLI `status`) derives from — no surface gets to
+ * re-count rows on its own.
+ *
+ * The `stopped` status is surfaced here as its OWN discrete count rather
+ * than folded into either `ready` or `waiting`. No surface loses
+ * information: `deriveHealth(counts, policy)` re-applies each surface's documented
+ * rule, and the web adapter folds `stopped` into its GraphQL `ready`
+ * contract INSIDE the web adapter — never in this shared shape.
+ *
+ * ready/active/failed/waiting follow the web switch (was
+ * `computeHealthSummary`) with `stopped` pulled out separately:
+ *   - readyRows:   ready | done
+ *   - activeRows:  acquiring | stopping
+ *   - failedRows:  failed
+ *   - waitingRows: pending
+ *   - stoppedRows: stopped
+ */
+export interface StackViewModel {
+	readonly total: number;
+	readonly readyRows: number;
+	readonly activeRows: number;
+	readonly failedRows: number;
+	readonly waitingRows: number;
+	readonly stoppedRows: number;
+	readonly endpointCount: number;
+	readonly accountCount: number;
+	readonly packageCount: number;
+	readonly errorCount: number;
+}
+
+/** Health bucketing policy. `'tui'` preserves the operator-facing TUI
+ *  rule (pending/stopped/mid-flight all read as "system not settled" →
+ *  `active`); `'web'` preserves the GraphQL contract (stopped folds into
+ *  ready, pending-only reads as `empty`). The two policies are kept
+ *  NAMED and SEPARATE — never unified — so neither surface regresses. */
+export type HealthPolicy = 'tui' | 'web';
+
+/**
+ * Derive the single canonical surface-neutral ViewModel from a snapshot.
+ * Pure. No surface coupling — substrate types only.
+ */
+export const deriveStackViewModel = (
+	state: Pick<SubscribableState, 'rows' | 'endpoints' | 'accounts' | 'packages' | 'errors'>,
+): StackViewModel => {
+	let readyRows = 0;
+	let activeRows = 0;
+	let failedRows = 0;
+	let waitingRows = 0;
+	let stoppedRows = 0;
+	for (const row of state.rows) {
+		switch (row.status) {
+			case 'ready':
+			case 'done':
+				readyRows += 1;
+				break;
+			case 'acquiring':
+			case 'stopping':
+				activeRows += 1;
+				break;
+			case 'failed':
+				failedRows += 1;
+				break;
+			case 'pending':
+				waitingRows += 1;
+				break;
+			case 'stopped':
+				stoppedRows += 1;
+				break;
+			default: {
+				const _exhaustive: never = row.status;
+				void _exhaustive;
+			}
+		}
+	}
+	return {
+		total: state.rows.length,
+		readyRows,
+		activeRows,
+		failedRows,
+		waitingRows,
+		stoppedRows,
+		endpointCount: visibleEndpointCount(state.rows, state.endpoints),
+		accountCount: state.accounts.length,
+		packageCount: state.packages.length,
+		errorCount: state.errors.length,
+	};
+};
+
+/**
+ * Resolve the canonical counts to a health enum under a NAMED policy.
+ * The two policies are documented divergent and kept separate:
+ *
+ *   policy='tui': total===0 → empty; failed>0 → blocked;
+ *     (active>0 || waiting>0 || stopped>0) → active; else ready.
+ *     (Preserves the TUI operator signal where anything not-yet-settled
+ *      — including a stopped row — reads as `active`.)
+ *
+ *   policy='web': failed>0 → blocked; active>0 → active;
+ *     total>0 && (ready+stopped)===total → ready; else empty.
+ *     (Preserves the web GraphQL contract where `stopped` folds into the
+ *      ready denominator and a pending-only stack reads as `empty`.)
+ */
+export const deriveHealth = (
+	counts: Pick<
+		StackViewModel,
+		'total' | 'readyRows' | 'activeRows' | 'failedRows' | 'waitingRows' | 'stoppedRows'
+	>,
+	policy: HealthPolicy,
+): HealthState => {
+	if (policy === 'tui') {
+		return counts.total === 0
+			? 'empty'
+			: counts.failedRows > 0
+				? 'blocked'
+				: counts.activeRows > 0 || counts.waitingRows > 0 || counts.stoppedRows > 0
+					? 'active'
+					: 'ready';
+	}
+	return counts.failedRows > 0
+		? 'blocked'
+		: counts.activeRows > 0
+			? 'active'
+			: counts.total > 0 && counts.readyRows + counts.stoppedRows === counts.total
+				? 'ready'
+				: 'empty';
+};
 
 // -----------------------------------------------------------------------------
 // Status → glyph / color / label
@@ -400,38 +541,29 @@ export const groupRows = (
 		}));
 };
 
+/**
+ * TUI dashboard summary. Delegates to the canonical `deriveStackViewModel`
+ * + `deriveHealth(counts, 'tui')`. The `waitingRows` field folds the
+ * discrete `stoppedRows` back in (the TUI counts stopped rows as
+ * "waiting") so `dashboardSummaryLine` and its consumers get the TUI's
+ * expected shape.
+ */
 export const deriveDashboardSummary = (
 	state: Pick<SubscribableState, 'rows' | 'endpoints' | 'accounts' | 'packages' | 'errors'>,
 ): DashboardSummary => {
-	const readyRows = state.rows.filter(
-		(row) => row.status === 'ready' || row.status === 'done',
-	).length;
-	const activeRows = state.rows.filter(
-		(row) => row.status === 'acquiring' || row.status === 'stopping',
-	).length;
-	const failedRows = state.rows.filter((row) => row.status === 'failed').length;
-	const waitingRows = state.rows.filter(
-		(row) => row.status === 'pending' || row.status === 'stopped',
-	).length;
-	const health =
-		state.rows.length === 0
-			? 'empty'
-			: failedRows > 0
-				? 'blocked'
-				: activeRows > 0 || waitingRows > 0
-					? 'active'
-					: 'ready';
+	const vm = deriveStackViewModel(state);
 	return {
-		totalRows: state.rows.length,
-		readyRows,
-		activeRows,
-		failedRows,
-		waitingRows,
-		endpointCount: visibleEndpointCount(state.rows, state.endpoints),
-		accountCount: state.accounts.length,
-		packageCount: state.packages.length,
-		errorCount: state.errors.length,
-		health,
+		totalRows: vm.total,
+		readyRows: vm.readyRows,
+		activeRows: vm.activeRows,
+		failedRows: vm.failedRows,
+		// TUI's `waitingRows` counts pending + stopped together.
+		waitingRows: vm.waitingRows + vm.stoppedRows,
+		endpointCount: vm.endpointCount,
+		accountCount: vm.accountCount,
+		packageCount: vm.packageCount,
+		errorCount: vm.errorCount,
+		health: deriveHealth(vm, 'tui'),
 	};
 };
 
@@ -530,15 +662,6 @@ export const endpointLine = (endpoint: Endpoint): string => {
 			: '';
 	const protocol = endpoint.wireProtocol === 'http' ? '' : ` [${endpoint.wireProtocol}]`;
 	return `${endpoint.name}: ${target}${backing}${protocol}`;
-};
-
-export const endpointsSummaryForRow = (
-	row: Pick<Row, 'key' | 'endpoints'>,
-	endpoints: ReadonlyArray<Endpoint>,
-): string => {
-	const rowEndpoints = visibleEndpointsForRow(row, endpoints);
-	if (rowEndpoints.length === 0) return '';
-	return rowEndpoints.map(endpointLine).join(' | ');
 };
 
 export const accountLine = (account: AccountProjection): string => {

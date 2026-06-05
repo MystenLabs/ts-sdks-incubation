@@ -12,7 +12,6 @@ import type {
 	ArtifactPublisher,
 	ArtifactSpec,
 } from '../../../src/primitives/artifact-publisher.ts';
-import { chainId } from '../../../src/substrate/brand.ts';
 import { MASTER_KEY_ENVFILE_BASENAME } from '../../../src/plugins/seal/keygen.ts';
 import {
 	bootLocalKeygen,
@@ -118,7 +117,7 @@ const deps = (root: string, events: string[]): LocalKeygenDeps => ({
 	chainProbe: {
 		get: () => Effect.succeed(null),
 	},
-	chain: chainId('sui:local'),
+	chain: 'sui:local',
 	servicePath: join(root, 'seal', 'seal'),
 	containerName: 'devstack-app-main-seal-seal-key-server',
 	labels: { app: 'app', stack: 'main', plugin: 'seal', role: 'key-server' },

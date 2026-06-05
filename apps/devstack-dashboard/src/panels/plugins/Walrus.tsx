@@ -31,11 +31,19 @@ import {
 	timeAgo,
 	truncateMiddle,
 } from '../../lib/format.ts';
+import {
+	probeBanner,
+	probeDaemon,
+	probeLabel,
+	PROBE_TOKEN,
+	trimTrailingSlash,
+	type ProbeResult,
+} from '../../lib/probe.ts';
 import { navigate, gotoObject, gotoTx } from '../../lib/router.ts';
+import { suiGraphqlUrl } from '../../lib/sui-graphql.ts';
 import { useToast } from '../../lib/toast.tsx';
 import type { Endpoint } from '../../lib/types.ts';
 import {
-	walrusGraphqlUrl,
 	walrusPackageId,
 	useRecentBlobs,
 	useShardAssignments,
@@ -45,6 +53,7 @@ import {
 } from '../../lib/walrus.ts';
 import {
 	Badge,
+	Banner,
 	CopyChip,
 	Dot,
 	EmptyState,
@@ -99,40 +108,20 @@ const Field = ({ label, children }: { label: string; children: ReactNode }) => (
 	</div>
 );
 
-/** Reachability of the aggregator daemon, probed directly from the browser. */
-type DaemonState = 'probing' | 'reachable' | 'unreachable';
-
-interface DaemonProbe {
-	readonly state: DaemonState;
-	readonly detail: string;
-}
-
 /**
- * Probe the Walrus aggregator daemon directly from the browser. The storage
- * routes set `cors: true`, so a readable response means the daemon is up; a
- * CORS-opaque response that still resolves means the socket is alive even though
- * we can't read the body. A network rejection means genuinely unreachable.
+ * Probe the Walrus aggregator daemon directly from the browser via the shared
+ * 3-state probe (`lib/probe.ts`). We try two fully-formed candidates
+ * (`${root}/v1/api` then the root); the storage routes set `cors: true`, so a
+ * healthy daemon answers a *readable* 2xx. See `lib/probe.ts` for the full
+ * up/down/unreachable semantics.
  */
-const probeAggregator = async (baseUrl: string): Promise<DaemonProbe> => {
-	const root = baseUrl.replace(/\/+$/, '');
-	const candidates = [`${root}/v1/api`, root];
-	let lastDetail = 'no response';
-	for (const url of candidates) {
-		try {
-			const res = await fetch(url, { method: 'GET', mode: 'cors' });
-			if (res.ok) return { state: 'reachable', detail: `HTTP ${res.status} · ${url}` };
-			lastDetail = `HTTP ${res.status}`;
-		} catch (err) {
-			try {
-				await fetch(url, { method: 'GET', mode: 'no-cors' });
-				return { state: 'reachable', detail: `reachable (opaque) · ${url}` };
-			} catch {
-				lastDetail = err instanceof Error ? err.message : String(err);
-			}
-		}
-	}
-	return { state: 'unreachable', detail: lastDetail };
+const probeAggregator = (baseUrl: string): Promise<ProbeResult> => {
+	const root = trimTrailingSlash(baseUrl);
+	return probeDaemon([`${root}/v1/api`, root]);
 };
+
+// This panel's daemon noun is "aggregator": the `up` dot reads `reachable`.
+const PROBE_LABEL = probeLabel('reachable');
 
 const byName = (endpoints: ReadonlyArray<Endpoint>, name: string): Endpoint | null =>
 	endpoints.find((e) => e.name === name) ?? null;
@@ -157,7 +146,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 
 	// Browser-direct Walrus reads over the node's Sui GraphQL endpoint.
 	const source: WalrusSource = {
-		graphqlUrl: walrusGraphqlUrl(projection.endpoints),
+		graphqlUrl: suiGraphqlUrl(projection.endpoints),
 		packageId: walrusPackageId(projection.packages),
 		network,
 	};
@@ -167,7 +156,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 	const shards = shardsQ.data ?? null;
 	const blobs = blobsQ.data ?? [];
 
-	const [probe, setProbe] = useState<DaemonProbe>({ state: 'probing', detail: '' });
+	const [probe, setProbe] = useState<ProbeResult>({ state: 'probing', detail: '' });
 
 	// Probe the aggregator daemon directly whenever the connected stack changes.
 	useEffect(() => {
@@ -186,9 +175,33 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 		};
 	}, [aggregator?.url, network]);
 
-	const clusterReady = probe.state === 'reachable';
+	const clusterReady = probe.state === 'up';
+	const probeToken = PROBE_TOKEN[probe.state];
+	// Two distinct banner-worthy states. `down` = a readable non-2xx from the
+	// aggregator's HTTP API: a genuine outage, surfaced in red. `unreachable` = no
+	// readable response: the ambiguous CORS/network case, surfaced in soft yellow.
+	// `up`/`probing` get no banner. The shared `probeBanner` returns the tone +
+	// title + body; this panel supplies its verbatim copy and appends `probe.detail`.
+	const banner = probeBanner(probe.state, {
+		downTitle: 'Walrus aggregator is down',
+		unreachableTitle: 'Aggregator unreachable from the browser',
+		endpointPhrase: "aggregator's HTTP API",
+		unreachableSubject: 'daemon',
+		downConsequence: 'Storage',
+	});
 	const nodeCount = nodeEndpoints.length;
 	const epoch = epochQ.data ?? null;
+
+	// Re-probe the aggregator daemon on demand (banner action buttons).
+	const runProbe = () => {
+		const url = aggregator?.url ?? null;
+		if (!url) {
+			setProbe({ state: 'unreachable', detail: 'no aggregator endpoint' });
+			return;
+		}
+		setProbe({ state: 'probing', detail: '' });
+		void probeAggregator(url).then(setProbe);
+	};
 
 	return (
 		<PluginScaffold
@@ -223,6 +236,27 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 				</>
 			}
 		>
+			{/* `down` (red) = the aggregator's HTTP API answered with a readable
+			    non-2xx status — a genuine outage: storage requests will fail.
+			    `unreachable` (soft yellow) = no readable response (fetch threw, or an
+			    opaque CORS-hidden response) — genuinely ambiguous, may still work
+			    in-process. `up`/`probing` -> no banner. Tone + title + body come from
+			    the shared `probeBanner`; this panel appends `probe.detail`. */}
+			{banner && (
+				<Banner
+					tone={banner.tone}
+					title={banner.title}
+					action={
+						<button className="btn btn-sm" onClick={runProbe}>
+							<Icon name="refresh" size={13} /> Probe
+						</button>
+					}
+				>
+					{banner.body}
+					{probe.detail ? ` (${probe.detail})` : ''}
+				</Banner>
+			)}
+
 			{/* KPIs — storage epoch + shard count come from on-chain Walrus events
 			    over the node's GraphQL; blobs-stored is derived from the recent-blobs
 			    query (a floor: it counts blobs seen in the recent register/certify
@@ -244,7 +278,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 								: `0/${nodeCount}`
 					}
 					sub="nodes reachable"
-					token={clusterReady ? 'green' : probe.state === 'probing' ? 'yellow' : 'white'}
+					token={probeToken}
 					icon="database"
 				/>
 				<Kpi
@@ -305,26 +339,10 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 						</Field>
 						<Field label="Daemon">
 							<span className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>
-								<Dot
-									token={clusterReady ? 'green' : probe.state === 'probing' ? 'yellow' : 'red'}
-									pulse={probe.state === 'probing'}
-								/>
+								<Dot token={probeToken} pulse={probe.state === 'probing'} />
 								<Tooltip label={probe.detail || 'probing the aggregator daemon'}>
-									<span
-										style={{
-											fontSize: 12.5,
-											color: clusterReady
-												? 'var(--c-green)'
-												: probe.state === 'probing'
-													? 'var(--c-yellow)'
-													: 'var(--c-red)',
-										}}
-									>
-										{probe.state === 'probing'
-											? 'probing'
-											: clusterReady
-												? 'reachable'
-												: 'unreachable'}
+									<span style={{ fontSize: 12.5, color: `var(--c-${probeToken})` }}>
+										{PROBE_LABEL[probe.state]}
 									</span>
 								</Tooltip>
 							</span>

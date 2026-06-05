@@ -1,24 +1,41 @@
-// Capture pipeline.
+// Capture — the unified lifecycle bounce (capture half).
 //
-// Architecture § Snapshot lifecycle (capture half):
+// Capture is a parameterization of the lifecycle bounce, NOT a separate
+// subsystem:
 //
-//   Walk Snapshotable registry; group by plugin.
-//   Validate the full capture set.
-//   Pause every running managed container (unless already stopped).
-//   While paused:
-//     docker commit + tag committed images
-//     tar host-tree subtrees with mode round-trip
-//     collect metadata slice
-//   Unpause (always — success AND failure)
-//   Stage everything in tempdir.
-//   Atomic rename → snapshot catalog entry.
+//   gather (BEFORE stop, plugins live)
+//     → graceful-stop all managed containers (FLUSHES RocksDB/WAL → the
+//       committed image is faithful — the walrus capture-survival fix; a
+//       `docker pause` does NOT flush, which is the original regression)
+//     → docker commit each STOPPED container + saveImages + tar host-tree
+//       + write contributions + meta.json LAST → publish via stageAndSwap
+//     → retag each committed image to the container's ORIGINAL image name +
+//       HARD-rm the stopped containers
+//     → resume = recreate-from-image + wait-write-ready
+//
+// The resume is recreate-from-image (NEVER `docker start` — walrus storage
+// nodes EXIT on `docker start` after a graceful stop) and waits for
+// write-readiness (a recreated node re-syncs its committee/epoch and is not
+// write-ready immediately). Both of those live in the LIFECYCLE: the
+// orchestrator cannot recreate a container (it has no plugin spec — env,
+// mounts, networks), so resume is an INJECTED effect that re-runs the
+// plugin acquire (the supervisor's restart / the converge), which goes
+// through `startStorageNodes`' strengthened write-ready ready-gate. So
+// capture inherits write-readiness exactly like up / restart / restore.
+//
+// Because capture commits the live state and resumes the same state, it is
+// NON-DESTRUCTIVE: the retag aliases each container's original image name
+// onto its just-committed writable layer (the flushed RocksDB), so the
+// resume's recreate-from-fresh boots the node on its own committed data —
+// the same mechanism restore uses with its loaded image bundle.
 //
 // The orchestrator is name-blind: it walks `Snapshotable` contributions
-// without referencing any service. Containers are enumerated via the
-// label tuple the participant declared; subtrees via the relative
-// paths the participant declared.
+// without referencing any service. Containers are enumerated via the label
+// tuple the participant declared; subtrees via the relative paths declared.
+// Identity / contributions are gathered BEFORE the stop because the plugin's
+// resolved state is read by live Effects that are gone once scopes close.
 
-import { Effect, Exit, FileSystem, Schema, Stream } from 'effect';
+import { Duration, Effect, Exit, FileSystem, Schema, Stream } from 'effect';
 
 import type {
 	ContainerRuntime,
@@ -30,7 +47,7 @@ import { tarHostTree as streamHostTreeTar } from '../../substrate/runtime/host-t
 import {
 	containerImagesBundlePath,
 	contributionPath,
-	DEPLOY_CACHE_NAMESPACES,
+	deployCacheSubtreeRelPaths,
 	SnapshotLayout,
 	type CapturedContainer,
 	type CapturedSubtree,
@@ -58,7 +75,13 @@ import {
 	type IdentityContributionConflictError,
 	type IdentityGuardError,
 } from './identity-guard.ts';
-import { readSnapshotStateDocument, writeSnapshotStateDocument } from './state-document.ts';
+
+/** Synthetic "plugin" key for the orchestrator-owned deploy-cache subtrees.
+ *  The cache is per-stack runtime state (not plugin-declared), so the capture
+ *  orchestrator injects `cache/<ns>` subtrees under this key rather than
+ *  attributing them to any one plugin. Distinct from any real plugin name (the
+ *  `__…__` sentinel shape), so it cannot collide with a participant. */
+const DEPLOY_CACHE_SUBTREE_PLUGIN = '__deploy-cache__';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -71,18 +94,17 @@ export class CapturePhaseError extends Schema.TaggedErrorClass<CapturePhaseError
 	{
 		phase: Schema.Literals([
 			'enumerate-containers',
-			'quiesce',
-			'pause',
+			'stop',
 			'commit',
 			'save-images',
 			'tar-subtree',
 			'tar-host-tree',
-			'read-state',
-			'write-state',
 			'write-contribution',
 			'write-meta',
 			'write-integrity',
-			'unpause',
+			'retag-image',
+			'remove-container',
+			'resume',
 		]),
 		plugin: Schema.optional(Schema.String),
 		detail: Schema.String,
@@ -102,40 +124,15 @@ export class CapturePhaseError extends Schema.TaggedErrorClass<CapturePhaseError
 export interface SnapshotParticipant {
 	readonly plugin: string;
 	readonly decl: SnapshotableDecl;
-	/** Identity slice this participant contributes to the guard. The
-	 *  orchestrator merges contributions across participants — see
-	 *  `identity-guard.ts`. Returned by the participant's preRestore
-	 *  hook on RESTORE; on CAPTURE the substrate reads the live value
-	 *  via this `captureIdentity` helper (separately wired). */
+	/** Identity slice this participant contributes to the guard. Read by a
+	 *  LIVE Effect (the plugin's resolved state), so it MUST run during the
+	 *  pre-stop gather — it is gone once the bounce stops/recreates. */
 	readonly captureIdentity: Effect.Effect<IdentitySlice>;
 	/** Opaque JSON metadata the plugin wants snapshotted. The
 	 *  contribution document validates only an envelope around this
 	 *  payload; the orchestrator never relies on the payload shape. */
 	readonly captureContribution: Effect.Effect<unknown>;
 }
-
-export type SnapshotCaptureProgressPhase =
-	| 'quiescing'
-	| 'pausing'
-	| 'paused'
-	| 'capturing-containers'
-	| 'saving-images'
-	| 'capturing-host-tree'
-	| 'saving-state'
-	| 'saving-contributions'
-	| 'writing-metadata'
-	| 'resuming';
-
-export interface SnapshotCaptureProgress {
-	readonly phase: SnapshotCaptureProgressPhase;
-	readonly detail?: string;
-	readonly pausedContainers?: number;
-	readonly totalContainers?: number;
-}
-
-export type SnapshotProgressReporter = (
-	progress: SnapshotCaptureProgress,
-) => Effect.Effect<void, never>;
 
 // -----------------------------------------------------------------------------
 // Staging — populate a directory; the caller wraps in stage-and-swap.
@@ -148,18 +145,13 @@ const failImageBundleTagScan = (
 ): Effect.Effect<never, CapturePhaseError> =>
 	Effect.fail(new CapturePhaseError({ phase: 'save-images', detail: cause.detail, cause }));
 
-interface QuiescedContainer {
+interface EnumeratedContainer {
 	readonly handle: ContainerHandle;
 	readonly labels: ContainerLabelTuple;
-	readonly unpauseAfterCapture: boolean;
 }
 
-interface PlannedContainerCapture extends QuiescedContainer {
-	readonly participant: SnapshotParticipant;
-}
-
-interface ReadyContainerCapture extends PlannedContainerCapture {
-	readonly commitHandle: ContainerHandle;
+interface PlannedContainerCapture extends EnumeratedContainer {
+	readonly plugin: string;
 }
 
 interface CommittedContainerCapture {
@@ -186,16 +178,16 @@ const validateSnapshotPathSegment = (
 const validateCapturedContainer = (
 	handle: ContainerHandle,
 	labels: ContainerLabelTuple,
-	participant: SnapshotParticipant,
+	plugin: string,
 ): Effect.Effect<void, CapturePhaseError> =>
 	Effect.gen(function* () {
-		yield* validateSnapshotPathSegment('plugin', labels.plugin, 'commit', participant.plugin);
-		yield* validateSnapshotPathSegment('role', labels.role, 'commit', participant.plugin);
+		yield* validateSnapshotPathSegment('plugin', labels.plugin, 'commit', plugin);
+		yield* validateSnapshotPathSegment('role', labels.role, 'commit', plugin);
 		if (!isRestorableContainerImageName(handle.imageName)) {
 			return yield* Effect.fail(
 				new CapturePhaseError({
 					phase: 'commit',
-					plugin: participant.plugin,
+					plugin,
 					detail: `container ${handle.name} imageName is not a restorable Docker tag destination: ${handle.imageName}`,
 				}),
 			);
@@ -214,7 +206,7 @@ const detectContainerArtifactCollisions = (
 				return yield* Effect.fail(
 					new CapturePhaseError({
 						phase: 'commit',
-						plugin: candidate.participant.plugin,
+						plugin: candidate.plugin,
 						detail: `duplicate managed container snapshot identity ${key} for ${previous.handle.name} and ${candidate.handle.name}`,
 					}),
 				);
@@ -223,29 +215,16 @@ const detectContainerArtifactCollisions = (
 		}
 	});
 
-/**
- * Enumerate a participant's live managed containers, then run its
- * optional app-level quiesce hook. Already-paused, exited, and
- * created containers are committed as-is and are not unpaused by
- * capture finalization.
- *
- * Architecture § Invariants: "A running container must be paused
- * around the writable-layer commit; the unpause must fire on both
- * success and failure paths (no orphaned paused containers). A
- * stopped container is already quiescent and must not be paused."
- *
- * The default quiescence is `pauseAndCommit`; participants that need
- * an application-level flush (postgres, RocksDB) declare a longer-grace
- * `quiesce` effect on their decl — the orchestrator runs it BEFORE
- * `pauseAndCommit`.
- */
-const quiesceParticipant = (
-	participant: SnapshotParticipant,
+/** Enumerate a participant's live managed containers by its declared
+ *  label tuples. `inspectByLabels` matches running AND stopped/created
+ *  containers (`docker ps -a`). */
+const enumerateParticipantContainers = (
+	plugin: string,
+	labelTuples: ReadonlyArray<ContainerLabelTuple>,
 	runtime: ContainerRuntime,
-): Effect.Effect<ReadonlyArray<QuiescedContainer>, CapturePhaseError> =>
+): Effect.Effect<ReadonlyArray<EnumeratedContainer>, CapturePhaseError> =>
 	Effect.gen(function* () {
-		const labelTuples = participant.decl.managedContainers ?? [];
-		const containers: QuiescedContainer[] = [];
+		const containers: EnumeratedContainer[] = [];
 		for (const tuple of labelTuples) {
 			const matched = yield* runtime
 				.inspectByLabels(tuple)
@@ -254,51 +233,36 @@ const quiesceParticipant = (
 						failPhase(
 							'enumerate-containers',
 							`inspect by labels failed for ${tuple.plugin}/${tuple.role}`,
-							participant.plugin,
+							plugin,
 						),
 					),
 				);
 			for (const handle of matched) {
-				if (handle.status === 'running') {
-					containers.push({ handle, labels: tuple, unpauseAfterCapture: true });
-				} else if (
-					handle.status === 'paused' ||
-					handle.status === 'exited' ||
-					handle.status === 'created'
-				) {
-					containers.push({ handle, labels: tuple, unpauseAfterCapture: false });
-				}
+				containers.push({ handle, labels: tuple });
 			}
 		}
-		// Run the optional app-level flush hook first; default pause
-		// follows. The hook itself only signals failure-or-success in
-		// `Cause<never>` (per `SnapshotableDecl.quiesce`'s typed shape) —
-		// the orchestrator does not surface flush errors as a separate
-		// tag; defects propagate through the underlying Cause.
-		if (participant.decl.quiesce) {
-			yield* participant.decl.quiesce.pipe(Effect.scoped, Effect.ignore);
-		}
 		return containers;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.quiesce'));
+	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.enumerate'));
 
-/** Commit one container's writable layer to a temporary snapshot image tag. */
-const commitContainerToImage = (
+/** Commit one STOPPED container's writable layer to a temporary snapshot
+ *  image tag. The container has already been gracefully stopped (RocksDB
+ *  flushed), so this commits the faithful flushed layer. */
+const commitStoppedContainer = (
 	handle: ContainerHandle,
 	labels: ContainerLabelTuple,
 	runtime: ContainerRuntime,
-	participant: SnapshotParticipant,
+	plugin: string,
 	registerCommittedRef: (ref: TaggedImageRef) => Effect.Effect<void>,
 ): Effect.Effect<CommittedContainerCapture, CapturePhaseError> =>
 	Effect.gen(function* () {
-		// pause+commit produces the image; the orchestrator does NOT
-		// unpause here — `runCapture` owns the unpause-on-all-paths
-		// finalizer.
+		// The container is stopped (`exited`), so `pauseAndCommit` skips its
+		// pause branch and commits the already-quiescent, already-flushed
+		// writable layer as-is.
+		const stoppedHandle: ContainerHandle = { ...handle, status: 'exited' };
 		const imageRef = yield* runtime
-			.pauseAndCommit(handle)
+			.pauseAndCommit(stoppedHandle)
 			.pipe(
-				Effect.catch(
-					failPhase('commit', `pauseAndCommit failed for ${handle.name}`, participant.plugin),
-				),
+				Effect.catch(failPhase('commit', `commit failed for ${handle.name}`, plugin)),
 			);
 		const snapshotTag = imageRef.tag;
 		yield* registerCommittedRef(imageRef);
@@ -306,7 +270,7 @@ const commitContainerToImage = (
 			return yield* Effect.fail(
 				new CapturePhaseError({
 					phase: 'commit',
-					plugin: participant.plugin,
+					plugin,
 					detail: `committed image for ${handle.name} did not receive a restorable snapshot tag`,
 				}),
 			);
@@ -336,10 +300,13 @@ const saveCommittedImages = (
 		yield* fs
 			.makeDirectory(`${stagingDir}/${SnapshotLayout.containersDir}`, { recursive: true })
 			.pipe(Effect.catch(failPhase('save-images', `mkdir containers dir failed`)));
+		// `removeAfterSave: false` — the committed temp tags are retained so
+		// the post-publish step can retag each onto its original image name
+		// (the capture-resume alias). A capture-failure finalizer cleans them.
 		yield* Stream.run(
 			runtime.saveImages(
 				committed.map((entry) => entry.imageRef),
-				{ removeAfterSave: true },
+				{ removeAfterSave: false },
 			),
 			fs.sink(tarDest),
 		).pipe(
@@ -450,7 +417,122 @@ const writeHostTreeTar = (
 	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.tar-host-tree'));
 
 // -----------------------------------------------------------------------------
-// Top-level capture — populate a staging directory; caller wraps in swap.
+// Pre-stop gather — runs while plugins are LIVE (the gather-before-drain
+// lesson: identity/contribution Effects read resolved plugin state that is
+// gone once the bounce stops/recreates).
+// -----------------------------------------------------------------------------
+
+/** One participant projected to CONCRETE pre-stop values. No unresolved
+ *  Effect, no live handle — every field is a plain value read while the
+ *  plugin was still acquired, so it survives the stop + recreate. */
+interface GatheredParticipant {
+	readonly plugin: string;
+	readonly labelTuples: ReadonlyArray<ContainerLabelTuple>;
+	readonly identitySlice: IdentitySlice;
+	readonly opaqueState: unknown;
+}
+
+/** Plain pre-stop capture data threaded across the bounce. */
+export interface GatheredCapture {
+	readonly participants: ReadonlyArray<GatheredParticipant>;
+	/** Merged + fail-closed-checked identity. `requireIdentity` already
+	 *  passed during gather, so this is non-empty by construction. */
+	readonly identityMerged: IdentitySlice;
+	readonly declaredSubtrees: ReadonlyArray<CapturedSubtree>;
+	readonly participantKeys: ReadonlyArray<string>;
+}
+
+/**
+ * PRE-STOP gather. Runs while every plugin is still acquired/live:
+ *
+ *   - Run each participant's `captureIdentity` / `captureContribution`
+ *     Effects to concrete values (they read live resolved plugin state).
+ *   - Snapshot each participant's `managedContainers` label tuples and
+ *     declared `subtrees` as plain data.
+ *   - Merge the identity slices with the SAME `mergeContributions`
+ *     predicate the restore-side guard uses (so intra-capture conflicts
+ *     fail HERE, at the capture site, before any stop).
+ *   - `requireIdentity` (fail-closed) HERE so an empty/conflicting
+ *     identity short-circuits BEFORE the bounce stops anything.
+ *
+ * The returned `GatheredCapture` holds no live registry handles; it
+ * survives the stop + recreate.
+ */
+export const gatherCaptureParticipants = (
+	participants: ReadonlyArray<SnapshotParticipant>,
+): Effect.Effect<
+	GatheredCapture,
+	IdentityGuardError | IdentityContributionConflictError,
+	never
+> =>
+	Effect.gen(function* () {
+		const identityContributions: IdentityContribution[] = [];
+		const gathered: GatheredParticipant[] = [];
+		const participantKeys: string[] = [];
+		for (const participant of participants) {
+			const identitySlice = yield* participant.captureIdentity;
+			const opaqueState = yield* participant.captureContribution;
+			identityContributions.push({ plugin: participant.plugin, slice: identitySlice });
+			gathered.push({
+				plugin: participant.plugin,
+				labelTuples: participant.decl.managedContainers ?? [],
+				identitySlice,
+				opaqueState,
+			});
+			participantKeys.push(participant.plugin);
+		}
+		const identityMerged = yield* mergeContributions(identityContributions);
+		// Fail-closed BEFORE any stop: an empty contributed identity refuses
+		// here (pre-stop) so the bounce never tears the stack down for a
+		// capture that would have been rejected anyway. Preserves the
+		// `SnapshotIdentityEmpty` fail-closed guard — only EARLIER.
+		yield* requireIdentity(identityMerged, 'snapshot');
+
+		// Declared host-tree subtrees, captured as concrete descriptors —
+		// real host-tree data (walrus blobs, the seal vault, keystores).
+		const pluginSubtrees: CapturedSubtree[] = participants.flatMap((p) =>
+			p.decl.subtrees.map((relPath) => ({
+				plugin: p.plugin,
+				relPath,
+				missingTolerance: p.decl.missingTolerance,
+				secretMaterial: p.decl.secretMaterial ?? false,
+			})),
+		);
+
+		// Deploy/mint artifact caches (`cache/<ns>`) ride the host-tree tar too,
+		// so the snapshot is SELF-CONTAINED: a fresh runner with an empty live
+		// cache recovers the deploy ids from the snapshot itself (cross-machine
+		// restore). Restore untars them and the post-restore boot REUSES the
+		// deploy rather than re-running it with fresh ids. `missingTolerance:
+		// 'fine'` — a namespace whose plugin is disabled (e.g. `cache/deepbook`
+		// in a deepbook-less stack) simply isn't on disk and is skipped; only the
+		// namespaces that exist are tarred (and recorded in `meta.subtrees`). Not
+		// secret material — these are public on-chain deploy/mint ids. See
+		// LIVE_RESTORE_PRESERVED_PATHS in restore.ts.
+		const deployCacheSubtrees: CapturedSubtree[] = deployCacheSubtreeRelPaths(CACHE_DIR_NAME).map(
+			(relPath) => ({
+				plugin: DEPLOY_CACHE_SUBTREE_PLUGIN,
+				relPath,
+				missingTolerance: 'fine' as const,
+				secretMaterial: false,
+			}),
+		);
+
+		// Deploy cache FIRST so it lands at the FRONT of the host-tree tar — the
+		// restore preflight scans for the cache namespaces and short-circuits the
+		// (potentially huge — walrus blobs) tar read once they're all found.
+		const declaredSubtrees: CapturedSubtree[] = [...deployCacheSubtrees, ...pluginSubtrees];
+
+		return {
+			participants: gathered,
+			identityMerged,
+			declaredSubtrees,
+			participantKeys,
+		} satisfies GatheredCapture;
+	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.gather'));
+
+// -----------------------------------------------------------------------------
+// Top-level capture — the bounce.
 // -----------------------------------------------------------------------------
 
 export interface CaptureInputs {
@@ -461,24 +543,43 @@ export interface CaptureInputs {
 	readonly stack: string;
 	readonly network: string;
 	readonly runtimeStackRoot: string;
-	readonly stateFilePath: string;
 	readonly participants: ReadonlyArray<SnapshotParticipant>;
 	readonly runtime: ContainerRuntime;
-	readonly onProgress?: SnapshotProgressReporter;
+	/** Per-container graceful-stop grace. Storage nodes need >10s to flush
+	 *  + checkpoint RocksDB on `docker stop`. Defaults to 20s. */
+	readonly stopGraceSeconds?: number;
+	/** RESUME — re-converge the stack to write-ready AFTER the host-tree +
+	 *  images are published and the original containers are removed. The
+	 *  orchestrator cannot recreate a container itself (no plugin spec), so
+	 *  resume is injected: the supervisor wires it to a stack restart (drain
+	 *  ∘ converge), which re-runs each plugin's acquire — including walrus's
+	 *  strengthened write-ready ready-gate. Omitted in unit tests / the
+	 *  offline first-boot capture (where the next boot is the resume). */
+	readonly resume?: Effect.Effect<void>;
 }
 
+/** Default graceful-stop grace — mirrors the walrus storage-node grace so
+ *  RocksDB flushes before the commit captures the writable layer. */
+const DEFAULT_CAPTURE_STOP_GRACE_SECONDS = 20;
+
 /**
- * Populate `stagingDir` with a complete snapshot artifact.
+ * Populate `stagingDir` with a complete snapshot artifact via the bounce:
+ * gather (live) → graceful-stop (flush) → commit + tar + meta → retag
+ * committed images onto original names + hard-rm stopped containers →
+ * resume (recreate + wait-write-ready).
  *
  * Discipline:
  *   - Iterate participants — no service names appear.
- *   - Pause-around-commit with always-unpause via `addFinalizer`.
- *   - Mode bits preserved by the host-tree tar primitive.
+ *   - Identity gathered + fail-closed BEFORE any stop.
+ *   - Graceful stop (NOT pause) so RocksDB/WAL flush — the committed image
+ *     is faithful.
  *   - meta.json is written LAST so a crashed save leaves the artifact
- *     invisible to the catalog (architecture § "Partial saves are inert").
+ *     invisible to the catalog.
+ *   - Resume is recreate-from-image (injected), NEVER `docker start`.
  *
- * Caller wraps this in `stageAndSwap` + `acquireReservation` + the
- * stack lock.
+ * Caller wraps the staging build in `stageAndSwap` (the publish) — but the
+ * retag/hard-rm/resume tail runs AFTER the swap so a publish failure leaves
+ * the live stack untouched (only stopped, recoverable by the next boot).
  */
 export const runCapture = (
 	inputs: CaptureInputs,
@@ -493,161 +594,62 @@ export const runCapture = (
 			'devstack.snapshot.phase': 'capture',
 			'devstack.snapshot.id': inputs.snapshotId,
 		});
+		const grace = Duration.seconds(
+			inputs.stopGraceSeconds ?? DEFAULT_CAPTURE_STOP_GRACE_SECONDS,
+		);
 
-		const report = (progress: SnapshotCaptureProgress): Effect.Effect<void, never> =>
-			inputs.onProgress?.(progress) ?? Effect.void;
+		// 0. GATHER (plugins live) — identity fail-closed BEFORE any stop.
+		const gathered = yield* gatherCaptureParticipants(inputs.participants);
 
 		return yield* Effect.scoped(
 			Effect.gen(function* () {
-				// 1. Quiesce every participant, validate the full capture
-				//    set, then pause all running managed containers before
-				//    any artifact is written. The pause finalizer covers the
-				//    entire capture pipeline so container commits, host-tree
-				//    tar, scalar state, and contribution metadata share one
-				//    consistent snapshot window.
 				const capturedContainers: CapturedContainer[] = [];
-				// Two buckets:
-				//
-				//   `pauseIntended` — every container the orchestrator
-				//   ASKED Docker to pause, recorded BEFORE the pause
-				//   syscall. The finalizer attempts `unpause` for every
-				//   one of these so a `docker pause` failure that left
-				//   the engine in a half-paused state (race: SIGSTOP
-				//   delivered, then `pause` returns non-zero on a
-				//   downstream check; ambiguous Docker daemon behavior —
-				//   `pause` is a multi-step engine op against cgroups +
-				//   the freezer) still gets `unpause`'d on the way out.
-				//
-				//   `pauseConfirmed` — entries Docker confirmed paused
-				//   (i.e. pause returned success). Used only for progress
-				//   reporting so the operator sees the same count that
-				//   the engine acknowledged.
-				//
-				// The `unpause` finalizer treats this as best-effort:
-				// `unpause` against a non-paused container is the typical
-				// Docker "container not paused" error which we silently
-				// swallow. Any other failure is logged but does not
-				// interrupt the finalizer.
-				const pauseIntended: ContainerHandle[] = [];
-				const pauseConfirmed: ContainerHandle[] = [];
-				yield* Effect.addFinalizer(() =>
-					Effect.gen(function* () {
-						if (pauseIntended.length > 0) {
-							yield* report({
-								phase: 'resuming',
-								detail: `unpausing ${pauseIntended.length} container${pauseIntended.length === 1 ? '' : 's'}`,
-								pausedContainers: pauseConfirmed.length,
-								totalContainers: pauseIntended.length,
-							});
-						}
-						yield* Effect.forEach(
-							pauseIntended,
-							(handle) =>
-								inputs.runtime
-									.unpause(handle)
-									.pipe(
-										Effect.catch((cause) =>
-											Effect.logWarning(
-												`unpause(${handle.name}) failed during snapshot capture: ${String(cause)}`,
-											),
-										),
-									),
-							{ concurrency: 'unbounded' },
-						);
-					}).pipe(Effect.asVoid),
-				);
-				const plannedContainers: PlannedContainerCapture[] = [];
 				const committedRefs: TaggedImageRef[] = [];
+				// On capture failure, drop any committed temp tags so a failed
+				// capture leaves no orphaned snapshot images (prune also reaps
+				// these via the SNAPSHOT_IMAGE_ROLE label).
 				yield* Effect.addFinalizer((exit) =>
 					Exit.isFailure(exit) ? cleanupCommittedRefs(inputs.runtime, committedRefs) : Effect.void,
 				);
-				yield* report({
-					phase: 'quiescing',
-					detail: `checking ${inputs.participants.length} snapshot participant${
-						inputs.participants.length === 1 ? '' : 's'
-					}`,
-				});
-				for (const participant of inputs.participants) {
-					const containers = yield* quiesceParticipant(participant, inputs.runtime);
-					for (const { handle, labels, unpauseAfterCapture } of containers) {
-						yield* validateCapturedContainer(handle, labels, participant);
-						plannedContainers.push({
-							handle,
-							labels,
-							unpauseAfterCapture,
-							participant,
-						});
+
+				// 1. ENUMERATE + validate the full capture set.
+				const plannedContainers: PlannedContainerCapture[] = [];
+				for (const g of gathered.participants) {
+					const containers = yield* enumerateParticipantContainers(
+						g.plugin,
+						g.labelTuples,
+						inputs.runtime,
+					);
+					for (const { handle, labels } of containers) {
+						yield* validateCapturedContainer(handle, labels, g.plugin);
+						plannedContainers.push({ handle, labels, plugin: g.plugin });
 					}
 				}
 				yield* detectContainerArtifactCollisions(plannedContainers);
-				const runningContainers = plannedContainers.filter((entry) => entry.unpauseAfterCapture);
-				if (runningContainers.length > 0) {
-					yield* report({
-						phase: 'pausing',
-						detail: `pausing ${runningContainers.length} running container${
-							runningContainers.length === 1 ? '' : 's'
-						}`,
-						pausedContainers: 0,
-						totalContainers: runningContainers.length,
-					});
-				}
-				const readyContainers: ReadyContainerCapture[] = [];
-				for (const entry of plannedContainers) {
-					const { handle, unpauseAfterCapture } = entry;
-					if (unpauseAfterCapture) {
-						// Stamp INTENT before issuing the pause. If
-						// `pause` fails partway through (Docker daemon
-						// may have already moved the freezer into a
-						// transitional state before returning non-zero),
-						// the addFinalizer above will still attempt
-						// `unpause(handle)` — `unpause` is a no-op for a
-						// non-paused container so the worst case is a
-						// swallowed "container not paused" log line.
-						// Without this stamp, a half-paused container is
-						// silently abandoned to its frozen state.
-						pauseIntended.push(handle);
-						yield* inputs.runtime
-							.pause(handle)
-							.pipe(
-								Effect.catch(
-									failPhase('pause', `pause failed for ${handle.name}`, entry.participant.plugin),
-								),
-							);
-						pauseConfirmed.push(handle);
-					}
-					readyContainers.push({
-						...entry,
-						commitHandle: unpauseAfterCapture ? { ...handle, status: 'paused' as const } : handle,
-					});
-				}
-				if (runningContainers.length > 0) {
-					yield* report({
-						phase: 'paused',
-						detail: `stack paused for snapshot (${pauseConfirmed.length}/${runningContainers.length} containers)`,
-						pausedContainers: pauseConfirmed.length,
-						totalContainers: runningContainers.length,
-					});
-				}
 
-				// 2. Commit managed containers while the whole capture set
-				//    remains paused.
+				// 2. GRACEFUL-STOP every managed container — FLUSHES RocksDB/WAL
+				//    so the committed writable layer is faithful (the walrus
+				//    capture-survival fix). Stopped (not removed) so a publish
+				//    failure leaves them recoverable by the next boot.
+				yield* Effect.forEach(
+					plannedContainers,
+					(entry) =>
+						inputs.runtime
+							.stop(entry.handle, grace)
+							.pipe(
+								Effect.catch(failPhase('stop', `graceful stop failed for ${entry.handle.name}`, entry.plugin)),
+							),
+					{ concurrency: 'unbounded', discard: true },
+				);
+
+				// 3. COMMIT each stopped container's flushed layer.
 				const committedContainers: CommittedContainerCapture[] = [];
-				if (readyContainers.length > 0) {
-					yield* report({
-						phase: 'capturing-containers',
-						detail: `committing ${readyContainers.length} container${
-							readyContainers.length === 1 ? '' : 's'
-						}`,
-						pausedContainers: pauseConfirmed.length,
-						totalContainers: runningContainers.length,
-					});
-				}
-				for (const { commitHandle, labels, participant } of readyContainers) {
-					const committed = yield* commitContainerToImage(
-						commitHandle,
+				for (const { handle, labels, plugin } of plannedContainers) {
+					const committed = yield* commitStoppedContainer(
+						handle,
 						labels,
 						inputs.runtime,
-						participant,
+						plugin,
 						(ref) =>
 							Effect.sync(() => {
 								committedRefs.push(ref);
@@ -656,53 +658,15 @@ export const runCapture = (
 					committedContainers.push(committed);
 					capturedContainers.push(committed.captured);
 				}
-				if (committedContainers.length > 0) {
-					yield* report({
-						phase: 'saving-images',
-						detail: `saving ${committedContainers.length} committed image${
-							committedContainers.length === 1 ? '' : 's'
-						}`,
-						pausedContainers: pauseConfirmed.length,
-						totalContainers: runningContainers.length,
-					});
-				}
 				yield* saveCommittedImages(committedContainers, inputs.stagingDir, inputs.runtime);
 
-				// 3. Tar the host-tree subtrees declared by participants.
-				const declaredSubtrees: CapturedSubtree[] = [
-					...inputs.participants.flatMap((p) =>
-						p.decl.subtrees.map((relPath) => ({
-							plugin: p.plugin,
-							relPath,
-							missingTolerance: p.decl.missingTolerance,
-							secretMaterial: p.decl.secretMaterial ?? false,
-						})),
-					),
-					// Capture the deploy/mint artifact caches so the snapshot is
-					// SELF-CONTAINED: the cached on-chain ids ride the tar and are
-					// restored even when the live cache is gone (`snapshot → wipe →
-					// fresh boot → restore`). `fine` tolerance — a stack with no
-					// deploys yet simply has no `cache/<ns>` dir to capture. The
-					// restore side ALSO preserves the live copy (the in-place fast
-					// path) — see LIVE_RESTORE_PRESERVED_PATHS in restore.ts.
-					...DEPLOY_CACHE_NAMESPACES.map(
-						(ns): CapturedSubtree => ({
-							plugin: 'snapshot/deploy-cache',
-							relPath: `${CACHE_DIR_NAME}/${ns}`,
-							missingTolerance: 'fine',
-							secretMaterial: false,
-						}),
-					),
-				];
-				const subtrees = yield* resolveCapturedSubtrees(declaredSubtrees, inputs.runtimeStackRoot);
+				// 4. TAR the host-tree subtrees declared by participants.
+				const subtrees = yield* resolveCapturedSubtrees(
+					gathered.declaredSubtrees,
+					inputs.runtimeStackRoot,
+				);
 				const hostTreeIncluded = subtrees.length > 0;
 				if (hostTreeIncluded) {
-					yield* report({
-						phase: 'capturing-host-tree',
-						detail: `archiving ${subtrees.length} host subtree${subtrees.length === 1 ? '' : 's'}`,
-						pausedContainers: pauseConfirmed.length,
-						totalContainers: runningContainers.length,
-					});
 					yield* writeHostTreeTar(
 						inputs.runtimeStackRoot,
 						subtrees,
@@ -710,103 +674,36 @@ export const runCapture = (
 					);
 				}
 
-				// 4. Copy the scalar state file (best-effort missing-OK —
-				//    empty stack on first-boot has no state.json yet).
-				const stateExists = yield* fs
-					.exists(inputs.stateFilePath)
-					.pipe(Effect.catch(() => Effect.succeed(false)));
-				if (stateExists) {
-					yield* report({
-						phase: 'saving-state',
-						detail: 'copying runtime state',
-						pausedContainers: pauseConfirmed.length,
-						totalContainers: runningContainers.length,
-					});
-					const stateDoc = yield* readSnapshotStateDocument(inputs.stateFilePath).pipe(
-						Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
-					);
-					yield* writeSnapshotStateDocument(
-						`${inputs.stagingDir}/${SnapshotLayout.stateFile}`,
-						stateDoc,
-					).pipe(Effect.catch(failPhase('write-state', `write state.json failed`)));
-				}
-
-				// 5. Write per-participant contribution docs + collect identity.
-				yield* report({
-					phase: 'saving-contributions',
-					detail: `writing ${inputs.participants.length} contribution document${
-						inputs.participants.length === 1 ? '' : 's'
-					}`,
-					pausedContainers: pauseConfirmed.length,
-					totalContainers: runningContainers.length,
-				});
+				// 5. WRITE per-participant contribution docs from gathered state.
 				yield* fs
 					.makeDirectory(`${inputs.stagingDir}/${SnapshotLayout.contributionsDir}`, {
 						recursive: true,
 					})
 					.pipe(Effect.catch(failPhase('write-contribution', `mkdir contributions dir failed`)));
-				// Collect per-participant identity slices first so the same
-				// `mergeContributions` predicate the restore-side guard uses
-				// rejects intra-capture conflicts here too. A capture that
-				// silently last-write-wins would hide a conflict the
-				// downstream restore would later reject as
-				// `IdentityContributionConflictError` — surface it AT THE
-				// CAPTURE SITE instead so the operator can fix the offending
-				// plugins before the broken artifact is even written.
-				const identityContributions: IdentityContribution[] = [];
-				const stateByParticipant = new Map<string, unknown>();
-				const participantKeys: string[] = [];
-				for (const participant of inputs.participants) {
-					const identity = yield* participant.captureIdentity;
-					identityContributions.push({ plugin: participant.plugin, slice: identity });
-					const state = yield* participant.captureContribution;
-					stateByParticipant.set(participant.plugin, state);
-				}
-				const identityMerged = yield* mergeContributions(identityContributions);
-				for (const participant of inputs.participants) {
-					const identity =
-						identityContributions.find((c) => c.plugin === participant.plugin)?.slice ?? {};
-					const state = stateByParticipant.get(participant.plugin);
+				for (const g of gathered.participants) {
 					const doc: ContributionDoc = {
 						version: SNAPSHOT_CONTRIBUTION_VERSION,
-						plugin: participant.plugin,
-						identity,
-						...(state === undefined
+						plugin: g.plugin,
+						identity: g.identitySlice,
+						...(g.opaqueState === undefined
 							? {}
-							: {
-									opaqueState: {
-										encoding: 'json' as const,
-										value: state,
-									},
-								}),
+							: { opaqueState: { encoding: 'json' as const, value: g.opaqueState } }),
 					};
 					yield* fs
 						.writeFileString(
-							`${inputs.stagingDir}/${contributionPath(participant.plugin)}`,
+							`${inputs.stagingDir}/${contributionPath(g.plugin)}`,
 							JSON.stringify(doc, null, 2),
 						)
 						.pipe(
 							Effect.catch(
-								failPhase(
-									'write-contribution',
-									`write contribution doc failed`,
-									participant.plugin,
-								),
+								failPhase('write-contribution', `write contribution doc failed`, g.plugin),
 							),
 						);
-					participantKeys.push(participant.plugin);
 				}
-				yield* requireIdentity(identityMerged, 'snapshot');
 
-				// 6. Write meta.json, then integrity over the full artifact.
-				//    The caller publishes via stage-and-swap, so catalog
-				//    readers still never observe a half-written artifact.
-				yield* report({
-					phase: 'writing-metadata',
-					detail: 'finalizing snapshot artifact',
-					pausedContainers: pauseConfirmed.length,
-					totalContainers: runningContainers.length,
-				});
+				// 6. WRITE meta.json, then integrity over the full artifact.
+				//    The caller publishes via stage-and-swap (atomic rename),
+				//    so catalog readers never observe a half-written artifact.
 				const meta: SnapshotMetadata = {
 					version: SNAPSHOT_META_VERSION,
 					id: inputs.snapshotId,
@@ -818,8 +715,8 @@ export const runCapture = (
 					hostTreeIncluded,
 					subtrees,
 					containers: capturedContainers,
-					identity: identityMerged,
-					participants: participantKeys,
+					identity: gathered.identityMerged,
+					participants: [...gathered.participantKeys],
 				};
 				yield* fs
 					.writeFileString(
@@ -835,3 +732,79 @@ export const runCapture = (
 			}),
 		);
 	}).pipe(Effect.withSpan('orchestrator.snapshot.capture'));
+
+/**
+ * The post-publish bounce tail: retag each committed image onto its
+ * container's ORIGINAL image name (so the resume's recreate-from-image
+ * boots the node on its just-committed, flushed layer), hard-rm the stopped
+ * containers, then run the injected resume (recreate + wait-write-ready).
+ *
+ * Runs AFTER `stageAndSwap` publishes the artifact, so a publish failure
+ * never reaches here — the live stack is only stopped (recoverable). The
+ * retag aliases the original image name onto the committed layer; restore
+ * uses the SAME retag-to-original-name mechanism with its loaded bundle, so
+ * capture and restore resume identically (recreate-from-fresh off an image
+ * whose name now resolves to the snapshot layer).
+ *
+ * This is NEVER expressed as `docker start` — walrus storage nodes EXIT on
+ * `docker start` after a graceful stop; the resume's recreate is a fresh
+ * `docker run` that re-syncs and the write-ready ready-gate blocks on.
+ */
+export const resumeAfterCapture = (
+	meta: SnapshotMetadata,
+	inputs: Pick<CaptureInputs, 'runtime' | 'app' | 'stack' | 'resume'>,
+): Effect.Effect<void, CapturePhaseError> =>
+	Effect.gen(function* () {
+		// Retag each committed image onto its original name. Re-find the
+		// committed ref by its snapshot tag; tagImage aliases the original
+		// imageName onto it (removeSourceAfterTag drops the temp snapshot
+		// tag — its label-owned image is now reachable by the original name).
+		for (const captured of meta.containers) {
+			// The contract's `tagImage` resolves the source by `tag ?? digest`
+			// (runtime/docker/service.ts), so the snapshot tag is the operative
+			// source; `digest` mirrors it to satisfy the `ImageRef` shape.
+			yield* inputs.runtime
+				.tagImage({ digest: captured.snapshotTag, tag: captured.snapshotTag }, captured.imageName, {
+					removeSourceAfterTag: true,
+				})
+				.pipe(
+					Effect.catch(
+						failPhase(
+							'retag-image',
+							`tag committed image ${captured.snapshotTag} as ${captured.imageName} failed`,
+							captured.plugin,
+						),
+					),
+				);
+		}
+		// HARD-rm the stopped containers (claim-bypassing) so the resume's
+		// recreate sees facts:null → fresh → `docker run` the original name,
+		// which now resolves to the committed layer.
+		for (const captured of meta.containers) {
+			yield* inputs.runtime
+				.removeManagedContainers({
+					app: inputs.app,
+					stack: inputs.stack,
+					plugin: captured.plugin,
+					role: captured.role,
+				})
+				.pipe(
+					Effect.catch(
+						failPhase(
+							'remove-container',
+							`remove managed containers for ${captured.plugin}/${captured.role} failed`,
+							captured.plugin,
+						),
+					),
+				);
+		}
+		// RESUME = recreate-from-image + wait-write-ready. Injected (the
+		// orchestrator can't recreate without the plugin spec); the supervisor
+		// wires it to a stack restart whose converge re-runs each plugin's
+		// acquire — including walrus's write-ready ready-gate.
+		if (inputs.resume !== undefined) {
+			yield* inputs.resume.pipe(
+				Effect.catch(failPhase('resume', `stack resume after capture failed`)),
+			);
+		}
+	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.resume'));

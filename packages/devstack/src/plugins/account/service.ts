@@ -30,7 +30,7 @@
 // substrate's `LeaseBrokerService` is the L0 primitive: each
 // transaction scope opens a fresh lease keyed by `account:<address>`.
 // The public sign helpers are implemented in terms of that scope so
-// they keep the historical per-address behavior.
+// they keep the per-address serialization behavior.
 
 import { Effect } from 'effect';
 
@@ -63,18 +63,19 @@ import { resolveInlineVariant } from './variants/inline.ts';
 import { resolveSignerVariant } from './variants/signer.ts';
 import { resolveImpersonateVariant } from './variants/impersonate.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
-import type { ChainId } from '../../substrate/brand.ts';
 import {
 	extractExecuteDigest,
 	type ExecutedFailure,
 	type TransactionSignerScope,
-} from '../../substrate/runtime/sui-execute/index.ts';
+	type ForkAdminSurface,
+	type SuiSdkShim,
+	SuiSpans,
+} from '../sui/index.ts';
 import {
 	LeaseBrokerService,
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { FUNDING_BALANCE_READ_TIMEOUT_MS } from '../../substrate/runtime/retry-policy.ts';
-import { type ForkAdminSurface, type SuiSdkShim, SuiSpans } from '../sui/index.ts';
 import { withAddressLease } from './lease.ts';
 import { AccountSpans } from './spans.ts';
 
@@ -198,7 +199,7 @@ export interface TxResult {
  *
  *  The on-chain `FailedTransaction` projection is the substrate
  *  `ExecutedFailure` shape — single source of truth lives in
- *  `substrate/runtime/sui-execute/index.ts`. An envelope without a
+ *  `plugins/sui/exec/index.ts`. An envelope without a
  *  digest fails at projection with `AccountSignError(phase: 'no-digest')`. */
 export type SignAndExecuteResult =
 	| { readonly $kind: 'Transaction'; readonly Transaction: TxResult }
@@ -308,7 +309,7 @@ export const validateAccountName = (name: string): Effect.Effect<void, AccountAc
  *  chain, sdk) rather than at the wide `SuiClient` shape. */
 export interface AccountSuiShim {
 	readonly mode: 'local' | 'local-rpc' | 'live' | 'fork';
-	readonly chain: ChainId;
+	readonly chain: string;
 	/** SDK shim — exposes `executeTransaction` + `waitForTransaction`
 	 *  for the signAndExecute pipeline. */
 	readonly sdk: SuiSdkShim;

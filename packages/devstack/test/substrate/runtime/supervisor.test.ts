@@ -1,51 +1,74 @@
-// Supervisor harvest-loop direct tests.
+// Supervisor post-start dispatch direct tests.
 //
-// The supervisor's harvest loop is exercised TRANSITIVELY via the
-// CapabilitySinks service tests + e2e boot suites. This file pins the
-// wiring contract directly: a minimal stack with mixed
-// `CapabilityDecl` kinds + `PluginErrorContribution`s is supervised
-// to ready, and we assert each contribution reached the matching
-// `OrchestratorSinks` registration at the supervisor boundary.
+// This file pins the wiring contract directly: a minimal stack whose
+// plugins emit contributions inline via the typed `ctx` verbs (+ static
+// `errorContributions`) is supervised to ready, and we assert each
+// buffered contribution reached the matching `ContributionDispatcher`
+// method at the supervisor boundary.
 //
 // Architecture invariants under test:
-//   1. The supervisor's post-acquire harvest walks `member.capabilities`
-//      AND `member.errorContributions`, routing each through
-//      `CapabilitySinksService.dispatch`.
-//   2. Caller-supplied sink registrations adapt each capability `kind`
-//      literal. Plugins emitting decls of different kinds dispatch to
-//      different registered sinks.
+//   1. The supervisor's post-start replay walks each plugin's ctx buffer
+//      (in emit order) AND its `errorContributions` field, routing the
+//      former through the closed `ContributionDispatcher` and the latter
+//      into the FormatterRegistry.
+//   2. Each decl kind dispatches to its matching dispatcher method.
+//      Plugins emitting decls of different kinds dispatch differently.
 //   3. Dispatch occurs once per plugin after acquire succeeds — no
 //      duplicate calls; no calls for plugins that failed acquire.
-//   4. The supervisor stays name-blind: it walks the `kind` literal
-//      and dispatches structurally; the sink registry is the ONE place
+//   4. The supervisor stays name-blind: it switches on the closed decl
+//      discriminant; the dispatcher (built in L3) is the ONE place
 //      orchestrator names land.
 
 import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
-import { makeProjectionCapabilitySink } from '../../../src/orchestrators/runtime-composition.ts';
+import { appName, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
-	CapabilitySinksService,
 	Logger,
-	layerCapabilitySinksDefault,
 	layerLogger,
 	makeProjectionRef,
+	noopContributionDispatcher,
 	startSupervisor,
 	supervise,
-	type CapabilitySink,
-	type ContributionKind,
-	type OrchestratorSinks,
+	type ContributionDispatcher,
 	type SupervisedStack,
 } from '../../../src/substrate/runtime/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import { definePlugin, type PluginErrorContribution } from '../../../src/substrate/plugin.ts';
+import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../../src/contracts/projection.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
 import type { SnapshotableDecl } from '../../../src/contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../../src/contracts/strategy-contributor.ts';
+
+/** A projection dispatcher matching the production rowKey-stamping body
+ *  (`buildProductionContributionDispatcher`): stamps the contributing
+ *  plugin key onto an absent `rowKey` then publishes the projection
+ *  event so the reducer folds it into `accounts`/`packages`. Other kinds
+ *  are no-ops. The strategy-contributor body registers (so a sibling can
+ *  `requires`), but these tests only assert the projection reducer
+ *  output. */
+const projectionDispatcher: ContributionDispatcher = {
+	...noopContributionDispatcher,
+	projection: (decl, ctx) => {
+		const payload = decl.event.payload;
+		const payloadWithRowKey =
+			payload !== null &&
+			typeof payload === 'object' &&
+			'rowKey' in payload &&
+			(payload as { rowKey: unknown }).rowKey === null
+				? { ...payload, rowKey: ctx.pluginKey }
+				: payload;
+		return ctx.publish({ ...decl.event, payload: payloadWithRowKey });
+	},
+	strategyContributor: (decl, ctx) =>
+		ctx.strategyRegistry.register(decl.capabilityKey, decl.strategy, {
+			autoMounted: decl.autoMounted,
+			...(decl.priority === undefined ? {} : { priority: decl.priority }),
+		}),
+};
 
 // -----------------------------------------------------------------------------
 // Fixtures
@@ -54,7 +77,7 @@ import type { StrategyContributorDecl } from '../../../src/contracts/strategy-co
 const identity: Identity = {
 	app: appName('supervisor-test-app'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 interface Captured {
@@ -72,55 +95,40 @@ const makeCapture = () =>
 			codegenable: [],
 			strategy: [],
 		});
-		const sinks: OrchestratorSinks = [
-			orchestratorSink<'snapshotable', SnapshotableDecl>({
-				kind: 'snapshotable',
-				accept: (decl, ctx) =>
-					Ref.update(ref, (c) => ({
-						...c,
-						snapshotable: [
-							...c.snapshotable,
-							{ key: String(ctx.pluginKey), subtree: decl.subtrees[0] ?? '' },
-						],
-					})),
-			}),
-			orchestratorSink<'routable', RoutableDecl>({
-				kind: 'routable',
-				accept: (decl, ctx) =>
-					Ref.update(ref, (c) => ({
-						...c,
-						routable: [...c.routable, { key: String(ctx.pluginKey), endpoint: decl.endpointName }],
-					})),
-			}),
-			orchestratorSink<'codegenable', CodegenableDecl<string>>({
-				kind: 'codegenable',
-				accept: (decl, ctx) =>
-					Ref.update(ref, (c) => ({
-						...c,
-						codegenable: [
-							...c.codegenable,
-							{ key: String(ctx.pluginKey), emitter: decl.emitterName },
-						],
-					})),
-			}),
-			orchestratorSink<'strategy-contributor', StrategyContributorDecl<string, unknown>>({
-				kind: 'strategy-contributor',
-				accept: (decl, ctx) =>
-					Ref.update(ref, (c) => ({
-						...c,
-						strategy: [
-							...c.strategy,
-							{ key: String(ctx.pluginKey), capabilityKey: decl.capabilityKey },
-						],
-					})),
-			}),
-		];
-		return { ref, sinks };
+		const dispatcher: ContributionDispatcher = {
+			snapshotable: (decl, ctx) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					snapshotable: [
+						...c.snapshotable,
+						{ key: String(ctx.pluginKey), subtree: decl.subtrees[0] ?? '' },
+					],
+				})),
+			routable: (decl, ctx) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					routable: [...c.routable, { key: String(ctx.pluginKey), endpoint: decl.endpointName }],
+				})),
+			codegenable: (decl, ctx) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					codegenable: [
+						...c.codegenable,
+						{ key: String(ctx.pluginKey), emitter: decl.emitterName },
+					],
+				})),
+			projection: () => Effect.void,
+			strategyContributor: (decl, ctx) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					strategy: [
+						...c.strategy,
+						{ key: String(ctx.pluginKey), capabilityKey: decl.capabilityKey },
+					],
+				})),
+		};
+		return { ref, dispatcher };
 	});
-
-const orchestratorSink = <K extends ContributionKind, TDecl>(
-	sink: CapabilitySink<K, TDecl>,
-): OrchestratorSinks[number] => sink as OrchestratorSinks[number];
 
 // Each plugin provides a distinct resource id and
 // declares a single capability `kind`. The supervisor's resolve-graph
@@ -304,48 +312,74 @@ const pluginSnap = definePlugin({
 	id: 'test:snap',
 	role: 'service' as const,
 	section: 'service',
-	start: () => Effect.succeed({ v: 'snap' as const }),
-	capabilities: [snapDecl] as const,
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
+			ctx.snapshotExtra(snapDecl);
+			return { v: 'snap' as const };
+		}),
 });
 
 const pluginRoute = definePlugin({
 	id: 'test:route',
 	role: 'service' as const,
 	section: 'service',
-	start: () => Effect.succeed({ v: 'route' as const }),
-	capabilities: [routeDecl] as const,
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
+			ctx.endpoint(routeDecl);
+			return { v: 'route' as const };
+		}),
 });
 
 const pluginCodegen = definePlugin({
 	id: 'test:codegen',
 	role: 'service' as const,
 	section: 'service',
-	start: () => Effect.succeed({ v: 'codegen' as const }),
-	capabilities: [codegenDecl] as const,
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
+			ctx.codegen(codegenDecl);
+			return { v: 'codegen' as const };
+		}),
 });
 
 const pluginStrat = definePlugin({
 	id: 'test:strat',
 	role: 'service' as const,
 	section: 'service',
-	start: () => Effect.succeed({ v: 'strat' as const }),
-	capabilities: [strategyDecl] as const,
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
+			ctx.provides(strategyDecl);
+			return { v: 'strat' as const };
+		}),
 });
 
 const pluginAccountProjection = definePlugin({
 	id: 'account/alice',
 	role: 'task' as const,
 	section: 'service',
-	start: () => Effect.succeed({ v: 'account' as const }),
-	capabilities: [accountStrategyDecl, accountProjectionDecl] as const,
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
+			ctx.provides(accountStrategyDecl);
+			ctx.publish(accountProjectionDecl);
+			return { v: 'account' as const };
+		}),
 });
 
 const pluginPackageProjection = definePlugin({
 	id: 'package:vault',
 	role: 'service' as const,
 	section: 'service',
-	start: () => Effect.succeed({ v: 'package' as const }),
-	capabilities: [packageStrategyDecl, packageProjectionDecl] as const,
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
+			ctx.provides(packageStrategyDecl);
+			ctx.publish(packageProjectionDecl);
+			return { v: 'package' as const };
+		}),
 });
 
 const pluginStableKey = definePlugin({
@@ -592,7 +626,7 @@ describe('supervisor harvest loop', () => {
 						identity,
 						state,
 						Context.empty(),
-						[],
+						noopContributionDispatcher,
 						undefined,
 						() =>
 							Effect.gen(function* () {
@@ -620,61 +654,16 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect('snapshot capture does not block shutdown commands', () =>
-		Effect.gen(function* () {
-			const captureStarted = yield* Deferred.make<void>();
-			const releaseCapture = yield* Deferred.make<void>();
-			const calls = yield* Ref.make(0);
-			const state = yield* makeProjectionRef();
-			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const startup = yield* startSupervisor(
-						stack,
-						identity,
-						state,
-						Context.empty(),
-						[],
-						(cmd) => {
-							if (cmd.tag !== 'snapshot.capture') return Effect.succeed([]);
-							return Effect.gen(function* () {
-								yield* Ref.update(calls, (n) => n + 1);
-								yield* Deferred.succeed(captureStarted, void 0).pipe(Effect.ignore);
-								yield* Deferred.await(releaseCapture);
-								return [
-									{
-										tag: 'snapshot.captured' as const,
-										snapshotId: 'held',
-										...(cmd.name === undefined ? {} : { name: cmd.name }),
-										at: 1,
-									},
-								];
-							});
-						},
-					);
-					yield* startup.runInitialAcquire;
-					yield* Queue.offer(startup.handle.commands, {
-						tag: 'snapshot.capture',
-						name: 'before-change',
-					});
-					yield* Deferred.await(captureStarted);
-					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
-					for (let i = 0; i < 10; i++) {
-						const snapshot = yield* SubscriptionRef.get(state);
-						if (snapshot.cycle.phase === 'shutting-down') break;
-						yield* Effect.yieldNow;
-					}
-
-					const snap = yield* SubscriptionRef.get(state);
-					expect(snap.cycle.phase).toBe('shutting-down');
-					expect(yield* Ref.get(calls)).toBe(1);
-					yield* Deferred.succeed(releaseCapture, void 0).pipe(Effect.ignore);
-					yield* startup.handle.awaitShutdown;
-				}),
-			);
-		}),
-	);
+	// NOTE: the former "snapshot capture does not block shutdown commands" and
+	// "second snapshot keypress is skipped while capture is running" tests are
+	// removed. Capture is no longer a forked background task with skip-dedup; it
+	// is the lifecycle bounce that runs INLINE in the command loop (gather →
+	// graceful-stop → commit → retag → hard-rm + the loop's converge), exactly
+	// like `snapshot.restore`. The command loop serializes commands, so a
+	// long capture is followed by — not overlapped with — a queued command;
+	// double-SIGINT hard-kill remains the escape hatch (covered by the shutdown
+	// tests). The stack-restart background task (forked, skip-deduped) is
+	// unchanged — see "manual stack restart does not block shutdown commands".
 
 	it.effect('manual stack restart does not block shutdown commands', () =>
 		Effect.gen(function* () {
@@ -730,74 +719,6 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect('second snapshot keypress is skipped while capture is running', () =>
-		Effect.gen(function* () {
-			const captureStarted = yield* Deferred.make<void>();
-			const releaseCapture = yield* Deferred.make<void>();
-			const calls = yield* Ref.make(0);
-			const eventTags = yield* Ref.make<ReadonlyArray<string>>([]);
-			const state = yield* makeProjectionRef();
-			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const startup = yield* startSupervisor(
-						stack,
-						identity,
-						state,
-						Context.empty(),
-						[],
-						(cmd) => {
-							if (cmd.tag !== 'snapshot.capture') return Effect.succeed([]);
-							return Effect.gen(function* () {
-								yield* Ref.update(calls, (n) => n + 1);
-								yield* Deferred.succeed(captureStarted, void 0).pipe(Effect.ignore);
-								yield* Deferred.await(releaseCapture);
-								return [
-									{
-										tag: 'snapshot.captured' as const,
-										snapshotId: 'held',
-										...(cmd.name === undefined ? {} : { name: cmd.name }),
-										at: 1,
-									},
-								];
-							});
-						},
-					);
-					yield* Effect.forkScoped(
-						Effect.gen(function* () {
-							while (true) {
-								const event = yield* Queue.take(startup.handle.events);
-								yield* Ref.update(eventTags, (tags) => [...tags, event.tag]);
-							}
-						}),
-					);
-
-					yield* startup.runInitialAcquire;
-					yield* Queue.offer(startup.handle.commands, {
-						tag: 'snapshot.capture',
-						name: 'first',
-					});
-					yield* Deferred.await(captureStarted);
-					yield* Queue.offer(startup.handle.commands, {
-						tag: 'snapshot.capture',
-						name: 'second',
-					});
-					for (let i = 0; i < 10; i++) {
-						const tags = yield* Ref.get(eventTags);
-						if (tags.includes('snapshot.captureSkipped')) break;
-						yield* Effect.yieldNow;
-					}
-
-					expect(yield* Ref.get(calls)).toBe(1);
-					expect(yield* Ref.get(eventTags)).toContain('snapshot.captureSkipped');
-					yield* Deferred.succeed(releaseCapture, void 0).pipe(Effect.ignore);
-					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
-					yield* startup.handle.awaitShutdown;
-				}),
-			);
-		}),
-	);
 
 	it.effect('hot restart reacquires with a fresh scope and ready gate', () =>
 		Effect.gen(function* () {
@@ -940,9 +861,9 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect('dispatches each CapabilityDecl kind to its OrchestratorSinks slot', () =>
+	it.effect('dispatches each contribution kind to its ContributionDispatcher method', () =>
 		Effect.gen(function* () {
-			const { ref, sinks } = yield* makeCapture();
+			const { ref, dispatcher } = yield* makeCapture();
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
 				members: [pluginSnap, pluginRoute, pluginCodegen, pluginStrat],
@@ -952,7 +873,7 @@ describe('supervisor harvest loop', () => {
 
 			yield* Effect.scoped(
 				Effect.gen(function* () {
-					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					const handle = yield* supervise(stack, identity, state, Context.empty(), dispatcher);
 					for (const [key] of handle.graph.nodes) {
 						yield* handle.registry.awaitReady(key);
 					}
@@ -986,9 +907,13 @@ describe('supervisor harvest loop', () => {
 
 				yield* Effect.scoped(
 					Effect.gen(function* () {
-						const startup = yield* startSupervisor(stack, identity, state, Context.empty(), [
-							makeProjectionCapabilitySink(),
-						]);
+						const startup = yield* startSupervisor(
+							stack,
+							identity,
+							state,
+							Context.empty(),
+							projectionDispatcher,
+						);
 						const pending = yield* SubscriptionRef.get(state);
 						expect(pending.accounts).toEqual([
 							{
@@ -1049,9 +974,13 @@ describe('supervisor harvest loop', () => {
 
 				yield* Effect.scoped(
 					Effect.gen(function* () {
-						const startup = yield* startSupervisor(stack, identity, state, Context.empty(), [
-							makeProjectionCapabilitySink(),
-						]);
+						const startup = yield* startSupervisor(
+							stack,
+							identity,
+							state,
+							Context.empty(),
+							projectionDispatcher,
+						);
 						const pending = yield* SubscriptionRef.get(state);
 						expect(pending.packages).toEqual([]);
 
@@ -1098,17 +1027,15 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect('runs the harvest path for plugins that contribute only errorContributions', () =>
-		// The plugin emits NO capability decls — only a
-		// `PluginErrorContribution`. The supervisor's harvest must
-		// dispatch the error contribution to the substrate's
-		// `error-contribution` sink (which folds into the
-		// FormatterRegistry); no orchestrator-side callback fires for
-		// this kind because `OrchestratorSinks` carries no error slot.
-		// We assert the supervisor reached ready WITHOUT calling any
-		// capability-side callback — the harvest path completed cleanly.
+	it.effect('runs the dispatch path for plugins that contribute only errorContributions', () =>
+		// The plugin emits NO ctx contributions — only a
+		// `PluginErrorContribution`. The supervisor feeds the error
+		// contribution directly into the FormatterRegistry; no dispatcher
+		// method fires (the buffer is empty). We assert the supervisor
+		// reached ready WITHOUT calling any dispatcher method — the
+		// dispatch path completed cleanly.
 		Effect.gen(function* () {
-			const { ref, sinks } = yield* makeCapture();
+			const { ref, dispatcher } = yield* makeCapture();
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
 				members: [pluginErrorOnly],
@@ -1118,7 +1045,7 @@ describe('supervisor harvest loop', () => {
 
 			yield* Effect.scoped(
 				Effect.gen(function* () {
-					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					const handle = yield* supervise(stack, identity, state, Context.empty(), dispatcher);
 					for (const [key] of handle.graph.nodes) {
 						yield* handle.registry.awaitReady(key);
 					}
@@ -1147,7 +1074,7 @@ describe('supervisor harvest loop', () => {
 		// Boot a stack with two plugins, each emitting one decl. We assert
 		// the orchestrator callback fires exactly once per plugin.
 		Effect.gen(function* () {
-			const { ref, sinks } = yield* makeCapture();
+			const { ref, dispatcher } = yield* makeCapture();
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
 				members: [pluginSnap, pluginRoute],
@@ -1157,7 +1084,7 @@ describe('supervisor harvest loop', () => {
 
 			yield* Effect.scoped(
 				Effect.gen(function* () {
-					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					const handle = yield* supervise(stack, identity, state, Context.empty(), dispatcher);
 					for (const [key] of handle.graph.nodes) {
 						yield* handle.registry.awaitReady(key);
 					}
@@ -1170,132 +1097,11 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect(
-		'plugin-author Layer composition adds a custom-kind sink the supervisor harvests through',
-		() =>
-			// Demonstrates the plugin-author extension path (ARCHITECTURE.md §
-			// Plugin-author extension via Layer composition): a custom plugin
-			// emits a `CapabilityDecl` whose `kind` literal is not in the
-			// substrate's built-in vocabulary. The author composes a Layer
-			// that yields `CapabilitySinksService` and calls `registerSink`
-			// for that kind, layers it into `pluginContext` alongside the
-			// orchestrator-built default. The supervisor must harvest THROUGH
-			// the composed registry — i.e., the custom sink's accept body
-			// fires for the emitted decl.
-			//
-			// Before this fix: the supervisor called `Layer.build(
-			// layerCapabilitySinksDefault(sinks))` internally and harvested
-			// through its OWN instance, ignoring whatever the caller layered
-			// in. The plugin author's sink never fired.
-			Effect.gen(function* () {
-				interface CustomDecl {
-					readonly kind: 'plugin-author:custom';
-					readonly payload: string;
-				}
-				const customDecl: CustomDecl = {
-					kind: 'plugin-author:custom',
-					payload: 'extension-path-fired',
-				};
-				const pluginCustom = definePlugin({
-					id: 'test:custom',
-					role: 'service' as const,
-					section: 'service',
-					start: () => Effect.succeed({ v: 'custom' as const }),
-					// Cast: the custom decl isn't part of the built-in
-					// CapabilityDecl union. The substrate dispatches
-					// structurally on `kind`, so the union is the default
-					// vocabulary, not a closed surface.
-					capabilities: [customDecl] as unknown as readonly never[],
-				});
-
-				const captured = yield* Ref.make<ReadonlyArray<string>>([]);
-
-				const customSink: CapabilitySink<'plugin-author:custom', CustomDecl> = {
-					kind: 'plugin-author:custom',
-					accept: (decl) => Ref.update(captured, (xs) => [...xs, decl.payload]),
-				};
-
-				// Plugin-author overlay: yields CapabilitySinksService from
-				// the underlying registry Layer, calls registerSink for the
-				// custom kind. `Layer.effectDiscard` runs the registration
-				// body once per Layer.build; the registerSink call
-				// `addFinalizer`s a scope-bound restore (see
-				// `capability-sinks/service.ts`) so the override reaps on
-				// supervisor shutdown.
-				const customOverlay = Layer.effectDiscard(
-					Effect.gen(function* () {
-						const sinks = yield* CapabilitySinksService;
-						yield* sinks.registerSink(customSink);
-					}),
-				);
-
-				// Compose: base default sinks (no orchestrator registrations for
-				// this test) + the plugin-author overlay. This is the layer
-				// the caller hands to the supervisor via pluginContext.
-				const sinksLayer = customOverlay.pipe(Layer.provideMerge(layerCapabilitySinksDefault()));
-
-				const stack: SupervisedStack = {
-					_tag: 'Stack',
-					members: [pluginCustom],
-					options: {},
-				};
-				const state = yield* makeProjectionRef();
-
-				yield* Effect.scoped(
-					Effect.gen(function* () {
-						// Build the composed sinks layer on the surrounding
-						// (test) scope so the service instance survives
-						// across into the supervisor.
-						const sinksCtx = yield* Layer.build(sinksLayer);
-						const sinksService = Context.get(sinksCtx, CapabilitySinksService);
-						const pluginContext = Context.empty().pipe(
-							Context.add(CapabilitySinksService, sinksService),
-						) as Context.Context<never>;
-
-						const handle = yield* supervise(stack, identity, state, pluginContext);
-						for (const [key] of handle.graph.nodes) {
-							yield* handle.registry.awaitReady(key);
-						}
-					}),
-				);
-
-				const fired = yield* Ref.get(captured);
-				expect(fired).toEqual(['extension-path-fired']);
-			}),
-	);
-
-	it.effect('unregistered custom capability kinds are ignored at the supervisor boundary', () =>
-		Effect.gen(function* () {
-			const pluginCustom = definePlugin({
-				id: 'test:custom-unregistered',
-				role: 'service' as const,
-				section: 'service',
-				start: () => Effect.succeed({ v: 'custom-unregistered' as const }),
-				capabilities: [
-					{ kind: 'plugin-author:unregistered', payload: 'ignored' },
-				] as unknown as readonly never[],
-			});
-			const state = yield* makeProjectionRef();
-			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginCustom], options: {} };
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const handle = yield* supervise(stack, identity, state);
-					yield* handle.registry.awaitReady(pluginKey('test:custom-unregistered#0'));
-				}),
-			);
-
-			const snap = yield* SubscriptionRef.get(state);
-			expect(snap.rows.find((r) => r.key === 'test:custom-unregistered#0')?.status).toBe('stopped');
-			expect(snap.errors).toEqual([]);
-		}),
-	);
-
-	it.effect('omitted OrchestratorSinks slots are no-ops without crashing dispatch', () =>
-		// The default OrchestratorSinks list is empty. Unknown
-		// contribution kinds are downgraded to no-ops at the supervisor
-		// boundary, so the harvest path stays alive even when the
-		// orchestrator declines to handle a kind.
+	it.effect('the no-op dispatcher leaves every plugin ready without crashing dispatch', () =>
+		// The default `ContributionDispatcher` is the no-op dispatcher
+		// (bare smoke-test path). Buffered contributions simply have
+		// nowhere to go, so the post-start dispatch stays alive and every
+		// plugin reaches `ready`.
 		Effect.gen(function* () {
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
@@ -1456,64 +1262,34 @@ describe('supervisor harvest loop', () => {
 			}),
 	);
 
-	it.effect('capability factory failure reports a structured error instead of marking ready', () =>
-		Effect.gen(function* () {
-			const pluginCaps = definePlugin({
-				id: 'test:caps',
-				role: 'service' as const,
-				section: 'service',
-				start: () => Effect.succeed({ v: 'caps' as const }),
-				capabilities: (() => {
-					throw new Error('capability boom');
-				}) as never,
-			});
-			const state = yield* makeProjectionRef();
-			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginCaps], options: {} };
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					yield* supervise(stack, identity, state);
-				}),
-			);
-
-			const snap = yield* SubscriptionRef.get(state);
-			const row = snap.rows.find((r) => r.key === 'test:caps#0');
-			expect(row?.status).toBe('failed');
-			expect(row?.lastError?.tag).toBe('CapabilityFactoryFailed');
-			expect(row?.lastError?.pluginKey).toBe('test:caps#0');
-			expect(row?.lastError?.chain.join('\n')).toContain('capability boom');
-			expect(snap.cycle.phase).toBe('running');
-		}),
-	);
-
-	it.effect('capability sink failure reports a structured error instead of crashing', () =>
+	it.effect('contribution-dispatch failure reports a structured event instead of crashing', () =>
 		Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
 			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRoute], options: {} };
-			const sinks: OrchestratorSinks = [
-				orchestratorSink<'routable', RoutableDecl>({
-					kind: 'routable',
-					accept: () => Effect.fail(new Error('route dispatch boom')),
-				}),
-			];
+			// A dispatcher whose `routable` body REJECTS — the
+			// orchestrator-fault path.
+			const failingDispatcher: ContributionDispatcher = {
+				...noopContributionDispatcher,
+				routable: () => Effect.fail(new Error('route dispatch boom')),
+			};
 
 			yield* Effect.scoped(
 				Effect.gen(function* () {
-					yield* supervise(stack, identity, state, Context.empty(), sinks);
+					yield* supervise(stack, identity, state, Context.empty(), failingDispatcher);
 				}),
 			);
 
 			const snap = yield* SubscriptionRef.get(state);
 			const row = snap.rows.find((r) => r.key === 'test:route#0');
-			// Sink failure is orchestrator-fault, NOT plugin-fault (Phase 6 #39
-			// fix): the plugin's acquire ran cleanly, the sink that received
-			// the contribution failed. Plugin status stays ready; the row's
-			// lastError carries no entry attributed to this plugin.
-			// `supervise(...)` runs to shutdown, so the plugin's post-supervise
-			// status is `'stopped'` (clean lifecycle exit), NOT `'failed'`.
+			// Dispatch-body failure is orchestrator-fault, NOT plugin-fault
+			// (backlog #39): the plugin's acquire ran cleanly, the dispatch
+			// body that received the contribution failed. Plugin status stays
+			// ready; the row's lastError carries no entry attributed to this
+			// plugin. `supervise(...)` runs to shutdown, so the plugin's
+			// post-supervise status is `'stopped'` (clean lifecycle exit).
 			expect(row?.status).toBe('stopped');
 			expect(row?.lastError ?? undefined).toBeUndefined();
-			// The sink failure surfaces via the new orchestrator-event path —
+			// The failure surfaces via the orchestrator-event path —
 			// `engine.orchestrator.dispatchFailed` (covered by the dedicated
 			// regression at test/substrate/runtime/supervisor-contribution-sink-fail.test.ts).
 			expect(snap.cycle.phase).toBe('running');

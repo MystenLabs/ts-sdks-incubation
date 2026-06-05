@@ -39,7 +39,6 @@ import {
 	runRegisterKeyServerTransaction,
 	type RegisterKeyServerInputs,
 } from '../../../src/plugins/seal/deploy.ts';
-import { chainId } from '../../../src/substrate/brand.ts';
 import type { ChainProbe } from '../../../src/contracts/chain-probe.ts';
 import type { SealObjectProbeKey } from '../../../src/plugins/seal/deploy.ts';
 
@@ -75,7 +74,7 @@ const stubSdk = (executeResult: unknown) => ({
 
 const registerInputs: RegisterKeyServerInputs = {
 	name: 'seal',
-	chain: chainId('localnet'),
+	chain: 'localnet',
 	signer: stubSigner,
 	sdk: stubSdk(undefined),
 	chainProbe: stubChainProbe,

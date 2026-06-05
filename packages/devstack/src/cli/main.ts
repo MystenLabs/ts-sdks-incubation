@@ -152,6 +152,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 				runUpLive(flags.configPath, identity, {
 					renderer: flags.renderer,
 					stdoutIsTty: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
+					warm: flags.warm,
 				}),
 		},
 		apply: {

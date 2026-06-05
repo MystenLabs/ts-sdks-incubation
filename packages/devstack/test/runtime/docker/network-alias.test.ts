@@ -24,7 +24,7 @@ import {
 	type DockerHost,
 } from '../../../src/runtime/docker/client.ts';
 import { ensureContainer, type PerNameLockState } from '../../../src/runtime/docker/container.ts';
-import { StackPathsService, type StackPaths } from '../../../src/substrate/runtime/paths.ts';
+import { stackPathsLayer } from '../../helpers/mock-stack-paths.ts';
 
 const labels: ContainerLabelTuple = {
 	app: 'app',
@@ -93,30 +93,6 @@ const writeDocker = (root: string, lines: ReadonlyArray<string>): { bin: string;
 	return { bin, log };
 };
 
-const stackPathsFor = (stackRoot: string): StackPaths => {
-	const cacheDir = join(stackRoot, 'cache');
-	const cacheNamespaceDir = (namespace: string): string => join(cacheDir, namespace);
-	const cacheChainDir = (namespace: string, chain: string): string =>
-		join(cacheNamespaceDir(namespace), chain);
-	return {
-		stackRoot,
-		stateFile: join(stackRoot, 'state.json'),
-		stateLockHint: join(stackRoot, 'state.json.lock'),
-		cacheDir,
-		snapshotDir: join(stackRoot, 'snapshots'),
-		stackLockFile: join(stackRoot, 'stack.lock'),
-		rosterFile: join(stackRoot, 'roster.json'),
-		containerClaimsFile: join(stackRoot, 'container-claims.json'),
-		snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
-		cacheEntry: (namespace, chain, contentHash) => {
-			const dir = cacheChainDir(namespace, chain);
-			return { dir, file: join(dir, `${contentHash}.json`) };
-		},
-		cacheChainDir,
-		cacheNamespaceDir,
-	};
-};
-
 const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
 	Layer.effect(
 		DockerSpawner,
@@ -136,9 +112,6 @@ const fakeDockerLayer = (bin: string): Layer.Layer<DockerHost | DockerSpawner> =
 			),
 		),
 	);
-
-const stackPathsLayer = (stackRoot: string): Layer.Layer<StackPathsService> =>
-	Layer.succeed(StackPathsService)(stackPathsFor(stackRoot));
 
 describe('docker network-alias plumbing', () => {
 	it.effect('emits --network-alias on docker run for primary attach aliases', () =>

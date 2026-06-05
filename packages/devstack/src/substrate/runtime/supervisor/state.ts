@@ -17,6 +17,7 @@ import {
 	type Fiber,
 	type Queue,
 	type Ref,
+	type Scope,
 	type SubscriptionRef,
 } from 'effect';
 
@@ -24,29 +25,25 @@ import type { EngineCommand, EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { SubscribableState } from '../../projection.ts';
-import { type CapabilitySinksShape } from '../capability-sinks/index.ts';
+import { type ContributionDispatcher } from './contribution-dispatcher.ts';
 import { isReadyOrTerminal } from '../lifecycle/index.ts';
 import type { LoggerShape } from '../observability/index.ts';
 import type { PluginRegistry, ResolvedGraph } from '../lifecycle/index.ts';
 
-export type StackRestartTaskState =
-	| { readonly tag: 'idle' }
-	| { readonly tag: 'starting'; readonly token: number }
-	| {
-			readonly tag: 'running';
-			readonly token: number;
-			readonly fiber: Fiber.Fiber<void, never>;
-	  };
-
-export type SnapshotCaptureTaskState =
-	| { readonly tag: 'idle' }
-	| { readonly tag: 'starting'; readonly token: number; readonly snapshotId: string | null }
-	| {
-			readonly tag: 'running';
-			readonly token: number;
-			readonly snapshotId: string | null;
-			readonly fiber: Fiber.Fiber<void, never>;
-	  };
+/**
+ * A long-running background task forked into the supervisor-lifetime
+ * scope (snapshot capture, stack restart). The slot holds the live
+ * fiber while the task runs and `null` when idle. A second concurrent
+ * trigger reads the slot: a non-null slot means one is already running
+ * (skip-dedup); a shutdown/conflicting command reads-and-clears the
+ * slot and `Fiber.interrupt`s it.
+ *
+ * The fiber IS the running state, `Effect.forkIn(supervisorScope)` gives
+ * it the supervisor's lifetime (so it outlives the command-loop fiber
+ * and does NOT wedge shutdown), and `Fiber.interrupt` is the
+ * conflict-resolution primitive.
+ */
+export type BackgroundTaskSlot = Ref.Ref<Fiber.Fiber<void, never> | null>;
 
 export interface SupervisorCommandHandlerContext {
 	readonly publish: (event: EngineEvent) => Effect.Effect<void, never, never>;
@@ -110,14 +107,20 @@ export interface SupervisorState {
 	readonly ref: SubscriptionRef.SubscriptionRef<SubscribableState>;
 	readonly hub: Queue.Enqueue<EngineEvent>;
 	readonly queuedCommands: Queue.Dequeue<QueuedCommand>;
-	readonly stackRestartTask: Ref.Ref<StackRestartTaskState>;
-	readonly stackRestartSeq: Ref.Ref<number>;
-	readonly snapshotCaptureTask: Ref.Ref<SnapshotCaptureTaskState>;
-	readonly snapshotCaptureSeq: Ref.Ref<number>;
+	/** The supervisor-lifetime scope. Long-running background tasks
+	 *  (snapshot capture, stack restart) are forked into THIS scope via
+	 *  `Effect.forkIn` so they ride the supervisor's lifetime rather than
+	 *  the command-loop fiber — a forked capture must not wedge shutdown. */
+	readonly supervisorScope: Scope.Scope;
+	/** Live stack-restart fiber (or `null` when idle). See {@link BackgroundTaskSlot}.
+	 *  Snapshot capture/restore now run INLINE in the command loop (the bounce:
+	 *  the handler stops+commits/loads + the loop converges), so there is no
+	 *  forked capture fiber — only the stack-restart background task. */
+	readonly stackRestartTask: BackgroundTaskSlot;
 	readonly shutdownLatch: Ref.Ref<boolean>;
 	readonly shutdownComplete: Deferred.Deferred<void>;
 	readonly pluginContext: Context.Context<never>;
-	readonly sinks: CapabilitySinksShape;
+	readonly dispatcher: ContributionDispatcher;
 	readonly logger: LoggerShape;
 	readonly identity: Identity;
 	readonly runtimeRoot: string;

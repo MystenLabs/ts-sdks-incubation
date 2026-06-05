@@ -29,8 +29,8 @@ import type { SuiOptions } from './mode/spec.ts';
 import { bootLocalRpcMode } from './mode/external.ts';
 import { bootForkMode } from './mode/fork.ts';
 import { bootLiveMode } from './mode/live.ts';
-import { bootLocalMode } from './mode/local.ts';
-import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import { bootLocalMode, type LocalIndexer } from './mode/local.ts';
+import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import type { StackPaths } from '../../substrate/runtime/paths.ts';
 import type { PortBroker } from '../../substrate/runtime/port-broker/index.ts';
@@ -47,16 +47,21 @@ export interface SuiBootResult {
  *
  *  The `ContainerRuntime` is consumed by container-bearing modes
  *  only (local + fork); external + live get `null` and a typed
- *  refusal would surface if they tried to use it.
+ *  refusal would surface if they tried to use it. `indexer` (external
+ *  GraphQL-indexer DSN + network) is consumed by local mode only.
  *
- *  Stub: the per-mode builders are all stubs; the orchestrator
- *  here is the only fully-wired piece. */
+ *  `prebuiltImage` (local mode only) is the validator image the barrel
+ *  already resolved before the indexer-db sidecar — passed straight
+ *  through so the sidecar's `configHash` and the validator container use
+ *  the SAME `ImageRef` (no drift, no double build). */
 export const bootSuiService = (
 	runtime: ContainerRuntime,
 	identity: Identity,
 	portBroker: PortBroker,
 	paths: StackPaths,
 	opts: SuiOptions,
+	indexer: LocalIndexer | undefined,
+	prebuiltImage?: ImageRef,
 ): Effect.Effect<
 	SuiBootResult,
 	SuiPluginError | SuiConfigError,
@@ -64,7 +69,7 @@ export const bootSuiService = (
 > => {
 	switch (opts.mode) {
 		case 'local':
-			return bootLocalMode(runtime, identity, portBroker, opts).pipe(
+			return bootLocalMode(runtime, identity, portBroker, opts, indexer, prebuiltImage).pipe(
 				Effect.map(({ resolved, client }) => ({ resolved, client })),
 			);
 		case 'local-rpc':
@@ -76,6 +81,13 @@ export const bootSuiService = (
 		case 'fork':
 			return bootForkMode(runtime, identity, portBroker, paths, opts).pipe(
 				Effect.map(({ resolved, client }) => ({ resolved, client })),
+			);
+		default:
+			// The typed union makes this unreachable; guards an untyped
+			// caller that passes options with no/unknown `mode` (which would
+			// otherwise fall through to an opaque "not iterable" defect).
+			return Effect.die(
+				new Error(`sui: unhandled mode ${String((opts as { mode?: unknown }).mode)}`),
 			);
 	}
 };

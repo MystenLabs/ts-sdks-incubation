@@ -21,8 +21,7 @@ import { Effect } from 'effect';
 import { defineDevstackWith } from '../../src/api/define-devstack-with.ts';
 import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.ts';
 import { definePlugin } from '../../src/api/define-plugin.ts';
-import { chainId } from '../../src/substrate/brand.ts';
-import type { NetworkConfig } from '../../src/substrate/network.ts';
+import type { NetworkConfig } from '../../src/plugins/sui/network-config.ts';
 
 // --- Fixtures -----------------------------------------------------------
 
@@ -35,11 +34,11 @@ const leaf = definePlugin({
 
 const localNetwork: NetworkConfig<'local'> = {
 	mode: 'local',
-	chain: chainId('demo:local'),
+	chain: 'demo:local',
 };
 const forkNetwork: NetworkConfig<'fork'> = {
 	mode: 'fork',
-	chain: chainId('demo:fork@1'),
+	chain: 'demo:fork@1',
 	checkpoint: '1',
 };
 

@@ -22,7 +22,7 @@ import type { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
 import { WalrusClient } from '@mysten/walrus';
 
-import { extractExecuteDigest } from '../../../src/substrate/runtime/sui-execute/index.ts';
+import { extractExecuteDigest } from '../../../src/plugins/sui/exec/index.ts';
 import type { BootScopeContext } from '../boot-config-impl.ts';
 
 const SUI_COIN_TYPE = '0x2::sui::SUI';

@@ -14,11 +14,14 @@
 //   - `types.ts`              — `SupervisedStack` runtime-boundary shape.
 //   - `state.ts`              — shared-state record threaded through the
 //                               per-concern modules.
-//   - `dispatch-contributions.ts` — capability-harvest path with the
-//                                   ContributionSinkFailed routing fix
-//                                   (backlog #39).
+//   - `contribution-dispatcher.ts` — the closed, typed post-start
+//                               contribution seam (five methods, one per
+//                               built-in decl kind) the supervisor
+//                               replays each plugin's ctx buffer through.
 //   - `acquire-node.ts`       — per-plugin acquire pipeline +
-//                               buildRegistry + acquireFullGraph.
+//                               buildRegistry + acquireFullGraph + the
+//                               static dispatch (dual-catch + error-
+//                               contribution → FormatterRegistry feed).
 //   - `teardown.ts`           — slice teardown + selective restart.
 //   - `background-tasks.ts`   — injected command handler, snapshot
 //                               capture, stack restart, post-acquire
@@ -32,7 +35,6 @@
 //                               runToShutdown.
 
 export {
-	CapabilityFactoryFailed,
 	SupervisorBootError,
 	SupervisorPostAcquireFailed,
 	SupervisorRestoreFailed,
@@ -52,6 +54,11 @@ export type {
 	SupervisorStartupOptions,
 } from './start-supervisor.ts';
 
-// Re-export of `OrchestratorSinks` mirrors the legacy supervisor.ts
-// surface so existing callers (CLI, e2e tests) keep their import paths.
-export type { OrchestratorSinks } from '../capability-sinks/index.ts';
+// The closed contribution-dispatch seam: production callers build it via
+// `buildProductionContributionDispatcher` (L3) and pass it into
+// `startSupervisor`; bare smoke tests use the no-op default.
+export {
+	noopContributionDispatcher,
+	type ContributionDispatcher,
+	type ContributionDispatchContext,
+} from './contribution-dispatcher.ts';

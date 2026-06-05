@@ -9,7 +9,7 @@ import { resolve as resolvePath } from 'node:path';
 
 import { Cause, Effect } from 'effect';
 
-import { appName, chainId, stackName } from '../../substrate/brand.ts';
+import { appName, stackName } from '../../substrate/brand.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 import { CliSupervisorLiveError } from '../../surfaces/cli/index.ts';
@@ -58,7 +58,7 @@ export const identityValueFor = (
 ): Identity => ({
 	app: appName(identity.app),
 	stack: stackName(effectiveStackName(identity, stack)),
-	chain: chainId(identity.network),
+	chain: identity.network,
 });
 
 /** When a verb loads a config whose `stackName` may differ from the

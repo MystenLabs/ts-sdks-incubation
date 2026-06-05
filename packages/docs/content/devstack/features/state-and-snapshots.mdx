@@ -56,7 +56,6 @@ state.json              # present only when the stack state store exists
 host-tree.tar
 containers/images.tar
 contributions/<encoded-plugin>.json
-integrity.json
 ```
 
 Supported behavior:
@@ -80,9 +79,9 @@ Important caveats:
   incomplete. These docs describe the supported CLI and artifact contract, not a claim that every
   service has full restore proof.
 - The supported snapshot surface is the CLI and the on-disk artifact described above. Treat
-  `meta.json`, `state.json`, `host-tree.tar`, `containers/images.tar`, and `integrity.json` as the
-  artifact contract; everything else under the snapshot directory is implementation detail and not
-  load-bearing for app or plugin-author code.
+  `meta.json`, `state.json`, `host-tree.tar`, and `containers/images.tar` as the artifact contract;
+  everything else under the snapshot directory is implementation detail and not load-bearing for app
+  or plugin-author code.
 
 Use `devstack wipe --yes --stack <name>` to remove all state for a selected stack in non-interactive
 shells. In a TTY, omitting `--yes` prompts for `y` before deleting state.

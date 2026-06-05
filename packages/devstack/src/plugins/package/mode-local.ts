@@ -26,7 +26,7 @@
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
 
-import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
+import { contentHash as brandContentHash } from '../../substrate/brand.ts';
 import {
 	pickPublishedChange,
 	pickUpgradeCapChange,
@@ -93,7 +93,7 @@ export interface PublishExecutor {
 	readonly build: (inputs: {
 		readonly sourcePath: string;
 		readonly packageName: string;
-		readonly chainId: ChainId;
+		readonly chainId: string;
 	}) => Effect.Effect<BuildOutput, PublishError, Scope.Scope>;
 
 	/** Construct + sign + execute a `Transaction.publish({modules,
@@ -130,7 +130,7 @@ export interface PublishExecutor {
 export interface LocalModeInputs {
 	readonly packageName: string;
 	readonly sourcePath: string;
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	readonly publisherAddress: string;
 	readonly mvrOverride?: string;
 	readonly capture?: (output: LocalPackagePublishOutput) => Readonly<Record<string, string>>;
@@ -155,6 +155,22 @@ export interface LocalModeOutputs {
  * 4: "Signer MUST be an explicit upstream").
  */
 const LOCAL_PACKAGE_CACHE_SCHEMA_VERSION = 'v3';
+// Short verify budget covering RPC index-visibility lag only. The big
+// post-restore catch-up window — `sui start` re-executes its committed
+// checkpoint store from seq=0, and `getObject(packageId)` reads not-found
+// until the replay reaches the publish checkpoint — is now absorbed by the
+// sui plugin's caught-up-to-head ready-gate (`waitForCheckpointCatchUp` in
+// plugins/sui/mode/local.ts): the validator does not report ready until its
+// head stabilizes to live cadence, so by the time this verify runs the
+// committed package object is already served. This budget only needs to ride
+// out the small fullnode/index lag between publish-tx commit and `getObject`
+// visibility — NOT the whole replay. If it gives up too soon it returns null →
+// the substrate re-PRODUCES (re-publishes) the package, minting a FRESH
+// packageId (codegen `config.ts` loses the stable id; downstream
+// `deepbookOf(...).packageId` churns). A truly-wiped chain genuinely has no
+// package and re-publishes once the budget lapses. Mirrors
+// WALRUS_DEPLOY_VERIFY_READINESS_* in plugins/walrus/deploy.ts — the on-chain
+// artifact-publisher consumers share the same short RPC-lag tolerance.
 const PACKAGE_CACHE_VERIFY_MAX_ATTEMPTS = 20;
 const PACKAGE_CACHE_VERIFY_DELAY_MS = 250;
 
@@ -190,10 +206,12 @@ export const buildVerifyProbe = (
 		const delayMs = opts?.delayMs ?? PACKAGE_CACHE_VERIFY_DELAY_MS;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			// Lenient mode in the underlying probe already coerces
-			// not-found AND transient → null. We retry nulls briefly
-			// because local Sui restart can report ready before package
-			// objects are immediately queryable, and a false cache miss
-			// turns a warm restart into an unnecessary publish.
+			// not-found AND transient → null. We retry nulls briefly to
+			// ride out the small fullnode/index lag between publish-tx
+			// commit and `getObject` visibility; the validator's larger
+			// post-restore replay is already gated upstream by the sui
+			// plugin's caught-up-to-head ready-gate, so a false cache miss
+			// does not turn a warm restart into an unnecessary publish.
 			const result: typeof PackageVerifyShape.Type | null = yield* probe
 				.get({ kind: 'object', objectId: cachedPackageIdHint }, PackageVerifyShape, 'lenient')
 				.pipe(
@@ -469,9 +487,9 @@ export const acquireLocal = (
 		// `capture` callback is user code; a throw is a user bug (typo /
 		// renamed key against a stale cached output) and MUST surface as
 		// `PublishError('parse')` so the user sees the mistake instead of
-		// silently carrying forward `artifact.captured` (the historical
-		// `try { ... } catch { return artifact.captured }` hid renamed
-		// keys behind stale data — A5 of the remediation plan).
+		// silently carrying forward `artifact.captured` — swallowing the
+		// throw with `catch { return artifact.captured }` would hide
+		// renamed keys behind stale data.
 		//
 		// Cache miss: `producedOutput` was set inside `produce`, the
 		// produce-time capture already ran (Effect.try → PublishError),

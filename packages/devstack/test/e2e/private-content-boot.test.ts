@@ -164,6 +164,11 @@ const expectedKeys = [
 	'account/bob#8',
 	walletKey,
 	'host-service/app#10',
+	// The example config composes `dashboard()` as the final member
+	// (examples/private-content/devstack.config.ts) — it reaches ready as #11.
+	// (This fixture previously omitted it, so the test was failing on a stray
+	// dashboard#11 key independent of any source change.)
+	'dashboard#11',
 ];
 
 interface PrivateContentBoot {

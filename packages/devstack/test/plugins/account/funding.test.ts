@@ -2,7 +2,6 @@ import { Effect, Exit, Fiber } from 'effect';
 import * as TestClock from 'effect/testing/TestClock';
 import { describe, expect, it } from '@effect/vitest';
 
-import { chainId } from '../../../src/substrate/brand.ts';
 import {
 	StrategyRegistryService,
 	layerStrategyRegistry,
@@ -56,7 +55,7 @@ const applyFunding = (
 			variant: 'ephemeral',
 			account: fakeAccount,
 			funding,
-			chainId: chainId('sui:localnet'),
+			chainId: 'sui:localnet',
 			broker,
 			balanceReader,
 		});
@@ -166,7 +165,7 @@ describe('account cross-cutting funding dispatch', () => {
 						address: '0xalice',
 						amountMist: 1_000_000n,
 						suiMode: 'local',
-						chainId: chainId('sui:localnet'),
+						chainId: 'sui:localnet',
 						emitAutoPromotionEvent: () => Effect.void,
 						broker,
 						balanceReader,
@@ -302,7 +301,7 @@ describe('account cross-cutting funding dispatch', () => {
 							variant: 'ephemeral',
 							account: fakeAccount,
 							funding: [fundingEntry()],
-							chainId: chainId('sui:localnet'),
+							chainId: 'sui:localnet',
 							broker,
 							balanceReader: NULL_BALANCE_READER,
 						});
@@ -400,7 +399,7 @@ describe('account cross-cutting funding dispatch', () => {
 						variant: 'ephemeral',
 						account,
 						funding: [fundingEntry()],
-						chainId: chainId('sui:localnet'),
+						chainId: 'sui:localnet',
 						broker,
 						balanceReader: NULL_BALANCE_READER,
 					});

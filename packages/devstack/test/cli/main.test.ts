@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { identityInputsFromArgv, runCli } from '../../src/cli/main.ts';
 import {
+	CACHE_DIR_NAME,
 	contributionPath,
+	DEPLOY_CACHE_NAMESPACES,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	SnapshotLayout,
 	SNAPSHOT_META_VERSION,
@@ -43,28 +45,32 @@ const writeCodegenConfig = (appRoot: string, stackName = 'main'): string => {
 		`
 import { Effect } from 'effect';
 import {
-\tcodegenable,
 \tdefineDevstack,
 \tdefinePlugin,
+\tPluginContext,
 } from '@mysten-incubation/devstack';
 
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-apply-codegen',
 \trole: 'service',
 \tsection: 'service',
-\tstart: () => Effect.succeed({ message: 'from-cli-apply' } as const),
-\tcapabilities: ({ value }) => [
-\t\tcodegenable({
-\t\t\temitterName: 'cli-apply-proof',
-\t\t\toutputPath: 'cli-apply-proof.ts',
-\t\t\tsensitive: false,
-\t\t\temit: (ctx) =>
-\t\t\t\tEffect.sync(() => {
-\t\t\t\t\tctx.exportConst('cliApplyProof', value);
-\t\t\t\t\treturn ctx.done();
-\t\t\t\t}),
+\tstart: () =>
+\t\tEffect.gen(function* () {
+\t\t\tconst ctx = yield* PluginContext;
+\t\t\tconst value = { message: 'from-cli-apply' } as const;
+\t\t\tctx.codegen({
+\t\t\t\tkind: 'codegenable',
+\t\t\t\temitterName: 'cli-apply-proof',
+\t\t\t\toutputPath: 'cli-apply-proof.ts',
+\t\t\t\tsensitive: false,
+\t\t\t\temit: (emit) =>
+\t\t\t\t\tEffect.sync(() => {
+\t\t\t\t\t\temit.exportConst('cliApplyProof', value);
+\t\t\t\t\t\treturn emit.done();
+\t\t\t\t\t}),
+\t\t\t});
+\t\t\treturn value;
 \t\t}),
-\t],
 });
 
 export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: '${stackName}' });
@@ -132,6 +138,11 @@ const writeRestorableSnapshotArtifact = async (
 ): Promise<void> => {
 	const snapshotDir = join(stackRoot, 'snapshots', snapshotId);
 	mkdirSync(join(snapshotDir, SnapshotLayout.contributionsDir), { recursive: true });
+	// This baseline snapshot records no host-tree / deploy-cache subtrees, so the
+	// restore cache preflight (now checked against the SNAPSHOT, not the live
+	// stack) has nothing to verify and passes. The live cache seed below is left
+	// as a harmless realistic fixture (a deployed stack would have one).
+	mkdirSync(join(stackRoot, CACHE_DIR_NAME, DEPLOY_CACHE_NAMESPACES[0]!), { recursive: true });
 	const participants = Object.entries(identity);
 	writeFileSync(
 		join(snapshotDir, SnapshotLayout.metaFile),
@@ -324,7 +335,7 @@ describe('cli/main', () => {
 								yield* Effect.sync(() => {
 									observed.push(record.command as { readonly tag?: string });
 								});
-								yield* subscriber.ack(record.id, 'applied');
+								yield* subscriber.publishReply(record.id, { kind: 'ack', detail: 'applied' });
 							}),
 						),
 					);
@@ -488,10 +499,14 @@ describe('cli/main', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured', {
-									kind: 'captured',
-									snapshotId: command.snapshotId,
-									...(command.name === undefined ? {} : { name: command.name }),
+								yield* subscriber.publishReply(record.id, {
+									kind: 'ack',
+									detail: 'captured',
+									payload: {
+										kind: 'captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+									},
 								});
 							}),
 						),
@@ -597,10 +612,14 @@ describe('cli/main', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured', {
-									kind: 'captured',
-									snapshotId: command.snapshotId,
-									...(command.name === undefined ? {} : { name: command.name }),
+								yield* subscriber.publishReply(record.id, {
+									kind: 'ack',
+									detail: 'captured',
+									payload: {
+										kind: 'captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+									},
 								});
 							}),
 						),
@@ -654,27 +673,31 @@ describe('cli/main', () => {
 			configPath,
 			`
 import { Effect } from 'effect';
-import { codegenable } from '../src/api/define-capabilities.ts';
 import { defineDevstack } from '../src/api/define-devstack.ts';
 import { definePlugin } from '../src/api/define-plugin.ts';
+import { PluginContext } from '../src/substrate/plugin-ctx.ts';
 
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-identity-codegen',
 \trole: 'service',
 \tsection: 'service',
-\tstart: () => Effect.succeed({ message: 'from-cli-identity' } as const),
-\tcapabilities: ({ value }) => [
-\t\tcodegenable({
-\t\t\temitterName: 'cli-identity-proof',
-\t\t\toutputPath: 'cli-identity-proof.ts',
-\t\t\tsensitive: false,
-\t\t\temit: (ctx) =>
-\t\t\t\tEffect.sync(() => {
-\t\t\t\t\tctx.exportConst('cliIdentityProof', value);
-\t\t\t\t\treturn ctx.done();
-\t\t\t\t}),
+\tstart: () =>
+\t\tEffect.gen(function* () {
+\t\t\tconst ctx = yield* PluginContext;
+\t\t\tconst value = { message: 'from-cli-identity' } as const;
+\t\t\tctx.codegen({
+\t\t\t\tkind: 'codegenable',
+\t\t\t\temitterName: 'cli-identity-proof',
+\t\t\t\toutputPath: 'cli-identity-proof.ts',
+\t\t\t\tsensitive: false,
+\t\t\t\temit: (emit) =>
+\t\t\t\t\tEffect.sync(() => {
+\t\t\t\t\t\temit.exportConst('cliIdentityProof', value);
+\t\t\t\t\t\treturn emit.done();
+\t\t\t\t\t}),
+\t\t\t});
+\t\t\treturn value;
 \t\t}),
-\t],
 });
 
 export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'main' });

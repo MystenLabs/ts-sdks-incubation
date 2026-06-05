@@ -31,6 +31,13 @@ import {
 	selectReusablePortMapping,
 } from '../../../src/plugins/sui/mode/local.ts';
 
+// Resolved indexer wiring — the sui-owned sidecar shape: DSN dials the
+// in-network alias `sui-indexer-db`, network is the per-stack sui-indexer net.
+const TEST_INDEXER = {
+	url: 'postgres://devstack:pw@sui-indexer-db:5432/sui_indexer',
+	network: 'devstack-wallet-wallet-sui-indexer',
+} as const;
+
 const fakeBroker = (allocate: (opts: AllocateOptions) => number): PortBroker => ({
 	allocate: (opts = {}) =>
 		Effect.succeed({
@@ -290,11 +297,52 @@ describe('Sui local port mapping', () => {
 					{ app: appName('wallet'), stack: stackName('wallet'), plugin: 'sui', role: 'validator' },
 					'devstack-wallet-wallet-sui-validator',
 					{ mode: 'local' },
+					TEST_INDEXER,
 				);
 
 				expect(specs).toHaveLength(1);
 				expect(specs[0]?.recreate).toBe('on-failure');
 				expect(specs[0]?.stopGraceSeconds).toBe(LOCAL_VALIDATOR_STOP_GRACE_SECONDS);
+				// External indexer: join the postgres network + hand the DSN
+				// to the entrypoint.
+				expect(specs[0]?.networkAttach).toEqual([TEST_INDEXER.network]);
+				expect(specs[0]?.env).toEqual({ DEVSTACK_SUI_INDEXER_URL: TEST_INDEXER.url });
+			}),
+		),
+	);
+
+	it.effect('omits the indexer network + env when no indexer is supplied', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const specs: EnsureContainerSpec[] = [];
+				const broker = fakeBroker(
+					(opts) => opts.preferredPort ?? (opts.owner === 'sui:faucet' ? 50000 : 51000),
+				);
+				const runtime = unusedRuntime((spec) => {
+					specs.push(spec);
+					return Effect.succeed({
+						id: 'container-id',
+						name: spec.name,
+						imageName: spec.image.tag ?? spec.image.digest,
+						status: 'running',
+						ips: [],
+						ports: spec.ports,
+					});
+				});
+
+				yield* ensureLocalValidatorContainer(
+					runtime,
+					broker,
+					{ digest: 'sha256:sui', tag: 'sui:local' },
+					{ app: appName('wallet'), stack: stackName('wallet'), plugin: 'sui', role: 'validator' },
+					'devstack-wallet-wallet-sui-validator',
+					{ mode: 'local' },
+					undefined,
+				);
+
+				expect(specs).toHaveLength(1);
+				expect(specs[0]?.networkAttach).toBeUndefined();
+				expect(specs[0]?.env).toBeUndefined();
 			}),
 		),
 	);
@@ -357,6 +405,7 @@ describe('Sui local port mapping', () => {
 					{ app: appName('wallet'), stack: stackName('wallet'), plugin: 'sui', role: 'validator' },
 					'devstack-wallet-wallet-sui-validator',
 					{ mode: 'local' },
+					TEST_INDEXER,
 				);
 
 				expect(result.ports).toEqual([
@@ -410,6 +459,7 @@ describe('Sui local port mapping', () => {
 					{ app: appName('wallet'), stack: stackName('wallet'), plugin: 'sui', role: 'validator' },
 					'devstack-wallet-wallet-sui-validator',
 					{ mode: 'local' },
+					TEST_INDEXER,
 				);
 
 				expect(result.ports).toEqual([
@@ -442,6 +492,7 @@ describe('Sui local port mapping', () => {
 					{ app: appName('wallet'), stack: stackName('wallet'), plugin: 'sui', role: 'validator' },
 					'devstack-wallet-wallet-sui-validator',
 					{ mode: 'local' },
+					TEST_INDEXER,
 				).pipe(Effect.exit);
 
 				expect(Exit.isFailure(exit)).toBe(true);

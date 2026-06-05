@@ -35,7 +35,7 @@
 //   - All writes go through `atomicWriteFile` (tmp + rename) per
 //     architecture invariant #5.
 
-import { Context, Effect, FileSystem, Layer, Ref, Stream, SubscriptionRef } from 'effect';
+import { Context, Effect, FileSystem, Layer, Ref, SubscriptionRef } from 'effect';
 import { request as httpRequest } from 'node:http';
 import * as path from 'node:path';
 
@@ -130,7 +130,7 @@ export class RouterConfig extends Context.Service<RouterConfig, RouterConfigShap
 ) {}
 
 /** Default-config layer for tests. Production wires this from
- *  `runtime-composition.ts` at the engine boundary. */
+ *  `orchestrators/boot.ts` at the engine boundary. */
 export const layerRouterConfigLiteral = (cfg: RouterConfigShape): Layer.Layer<RouterConfig> =>
 	Layer.succeed(RouterConfig)(cfg);
 
@@ -195,31 +195,20 @@ export interface RouterServiceShape {
 
 	/** Contribute a `RoutableDecl`. The orchestrator resolves the
 	 *  upstream URL, renders the file-provider YAML, and writes it
-	 *  atomically. The returned `EndpointUrl` is the dispatched URL the
-	 *  manifest writer + codegen consume.
+	 *  atomically. The returned `ResolvedRoute` is the post-mint route —
+	 *  the single source of truth the boot adapter (`endpointSinksFromRoute`)
+	 *  derives both the manifest entry and the projection event from.
 	 *
 	 *  Scope-bound: when the caller's scope closes, the dispatch file
 	 *  is removed (best-effort) and the contribution is dropped from the
 	 *  subscribable map. */
 	readonly contributeRoute: (
 		decl: RoutableDecl,
-	) => Effect.Effect<EndpointUrl, RouterError, import('effect').Scope.Scope>;
+	) => Effect.Effect<ResolvedRoute, RouterError, import('effect').Scope.Scope>;
 
 	/** Subscribable view of currently-applied routes. Surfaces +
 	 *  diagnostics consume this. */
 	readonly applied: SubscriptionRef.SubscriptionRef<ReadonlyArray<ResolvedRoute>>;
-}
-
-/** What `contributeRoute` returns — the post-mint URL and the metadata
- *  the manifest needs. `wireProtocol: 'tcp'` carries `tcp://` URLs;
- *  consumers (codegen, manifest) translate to their protocol-specific
- *  scheme (`postgres://`, `redis://`, …). */
-export interface EndpointUrl {
-	readonly endpointName: string;
-	readonly hostname: string;
-	readonly entrypointPort: number;
-	readonly url: string;
-	readonly wireProtocol: 'http' | 'h2c' | 'tcp';
 }
 
 export class RouterService extends Context.Service<RouterService, RouterServiceShape>()(
@@ -355,12 +344,10 @@ const sweepStaleDispatchRoutes = (
 			const status: DispatchLeaseStatus =
 				route.lease === null
 					? 'unknown-owner'
-					: yield* probe
-							.probeHolderLiveness(route.lease.owner)
-							.pipe(
-								Effect.map((s) => (s === 'dead' ? ('stale' as const) : ('live' as const))),
-								Effect.catch(() => Effect.succeed('live' as const)),
-							);
+					: yield* probe.probeHolderLiveness(route.lease.owner).pipe(
+							Effect.map((s) => (s === 'dead' ? ('stale' as const) : ('live' as const))),
+							Effect.catch(() => Effect.succeed('live' as const)),
+						);
 			if (status === 'stale') {
 				const filePath = path.join(profile.dispatchDir, dispatchFilename(route.dispatchFileId));
 				yield* fs.remove(filePath).pipe(
@@ -562,20 +549,6 @@ const resolveDisabledDirectRoute = (
 		};
 	});
 
-const endpointFromResolvedRoute = (decl: RoutableDecl, resolved: ResolvedRoute): EndpointUrl => {
-	const url =
-		resolved.wireProtocol === 'tcp'
-			? `tcp://127.0.0.1:${resolved.entrypointPort}`
-			: `http://${resolved.hostname}:${resolved.entrypointPort}`;
-	return {
-		endpointName: decl.endpointName,
-		hostname: resolved.hostname,
-		entrypointPort: resolved.entrypointPort,
-		url,
-		wireProtocol: resolved.wireProtocol,
-	};
-};
-
 const removeDispatchFile = (
 	fs: FileSystem.FileSystem,
 	profile: RouterProfile,
@@ -588,7 +561,6 @@ const removeDispatchFile = (
 const waitForPublicRouteReadiness = (
 	cfg: RouterConfigShape,
 	decl: RoutableDecl,
-	endpoint: EndpointUrl,
 	resolved: ResolvedRoute,
 ): Effect.Effect<void, RouteReadinessProbeFailed> => {
 	const options = cfg.routeReadinessProbe;
@@ -604,6 +576,9 @@ const waitForPublicRouteReadiness = (
 	const intervalMs = options.intervalMs ?? DEFAULT_ROUTE_READINESS_INTERVAL_MS;
 	const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_ROUTE_READINESS_REQUEST_TIMEOUT_MS;
 	const probeUrl = `http://${directLoopbackHost}:${resolved.entrypointPort}`;
+	// The probe only runs for non-tcp routes, so the public endpoint URL is
+	// the http form — same derivation the boot adapter surfaces.
+	const publicUrl = `http://${resolved.hostname}:${resolved.entrypointPort}`;
 	return waitForHttpEndpoint({
 		endpoint: probeUrl,
 		timeoutMs,
@@ -617,10 +592,10 @@ const waitForPublicRouteReadiness = (
 			(cause): RouteReadinessProbeFailed =>
 				new RouteReadinessProbeFailed({
 					dispatchFileId: resolved.dispatchFileId,
-					url: endpoint.url,
+					url: publicUrl,
 					timeoutMs,
 					detail:
-						`public router endpoint ${endpoint.url} did not serve route ` +
+						`public router endpoint ${publicUrl} did not serve route ` +
 						`${resolved.dispatchFileId} within ${timeoutMs}ms ` +
 						`(probeUrl=${probeUrl}, hostHeader=${resolved.hostname})`,
 					cause,
@@ -809,7 +784,6 @@ export const layerRouterService: Layer.Layer<
 					? yield* resolveDisabledDirectRoute(identity, decl, registry)
 					: yield* resolveRoute(identity, decl, registry, upstreams);
 				const lease = makeRouteLease(profile, identity);
-				const endpoint = endpointFromResolvedRoute(decl, resolved);
 				const publishRouteFile: Effect.Effect<
 					RoutePublishOwnership,
 					DispatchWriteFailed | RouteCollision
@@ -912,7 +886,7 @@ export const layerRouterService: Layer.Layer<
 				let publishOwnership: RoutePublishOwnership;
 				if (cfg.disabled) {
 					publishOwnership = yield* publishRouteFile;
-					yield* waitForPublicRouteReadiness(cfg, decl, endpoint, resolved);
+					yield* waitForPublicRouteReadiness(cfg, decl, resolved);
 					if (publishOwnership !== 'reused-live') {
 						yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
 					}
@@ -944,7 +918,7 @@ export const layerRouterService: Layer.Layer<
 								),
 							);
 							const ownership = yield* publishRouteFile;
-							yield* waitForPublicRouteReadiness(cfg, decl, endpoint, resolved).pipe(
+							yield* waitForPublicRouteReadiness(cfg, decl, resolved).pipe(
 								Effect.onError(() =>
 									ownership !== 'owned' ? Effect.void : removeDispatchFile(fs, profile, resolved),
 								),
@@ -984,7 +958,7 @@ export const layerRouterService: Layer.Layer<
 					);
 				}
 
-				return endpoint;
+				return resolved;
 			}).pipe(Effect.withSpan('orchestrator.router.contributeRoute'));
 
 		return RouterService.of({ boot, contributeRoute, applied });
@@ -994,13 +968,6 @@ export const layerRouterService: Layer.Layer<
 // ---------------------------------------------------------------------------
 // Helpers for tests + composition
 // ---------------------------------------------------------------------------
-
-/** Stream of the resolved-route set. Use from a renderer / inventory
- *  surface to react to route adds + removes. The supervisor's main
- *  loop subscribes through this stream. */
-export const routesStream = (
-	router: RouterServiceShape,
-): Stream.Stream<ReadonlyArray<ResolvedRoute>> => SubscriptionRef.changes(router.applied);
 
 // Re-export for ergonomics — callers reach for the orchestrator
 // without having to spell out the sibling module paths.

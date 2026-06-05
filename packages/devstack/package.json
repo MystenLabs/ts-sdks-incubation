@@ -98,7 +98,6 @@
 		"@mysten-incubation/tsconfig": "workspace:*",
 		"@mysten/seal": "catalog:",
 		"@mysten/walrus": "^1.1.7",
-		"@mysten/walrus-wasm": "^0.2.0",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:",
 		"ink-testing-library": "^4.0.0",

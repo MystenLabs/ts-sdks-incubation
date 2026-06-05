@@ -46,7 +46,7 @@ import {
 	TraefikContainerOpsService,
 	type TraefikContainerOps,
 } from '../../../src/orchestrators/router/traefik-container.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness.ts';
 import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
@@ -70,6 +70,15 @@ const makeTmpDir = (): string => {
 	return dir;
 };
 
+// `contributeRoute` now returns the `ResolvedRoute` (the single source of
+// truth); the public endpoint URL is derived from it the same way the boot
+// adapter (`endpointSinksFromRoute`) does — `tcp://127.0.0.1:port` for
+// tcp routes, `http://hostname:port` otherwise.
+const publicRouteUrl = (resolved: ResolvedRoute): string =>
+	resolved.wireProtocol === 'tcp'
+		? `tcp://127.0.0.1:${resolved.entrypointPort}`
+		: `http://${resolved.hostname}:${resolved.entrypointPort}`;
+
 const upstreamsLayer = Layer.succeed(UpstreamResolverService)({
 	resolveContainer: (target) => Effect.succeed({ host: '172.20.0.5', port: target.containerPort }),
 	resolveHostLoopback: (target) => Effect.succeed({ host: '127.0.0.1', port: target.port }),
@@ -84,7 +93,7 @@ const unusedUpstreamsLayer = Layer.succeed(UpstreamResolverService)({
 const identity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: chainId('sui:localnet'),
+	chain: 'sui:localnet',
 };
 
 const identityLayer = layerIdentity(identity);
@@ -452,7 +461,7 @@ describe('RouterService.contributeRoute', () => {
 						wireProtocol: 'http',
 					});
 
-					expect(endpoint.url).toBe('http://127.0.0.1:49152');
+					expect(publicRouteUrl(endpoint)).toBe('http://127.0.0.1:49152');
 					expect(endpoint.hostname).toBe('127.0.0.1');
 					expect(endpoint.entrypointPort).toBe(49152);
 					expect(readdirSync(dir)).toEqual([]);
@@ -472,7 +481,7 @@ describe('RouterService.contributeRoute', () => {
 				Effect.gen(function* () {
 					const router = yield* RouterService;
 					yield* router.boot();
-					const url = yield* router.contributeRoute({
+					const resolved = yield* router.contributeRoute({
 						kind: 'routable',
 						endpointName: 'wallet-app',
 						dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
@@ -480,7 +489,7 @@ describe('RouterService.contributeRoute', () => {
 						cors: true,
 						wireProtocol: 'http',
 					});
-					expect(url.url).toBe('http://api.my-app.localhost:6173');
+					expect(publicRouteUrl(resolved)).toBe('http://api.my-app.localhost:6173');
 					const fileId = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
 					const fname = dispatchFilename(fileId);
 					const body = readFileSync(join(dir, fname), 'utf8');
@@ -510,8 +519,10 @@ describe('RouterService.contributeRoute', () => {
 						cors: false,
 						wireProtocol: 'http',
 					});
-					expect(endpoint.url).toBe('http://aggregator.my-app.localhost:9185');
-					expect(endpoint.endpointName).toBe('walrus-aggregator');
+					expect(publicRouteUrl(endpoint)).toBe('http://aggregator.my-app.localhost:9185');
+					// `ResolvedRoute` reports the resolved router entrypoint (not the
+					// decl's endpointName, which the boot adapter recovers separately).
+					expect(endpoint.entrypointName).toBe('walrus-node-0');
 					const files = readdirSync(dir).filter((name) => name.startsWith('10-'));
 					expect(files).toHaveLength(1);
 					const body = readFileSync(join(dir, files[0]!), 'utf8');
@@ -555,7 +566,7 @@ describe('RouterService.contributeRoute', () => {
 						}),
 					);
 
-					expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+					expect(publicRouteUrl(endpoint)).toBe('http://api.my-app.localhost:6173');
 					expect(readFileSync(join(dir, dispatchFilename(fileId)), 'utf8')).toBe(body);
 					const applied = yield* SubscriptionRef.get(router.applied);
 					expect(applied).toHaveLength(0);
@@ -646,7 +657,7 @@ describe('RouterService.contributeRoute', () => {
 						wireProtocol: 'http',
 					});
 
-					expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+					expect(publicRouteUrl(endpoint)).toBe('http://api.my-app.localhost:6173');
 					expect(calls).toEqual([
 						{ url: 'http://127.0.0.1:6173', host: 'api.my-app.localhost' },
 						{ url: 'http://127.0.0.1:6173', host: 'api.my-app.localhost' },
@@ -696,7 +707,7 @@ describe('RouterService.contributeRoute', () => {
 						wireProtocol: 'http',
 					});
 
-					expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+					expect(publicRouteUrl(endpoint)).toBe('http://api.my-app.localhost:6173');
 					expect(calls).toEqual([1, 2]);
 				}).pipe(
 					Effect.provide(
@@ -733,7 +744,7 @@ describe('RouterService.contributeRoute', () => {
 							readiness: 'deferred',
 						});
 
-						expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+						expect(publicRouteUrl(endpoint)).toBe('http://api.my-app.localhost:6173');
 						expect(calls).toBe(0);
 						expect(readdirSync(dir).filter((name) => name.startsWith('10-'))).toHaveLength(1);
 						const applied = yield* SubscriptionRef.get(router.applied);

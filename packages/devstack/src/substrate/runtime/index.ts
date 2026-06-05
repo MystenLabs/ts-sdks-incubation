@@ -63,27 +63,21 @@ export type {
 } from './supervisor/index.ts';
 
 // ---------------------------------------------------------------------
-// Capability sinks — service + default Layer + contribution types.
-// Consumers: capability-sinks tests, supervisor tests, router
-// integration tests, run-stack API test.
+// Contribution dispatch — the closed post-start dispatch seam the
+// supervisor replays each plugin's ctx buffer through.
+// Consumers: supervisor tests, router integration tests, run-stack API
+// test, boot-config-impl.
 // ---------------------------------------------------------------------
 export {
-	CapabilitySinksService,
-	layerCapabilitySinks,
-	layerCapabilitySinksDefault,
-} from './capability-sinks/index.ts';
-export type {
-	AnyContribution,
-	CapabilitySink,
-	ContributionKind,
-	HarvestContext,
-	OrchestratorSinks,
-} from './capability-sinks/index.ts';
+	noopContributionDispatcher,
+	type ContributionDispatcher,
+	type ContributionDispatchContext,
+} from './supervisor/index.ts';
 
 // ---------------------------------------------------------------------
 // Observability — Logger service + default Layers, plus the formatter
-// registry the capability-sinks layer composes with.
-// Consumers: supervisor tests, capability-sinks tests.
+// registry the supervisor feeds plugin error-contributions into.
+// Consumers: supervisor tests, formatter-registry tests.
 // ---------------------------------------------------------------------
 export { FormatterRegistryService } from './observability/index.ts';
 export { Logger, layerLogger } from './observability/logger.ts';

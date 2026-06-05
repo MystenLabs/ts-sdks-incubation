@@ -21,13 +21,6 @@ export const mountFailed = (detail: string): RendererError => ({
 	detail,
 });
 
-/** Construct a `subscription-lost` renderer error. */
-export const subscriptionLost = (detail: string): RendererError => ({
-	_tag: 'RendererError',
-	reason: 'subscription-lost',
-	detail,
-});
-
 // Re-export the shared contract type so callers in this surface only
 // need to import from one place.
 export type { RendererError };

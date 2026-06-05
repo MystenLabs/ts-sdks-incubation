@@ -80,7 +80,9 @@ describe('command-channel', () => {
 						yield* Effect.forkChild(
 							subscriber.commands.pipe(
 								Stream.runForEach((rec) =>
-									subscriber.ack(rec.id, 'observed').pipe(Effect.catch(() => Effect.void)),
+									subscriber
+										.publishReply(rec.id, { kind: 'ack', detail: 'observed' })
+										.pipe(Effect.catch(() => Effect.void)),
 								),
 								Effect.catch(() => Effect.void),
 							),
@@ -152,7 +154,10 @@ describe('command-channel', () => {
 								at: 0,
 							});
 						}
-						yield* subscriber.ack('not-the-command-we-await', 'stale');
+						yield* subscriber.publishReply('not-the-command-we-await', {
+							kind: 'ack',
+							detail: 'stale',
+						});
 
 						// Supervisor acks only the command it actually observes,
 						// echoing its id as the correlation key + a payload we can
@@ -161,7 +166,11 @@ describe('command-channel', () => {
 							subscriber.commands.pipe(
 								Stream.runForEach((rec) =>
 									subscriber
-										.ack(rec.id, 'observed', { echoedId: rec.id })
+										.publishReply(rec.id, {
+											kind: 'ack',
+											detail: 'observed',
+											payload: { echoedId: rec.id },
+										})
 										.pipe(Effect.catch(() => Effect.void)),
 								),
 								Effect.catch(() => Effect.void),

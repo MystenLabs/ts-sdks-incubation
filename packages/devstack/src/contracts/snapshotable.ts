@@ -53,7 +53,7 @@
 //   - plugins/account/snapshot.ts:51   `['account/${name}.key']`  (file — keep)
 //   - plugins/wallet/snapshot.ts:13    `['wallet/token']`         (file — keep)
 
-import type { Effect, Scope } from 'effect';
+import type { Effect } from 'effect';
 
 /** Label tuple identifying managed containers. The orchestrator
  *  filters the runtime adapter by this tuple. */
@@ -98,12 +98,10 @@ export interface SnapshotableDecl {
 	 *  + file-path rules. */
 	readonly subtrees: ReadonlyArray<string>;
 	/** Managed containers identified by label tuples — orchestrator
-	 *  is name-blind. */
+	 *  is name-blind. The capture bounce gracefully `docker stop`s each
+	 *  (RocksDB/WAL flush) before commit, so no separate quiescence hook
+	 *  is needed — the graceful stop IS the flush. */
 	readonly managedContainers?: ReadonlyArray<ContainerLabelTuple>;
-	/** Quiescence hook: how to make state consistent before commit.
-	 *  Default is "pause container"; postgres / RocksDB declare
-	 *  longer grace. */
-	readonly quiesce?: Effect.Effect<void, never, Scope.Scope>;
 	/** Pre-restore hook: contribute to the identity guard. The returned
 	 *  object is JSON-stringified to derive a stable comparison string.
 	 *  See `IdentityContributionShape` + the top-of-file convention

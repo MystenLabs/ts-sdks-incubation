@@ -34,7 +34,9 @@ import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import type { Contribution } from '../../substrate/plugin-ctx.ts';
+import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
 import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
@@ -134,12 +136,25 @@ const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => ({
 });
 
 // ---------------------------------------------------------------------------
-// Per-form capability builders — dynamic (POST-acquire). Receive the
+// Per-form contribution decls — dynamic (POST-acquire). Receive the
 // resolved `CoinValue` so codegen bindings stamp the REAL fullCoinType
 // + decimals instead of placeholder values.
+//
+// `coinContributions` is a PURE decl-builder (NOT a routing wrapper): the
+// three coin `start` bodies feed its return into the shared
+// `emitContributions(ctx, …)`, which routes each decl by `kind`. Shared by
+// all three forms so the rich funding-strategy projection below lives once.
+// Decl shapes + ORDER are load-bearing.
+//
+// Exported for the funding-strategy decl-shape test: it feeds a hand-built
+// resolved `CoinValue` here and asserts the projected `strategy-contributor`
+// decl via `emitContributions` against a capturing ctx.
 // ---------------------------------------------------------------------------
 
-const buildCapabilities = (symbol: string, resolved: CoinValue) => {
+export const coinContributions = (
+	symbol: string,
+	resolved: CoinValue,
+): ReadonlyArray<Contribution> => {
 	const bindings: CoinBindings = {
 		symbol: resolved.symbol ?? symbol,
 		fullCoinType: resolved.fullCoinType,
@@ -207,7 +222,7 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>,
 				];
-	return [snap, codegen, ...fundingContribution] as const;
+	return [snap, codegen, ...fundingContribution];
 };
 
 // ---------------------------------------------------------------------------
@@ -262,9 +277,12 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		// `'coin'` section would ripple through every projection / TUI
 		// consumer for marginal display value.
 		section: 'action',
+		// `deps` auto-infers the resolved `{ pkg, sui }` dependency object;
+		// `ctx` arrives via the `PluginContext` service.
 		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {
-				const artifactPublisher = yield* ArtifactPublisherService;
+				const ctx = yield* PluginContext;
+				const artifactPublisher = yield* CacheService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = {
 					kind: 'witness',
@@ -272,15 +290,19 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 					witness: witnessName,
 					...(resolved.publisher === undefined ? {} : { fundingSigner: resolved.publisher }),
 				};
-				return yield* acquireCoin(form, {
+				const value = yield* acquireCoin(form, {
 					registry,
 					sdk: projectCoinSdk(sui),
 					chain: sui.chain,
 					publisher: artifactPublisher,
 				});
+				// Emit the resolved coin's contributions inline. `value` is the
+				// just-resolved `CoinValue`; `symbol` is the package-scoped
+				// witness symbol in scope.
+				emitContributions(ctx, coinContributions(symbol, value));
+				return value;
 			}),
 		errorContributions: coinErrorContributions,
-		capabilities: ({ value }) => buildCapabilities(symbol, value),
 	});
 };
 
@@ -313,18 +335,22 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 		section: 'action',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
-				const publisher = yield* ArtifactPublisherService;
+				const ctx = yield* PluginContext;
+				const publisher = yield* CacheService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'known', fullCoinType };
-				return yield* acquireCoin(form, {
+				const value = yield* acquireCoin(form, {
 					registry,
 					sdk: projectCoinSdk(sui),
 					chain: sui.chain,
 					publisher,
 				});
+				// Emit inline. `value` is the resolved `CoinValue`; `id` is the
+				// derived `coin.known` resource key.
+				emitContributions(ctx, coinContributions(id, value));
+				return value;
 			}),
 		errorContributions: coinErrorContributions,
-		capabilities: ({ value }) => buildCapabilities(id, value),
 	});
 };
 
@@ -345,18 +371,22 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		section: 'action',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
-				const publisher = yield* ArtifactPublisherService;
+				const ctx = yield* PluginContext;
+				const publisher = yield* CacheService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'builtin', name };
-				return yield* acquireCoin(form, {
+				const value = yield* acquireCoin(form, {
 					registry,
 					sdk: projectCoinSdk(sui),
 					chain: sui.chain,
 					publisher,
 				});
+				// Emit inline. `value` is the resolved `CoinValue`; `symbol` is
+				// the builtin coin name (`'sui'`).
+				emitContributions(ctx, coinContributions(symbol, value));
+				return value;
 			}),
 		errorContributions: coinErrorContributions,
-		capabilities: ({ value }) => buildCapabilities(symbol, value),
 	});
 };
 

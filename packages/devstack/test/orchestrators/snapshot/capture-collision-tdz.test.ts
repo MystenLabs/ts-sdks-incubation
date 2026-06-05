@@ -2,7 +2,7 @@
 //
 // Code-review speculation (review fix phase 22f):
 //   "capture calls `yield* list` for label uniqueness AFTER
-//   acquireReservation. `list` is defined later in the same
+//   acquiring the stack lock. `list` is defined later in the same
 //   `Effect.gen`. JS hoisting via `const` makes this TDZ throw at
 //   runtime IF the path is reached. (speculative — looks like `list`
 //   may be hoisted by the closure.)"
@@ -32,7 +32,7 @@ import * as NodePath from '@effect/platform-node/NodePath';
 import { Effect, Exit, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	SnapshotIdError,
@@ -49,7 +49,7 @@ import { withTempRoot } from '../../helpers/with-temp-root.ts';
 const identity: Identity = {
 	app: appName('snapshot-tdz-test'),
 	stack: stackName('main'),
-	chain: chainId('sui:local'),
+	chain: 'sui:local',
 };
 
 /** A container runtime whose `inspectByLabels` returns no containers —

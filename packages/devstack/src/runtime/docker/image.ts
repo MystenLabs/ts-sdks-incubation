@@ -26,7 +26,7 @@
 
 import { Effect, Fiber, Schema, Stream } from 'effect';
 
-import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import type { ContentHash } from '../../substrate/brand.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { decodeJsonTextSync } from '../../substrate/runtime/runtime-decode.ts';
 import type { ImageRef, LoadedImageBundle } from '../../contracts/container-runtime.ts';
@@ -499,7 +499,7 @@ export const loadImage = (
 
 export interface CachedBuildKey {
 	readonly namespace: string;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly contentHash: ContentHash;
 }
 

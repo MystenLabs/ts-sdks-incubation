@@ -69,7 +69,6 @@ export const isoToMillis = (iso: string | null | undefined): number | null => {
 // the superset that includes incoming transfers it didn't sign). Both filters
 // and the per-tx selection below are verified against the live node schema:
 //   - `digest`               — base58 tx digest (navigable to tx detail)
-//   - `sender { address }`    — signer (`Address`), null for system txs
 //   - `effects.status`        — `ExecutionStatus` enum: SUCCESS | FAILURE
 //   - `effects.timestamp`     — `DateTime` (ISO), → epoch-millis for "when"
 //   - `kind.__typename`       — the `TransactionKind` union member, e.g.
@@ -92,8 +91,6 @@ export type TxOutcome = 'success' | 'failure' | 'unknown';
 export interface AddressTransaction {
 	/** Base58 transaction digest (navigable to the tx detail view). */
 	readonly digest: string;
-	/** Signer address (`0x…`), or null for system transactions. */
-	readonly sender: string | null;
 	/** Execution outcome. */
 	readonly status: TxOutcome;
 	/** Coarse kind label, e.g. `ProgrammableTransaction` (the union member). */
@@ -116,9 +113,6 @@ const ADDRESS_TXS_SENT = graphql(`
 		transactions(last: $limit, filter: { sentAddress: $addr }) {
 			nodes {
 				digest
-				sender {
-					address
-				}
 				effects {
 					status
 					timestamp
@@ -136,9 +130,6 @@ const ADDRESS_TXS_RECEIVED = graphql(`
 		transactions(last: $limit, filter: { affectedAddress: $addr }) {
 			nodes {
 				digest
-				sender {
-					address
-				}
 				effects {
 					status
 					timestamp
@@ -156,9 +147,6 @@ const OBJECT_TXS_AFFECTED = graphql(`
 		transactions(last: $limit, filter: { affectedObject: $addr }) {
 			nodes {
 				digest
-				sender {
-					address
-				}
 				effects {
 					status
 					timestamp
@@ -204,7 +192,6 @@ export const fetchAddressTransactions = async (
 					: [
 							{
 								digest: n.digest,
-								sender: n.sender?.address ?? null,
 								status: toOutcome(n.effects?.status),
 								kind: n.kind?.__typename ?? 'Transaction',
 								timestampMs: isoToMillis(n.effects?.timestamp),

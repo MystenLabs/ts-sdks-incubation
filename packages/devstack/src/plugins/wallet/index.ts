@@ -18,12 +18,12 @@
 //   The HTTP protocol is the ONE cross-boundary contract. THIS PACKAGE
 //   NEVER IMPORTS `@mysten/dapp-kit*` OR `@mysten/wallet-standard`.
 //
-// Capabilities emitted:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs):
 //
-//   1. Snapshotable — pairing token under `wallet/token`.
-//   2. Codegenable — `dapp-kit-config` bindings (the dev-wallet
+//   1. `ctx.snapshotExtra` — pairing token under `wallet/token`.
+//   2. `ctx.codegen` — `dapp-kit-config` bindings (the dev-wallet
 //      adapter consumes this). Sensitive flag set — 0o600 + gitignore.
-//   3. Routable — wallet UI URL on the stack-scoped router.
+//   3. `ctx.endpoint` — wallet UI URL on the stack-scoped router.
 
 import { Effect } from 'effect';
 
@@ -56,6 +56,7 @@ import {
 	type WalletValue,
 } from './service.ts';
 import type { AnyPlugin } from '../../substrate/plugin.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 
 /** Wallet's expander contributes through the substrate-owned
  *  `PluginExpander` contract (`contracts/plugin-expander.ts`). The
@@ -210,8 +211,12 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// itself lives for the stack's lifetime.
 		role: 'service',
 		section: 'service',
+		// `deps` auto-infers from the resolved `dependsOn`: the hard Sui
+		// ordering edge (discarded) followed by the resolved account
+		// values. `ctx` arrives via the `PluginContext` service.
 		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				// Pull identity, the stack-paths bundle, and the port-
 				// broker from the supervisor-provided substrate context.
 				// `StackPathsService.stackRoot` is the on-disk root for
@@ -306,24 +311,29 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 					routedAppOrigin,
 				};
 
-				return yield* acquireWallet(resolvedOpts, acquireCtx);
+				const resolved = yield* acquireWallet(resolvedOpts, acquireCtx);
+
+				// Emit the wallet's contributions inline. `resolved` is the
+				// just-acquired `WalletValue`; `runtime.identity.{app,stack}`
+				// map to the `identity` already held here
+				// (`yield* IdentityContext`). Emit each decl via its matching
+				// buffered verb IN ORDER (snapshotable → `ctx.snapshotExtra`,
+				// codegenable → `ctx.codegen`, routable → `ctx.endpoint`); decl
+				// shapes are load-bearing. The verbs are void and buffer for the
+				// supervisor's post-start replay.
+				ctx.snapshotExtra(makeWalletSnapshotable());
+				ctx.codegen(makeWalletCodegen(resolved.bindings));
+				ctx.endpoint(
+					makeWalletRoutable({
+						app: identity.app,
+						stack: identity.stack,
+						port: resolved.localPort,
+					}),
+				);
+
+				return resolved;
 			}),
 		errorContributions: walletErrorContributions,
-		// Dynamic capability factory — receives the resolved
-		// `WalletValue` + acquire context. Stamps the real dapp-kit
-		// bindings (walletUrl, pairUrl, chain id, paths) into the
-		// codegen decl, and the real identity app/stack into the
-		// routable decl.
-		capabilities: ({ value: resolved, runtime: acquireCtx }) => {
-			const snapshot = makeWalletSnapshotable();
-			const codegen = makeWalletCodegen(resolved.bindings);
-			const routable = makeWalletRoutable({
-				app: acquireCtx.identity.app,
-				stack: acquireCtx.identity.stack,
-				port: resolved.localPort,
-			});
-			return [snapshot, codegen, routable] as const;
-		},
 	});
 }
 

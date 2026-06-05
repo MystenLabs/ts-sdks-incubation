@@ -110,39 +110,6 @@ describe('App snapshot flow', () => {
 				expect(instance.lastFrame() ?? '').not.toContain('Snapshot name:');
 			});
 
-			await Effect.runPromise(
-				Queue.offer(events, {
-					tag: 'snapshot.captureStarted',
-					name: 'before-change',
-					at: AT + 1,
-				}),
-			);
-			await waitFor(() => {
-				const frame = instance.lastFrame() ?? '';
-				expect(frame).toContain('Snapshot:');
-				expect(frame).toContain('before-change');
-				expect(frame).toContain('starting');
-			}, 5_000);
-
-			await Effect.runPromise(
-				Queue.offer(events, {
-					tag: 'snapshot.captureProgress',
-					name: 'before-change',
-					phase: 'capturing-host-tree',
-					detail: 'archiving 1 host subtree',
-					pausedContainers: 2,
-					totalContainers: 2,
-					at: AT + 2,
-				}),
-			);
-			await waitFor(() => {
-				const frame = instance.lastFrame() ?? '';
-				expect(frame).toContain('capturing files');
-				expect(frame).toContain('stack paused');
-				expect(frame).toContain('2/2');
-				expect(frame).toContain('archiving 1 host subtree');
-			}, 5_000);
-
 			instance.stdin.write('q');
 			await waitFor(() => {
 				expect(published).toContainEqual({ tag: 'shutdown.requested' });

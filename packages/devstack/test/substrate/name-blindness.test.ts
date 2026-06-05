@@ -3,12 +3,11 @@
 // ARCHITECTURE.md §"Substrate name-blindness" requires substrate code
 // (`src/substrate/**`) to NEVER mention plugin names — `sui`, `walrus`,
 // `seal`, `wallet`, `account`, `coin`, `package`, `faucet`, `deepbook`,
-// `pyth`, `postgres`, `action`, `host`. Two L1-adjacent helpers are
-// documented exceptions (`sui-execute/`, `sui-move-build/`); a small
-// permanent allowlist covers (a) network-host overloads (NOT the
-// plugin-host), (b) substrate field shapes that name plugin-domain
-// values by design (projection field set, supervisor's branded
-// account-resource-id literal). Each entry carries a reason.
+// `pyth`, `postgres`, `action`, `host`. A small permanent allowlist
+// covers (a) network-host overloads (NOT the plugin-host), (b) substrate
+// field shapes that name plugin-domain values by design (projection
+// field set, supervisor's branded account-resource-id literal). Each
+// entry carries a reason.
 //
 // The check strips line- and block-comments before matching so a
 // documentation-only mention of "the wallet" in a header doesn't trip
@@ -59,23 +58,6 @@ const ALLOWED_FILES: ReadonlyArray<{
 	readonly path: string;
 	readonly reason: string;
 }> = [
-	{
-		// ARCHITECTURE.md §"Substrate name-blindness" → "Documented exceptions"
-		path: 'src/substrate/runtime/sui-execute/index.ts',
-		reason: 'Documented L1-adjacent Sui helper (ARCHITECTURE.md §Substrate name-blindness).',
-	},
-	{
-		// ARCHITECTURE.md §"Substrate name-blindness" → "Documented exceptions"
-		path: 'src/substrate/runtime/sui-move-build/index.ts',
-		reason:
-			'Documented L1-adjacent Sui Move build helper (ARCHITECTURE.md §Substrate name-blindness).',
-	},
-	{
-		// ARCHITECTURE.md §"Substrate name-blindness" → "Documented exceptions"
-		path: 'src/substrate/runtime/sui-ledger/object-ref.ts',
-		reason:
-			'Documented L1-adjacent Sui ledger-object-ref helper (shared by deepbook + future on-chain seeders; ARCHITECTURE.md §Substrate name-blindness).',
-	},
 	{
 		// network-host fields (`hostname`, `host:port`); NOT the
 		// host-service plugin.
@@ -226,5 +208,57 @@ describe('substrate name-blindness', () => {
 		// in review. Bump only with explicit ARCHITECTURE.md +
 		// STYLE_GUIDE rationale.
 		expect(ALLOWED_FILES.length).toBeLessThanOrEqual(15);
+	});
+});
+
+// Substrate Sui-SDK blindness CI invariant.
+//
+// The substrate (`src/substrate/**`) must name no plugin AND import no
+// Sui SDK. The Sui-named SDK-boundary helpers were hoisted to
+// `plugins/sui/{exec,move,ledger}` in the simplification (ARCHITECTURE.md
+// §"Substrate name-blindness"), so substrate code has no remaining reason
+// to reach for `@mysten/sui*` or a `TransactionBuilder`. This guard fails
+// the moment one is re-introduced — the exact regression that would let a
+// Sui leak back into the substrate.
+//
+// There is NO allowlist: a Sui import in substrate is never legitimate.
+// Comments are stripped first so a doc-only mention of the SDK in a
+// header does not trip the alarm.
+const SUI_SDK_PATTERNS: ReadonlyArray<{ readonly label: string; readonly regex: RegExp }> = [
+	{ label: '@mysten/sui', regex: /@mysten\/sui(\b|\/)/ },
+	{ label: 'TransactionBuilder', regex: /\bTransactionBuilder\b/ },
+];
+
+const findSuiImportingFiles = (): Array<{ path: string; matches: Array<string> }> => {
+	const files = collectSubstrateFiles(SUBSTRATE_ROOT, []);
+	const offenders: Array<{ path: string; matches: Array<string> }> = [];
+	for (const file of files) {
+		const repoRel = relative(REPO_ROOT, file).replace(/\\/g, '/');
+		const stripped = stripComments(readFileSync(file, 'utf8'));
+		const matches = SUI_SDK_PATTERNS.filter((p) => p.regex.test(stripped)).map((p) => p.label);
+		if (matches.length > 0) {
+			offenders.push({ path: repoRel, matches });
+		}
+	}
+	return offenders;
+};
+
+describe('substrate Sui-SDK blindness', () => {
+	it('substrate code MUST NOT import @mysten/sui or name a TransactionBuilder', () => {
+		const offenders = findSuiImportingFiles();
+		if (offenders.length > 0) {
+			const report = offenders
+				.map((entry) => `  - ${entry.path} matches: [${entry.matches.join(', ')}]`)
+				.join('\n');
+			throw new Error(
+				`Substrate Sui-SDK leak. The following files reach for the Sui SDK ` +
+					`(@mysten/sui*, TransactionBuilder):\n${report}\n\n` +
+					`The substrate is Sui-blind — there is NO allowlist. Move the ` +
+					`SDK-touching logic into a plugin (canonical home: ` +
+					`plugins/sui/{exec,move,ledger}) and have substrate hold the result ` +
+					`opaquely.`,
+			);
+		}
+		expect(offenders).toEqual([]);
 	});
 });

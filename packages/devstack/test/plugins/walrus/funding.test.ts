@@ -2,24 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { Effect } from 'effect';
 
 import { account } from '../../../src/plugins/account/index.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { AcquireContext } from '../../../src/substrate/plugin.ts';
 import {
 	walCoin,
 	walrus,
 	walFaucetStrategyKey,
 	type WalrusResolved,
 } from '../../../src/plugins/walrus/index.ts';
-
-const fakeAcquireContext: AcquireContext = {
-	identity: {
-		app: appName('walrus-test'),
-		stack: stackName('main'),
-		chain: chainId('sui:localnet'),
-	},
-	chain: chainId('sui:localnet'),
-	runtimeRoot: '/tmp/devstack-walrus-test',
-};
+import { makeWalFaucetContribution } from '../../../src/plugins/walrus/faucet-strategy.ts';
+import { emitContributions } from '../../../src/substrate/plugin-ctx.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 const fakeWalrusResolved: WalrusResolved = {
 	mode: 'local',
@@ -81,20 +72,21 @@ describe('walrus WAL funding integration', () => {
 	});
 
 	it('registers the WAL faucet strategy under the resolved full coin type', () => {
-		const plugin = walrus({ local: {} });
-		if (typeof plugin.capabilities !== 'function') {
-			throw new Error('expected walrus capabilities factory');
+		// The local-mode walrus `start` emits the WAL faucet contribution
+		// inline (only when both a faucet strategy + WAL coin type resolved)
+		// via the shared `emitContributions` router. Drive that same
+		// `makeWalFaucetContribution` decl (the contribution under test)
+		// through `emitContributions` against a decl-capturing fake ctx and
+		// read the WAL strategy from `captured.provides`.
+		const { ctx, captured } = makeTestPluginCtx();
+		const { walCoinType, walFaucetStrategy } = fakeWalrusResolved;
+		if (walCoinType === null || walFaucetStrategy === null) {
+			throw new Error('fixture must resolve a WAL coin type + faucet strategy');
 		}
+		emitContributions(ctx, [makeWalFaucetContribution(walFaucetStrategy, walCoinType)]);
 
-		const capabilitiesFactory = plugin.capabilities as unknown as (
-			value: WalrusResolved,
-			runtime: AcquireContext,
-		) => ReadonlyArray<{ readonly kind: string; readonly capabilityKey?: string }>;
-		const capabilities = capabilitiesFactory(fakeWalrusResolved, fakeAcquireContext);
-		const walStrategy = capabilities.find(
-			(capability) =>
-				capability.kind === 'strategy-contributor' &&
-				capability.capabilityKey === walFaucetStrategyKey('0xfeed::wal::WAL'),
+		const walStrategy = captured.provides.find(
+			(capability) => capability.capabilityKey === walFaucetStrategyKey('0xfeed::wal::WAL'),
 		);
 
 		expect(walStrategy).toBeDefined();

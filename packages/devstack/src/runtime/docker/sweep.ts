@@ -17,6 +17,7 @@
 import { Effect } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
+import { makeReaper } from '../../substrate/runtime/cross-process/liveness.ts';
 import { readClaims, type ContainerClaim } from '../../substrate/runtime/cross-process/roster.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -57,6 +58,15 @@ import {
 	isNoSuchContainerStderr,
 	wrapGeneric,
 } from './wrap.ts';
+
+// The docker boot-time orphan sweep and the cross-stack lifecycle-prune
+// sweep are the two "reapers" that decide what is reclaimable. They share
+// the per-sweep `LivenessProbeScope` wiring through the `makeReaper`
+// combinator (`liveness.ts`) so that plumbing has ONE home. The
+// orchestration here is unchanged: the sweep stays a boot-phase pass that
+// holds `stack.lock` ONLY over the claim-ledger read, with the `docker
+// rm` loop OUTSIDE the lock.
+const reaper = makeReaper('runtime.docker.sweep');
 
 const removeManagedContainer = (
 	name: string,
@@ -99,53 +109,59 @@ const removeManagedContainer = (
 export const sweepOrphans = (
 	labelMatch: Partial<ContainerLabelTuple>,
 ): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner | StackPathsService> =>
-	Effect.gen(function* () {
-		const paths = yield* StackPathsService;
-		const containers = yield* listContainers(labelMatch);
-		if (containers.length === 0) return 0;
+	// Run the sweep under a FRESH per-sweep `LivenessProbeScope` via the
+	// shared reaper combinator. Orchestration is identical to before: the
+	// claim-ledger read happens under `stack.lock`; the `docker rm` loop
+	// runs OUTSIDE the lock.
+	reaper.withLivenessSweepScope(
+		Effect.gen(function* () {
+			const paths = yield* StackPathsService;
+			const containers = yield* listContainers(labelMatch);
+			if (containers.length === 0) return 0;
 
-		// Under stack.lock, snapshot the claim ledger. The decision
-		// (which to remove) happens here; the rm calls happen outside
-		// the lock.
-		const mapSubstrateError = (cause: unknown): DockerRuntimeError =>
-			new DaemonUnreachable({
-				op: 'cross-process.sweep',
-				detail: `sweep substrate read failed: ${String(cause)}`,
-				cause,
-			});
-		const claimNames = yield* Effect.scoped(
-			Effect.gen(function* () {
-				yield* acquireStackLock(paths.stackLockFile).pipe(Effect.mapError(mapSubstrateError));
-				const doc = yield* readClaims({
-					stackLockFile: paths.stackLockFile,
-					rosterFile: paths.rosterFile,
-					containerClaimsFile: paths.containerClaimsFile,
-				}).pipe(Effect.mapError(mapSubstrateError));
-				return new Set(doc.claims.map((c: ContainerClaim) => c.containerKey));
-			}),
-		);
-
-		// Sweep — best-effort per container. Individual rm failures
-		// don't poison the whole sweep, but they DO need operator
-		// visibility: a broken docker socket would otherwise silently
-		// swallow every entry. Surface the cause via `logWarning` so the
-		// supervisor's cascade and structured-log consumers can investigate.
-		// We reuse `removeManagedContainer` so the idempotent "no such
-		// container" path (a container reaped between list+rm) doesn't
-		// trip the warning logger.
-		let removed = 0;
-		for (const c of containers) {
-			if (claimNames.has(c.name)) continue;
-			const didRemove = yield* removeManagedContainer(c.name).pipe(
-				Effect.tapCause((cause) =>
-					Effect.logWarning('sweep: docker rm -f failed', { name: c.name, cause }),
-				),
-				Effect.catch(() => Effect.succeed(false)),
+			// Under stack.lock, snapshot the claim ledger. The decision
+			// (which to remove) happens here; the rm calls happen outside
+			// the lock.
+			const mapSubstrateError = (cause: unknown): DockerRuntimeError =>
+				new DaemonUnreachable({
+					op: 'cross-process.sweep',
+					detail: `sweep substrate read failed: ${String(cause)}`,
+					cause,
+				});
+			const claimNames = yield* Effect.scoped(
+				Effect.gen(function* () {
+					yield* acquireStackLock(paths.stackLockFile).pipe(Effect.mapError(mapSubstrateError));
+					const doc = yield* readClaims({
+						stackLockFile: paths.stackLockFile,
+						rosterFile: paths.rosterFile,
+						containerClaimsFile: paths.containerClaimsFile,
+					}).pipe(Effect.mapError(mapSubstrateError));
+					return new Set(doc.claims.map((c: ContainerClaim) => c.containerKey));
+				}),
 			);
-			if (didRemove) removed += 1;
-		}
-		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.sweep'));
+
+			// Sweep — best-effort per container. Individual rm failures
+			// don't poison the whole sweep, but they DO need operator
+			// visibility: a broken docker socket would otherwise silently
+			// swallow every entry. Surface the cause via `logWarning` so the
+			// supervisor's cascade and structured-log consumers can investigate.
+			// We reuse `removeManagedContainer` so the idempotent "no such
+			// container" path (a container reaped between list+rm) doesn't
+			// trip the warning logger.
+			let removed = 0;
+			for (const c of containers) {
+				if (claimNames.has(c.name)) continue;
+				const didRemove = yield* removeManagedContainer(c.name).pipe(
+					Effect.tapCause((cause) =>
+						Effect.logWarning('sweep: docker rm -f failed', { name: c.name, cause }),
+					),
+					Effect.catch(() => Effect.succeed(false)),
+				);
+				if (didRemove) removed += 1;
+			}
+			return removed;
+		}).pipe(Effect.withSpan('runtime.docker.sweep')),
+	);
 
 /** Explicit teardown. Unlike `sweepOrphans`, this does not consult the
  *  claim ledger; wipe/restore are intentional destructive operations. */

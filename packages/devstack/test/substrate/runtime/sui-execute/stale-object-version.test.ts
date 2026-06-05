@@ -14,7 +14,7 @@ import { describe, expect, it } from '@effect/vitest';
 import {
 	isSuiStaleObjectVersionError,
 	SuiExecuteError,
-} from '../../../../src/substrate/runtime/sui-execute/index.ts';
+} from '../../../../src/plugins/sui/exec/index.ts';
 
 const errorWith = (message: string): SuiExecuteError =>
 	new SuiExecuteError({

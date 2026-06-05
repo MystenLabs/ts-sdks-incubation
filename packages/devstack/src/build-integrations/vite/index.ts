@@ -13,7 +13,7 @@
 // The target is the manifest-recorded `codegen.generatedDir` (the
 // single source of truth — the supervisor wrote it at flush time; see
 // `orchestrators/codegen/output-location.ts` +
-// `runtime-composition.ts`). Resolution:
+// `orchestrators/boot.ts`). Resolution:
 //   1. `options.generatedDir` — explicit escape hatch, used verbatim.
 //   2. `resolveDiscoveryEnv(process.env)` → `{ stack, stateDir }`
 //      (single source of truth; honors `DEVSTACK_STACK` +

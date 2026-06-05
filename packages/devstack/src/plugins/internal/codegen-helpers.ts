@@ -1,11 +1,11 @@
 // Internal plugin helpers — codegen shape factories.
 //
 // `defineSimpleConstExport` collapses the duplicated `CodegenableDecl`
-// boilerplate shared by `coin/codegen.ts`, `wallet/codegen.ts`, and
-// `account/codegen.ts`. Each of those plugins emits one file containing
-// exactly one `export const` from a resolved value record, optionally
-// joining a cross-decl aggregate bucket and optionally running a
-// pre-emit Effect (e.g. span annotation) before writing.
+// boilerplate shared by the per-plugin `codegen.ts` modules. Each of
+// those plugins emits one file containing exactly one `export const`
+// from a resolved value record, optionally joining a cross-decl
+// aggregate bucket and optionally running a pre-emit Effect (e.g. span
+// annotation) before writing.
 //
 // Internal to this package — not re-exported from the root barrel.
 

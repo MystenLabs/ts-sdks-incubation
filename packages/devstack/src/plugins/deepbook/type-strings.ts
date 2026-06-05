@@ -10,7 +10,7 @@
 // arguments and the spec coin types are normalized with the shared SDK
 // `normalizeStructTag` (which recursively pads addresses) and compared
 // POSITIONALLY, so a reversed pair (`DEEP/SUI` vs `SUI/DEEP`) or a coin
-// type that is a substring of another can no longer cross-match.
+// type that is a substring of another cannot cross-match.
 
 import { normalizeStructTag } from '@mysten/sui/utils';
 

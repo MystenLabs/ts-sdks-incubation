@@ -14,7 +14,6 @@ import { Effect, Exit } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import { chainProbeCapabilityKey, type ChainProbe } from '../../../../src/contracts/chain-probe.ts';
-import { chainId } from '../../../../src/substrate/brand.ts';
 import {
 	StrategyRegistryService,
 	chainProbeFor,
@@ -32,7 +31,7 @@ describe('chainProbeFor', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const registry = yield* StrategyRegistryService;
-				const chain = chainId('sui:localnet');
+				const chain = 'sui:localnet';
 				const probe = stubProbe();
 				yield* registry.register(chainProbeCapabilityKey(chain), probe);
 
@@ -45,7 +44,7 @@ describe('chainProbeFor', () => {
 	it.effect('fails with StrategyNotFoundError when no probe is registered', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
-				const chain = chainId('sui:absent');
+				const chain = 'sui:absent';
 				const exit = yield* Effect.exit(chainProbeFor<StubKey>(chain));
 				expect(Exit.isFailure(exit)).toBe(true);
 				const err = Exit.findErrorOption(exit);
@@ -62,8 +61,8 @@ describe('chainProbeFor', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const registry = yield* StrategyRegistryService;
-				const chainA = chainId('sui:a');
-				const chainB = chainId('sui:b');
+				const chainA = 'sui:a';
+				const chainB = 'sui:b';
 				const probeA = stubProbe();
 				const probeB = stubProbe();
 				yield* registry.register(chainProbeCapabilityKey(chainA), probeA);

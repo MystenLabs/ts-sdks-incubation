@@ -1,24 +1,24 @@
 // Snapshot orchestrator service.
 //
-// Architecture § L3 § Snapshot orchestrator:
-//   "Collects all `Snapshotable` decls, applies one capture-wide
-//   pause window for managed containers, tars host subtrees with mode
-//   round-trip, commits container writable layers, threads a typed metadata record
-//   (identity guard + per-participant slice), atomic stage-and-swap
-//   for restore, identity-guard fires before any destructive mutation."
+// Snapshotting is a parameterization of the lifecycle bounce, not a
+// separate subsystem:
 //
-// This file is the orchestrator's typed entry point — `capture`,
-// `restore`, `list`, `delete`, `wipe`, `prune` — wired to the
-// cross-process safety primitives (`snapshot.reservation`,
-// `stack.lock`) and the substrate path resolver.
+//   gracefully stop everything → snapshot (docker commit each container +
+//   capture local files) / swap-in (restore) → resume if needed.
 //
-// The service surface is name-blind. The two participant lists
-// (capture and restore) are populated by the substrate at boot from
-// the `Snapshotable` decls of registered plugins; service-specific
-// behavior never reaches this file. Registration is scope-bound: the
-// supervisor calls `registerParticipant(pluginKey, decl)` from inside
-// each plugin's scope so the registry entry is reaped on plugin
-// teardown.
+// The two mutate verbs (`capture`, `restore`) share that bounce; `list`,
+// `delete`, `wipe`, `prune` are the catalog/teardown surface around it.
+//
+// Lock discipline: the bounce holds `stack.lock` for the (bounded,
+// whole-stack-stopped) snapshot window. There is no separate snapshot
+// reservation — the stop+commit window is bounded and the lock subsumes
+// the concurrency guard while keeping the roster heartbeat from starving.
+//
+// The service surface is name-blind. The participant list is populated by
+// the substrate at boot from the `Snapshotable` decls of registered
+// plugins; service-specific behavior never reaches this file. Registration
+// is scope-bound: the supervisor calls `registerParticipant(pluginKey,
+// decl)` from inside each plugin's scope so the entry is reaped on teardown.
 
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 
@@ -28,11 +28,6 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/index.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
-import { ownHolder } from '../../substrate/runtime/cross-process/liveness.ts';
-import {
-	acquireReservation,
-	type SnapshotReservationError,
-} from '../../substrate/runtime/cross-process/snapshot-reservation.ts';
 import {
 	acquireStackLock,
 	type StackLockError,
@@ -40,9 +35,9 @@ import {
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import {
 	runCapture,
+	resumeAfterCapture,
 	type CapturePhaseError,
 	type SnapshotParticipant,
-	type SnapshotProgressReporter,
 } from './capture.ts';
 import {
 	SnapshotDescriptorError,
@@ -59,12 +54,7 @@ import {
 	type IdentityGuardError,
 } from './identity-guard.ts';
 import { runPrune, type PruneResult, type PrunePhaseError } from './prune.ts';
-import {
-	recoverPendingRestore,
-	type RestorePendingRecoveryError,
-	type RestorePendingRecoverySummary,
-} from './recover-pending.ts';
-import { runRestore, type RestoreParticipant, type RestorePhaseError } from './restore.ts';
+import { runRestore, RestorePhaseError, type RestoreParticipant } from './restore.ts';
 import {
 	stageAndSwap,
 	type StageAndSwapError,
@@ -80,13 +70,11 @@ import { planWipe, runWipe, type WipePhaseError, type WipeTargets } from './wipe
 export type SnapshotOrchestratorError =
 	| CapturePhaseError
 	| RestorePhaseError
-	| RestorePendingRecoveryError
 	| WipePhaseError
 	| PrunePhaseError
 	| IdentityGuardError
 	| IdentityContributionConflictError
 	| StageAndSwapError
-	| SnapshotReservationError
 	| StackLockError
 	| SnapshotIdError
 	| SnapshotDescriptorError;
@@ -119,25 +107,33 @@ export interface SnapshotOrchestrator {
 		},
 	) => Effect.Effect<void, never, Scope.Scope>;
 
-	/** Capture a new snapshot. The id MAY be caller-supplied; if
-	 *  omitted, the substrate mints a random suffix to sidestep the
-	 *  concurrent-saves-against-same-id silent overwrite.
+	/** Capture a new snapshot — the lifecycle bounce: gather → graceful-stop
+	 *  (flush) → commit + tar + meta → retag committed images onto original
+	 *  names + hard-rm → resume (recreate + wait-write-ready). The id MAY be
+	 *  caller-supplied; if omitted, the substrate mints a random suffix to
+	 *  sidestep the concurrent-saves-against-same-id silent overwrite.
 	 *
-	 *  `participants` overrides the registered set — primarily for
-	 *  tests. Production callers omit it; the orchestrator reads the
-	 *  registered list. */
+	 *  `resume` re-converges the stack to write-ready after the publish (the
+	 *  supervisor wires it to a stack restart; omit on an offline one-shot
+	 *  capture where the next boot is the resume).
+	 *
+	 *  `participants` overrides the registered set — primarily for tests.
+	 *  Production callers omit it; the orchestrator reads the registered list. */
 	readonly capture: (args: {
 		readonly id?: string;
 		readonly label?: string;
 		readonly participants?: ReadonlyArray<SnapshotParticipant>;
-		readonly onProgress?: SnapshotProgressReporter;
+		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
-	/** Restore from a previously-captured artifact id. Refuses on
-	 *  identity mismatch BEFORE any destructive mutation. */
+	/** Restore from a captured artifact id — the destructive,
+	 *  ordered half of the bounce: identity-guard fail-closed + cache-missing
+	 *  preflight BEFORE any mutation → swap host-tree in + load images → hard-
+	 *  rm → resume = recreate (the next boot / the injected converge). */
 	readonly restore: (args: {
 		readonly id: string;
 		readonly participants?: ReadonlyArray<RestoreParticipant>;
+		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Catalog list — tolerates partial / corrupt entries (they appear
@@ -153,39 +149,26 @@ export interface SnapshotOrchestrator {
 		id: string,
 	) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
-	/** Wipe the live (`app`, `stack`) footprint; preserves the
-	 *  snapshot catalog by default. Stack-local artifact cache is
-	 *  removed unless `keepCache` is explicitly true. */
+	/** Wipe the live (`app`, `stack`) footprint; preserves the snapshot
+	 *  catalog AND the deploy cache together by default (`keepSnapshots`,
+	 *  default true). A hard reset (`keepSnapshots: false`) drops both so
+	 *  on-chain artifacts re-prove against the next chain — there is no
+	 *  asymmetric keep-snapshots-drop-cache degree of freedom. */
 	readonly wipe: (args: {
 		readonly keepSnapshots?: boolean;
-		readonly keepCache?: boolean;
 	}) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Enumerate the concrete teardown targets a `wipe` of the same
 	 *  `(app, stack)` would remove WITHOUT removing anything — the
-	 *  read-only preview behind `devstack wipe --dry-run`. Same args as
-	 *  `wipe` so the preview honors the same `keepSnapshots`/`keepCache`
-	 *  preservation policy the real wipe applies. */
+	 *  read-only preview behind `devstack wipe --dry-run`. */
 	readonly wipePlan: (args: {
 		readonly keepSnapshots?: boolean;
-		readonly keepCache?: boolean;
 	}) => Effect.Effect<WipeTargets, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Prune the snapshot catalog (reaps partial artifacts) and sweeps
 	 *  byproduct images via the runtime adapter's label-scoped cleanup. */
 	readonly prune: () => Effect.Effect<
 		PruneResult,
-		SnapshotOrchestratorError,
-		FileSystem.FileSystem
-	>;
-
-	/** Recover from a snapshot-restore that crashed mid-way through the
-	 *  post-publish Docker handoff. Reads the on-disk pending marker,
-	 *  retries each outstanding image promote, and clears the marker.
-	 *  Idempotent — safe to call on every supervise startup; a no-op
-	 *  when no marker is present. */
-	readonly recoverPendingRestore: Effect.Effect<
-		RestorePendingRecoverySummary,
 		SnapshotOrchestratorError,
 		FileSystem.FileSystem
 	>;
@@ -261,13 +244,6 @@ const normalizeSnapshotName = (
 	return Effect.succeed(normalized);
 };
 
-/** Read this process's canonical startTime stamp for the snapshot
- *  reservation liveness check. Returns `null` when the kernel-probe
- *  couldn't determine startTime — matches `RosterHolderSchema.startTime`
- *  semantics and is honored by the sweep's `checkHolderLiveness`
- *  null-conservative short-circuit. */
-const ownStartTime = (): number | null => ownHolder('snapshot').startTime;
-
 const normalizeIdentityValue = (value: unknown): unknown => {
 	if (Array.isArray(value)) return value.map(normalizeIdentityValue);
 	if (value !== null && typeof value === 'object') {
@@ -297,17 +273,6 @@ const identityHookFromDecl = (
 // Layer
 // -----------------------------------------------------------------------------
 
-/**
- * Wire the orchestrator from the substrate's path resolver + the
- * runtime container adapter.
- *
- * Discipline:
- *   - Capture/restore acquire `snapshot.reservation` (O_EXCL,
- *     no retry) — concurrent capture is structurally refused.
- *   - List/delete/wipe acquire `stack.lock` briefly (no reservation
- *     needed; they don't pause containers).
- *   - Prune acquires both — it walks the catalog AND sweeps images.
- */
 /** Per-plugin participant registration entry kept on the orchestrator's
  *  inner ref. Sequence number lets parallel registrations under the
  *  same key be reaped independently when their owning scopes close. */
@@ -318,6 +283,15 @@ interface RegisteredParticipantEntry {
 	readonly seq: number;
 }
 
+/**
+ * Wire the orchestrator from the substrate's path resolver + the runtime
+ * container adapter.
+ *
+ * Discipline: capture/restore acquire `stack.lock` for the (bounded,
+ * whole-stack-stopped) snapshot window; the `stageAndSwap` rename publishes
+ * atomically inside it. List/delete/wipe/prune acquire `stack.lock` briefly
+ * (they don't bounce containers).
+ */
 export const layerSnapshotOrchestrator: Layer.Layer<
 	SnapshotOrchestratorService,
 	never,
@@ -329,11 +303,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 		const identity = yield* IdentityContext;
 		const runtime: ContainerRuntime = yield* ContainerRuntimeService;
 
-		// Scope-local participant registry. The supervisor adds entries
-		// from each plugin's acquire scope; finalizers remove them on
-		// scope close. Sequence number protects against the parallel-
-		// registration-same-key race when two stack instances register
-		// concurrently.
+		// Scope-local participant registry. The supervisor adds entries from
+		// each plugin's acquire scope; finalizers remove them on scope close.
+		// Sequence number protects against the parallel-registration-same-key
+		// race when two stack instances register concurrently.
 		const participantsRef = yield* Ref.make<ReadonlyArray<RegisteredParticipantEntry>>([]);
 		const seqRef = yield* Ref.make(0);
 
@@ -371,7 +344,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				Scope.Scope
 			>;
 
-		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, onProgress }) =>
+		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, resume }) =>
 			Effect.gen(function* () {
 				const snapshotId =
 					id === undefined ? yield* mintSnapshotId() : yield* validateSnapshotId('capture', id);
@@ -379,24 +352,33 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.capture);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
-				// Snapshot stages at the SNAPSHOT-DIR level (siblings of
-				// other artifact dirs, NOT siblings of `artifactDir`) so
-				// the `list` walker's `.staging.` / `.bak.` prefix skip
-				// at line 517 keeps transient dirs invisible without
-				// having to descend a level. This layout is structurally
-				// distinct from `${target}.staging.<id>` so we pass
-				// explicit `stagingPath`/`backupPath` instead of
-				// `idSuffix` (the substrate primitive supports both
-				// shapes — see `stageAndSwap`'s union arg).
+				// Snapshot stages at the SNAPSHOT-DIR level (siblings of other
+				// artifact dirs) so the `list` walker's `.staging.` / `.bak.`
+				// prefix skip keeps transient dirs invisible.
 				const stagingDir = `${paths.snapshotDir}/.staging.${snapshotId}`;
 				const backupDir = `${paths.snapshotDir}/.bak.${snapshotId}`;
 
-				// Acquire `snapshot.reservation` (O_EXCL, no retry) for the
-				// duration of the capture. The stack.lock is acquired
-				// briefly inside `stageAndSwap` for the rename publish.
-				return yield* Effect.scoped(
+				// Hold `stack.lock` ONLY across the build+publish half of the
+				// bounce (gather → graceful-stop → commit + tar + meta →
+				// stage-and-swap). The lock subsumes the concurrency guard for
+				// that bounded window while keeping the roster heartbeat from
+				// starving.
+				//
+				// CRITICAL: the lock is RELEASED before the resume. The post-
+				// publish resume re-converges the stack, and each plugin's
+				// re-acquire takes `stack.lock` for its container-claim protocol
+				// (runtime/docker/container.ts) — `stack.lock` is a non-reentrant
+				// O_EXCL file lock, so holding it across the resume self-deadlocks:
+				// the re-acquire's claim EEXISTs against THIS process's own still-
+				// held lock, can't reclaim it (the holder PID is alive — us), and
+				// times out after 5s → every plugin's `start` fails → the resume
+				// comes back `failed` (sui RPC dead → `fetch failed`; codegen
+				// contributions never re-register → empty `config.ts`). Scoping the
+				// lock to the publish and running `resumeAfterCapture` AFTER it
+				// releases lets the re-acquire claim containers normally.
+				const meta = yield* Effect.scoped(
 					Effect.gen(function* () {
-						yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
+						yield* acquireStackLock(paths.stackLockFile);
 						const fs = yield* FileSystem.FileSystem;
 						const targetExists = yield* fs
 							.exists(artifactDir)
@@ -411,27 +393,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								}),
 							);
 						}
-						// O(N) catalog scan for label uniqueness — acceptable
-						// because N (snapshot count per stack) is small in
-						// practice and capture is a rare, human-paced verb. A
-						// future optimization could maintain a sibling name-
-						// index (e.g. `${snapshotDir}/.names/${label}` empty
-						// marker files) that lets uniqueness collapse to a
-						// single `fs.exists`, but that would need a paired
-						// cleanup-on-delete pathway + a corruption-tolerance
-						// story for the sidecar, which is outside this scope.
-						//
-						// Forward-reference safety: `list` is declared LATER
-						// in this outer `Effect.gen` body. No TDZ fires
-						// because `capture` is an arrow function returned
-						// from the gen — by the time any caller invokes it,
-						// the outer gen has fully resolved and all `const`
-						// bindings (including `list`) are bound. The
-						// regression guard at
-						// test/orchestrators/snapshot/capture-collision-tdz.test.ts
-						// pins this; if a future refactor wraps `list` in
-						// an `Effect.fn` decorator or extracts it through a
-						// hoisting-sensitive path, the guard will fail.
+						// O(N) catalog scan for label uniqueness — N is small and
+						// capture is human-paced. `list` is declared LATER in this
+						// gen; no TDZ fires because `capture` is invoked only after
+						// the outer gen has resolved all `const` bindings.
 						const existing = yield* list;
 						if (existing.some((entry) => entry.metadata?.label === snapshotName)) {
 							return yield* Effect.fail(
@@ -444,10 +409,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 							);
 						}
 
-						// Stage-and-swap publishes the artifact directory
-						// atomically — external watchers (and `list`)
-						// never observe a half-written tree.
-						const meta = yield* stageAndSwap({
+						// Build + publish the artifact (gather → stop → commit +
+						// tar + meta), atomically via stage-and-swap so watchers /
+						// `list` never observe a half-written tree.
+						return yield* stageAndSwap({
 							targetPath: artifactDir,
 							stagingPath: stagingDir,
 							backupPath: backupDir,
@@ -459,26 +424,47 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								stack: identity.stack,
 								network: identity.chain,
 								runtimeStackRoot: paths.stackRoot,
-								stateFilePath: paths.stateFile,
 								participants: effectiveParticipants,
 								runtime,
-								onProgress,
 							}),
 						});
-						return meta;
 					}),
 				);
+				// Post-publish bounce tail — runs with `stack.lock` RELEASED (see
+				// the CRITICAL note above) so the resume's per-plugin container
+				// claims can take the lock. Retag committed images onto original
+				// names + hard-rm + resume (recreate + wait-write-ready). Runs AFTER
+				// the swap so a publish failure leaves the live stack only stopped
+				// (recoverable by the next boot).
+				yield* resumeAfterCapture(meta, {
+					runtime,
+					app: identity.app,
+					stack: identity.stack,
+					...(resume === undefined ? {} : { resume }),
+				});
+				return meta;
 			}).pipe(Effect.withSpan('orchestrator.snapshot.capture.entry'));
 
-		const restore: SnapshotOrchestrator['restore'] = ({ id, participants }) =>
+		const restore: SnapshotOrchestrator['restore'] = ({ id, participants, resume }) =>
 			Effect.gen(function* () {
 				const snapshotId = yield* validateSnapshotId('restore', id);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.restore);
-				return yield* Effect.scoped(
+				// Hold `stack.lock` ONLY across the destructive swap+load+hard-rm
+				// half of the bounce — the resume is run AFTER the lock releases.
+				// The resume re-converges the stack and each plugin's re-acquire
+				// takes `stack.lock` for its container-claim protocol; `stack.lock`
+				// is a non-reentrant O_EXCL file lock, so holding it across the
+				// resume self-deadlocks (the claim EEXISTs against this process's
+				// own live lock and times out → every plugin fails). The offline
+				// restore omits `resume` (the next boot is the resume), so this only
+				// matters for a live-supervisor restore — but keep both bounce verbs
+				// consistent: lock the publish, resume unlocked. So `runRestore` runs
+				// WITHOUT `resume`, and we run the injected resume below, unlocked.
+				const meta = yield* Effect.scoped(
 					Effect.gen(function* () {
-						yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
+						yield* acquireStackLock(paths.stackLockFile);
 						return yield* runRestore({
 							snapshotId,
 							artifactDir,
@@ -495,6 +481,22 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						});
 					}),
 				);
+				// Resume with `stack.lock` RELEASED so the re-converge's per-plugin
+				// container claims can take the lock (see the note above). Omitted
+				// on the offline restore (the next boot is the resume).
+				if (resume !== undefined) {
+					yield* resume.pipe(
+						Effect.mapError(
+							(cause) =>
+								new RestorePhaseError({
+									phase: 'resume',
+									detail: 'stack resume after restore failed',
+									cause,
+								}),
+						),
+					);
+				}
+				return meta;
 			}).pipe(Effect.withSpan('orchestrator.snapshot.restore.entry'));
 
 		const list: SnapshotOrchestrator['list'] = Effect.gen(function* () {
@@ -508,9 +510,8 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
 			const entries: SnapshotCatalogEntry[] = [];
 			for (const id of ids) {
-				// Skip transient staging/backup directories — they're
-				// invisible to the catalog by construction (the
-				// `.staging.<id>` / `.bak.<id>` naming).
+				// Skip transient staging/backup directories — invisible to the
+				// catalog by construction (the `.staging.<id>` / `.bak.<id>` naming).
 				if (id.startsWith('.staging.') || id.startsWith('.bak.')) continue;
 				const parsedId = parseSnapshotId(id);
 				if (parsedId === null) {
@@ -568,34 +569,29 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						yield* runWipe({
 							labelMatch: { app: identity.app, stack: identity.stack },
 							stackRoot: paths.stackRoot,
-							stateFilePath: paths.stateFile,
 							runtime,
 							keepSnapshots: args.keepSnapshots,
-							keepCache: args.keepCache,
 						});
 					}),
 				);
 			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.entry'));
 
 		const wipePlan: SnapshotOrchestrator['wipePlan'] = (args) =>
-			// Read-only: no stack-lock / reservation. `planWipe` only lists
-			// matching containers and reads the stack-root directory, so it
-			// is safe to run without serializing against peers (a concurrent
-			// mutation just makes the preview slightly stale — acceptable for
-			// a dry-run estimate).
+			// Read-only: no stack-lock. `planWipe` only lists matching
+			// containers and reads the stack-root directory, so it is safe to
+			// run without serializing against peers (a concurrent mutation just
+			// makes the preview slightly stale — acceptable for a dry-run).
 			planWipe({
 				labelMatch: { app: identity.app, stack: identity.stack },
 				stackRoot: paths.stackRoot,
-				stateFilePath: paths.stateFile,
 				runtime,
 				keepSnapshots: args.keepSnapshots,
-				keepCache: args.keepCache,
 			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.plan.entry'));
 
 		const prune: SnapshotOrchestrator['prune'] = () =>
 			Effect.scoped(
 				Effect.gen(function* () {
-					yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
+					yield* acquireStackLock(paths.stackLockFile);
 					return yield* runPrune({
 						stackRoot: paths.stackRoot,
 						imageLabelFilter: { app: identity.app, stack: identity.stack },
@@ -603,11 +599,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					});
 				}),
 			).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
-
-		const recoverPendingRestoreImpl: SnapshotOrchestrator['recoverPendingRestore'] =
-			recoverPendingRestore(paths.stackRoot, runtime).pipe(
-				Effect.withSpan('orchestrator.snapshot.recover-pending.entry'),
-			);
 
 		return SnapshotOrchestratorService.of({
 			registerParticipant,
@@ -618,7 +609,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 			wipe,
 			wipePlan,
 			prune,
-			recoverPendingRestore: recoverPendingRestoreImpl,
 		});
 	}),
 );

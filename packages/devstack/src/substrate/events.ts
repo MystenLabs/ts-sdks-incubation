@@ -11,18 +11,6 @@ import type { BuildEntry, Endpoint, StructuredError } from './projection.ts';
 
 export type ShutdownSignal = 'SIGINT' | 'SIGTERM';
 
-export type SnapshotCaptureProgressPhase =
-	| 'quiescing'
-	| 'pausing'
-	| 'paused'
-	| 'capturing-containers'
-	| 'saving-images'
-	| 'capturing-host-tree'
-	| 'saving-state'
-	| 'saving-contributions'
-	| 'writing-metadata'
-	| 'resuming';
-
 /** Typed lifecycle event stream. Architecture-enumerated categories. */
 export type EngineEvent =
 	| {
@@ -113,22 +101,6 @@ export type EngineEvent =
 			readonly at: number;
 	  }
 	| {
-			readonly tag: 'snapshot.captureStarted';
-			readonly snapshotId?: string;
-			readonly name?: string;
-			readonly at: number;
-	  }
-	| {
-			readonly tag: 'snapshot.captureProgress';
-			readonly snapshotId?: string;
-			readonly name?: string;
-			readonly phase: SnapshotCaptureProgressPhase;
-			readonly detail?: string;
-			readonly pausedContainers?: number;
-			readonly totalContainers?: number;
-			readonly at: number;
-	  }
-	| {
 			readonly tag: 'snapshot.captureSkipped';
 			readonly reason: 'already-running';
 			readonly snapshotId: string;
@@ -169,9 +141,6 @@ export type EngineEvent =
 			readonly at: number;
 	  };
 
-/** Closed event-tag union — used by lint to assert exhaustiveness. */
-export type EngineEventTag = EngineEvent['tag'];
-
 /** Typed command channel. Surfaces publish; the engine consumes.
  *  Same shape regardless of producer (CLI argv / TUI keypress /
  *  programmable API). */
@@ -199,5 +168,3 @@ export type EngineCommand =
 			readonly tag: 'selective-restart.requested';
 			readonly pluginKey: PluginKey;
 	  };
-
-export type EngineCommandTag = EngineCommand['tag'];

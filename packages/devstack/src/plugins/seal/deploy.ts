@@ -17,23 +17,21 @@ import {
 	type ArtifactPublishError,
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
-import { contentHash, type ChainId, type ContentHash } from '../../substrate/brand.ts';
+import { contentHash, type ContentHash } from '../../substrate/brand.ts';
 import {
 	executeSuiTx,
 	formatExecutedFailure,
-	type ExecutedReceipt,
-} from '../../substrate/runtime/sui-execute/index.ts';
-import {
 	hashMoveSources,
 	runMoveBuild,
 	scrubLocksHost,
 	type BuildOutput,
+	type ExecutedReceipt,
 	type MoveBuildError,
-} from '../../substrate/runtime/sui-move-build/index.ts';
+	type ClientWithCoreApi,
+} from '../sui/index.ts';
 import { fromHex } from '@mysten/sui/utils';
 
 import type { AccountValue } from '../account/index.ts';
-import type { ClientWithCoreApi } from '../sui/index.ts';
 import { sealError, type SealError } from './errors.ts';
 import { SealSpans } from './spans.ts';
 
@@ -83,7 +81,7 @@ export type SealPackageVerified = Schema.Schema.Type<typeof SealPackageVerifySha
 
 export interface SealPublishInputs {
 	readonly name: string;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly movePackagePath: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
@@ -176,7 +174,6 @@ export const runSealPublishTransaction = (
 		const buildOutput = yield* runMoveBuild({
 			sourcePath: inputs.movePackagePath,
 			packageName: inputs.name,
-			chainId: inputs.chain,
 			runtime: inputs.runtime,
 			...(inputs.buildImage !== undefined ? { buildImage: inputs.buildImage } : {}),
 		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
@@ -283,7 +280,7 @@ export interface RegisterKeyServerTransactionInputs {
 
 export interface RegisterKeyServerInputs extends RegisterKeyServerTransactionInputs {
 	readonly name: string;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
 	readonly chainProbe: ChainProbe<SealObjectProbeKey>;

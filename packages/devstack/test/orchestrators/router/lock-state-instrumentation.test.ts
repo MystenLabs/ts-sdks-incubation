@@ -61,7 +61,7 @@ import {
 	UpstreamResolverService,
 } from '../../../src/orchestrators/router/service.ts';
 import { layerTraefikContainerOpsStub } from '../../../src/orchestrators/router/traefik-container.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
 
@@ -309,7 +309,7 @@ const makeTmpDir = (): string => {
 const behaviorIdentity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: chainId('sui:localnet'),
+	chain: 'sui:localnet',
 };
 
 const behaviorUpstreams = Layer.succeed(UpstreamResolverService)({
@@ -554,8 +554,14 @@ describe('router contributeRoute holds the real dispatch lock across the readine
 
 						const endpointA = yield* Fiber.join(fiberA);
 						const endpointB = yield* Fiber.join(fiberB);
-						expect(endpointA.url).toBe('http://api.my-app.localhost:6173');
-						expect(endpointB.url).toBe('http://aggregator.my-app.localhost:6173');
+						// `contributeRoute` returns the `ResolvedRoute`; the public http
+						// URL is `http://<hostname>:<entrypointPort>`.
+						expect(`http://${endpointA.hostname}:${endpointA.entrypointPort}`).toBe(
+							'http://api.my-app.localhost:6173',
+						);
+						expect(`http://${endpointB.hostname}:${endpointB.entrypointPort}`).toBe(
+							'http://aggregator.my-app.localhost:6173',
+						);
 
 						// Both wrapper scopes closed → finalizers drained `applied`.
 						const afterRelease = yield* SubscriptionRef.get(router.applied);

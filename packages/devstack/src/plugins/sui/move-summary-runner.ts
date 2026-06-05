@@ -15,7 +15,7 @@
 // Implementations:
 //   - `layerSuiMoveSummaryRunnerDocker` — runs `sui move summary`
 //     inside the Sui CLI container image; the default production
-//     wiring (`runtime-composition.ts`).
+//     wiring (`orchestrators/boot.ts`).
 //   - `layerSuiMoveSummaryRunnerHost` — runs the local `sui`
 //     binary directly via `ChildProcessSpawner`. Useful for
 //     embedders that already have a Sui CLI on PATH.
@@ -36,11 +36,7 @@ import {
 import { CodegenBindingsFailed } from '../../orchestrators/codegen/errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { capture } from '../../substrate/runtime/observability/subprocess-capture.ts';
-import {
-	copyLocalMoveDeps,
-	shellQuote,
-	suiCliImageBuildContext,
-} from '../../substrate/runtime/sui-move-build/index.ts';
+import { copyLocalMoveDeps, shellQuote, suiCliImageBuildContext } from './move/index.ts';
 
 // -----------------------------------------------------------------------------
 // Docker variant — `sui move summary` inside the Sui CLI container image.

@@ -6,9 +6,7 @@
 //   2. `applyLifecycleFact` merges the delta into the row,
 //      preserving non-delta fields (the merge-not-replace shape
 //      `LifecycleFact` promises).
-//   3. `factFromRow` reconstructs the closed `LifecycleFact` slice
-//      so diagnostic surfaces can derive the typed fact from a row.
-//   4. The projection updater consumes facts — applying a
+//   3. The projection updater consumes facts — applying a
 //      `lifecycle.statusChanged` event mutates the row's `status`
 //      AND no other lifecycle field.
 
@@ -18,7 +16,6 @@ import { applyEvent } from '../../../../src/substrate/runtime/projection/index.t
 import {
 	applyLifecycleFact,
 	factFromEvent,
-	factFromRow,
 } from '../../../../src/substrate/runtime/lifecycle/lifecycle-fact.ts';
 import { pluginKey } from '../../../../src/substrate/brand.ts';
 import type { Row, SubscribableState } from '../../../../src/substrate/projection.ts';
@@ -110,22 +107,6 @@ describe('applyLifecycleFact', () => {
 			phase: out.phase,
 			selectiveRestartHighlight: out.selectiveRestartHighlight,
 		}).toEqual({ status: 'failed', phase: 'fork-lock', selectiveRestartHighlight: true });
-	});
-});
-
-describe('factFromRow', () => {
-	it('extracts the closed LifecycleFact slice from a row', () => {
-		const fact = factFromRow({
-			...sampleRow,
-			status: 'ready',
-			phase: 'running',
-			selectiveRestartHighlight: true,
-		});
-		expect(fact).toEqual({
-			status: 'ready',
-			phase: 'running',
-			selectiveRestartHighlight: true,
-		});
 	});
 });
 

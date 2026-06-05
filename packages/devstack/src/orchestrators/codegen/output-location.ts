@@ -28,7 +28,17 @@
 // SAME location the writer chose — read and write are gated by one
 // decision, not two. Pure + unit-testable; no `process.env`, no I/O.
 
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+
+import { stackSubpath } from '../../substrate/runtime/paths.ts';
+
+/** The app-rooted base under which codegen authors its per-stack subtrees:
+ *  `<appRoot>/.devstack`. Mirrors the substrate's `RuntimeRoot` base, but
+ *  rooted at the app source tree (codegen output lives with the user's
+ *  source, not in engine-private state). The `stacks/<stack>/...` shape is
+ *  composed by the shared `stackSubpath` so the two authors (substrate at
+ *  `RuntimeRoot`, codegen here) never drift. */
+const codegenStacksBase = (appRoot: string): string => resolve(appRoot, '.devstack');
 
 export interface ResolveCodegenOutputInput {
 	/** The user application root — codegen output is resolved against
@@ -79,16 +89,18 @@ export interface ResolvedCodegenOutput {
 const PRIMARY_OUTPUT_SUBPATH = 'src/generated';
 
 /** Resolve `<appRoot>/.devstack/stacks/<stack>/generated` for a
- *  secondary stack — sibling of that stack's manifest. */
+ *  secondary stack — sibling of that stack's manifest. The
+ *  `stacks/<stack>/...` shape comes from the shared `stackSubpath`
+ *  composer (substrate authors the same shape at `RuntimeRoot`). */
 const secondaryOutputDir = (appRoot: string, stack: string): string =>
-	resolve(appRoot, '.devstack', 'stacks', stack, 'generated');
+	stackSubpath(join, codegenStacksBase(appRoot), stack, 'generated');
 
 /** Resolve `<appRoot>/.devstack/stacks/<stack>/generated-extras` — the
  *  dev-only + secret tree. Always under `.devstack`, for EVERY stack
  *  (primary and secondary), so dev-extras never land in the committed
  *  `src/generated/` tree. */
 const extrasDirFor = (appRoot: string, stack: string): string =>
-	resolve(appRoot, '.devstack', 'stacks', stack, 'generated-extras');
+	stackSubpath(join, codegenStacksBase(appRoot), stack, 'generated-extras');
 
 /**
  * Resolve the codegen output location for a stack. See the module

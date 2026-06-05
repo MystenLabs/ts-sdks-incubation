@@ -1,7 +1,7 @@
 // reclaim-stale-file — the shared unparseable/stale reclaim guard.
 //
-// This guard is the TOCTOU close shared by `stack-lock.ts` and
-// `snapshot-reservation.ts`. The bug it fixes: the naive shape (stat the
+// This guard is the TOCTOU close used by `stack-lock.ts` (its sole
+// remaining consumer). The bug it fixes: the naive shape (stat the
 // mtime, decide it's a stale orphan, then unlink) has a window in which
 // a competing process can legitimately reclaim the garbage file and
 // write a FRESH, VALID O_EXCL body. The unconditional unlink would then

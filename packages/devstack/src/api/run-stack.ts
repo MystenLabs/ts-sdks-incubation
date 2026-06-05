@@ -5,7 +5,7 @@
 // Effect-native apps, embedded fixtures) would otherwise have to
 // re-implement `cli/wirings/up.ts:runUpLive`'s substrate Layer composition.
 // `runStack` is the single embedder seam — it consumes the same
-// `orchestrators/runtime-composition.ts` helper the CLI consumes. See
+// `orchestrators/boot.ts` helpers the CLI consumes. See
 // ARCHITECTURE.md §"Layer composition lives at L3, not L0".
 //
 // Shape:
@@ -40,24 +40,22 @@ import {
 	SubscriptionRef,
 } from 'effect';
 
-import { appName, chainId, stackName } from '../substrate/brand.ts';
+import { appName, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
-import { CapabilitySinksService } from '../substrate/runtime/capability-sinks/index.ts';
 import { makeProjectionRefSync } from '../substrate/runtime/index.ts';
-import { buildSubstrateLayers, superviseStackEffect } from '../orchestrators/run.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
-	layerProductionOrchestrators,
-	type ProductionCodegenOptions,
-} from '../orchestrators/runtime-composition.ts';
-import { resolveCodegenOutput } from '../orchestrators/codegen/output-location.ts';
-import {
+	buildSubstrateLayers,
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../orchestrators/built-in-plugin-layers.ts';
+	layerProductionOrchestrators,
+	resolveProductionCodegenOptions,
+	superviseStackEffect,
+	type ProductionCodegenOptions,
+} from '../orchestrators/boot.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
 import {
@@ -101,10 +99,10 @@ export interface RunStackOptions {
 	readonly stateDir?: string;
 	/** Extend the plugin execution context after built-in plugin
 	 *  services are installed. Use this for custom plugin-author
-	 *  services, capability sinks, or logger overrides. */
+	 *  services or logger overrides. */
 	readonly extendContext?: (
 		ctx: Context.Context<never>,
-	) => Effect.Effect<Context.Context<never>, never, Scope.Scope | CapabilitySinksService>;
+	) => Effect.Effect<Context.Context<never>, never, Scope.Scope>;
 }
 
 /** Boot error surfaced by `RunHandle.start`. Wraps the supervisor's
@@ -168,7 +166,7 @@ const resolveIdentity = (
 	return {
 		app: appName(app),
 		stack: stackName(stackNameStr),
-		chain: chainId(resolved.raw),
+		chain: resolved.raw,
 	};
 };
 
@@ -244,35 +242,29 @@ export const runStack = (
 	// signal. `awaitShutdown` re-raises whatever this ref captured.
 	const midRunCauseRef = Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null));
 
-	// Resolve the per-stack codegen output location: primary run (effective
-	// stack === config `stackName`) → `src/generated/`; a secondary
-	// embedding → `.devstack/stacks/<stack>/generated/`. An explicit
-	// `opts.codegen.outputDir` (or the stack's own
-	// `codegen.outputDir`) is honored verbatim by the resolver. Both the
-	// primary stack (`engineStack.options.stackName`) and the effective
-	// stack (the resolved `identity.stack`) are in scope here, mirroring
-	// the CLI's `buildVerbLayers` seam.
-	const codegenOutput = resolveCodegenOutput({
-		appRoot,
-		effectiveStack: String(identity.stack),
-		primaryStack: engineStack.options.stackName,
-		explicitOutputDir: codegen?.outputDir,
-		explicitStackSubdir: codegen?.stackSubdir ?? null,
-	});
+	// Resolve the per-stack codegen output location through the ONE shared
+	// boot seam: primary run (effective stack === config `stackName`) →
+	// `src/generated/`; a secondary embedding →
+	// `.devstack/stacks/<stack>/generated/`. An explicit `opts.codegen`
+	// (or the stack's own `codegen`) is honored verbatim by the resolver.
+	// Both the primary stack (`engineStack.options.stackName`) and the
+	// effective stack (the resolved `identity.stack`) are in scope here,
+	// exactly as in the CLI's `buildVerbLayers` seam — both now route
+	// through `resolveProductionCodegenOptions`.
 	const substrate = layerProductionOrchestrators({
-		codegen: {
+		codegen: resolveProductionCodegenOptions({
 			appRoot,
-			outputDir: codegenOutput.outputDir,
-			stackSubdir: codegenOutput.stackSubdir,
-			extrasDir: codegenOutput.extrasDir,
-		},
+			effectiveStack: String(identity.stack),
+			primaryStack: engineStack.options.stackName,
+			codegen,
+		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
 
 	const supervised = Effect.gen(function* () {
-		const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+		const contributionDispatcher = yield* buildProductionContributionDispatcher();
 		const postAcquireHook = yield* buildProductionPostAcquireHook({ extras: stack.options.extras });
 		yield* superviseStackEffect(supervisedStack, identity, state, {
-			orchestratorSinks,
+			contributionDispatcher,
 			postAcquireHook,
 			extendContext: (ctx) =>
 				Effect.gen(function* () {
@@ -326,7 +318,7 @@ export const runStack = (
 						}),
 					);
 				}),
-		}).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
+		}).pipe(Effect.provide(layerBuiltInPluginRuntime));
 	});
 
 	const loggerLayer = Logger.layer([]);
@@ -366,8 +358,8 @@ export const runStack = (
 				started ? [false, true] : [true, true],
 			);
 			if (shouldStart) {
-				// `forkDetach` (v4 spelling of v3's `forkDaemon`) decouples the
-				// supervisor fiber from the `start` fiber's scope. `forkChild`
+				// `forkDetach` decouples the supervisor fiber from the `start`
+				// fiber's scope. `forkChild`
 				// would tie the supervisor to whatever fiber runs `start`, and
 				// once `start` resolves (after `bootDeferred` succeeds) the
 				// runtime would interrupt the supervisor — transitioning every

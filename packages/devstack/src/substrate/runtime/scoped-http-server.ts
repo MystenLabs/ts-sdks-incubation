@@ -46,8 +46,7 @@ export const listenScopedHttpServer = <E>(
 		// `acquireRelease` pairs the bound server with its close finalizer
 		// atomically: the moment `listen` resolves, the graceful-close
 		// finalizer is registered, so an interruption between bind and
-		// finalizer registration can no longer leak a listener holding the
-		// port.
+		// finalizer registration cannot leak a listener holding the port.
 		const server = yield* Effect.acquireRelease(
 			Effect.tryPromise({
 				try: () =>

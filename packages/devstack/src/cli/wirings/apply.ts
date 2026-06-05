@@ -25,16 +25,17 @@ import {
 	type SupervisedStack,
 	writeProjectionSnapshot,
 } from '../../substrate/runtime/index.ts';
-import { superviseStackEffect } from '../../orchestrators/run.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
-} from '../../orchestrators/runtime-composition.ts';
-import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../../orchestrators/built-in-plugin-layers.ts';
-import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
+	superviseStackEffect,
+} from '../../orchestrators/boot.ts';
+import {
+	recoverInterruptedRestore,
+	SnapshotOrchestratorService,
+} from '../../orchestrators/snapshot/index.ts';
 import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult, probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
@@ -140,36 +141,32 @@ export const runApplyLive = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+			const contributionDispatcher = yield* buildProductionContributionDispatcher();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
-			// Mirror the up-path recovery: reconcile any half-promoted
-			// snapshot restore from a prior supervise BEFORE the one-shot
-			// apply starts the stack. Idempotent + no-op when no marker.
+			const stackPaths = yield* StackPathsService;
+			// Mirror the up-path recovery: resume any restore interrupted by a
+			// hard kill between the atomic swap and the image-promotion handoff
+			// completing (the interrupted-restore sentinel rode the swap into the
+			// live root and was never cleared) BEFORE the one-shot apply starts
+			// the stack. Idempotent + no-op when no sentinel is present.
 			const snapshot = yield* SnapshotOrchestratorService;
-			yield* snapshot.recoverPendingRestore.pipe(
-				Effect.tapCause((cause) =>
-					Effect.sync(() => {
-						process.stderr.write(
-							`snapshot recovery scan failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-						);
-					}),
-				),
-				Effect.catch(() => Effect.succeed(null)),
-			);
+			yield* recoverInterruptedRestore({
+				liveRoot: stackPaths.stackRoot,
+				restoreSnapshot: (id) => snapshot.restore({ id }),
+			});
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
 				state,
 				{
-					orchestratorSinks,
+					contributionDispatcher,
 					postAcquireHook,
 					lifetime: 'one-shot',
 					extendContext: extendBuiltInPluginContext,
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
-			const stackPaths = yield* StackPathsService;
+			).pipe(Effect.provide(layerBuiltInPluginRuntime));
 			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
 

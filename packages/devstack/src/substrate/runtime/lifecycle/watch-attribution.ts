@@ -11,8 +11,6 @@
 // that index. Selective-restart is the supervisor's concern; watch
 // attribution stays pure.
 
-import { Effect } from 'effect';
-
 import type { PluginKey } from '../../brand.ts';
 import type { DepNode } from './dep-graph.ts';
 
@@ -67,25 +65,6 @@ export const attribute = (
 	}
 	return out;
 };
-
-/**
- * Effect-flavored wrapper — span-instrumented for tracing. Wraps the
- * pure `attribute` so the supervisor's invalidate-with-cascade trace
- * shows the watch fan-out alongside the dep-graph restart slice.
- */
-export const attributeFire = (
-	index: ReadonlyArray<WatchEntry>,
-	firedPath: string,
-	match: (pattern: string, path: string) => boolean,
-): Effect.Effect<ReadonlySet<PluginKey>> =>
-	Effect.gen(function* () {
-		const keys = attribute(index, firedPath, match);
-		yield* Effect.annotateCurrentSpan({
-			'devstack.watch.firedPath': firedPath,
-			'devstack.watch.matchedCount': keys.size,
-		});
-		return keys;
-	}).pipe(Effect.withSpan('lifecycle.watch.attribute'));
 
 /**
  * Default fallback matcher — exact-prefix only. Provided so unit
