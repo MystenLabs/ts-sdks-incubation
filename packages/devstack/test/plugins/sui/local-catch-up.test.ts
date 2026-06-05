@@ -1,11 +1,11 @@
 // Sui local-mode caught-up-to-head cadence evaluator.
 //
 // The catch-up gate (`waitForCheckpointCatchUp`) polls
-// `getLatestCheckpointSequenceNumber` and declares the validator caught
-// up once the per-poll delta drops from fast-replay cadence
-// (hundreds/poll) to live cadence (a handful/poll) and HOLDS there. This
-// exercises the pure cadence evaluator that decision rests on, on both
-// cold-boot and warm/restore shapes, without a live validator.
+// the gRPC service-info checkpoint height and declares the validator
+// caught up once the per-poll delta drops from fast-replay cadence
+// (hundreds/poll) to live cadence (a handful/poll) and HOLDS there.
+// This exercises the pure cadence evaluator that decision rests on, on
+// both cold-boot and warm/restore shapes, without a live validator.
 
 import { describe, expect, it } from '@effect/vitest';
 

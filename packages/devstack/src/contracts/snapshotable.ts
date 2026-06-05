@@ -47,11 +47,11 @@
 //     `'account/${name}.key'`). The substrate's tar handler stats the
 //     entry and routes file vs directory automatically.
 //
-// TODO(plugins): migrate to the canonical shape — tracked sites:
-//   - plugins/seal/snapshot.ts:50      `['seal']`           → `['seal/']`
-//   - plugins/sui/snapshot.ts:87       `['sui-fork/']`      (already canonical)
-//   - plugins/account/snapshot.ts:51   `['account/${name}.key']`  (file — keep)
-//   - plugins/wallet/snapshot.ts:13    `['wallet/token']`         (file — keep)
+// Known tracked sites:
+//   - plugins/seal/snapshot.ts         `['seal/']`          (canonical)
+//   - plugins/sui/snapshot.ts          `['sui-fork/']`      (canonical)
+//   - plugins/account/snapshot.ts      `['account/${name}.key']`  (file)
+//   - plugins/wallet/snapshot.ts       `['wallet/token']`         (file)
 
 import type { Effect } from 'effect';
 

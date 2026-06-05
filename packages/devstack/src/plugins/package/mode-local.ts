@@ -27,12 +27,7 @@
 import { Duration, Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash } from '../../substrate/brand.ts';
-import {
-	pickPublishedChange,
-	pickUpgradeCapChange,
-	type PackagePublishObjectChange,
-	type LocalPackagePublishOutput,
-} from './publish-output.ts';
+import type { LocalPackagePublishOutput } from './publish-output.ts';
 import {
 	artifactPublishError,
 	type ArtifactPublishError,
@@ -384,25 +379,6 @@ export const acquireLocal = (
 				// failure surfaces here.
 				yield* inputs.executor.postPublishReadyHint(output.packageId);
 
-				// Produce 5/5 — parse. Distilled doc §Move-specific
-				// concerns: pick the `'published'` change for packageId;
-				// pick the `UpgradeCap`-typed `'created'` change for the
-				// upgrade cap.
-				const published = pickPublishedChange(output.objectChanges);
-				if (!published?.objectId) {
-					return yield* Effect.fail(
-						publishError('parse', {
-							sourcePath: inputs.sourcePath,
-							packageName: inputs.packageName,
-							message:
-								'no "published" change in output — SDK shape drift (distilled doc §Edge cases)',
-						}),
-					);
-				}
-				const upgradeCap: PackagePublishObjectChange | undefined = pickUpgradeCapChange(
-					output.objectChanges,
-				);
-
 				// Capture spec — user-declared projection from output to
 				// typed object id map. Distilled doc §Outputs: the callback
 				// is user code, so a throw is a USER BUG (typo / missing
@@ -426,8 +402,8 @@ export const acquireLocal = (
 					: {};
 
 				const entry: CachedPackageEntry = {
-					packageId: published.objectId,
-					upgradeCapId: upgradeCap?.objectId,
+					packageId: output.packageId,
+					upgradeCapId: output.upgradeCapId,
 					publisher: inputs.publisherAddress,
 					mvrPlaceholder,
 					captured,

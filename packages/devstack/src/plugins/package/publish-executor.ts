@@ -43,7 +43,12 @@ import {
 	type SuiSdkShim,
 } from '../sui/index.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
-import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
+import {
+	pickPublishedChange,
+	pickUpgradeCapChange,
+	type LocalPackagePublishOutput,
+	type PackagePublishObjectChange,
+} from './publish-output.ts';
 import { publishError, type PublishError } from './errors.ts';
 import type { PublishExecutor } from './mode-local.ts';
 
@@ -304,15 +309,23 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 					}),
 			});
 
-			const published = objectChanges.find((c) => c.type === 'published');
-			const upgradeCap = objectChanges.find(
-				(c) => c.type === 'created' && (c.objectType?.endsWith('::package::UpgradeCap') ?? false),
-			);
+			const published = pickPublishedChange(objectChanges);
+			if (!published?.objectId) {
+				return yield* Effect.fail(
+					publishError('parse', {
+						sourcePath,
+						packageName,
+						message:
+							'no "published" change in output — SDK shape drift (distilled doc §Edge cases)',
+					}),
+				);
+			}
+			const upgradeCap = pickUpgradeCapChange(objectChanges);
 			const hydratedObjectChanges = yield* hydrateCreatedObjects(inputs.sdk, objectChanges);
 
 			const output: LocalPackagePublishOutput = {
 				digest,
-				packageId: published?.objectId ?? '',
+				packageId: published.objectId,
 				publisher: inputs.account.address,
 				...(upgradeCap?.objectId !== undefined ? { upgradeCapId: upgradeCap.objectId } : {}),
 				objectChanges: hydratedObjectChanges,

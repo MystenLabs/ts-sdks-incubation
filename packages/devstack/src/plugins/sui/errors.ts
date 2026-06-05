@@ -20,7 +20,7 @@ export type SuiPhase =
 	| 'image-build'
 	| 'port-allocate'
 	| 'container-start'
-	| 'rpc-probe'
+	| 'grpc-probe'
 	| 'faucet-probe'
 	| 'graphql-probe'
 	| 'fork-status-probe'

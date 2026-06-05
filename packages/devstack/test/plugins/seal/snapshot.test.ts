@@ -33,9 +33,9 @@ describe('makeLocalKeygenSnapshotable — distilled-doc §"What survives snapsho
 			stack: 'main',
 		});
 		// The orchestrator roots `subtrees` under `runtime/`. Plugin-side
-		// the path is just `seal` (plugin-blind from the orchestrator's
-		// POV).
-		expect(decl.subtrees).toContain('seal');
+		// the path is the canonical directory subtree `seal/`
+		// (plugin-blind from the orchestrator's POV).
+		expect(decl.subtrees).toContain('seal/');
 	});
 
 	it('declares the key-server container by label tuple', () => {

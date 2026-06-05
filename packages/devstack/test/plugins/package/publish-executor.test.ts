@@ -1,4 +1,4 @@
-import { Effect, Exit, Fiber } from 'effect';
+import { Effect, Exit, Fiber, Option } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { vi } from 'vitest';
 
@@ -133,7 +133,10 @@ const accountOpts: ResolvedAccountOptions = {
 
 const makePublishSdk = (
 	waitGates: ReadonlyMap<string, Gate>,
-	opts: { readonly failedLabels?: ReadonlySet<number> } = {},
+	opts: {
+		readonly failedLabels?: ReadonlySet<number>;
+		readonly missingPublishedLabels?: ReadonlySet<number>;
+	} = {},
 ): SuiSdkShim => {
 	const executeTransaction = async (args: { readonly transaction: Uint8Array }) => {
 		const label = args.transaction[0] ?? 0;
@@ -153,11 +156,15 @@ const makePublishSdk = (
 				digest: `digest-${label}`,
 				effects: {
 					changedObjects: [
-						{
-							objectId: `0xpkg${label}`,
-							outputState: 'PackageWrite',
-							idOperation: 'Created',
-						},
+						...(opts.missingPublishedLabels?.has(label) === true
+							? []
+							: [
+									{
+										objectId: `0xpkg${label}`,
+										outputState: 'PackageWrite',
+										idOperation: 'Created',
+									},
+								]),
 						{
 							objectId: `0xcap${label}`,
 							outputState: 'ObjectWrite',
@@ -370,6 +377,36 @@ describe('package publish executor', () => {
 				);
 				expect(Exit.isSuccess(exit)).toBe(true);
 			}),
+	);
+
+	it.effect('fails parse before returning output when the published change is missing', () =>
+		Effect.gen(function* () {
+			const sharedSdk = makePublishSdk(new Map(), {
+				missingPublishedLabels: new Set([3]),
+			});
+			const account = yield* acquireAccount(accountOpts, makeAccountCtx(sharedSdk)).pipe(
+				Effect.provide(layerStrategyRegistry),
+				Effect.orDie,
+			);
+			const executor = makePublishExecutor({ sdk: sharedSdk, account });
+
+			const exit = yield* Effect.exit(
+				executor.publishTx({
+					modules: [new Uint8Array([3])],
+					dependencies: [],
+					sourcePath: '/tmp/pkg-missing-published',
+					packageName: 'pkg_missing_published',
+				}),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const errorOpt = Exit.findErrorOption(exit);
+			expect(Option.isSome(errorOpt)).toBe(true);
+			const error = Option.getOrThrow(errorOpt);
+			expect(error._tag).toBe('PublishError');
+			expect(error.phase).toBe('parse');
+			expect(error.message).toContain('no "published" change');
+		}).pipe(Effect.provide(layerLeaseBroker)),
 	);
 
 	it('publishError("parse") shape — packageName is optional, never overloaded with on-chain id', () => {

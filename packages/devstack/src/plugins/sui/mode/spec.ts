@@ -38,12 +38,6 @@ export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly image?:
 		| { readonly pull: string }
 		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
-	/** Effectively DEAD for the default path: local mode now bases on the
-	 *  pinned `mysten/sui-tools` image, not a versioned tarball, so
-	 *  `resolveImage` ignores this field for the vendored build. Kept as a
-	 *  public option (it could be threaded into a custom `{build}`
-	 *  Dockerfile's build args) but currently has no in-repo reader. */
-	readonly version?: string;
 	/** GraphQL/indexer/Postgres on-off. Default `true` — sui owns a
 	 *  postgres sidecar and runs `--with-graphql` against it. `false` ⇒
 	 *  RPC + faucet only, no sidecar, no GraphQL. */

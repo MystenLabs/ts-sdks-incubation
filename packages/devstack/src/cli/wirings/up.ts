@@ -489,7 +489,7 @@ export const runUpLive = (
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
 		const appRoot = dirname(loaded.resolvedConfigPath);
 
-		const devstackVersion = readDevstackVersion();
+		const devstackVersion = readDevstackVersion({ fallback: '0.0.0' });
 		const rendererMode = resolveUpRendererMode({
 			cliRenderer: options.renderer,
 			stackRenderer: stack.options.renderer,

@@ -20,8 +20,8 @@
 //      unclean SIGKILL/137 exit recreates instead of resuming a suspect
 //      RocksDB/checkpoint state. The runtime stops the container with
 //      SIGINT so sui runs its ctrl-c shutdown path.
-//   3. Ready probe — RPC `getChainIdentifier`, faucet `GET /`, and
-//      GraphQL HTTP liveness. Per-fetch deadline + outer deadline.
+//   3. Ready probe — gRPC service info, faucet `GET /`, and GraphQL
+//      HTTP liveness. Per-fetch deadline + outer deadline.
 //   4. Fetch chain id from the now-responsive client (bounded timeout).
 //   5. Build `waitForTransactionsReady` — `Effect.cached` against a
 //      real faucet funding tx; first failure caches for the scope.
@@ -110,8 +110,8 @@ import type { SuiLocalOptions } from './spec.ts';
  *
  *  180s is therefore generous headroom, not a re-sync budget: the gate
  *  satisfies in a couple of polls on a healthy boot, and the timeout only
- *  bounds a genuinely wedged boot (RPC bound but head never stabilizing
- *  → typed `rpc-probe` error). */
+ *  bounds a genuinely wedged boot (gRPC bound but head never stabilizing
+ *  → typed `grpc-probe` error). */
 export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(180);
 
 // In-container ports the sui binary binds on. These match the router
@@ -229,13 +229,15 @@ export const bootLocalMode = (
 			? yield* routedSuiUrl(identity, SUI_GRAPHQL_ENDPOINT_NAME, SUI_GRAPHQL_ENTRYPOINT_PORT)
 			: undefined;
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_LOCAL_READY_TIMEOUT;
+		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
 
 		yield* setCurrentPluginPhase(
 			graphqlEnabled
-				? 'waiting for Sui RPC, faucet, and GraphQL'
-				: 'waiting for Sui RPC and faucet',
+				? 'waiting for Sui gRPC, faucet, and GraphQL'
+				: 'waiting for Sui gRPC and faucet',
 		);
 		yield* waitForReady(
+			sdkClient,
 			directRpcUrl,
 			directFaucetUrl,
 			graphqlEnabled ? directGraphqlUrl : undefined,
@@ -255,11 +257,9 @@ export const bootLocalMode = (
 		// without it a probe firing into a still-settling head could read a
 		// committed id as not-found and spuriously re-deploy with fresh ids.
 		yield* setCurrentPluginPhase('waiting for Sui checkpoint head to stabilize');
-		yield* waitForCheckpointCatchUp(directRpcUrl, readyTimeout).pipe(
+		yield* waitForCheckpointCatchUp(sdkClient, directRpcUrl, readyTimeout).pipe(
 			Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }),
 		);
-
-		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
 
 		// ----- 4. Resolve chain id ------------------------------------------
 		yield* setCurrentPluginPhase('fetching Sui chain id');
@@ -669,6 +669,7 @@ const allocatePort = (
  *  external indexer). Each probe has its own per-fetch deadline so a
  *  wedged endpoint surfaces by name. */
 const waitForReady = (
+	sdkClient: SuiGrpcClient,
 	rpcUrl: string,
 	faucetUrl: string,
 	graphqlUrl: string | undefined,
@@ -676,32 +677,25 @@ const waitForReady = (
 ): Effect.Effect<void, SuiPluginError> =>
 	Effect.gen(function* () {
 		const readyTimeoutMs = Duration.toMillis(readyTimeout);
-		const rpcProbe: Effect.Effect<void, SuiPluginError> = waitForHttpEndpoint({
-			endpoint: rpcUrl,
+		const grpcProbe: Effect.Effect<void, SuiPluginError> = waitForProbe({
+			label: `${rpcUrl} (gRPC service info)`,
 			timeoutMs: readyTimeoutMs,
 			intervalMs: 1_000,
-			requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
-			requestInit: {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					jsonrpc: '2.0',
-					id: 1,
-					method: 'sui_getLatestCheckpointSequenceNumber',
-					params: [],
-				}),
-			},
-			validate: async (response) => {
-				if (!response.ok) return false;
-				const body = (await response.json()) as { readonly result?: unknown };
-				return typeof body.result === 'string' || typeof body.result === 'number';
-			},
+			attemptTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+			probe: () =>
+				fetchServiceInfo(sdkClient, PROBE_FETCH_TIMEOUT_MS).pipe(
+					Effect.map((info) =>
+						info.chainId !== undefined || info.checkpointHeight !== undefined
+							? true
+							: { ready: false, detail: { reason: 'missing-service-info' } },
+					),
+				),
 		}).pipe(
 			Effect.mapError(
 				(cause): SuiPluginError =>
 					suiPluginError(
-						'rpc-probe',
-						`sui local mode: RPC endpoint ${rpcUrl} did not become ready within ` +
+						'grpc-probe',
+						`sui local mode: gRPC endpoint ${rpcUrl} did not become ready within ` +
 							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
 						cause,
 					),
@@ -752,7 +746,7 @@ const waitForReady = (
 						),
 					];
 
-		yield* Effect.all([rpcProbe, faucetProbe, ...graphqlProbe], { concurrency: 'unbounded' }).pipe(
+		yield* Effect.all([grpcProbe, faucetProbe, ...graphqlProbe], { concurrency: 'unbounded' }).pipe(
 			Effect.asVoid,
 		);
 	});
@@ -783,39 +777,32 @@ const CATCH_UP_LIVE_CADENCE_DELTA = 25;
  *  holds small deltas indefinitely. */
 const CATCH_UP_STABLE_POLLS_REQUIRED = 2;
 
-/** Fetch the latest checkpoint sequence number via raw JSON-RPC.
- *  Returns the number, or `undefined` when the listener answered but the
- *  result shape was unexpected (treated as "not yet sampleable"). */
-const fetchLatestCheckpoint = (rpcUrl: string): Effect.Effect<number | undefined, unknown> =>
+interface SuiServiceInfo {
+	readonly chainId?: string;
+	readonly checkpointHeight?: bigint;
+}
+
+const fetchServiceInfo = (
+	sdkClient: SuiGrpcClient,
+	timeoutMs: number,
+): Effect.Effect<SuiServiceInfo, unknown> =>
 	Effect.tryPromise({
 		try: (signal) =>
-			globalThis.fetch(rpcUrl, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					jsonrpc: '2.0',
-					id: 1,
-					method: 'sui_getLatestCheckpointSequenceNumber',
-					params: [],
-				}),
-				signal,
-			}),
+			sdkClient.ledgerService.getServiceInfo({}, { abort: signal, timeout: timeoutMs }).response,
 		catch: (cause) => cause,
-	}).pipe(
-		Effect.flatMap((response) =>
-			Effect.tryPromise({
-				try: () => response.json() as Promise<{ readonly result?: unknown }>,
-				catch: (cause) => cause,
-			}),
-		),
+	});
+
+/** Fetch the latest checkpoint height via the gRPC service-info surface.
+ *  Returns the number, or `undefined` when the listener answered but did
+ *  not include a safely numeric checkpoint height. */
+const fetchLatestCheckpoint = (
+	sdkClient: SuiGrpcClient,
+): Effect.Effect<number | undefined, unknown> =>
+	fetchServiceInfo(sdkClient, PROBE_FETCH_TIMEOUT_MS).pipe(
 		Effect.map((body) => {
-			const raw = body.result;
-			if (typeof raw === 'number') return raw;
-			if (typeof raw === 'string') {
-				const n = Number(raw);
-				return Number.isFinite(n) ? n : undefined;
-			}
-			return undefined;
+			if (body.checkpointHeight === undefined) return undefined;
+			const checkpoint = Number(body.checkpointHeight);
+			return Number.isSafeInteger(checkpoint) ? checkpoint : undefined;
 		}),
 	);
 
@@ -827,7 +814,7 @@ export type CatchUpVerdict =
 /** Build the stateful cadence evaluator the catch-up gate feeds samples
  *  into. Pure + injectable so the cadence logic is unit-testable without
  *  a live validator. Each `step(sample)` consumes one
- *  `getLatestCheckpointSequenceNumber` reading:
+ *  gRPC service-info checkpoint-height reading:
  *
  *    - `undefined` (listener answered, result unparseable) resets the
  *      stability streak.
@@ -887,7 +874,7 @@ export const makeCatchUpEvaluator = (opts?: {
 
 /** Head-stabilization gate.
  *
- *  Polls `sui_getLatestCheckpointSequenceNumber` and treats the head as
+ *  Polls the gRPC service-info checkpoint height and treats the head as
  *  stable once the per-poll delta is at live cadence (`<= CATCH_UP_LIVE_
  *  CADENCE_DELTA`/poll) and HOLDS there for `CATCH_UP_STABLE_POLLS_
  *  REQUIRED` consecutive polls. With the #26884 resume fix both nodes
@@ -897,9 +884,10 @@ export const makeCatchUpEvaluator = (opts?: {
  *  evaluator is retained as a cheap guard for any transient burst rather
  *  than a routine restart band.
  *
- *  A wedged boot (RPC bound but head never stabilizing) lapses the outer
- *  deadline → typed `rpc-probe` error rather than hanging forever. */
+ *  A wedged boot (gRPC bound but head never stabilizing) lapses the outer
+ *  deadline → typed `grpc-probe` error rather than hanging forever. */
 const waitForCheckpointCatchUp = (
+	sdkClient: SuiGrpcClient,
 	rpcUrl: string,
 	readyTimeout: Duration.Duration,
 ): Effect.Effect<void, SuiPluginError> =>
@@ -913,7 +901,7 @@ const waitForCheckpointCatchUp = (
 			intervalMs: CATCH_UP_POLL_INTERVAL_MS,
 			attemptTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
 			probe: () =>
-				fetchLatestCheckpoint(rpcUrl).pipe(
+				fetchLatestCheckpoint(sdkClient).pipe(
 					Effect.map((current) => {
 						const verdict = evaluator.step(current);
 						return verdict.caughtUp ? true : { ready: false, detail: verdict.detail };
@@ -923,7 +911,7 @@ const waitForCheckpointCatchUp = (
 			Effect.mapError(
 				(cause): SuiPluginError =>
 					suiPluginError(
-						'rpc-probe',
+						'grpc-probe',
 						`sui local mode: checkpoint head did not stabilize within ` +
 							`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). With the #26884 ` +
 							`resume fix both nodes resume from disk, so the head should reach live cadence ` +
