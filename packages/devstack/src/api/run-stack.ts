@@ -42,7 +42,7 @@ import {
 
 import { appName, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
-import type { EngineEvent } from '../substrate/events.ts';
+import type { EngineCommand, EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
 import { makeProjectionRefSync } from '../substrate/runtime/index.ts';
 import {
@@ -134,6 +134,20 @@ export interface RunHandle {
 	/** The supervisor's live projection. Renderers + tests read this
 	 *  directly; changes flow through `SubscriptionRef.changes`. */
 	readonly state: SubscriptionRef.SubscriptionRef<SubscribableState>;
+	/** Enqueue side of the supervisor's command channel — the same queue
+	 *  the supervisor consumes. An in-process TUI / out-of-process IPC
+	 *  bridge publishes `EngineCommand`s here (`shutdown.requested`,
+	 *  `selective-restart.requested`, snapshot verbs, …). The signal
+	 *  handler and the `stop` bridge already publish onto this queue. */
+	readonly commands: Queue.Enqueue<EngineCommand>;
+	/** Submit-and-await dispatch: offers `command` onto the supervisor's
+	 *  in-band command queue and resolves when the command-loop finishes
+	 *  it (re-failing with the handler's cause). The IPC layer adds ack
+	 *  correlation on top of this later. */
+	readonly runCommand: (command: EngineCommand) => Effect.Effect<void, unknown, never>;
+	/** The resolved `Identity` (app / stack / chain) this handle booted
+	 *  with. Available synchronously, before `start`. */
+	readonly identity: Identity;
 }
 
 // -----------------------------------------------------------------------------
@@ -194,9 +208,15 @@ const toBootError = (cause: Cause.Cause<unknown>): BootError => ({
  *   5. `handle.awaitShutdown` resolves once finalizers complete.
  *
  * Internal architecture: the handle stores a `Deferred` for boot
- * completion. The supervised body forks a watcher fiber over the
- * registry's `awaitReady` per node; once every node is `ready` (or one
- * fails) the deferred completes. `start` awaits it.
+ * completion. The supervised body resolves it from the SUPERVISOR-OWNED
+ * readiness signal — `superviseStackEffect`'s `withinScope` hook fires
+ * only after `runInitialAcquire` wins its `raceFirst` against
+ * `awaitShutdown` (i.e. once `allReadyOrTerminal` — `ready || done` — is
+ * true). This is the same `done`-tolerant gate the long-running CLI path
+ * uses; it does NOT watch per-node ready-gates (a non-failed terminal
+ * `done` node need never resolve its `awaitReady` gate). Initial-acquire
+ * failures surface through the supervised body's `catchCause` tee, which
+ * fails the deferred with a `BootError`. `start` awaits it.
  */
 export const runStack = (
 	stack: Stack<ReadonlyArray<AnyPlugin>>,
@@ -232,6 +252,20 @@ export const runStack = (
 	const bootDeferred = Effect.runSync(Deferred.make<void, BootError>());
 	const stopRequested = Effect.runSync(Deferred.make<void>());
 	const eventQueueRef = Effect.runSync(Deferred.make<Queue.Dequeue<EngineEvent>>());
+	// Public command channel. Allocated eagerly (like `state`) so the
+	// handle exposes a real `Queue.Enqueue<EngineCommand>` synchronously,
+	// before `start`. Everything offered here is pumped onto the
+	// supervisor's own command queue once it boots (see the pump in
+	// `beforeInitialAcquire`), so a publish always lands on the seam the
+	// supervisor drains — the TUI/IPC publish target.
+	const commandQueue = Effect.runSync(Queue.unbounded<EngineCommand>());
+	// `runCommand` is the supervisor's submit-and-await dispatch; only
+	// knowable once `startSupervisor` runs. Surfaced via a Deferred the
+	// same way `eventQueueRef` is. The IPC ack-correlation layers on top
+	// of this later.
+	const runCommandRef = Effect.runSync(
+		Deferred.make<(command: EngineCommand) => Effect.Effect<void, unknown, never>>(),
+	);
 	const fiberRef = Effect.runSync(Deferred.make<Fiber.Fiber<void, never>>());
 	const startClaim = Effect.runSync(Ref.make(false));
 	// Tee for mid-run defects/failures. `Deferred.fail(bootDeferred, …)`
@@ -278,6 +312,24 @@ export const runStack = (
 					yield* Deferred.succeed(eventQueueRef, handle.events).pipe(
 						Effect.catch(() => Effect.void),
 					);
+					// Surface the supervisor's submit-and-await dispatch onto the
+					// public handle BEFORE acquire so a boot failure can't leave
+					// the handle without a command bridge.
+					yield* Deferred.succeed(runCommandRef, handle.runCommand).pipe(
+						Effect.catch(() => Effect.void),
+					);
+					// Pump the eager public command queue onto the supervisor's
+					// own command queue (`handle.commands` — the seam the signal
+					// handler + command loop drain). A publish on the public
+					// queue therefore always reaches the supervisor's drain.
+					yield* Effect.forkScoped(
+						Effect.gen(function* () {
+							while (true) {
+								const command = yield* Queue.take(commandQueue);
+								yield* Queue.offer(handle.commands, command);
+							}
+						}),
+					);
 
 					// Bridge `stop` requests onto the supervisor's command
 					// channel before acquire starts so a boot failure cannot
@@ -292,31 +344,49 @@ export const runStack = (
 					);
 				}),
 			withinScope: (handle) =>
+				// Resolve the boot gate from the SUPERVISOR-OWNED readiness
+				// signal. `superviseStackEffect` only calls `withinScope`
+				// after `runInitialAcquire` wins its `raceFirst` against
+				// `awaitShutdown` and yields `'booted'` (boot.ts) — i.e. once
+				// `allReadyOrTerminal` is true (`ready || done`). This is the
+				// SAME `done`-tolerant gate the long-running CLI path uses,
+				// not a per-node `awaitReady` watcher (whose ready-gate a
+				// non-failed terminal `done` node need never resolve, so it
+				// would hang here).
+				//
+				// `runInitialAcquire` does NOT itself fail on a per-PLUGIN
+				// acquire failure: `acquireFullGraph` swallows node failures
+				// into the registry's `failed` status (the CLI surfaces them as
+				// red TUI rows and keeps the stack up). runStack's contract is
+				// stricter — `start` FAILS with `BootError` if any node failed
+				// initial acquire. So gate on the STATUS contract here: succeed
+				// iff every node is `ready`/`done`, else fail with the first
+				// `failed` node's `PluginAcquireFailed` cause. A failed node's
+				// ready-gate IS resolved (markFailed failed it), so reading it
+				// is hang-free — the `done`-tolerant equivalent of the old
+				// watcher's failure detection. (Post-acquire HOOK failures —
+				// codegen / manifest — fail `runInitialAcquire` directly and
+				// tee through the supervised body's `catchCause` below; we
+				// never reach here on that path.)
 				Effect.gen(function* () {
-					// Watch every plugin for `ready`; resolve `bootDeferred` once
-					// every node has reached ready (or one fails). The
-					// `awaitReady` callbacks resolve from the per-plugin
-					// ready-gates the registry holds — see supervisor §
-					// "ready-gate awaits its acquire effect".
-					// Both forks tie to the surrounding scope (the supervised
-					// scope inside superviseStackEffect). When the supervisor
-					// scope closes — either via graceful shutdown or interrupt
-					// — these fibers are torn down with it.
-					yield* Effect.forkScoped(
-						Effect.gen(function* () {
-							const exits = yield* Effect.forEach(
-								handle.graph.nodes,
-								([key]) => handle.registry.awaitReady(key).pipe(Effect.exit),
-								{ concurrency: 'unbounded' },
+					let firstFailure: BootError | null = null;
+					for (const [key] of handle.graph.nodes) {
+						const status = yield* handle.registry
+							.getStatus(key)
+							.pipe(Effect.catch(() => Effect.succeed('failed' as const)));
+						if (status === 'failed') {
+							const failureExit = yield* Effect.exit(handle.registry.awaitReady(key));
+							firstFailure = toBootError(
+								Exit.isFailure(failureExit) ? failureExit.cause : Cause.empty,
 							);
-							const firstFailure = exits.find(Exit.isFailure);
-							if (firstFailure === undefined) {
-								yield* Deferred.succeed(bootDeferred, undefined);
-							} else {
-								yield* Deferred.fail(bootDeferred, toBootError(firstFailure.cause));
-							}
-						}),
-					);
+							break;
+						}
+					}
+					if (firstFailure === null) {
+						yield* Deferred.succeed(bootDeferred, undefined).pipe(Effect.asVoid);
+					} else {
+						yield* Deferred.fail(bootDeferred, firstFailure).pipe(Effect.asVoid);
+					}
 				}),
 		}).pipe(Effect.provide(layerBuiltInPluginRuntime));
 	});
@@ -414,11 +484,22 @@ export const runStack = (
 		}),
 	);
 
+	// Submit-and-await dispatch. Awaits the supervisor's `runCommand`
+	// (surfaced in `beforeInitialAcquire`), then delegates. Awaiting the
+	// deferred means a pre-`start` call blocks until boot wires it, which
+	// matches the rest of the handle's "available after boot" command
+	// surface.
+	const runCommand = (command: EngineCommand): Effect.Effect<void, unknown, never> =>
+		Effect.flatMap(Deferred.await(runCommandRef), (dispatch) => dispatch(command));
+
 	return {
 		start,
 		stop,
 		awaitShutdown,
 		events,
 		state,
+		commands: commandQueue,
+		runCommand,
+		identity,
 	};
 };
