@@ -177,6 +177,17 @@ export interface ContainerHandle {
 	readonly status: 'running' | 'exited' | 'paused' | 'created';
 	readonly ips: ReadonlyArray<string>;
 	readonly ports?: ReadonlyArray<ContainerPortPublish>;
+	/** The container's last recorded exit code, surfaced from
+	 *  `InspectFacts.exitCode` whenever Docker supplied a `State` (so a
+	 *  running container or one that exited cleanly reports `0`; only a
+	 *  container whose inspect omitted `State` entirely — an indeterminate
+	 *  lifecycle — leaves this absent). Lets callers distinguish a clean exit
+	 *  from a SIGKILL/OOM `137` — the only code the runtime's `decideRunAction`
+	 *  recreates an `on-failure` container on. Sui's indexer-db sidecar keys
+	 *  its `configHash` on `present + 137` (a validator crash-recreate ⇒
+	 *  re-genesis incoming) so it resets rather than resuming stale rows
+	 *  against a brand-new chain. */
+	readonly lastExitCode?: number;
 }
 
 /** Captured stdout/stderr/exit code from a one-shot `exec` invocation

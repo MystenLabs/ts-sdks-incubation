@@ -41,7 +41,10 @@ import { fileURLToPath } from 'node:url';
 
 import type { ContainerHandle, ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
-import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import {
+	ensureManagedContainer,
+	sanitizeAlias,
+} from '../../substrate/runtime/managed-container.ts';
 import {
 	credentialedUrl,
 	plainUrl,
@@ -153,7 +156,24 @@ export const derivePassword = (app: string, stack: string, stackRoot: string): s
 	return `pg-${body}-${fingerprint}`;
 };
 
-const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
+/** Sidecar password — derived from `(app, stack, role)`, deliberately WITHOUT
+ *  `stackRoot`. A sibling-owned sidecar's PGDATA rides the OWNER's snapshot and
+ *  its committed layer is aliased onto the content-addressed `devstack-build:*`
+ *  build tag, so the persisted password must stay invariant for as long as that
+ *  image/snapshot does — across runs of the same `(app, stack)`, regardless of
+ *  the (per-run, possibly-tmpdir) runtime root. A `stackRoot`-folded password
+ *  would churn per run and stop matching the persisted PGDATA, failing auth on
+ *  reuse/restore. `role` keeps two sidecars of the same stack distinct. The
+ *  per-checkout isolation `stackRoot` buys for user-declared, host-port-published
+ *  `postgres()` does not apply: the sidecar publishes no host port. */
+export const deriveSidecarPassword = (app: string, stack: string, role: string): string => {
+	const body = (app + stack + role).replace(/[^a-zA-Z0-9]/g, '');
+	const fingerprint = createHash('sha256')
+		.update(`${app}\x1f${stack}\x1f${role}`)
+		.digest('hex')
+		.slice(0, 8);
+	return `pg-${body}-${fingerprint}`;
+};
 
 /** Resolve user-supplied options against defaults + identity-derived
  *  values. Pure; safe to call before the Effect body runs. */
@@ -234,17 +254,19 @@ const resolveImageContextPath = (): string => {
  *  field for the cause walker. */
 const containerExec = (runtime: ContainerRuntime, handle: ContainerHandle): ContainerExec => ({
 	run: (argv) =>
-		runtime.exec(handle, argv).pipe(
-			Effect.catch((err) =>
-				Effect.fail(
-					postgresPluginError(
-						'container-start',
-						`runtime.exec failed: ${err.reason} — ${err.detail}`,
-						err,
+		runtime
+			.exec(handle, argv)
+			.pipe(
+				Effect.catch((err) =>
+					Effect.fail(
+						postgresPluginError(
+							'container-start',
+							`runtime.exec failed: ${err.reason} — ${err.detail}`,
+							err,
+						),
 					),
 				),
 			),
-		),
 });
 
 /** Boot the postgres service. The barrel composes this with the
@@ -434,6 +456,14 @@ export const bootPostgresSidecar = (
 		readonly role: string;
 		readonly database: string;
 		readonly version?: string;
+		/** Opaque caller-owned fingerprint stamped as the sidecar's
+		 *  `devstack.config-hash` label. With `recreate: 'on-config-change'`
+		 *  a mismatch recreates the container — for a mount-less PGDATA-in-
+		 *  writable-layer sidecar that means an EMPTY DB (reset); a match
+		 *  resumes (rows preserved). The sui plugin keys this off the
+		 *  validator's chain identity so a re-genesis resets the indexer DB
+		 *  natively via `decideRunAction`, no marker/dropdb machinery. */
+		readonly configHash?: string;
 	},
 ): Effect.Effect<
 	{ readonly handle: Postgres; readonly containerHandle: ContainerHandle },
@@ -446,6 +476,14 @@ export const bootPostgresSidecar = (
 				resolveOptions(identity, stackRoot, {
 					name: opts.role,
 					databases: [opts.database],
+					// `(app, stack, role)`-only password — NOT stackRoot-folded (see
+					// `deriveSidecarPassword`). The sidecar's PGDATA (with the password
+					// baked at first init) rides the owner's snapshot / collapses onto
+					// the content-addressed build tag, so it outlives any one runtime
+					// root; a stackRoot-folded credential churns per run and stops
+					// matching the persisted dir → `FATAL: password authentication
+					// failed` (the validator's embedded indexer dies).
+					password: deriveSidecarPassword(identity.app, identity.stack, opts.role),
 					...(opts.version !== undefined ? { version: opts.version } : {}),
 				}),
 			catch: (cause) => cause as PostgresConfigError,
@@ -498,6 +536,7 @@ export const bootPostgresSidecar = (
 				name: containerName,
 				image: imageRef,
 				recreate: 'on-config-change',
+				...(opts.configHash !== undefined ? { configHash: opts.configHash } : {}),
 				env: {
 					POSTGRES_USER: resolved.user,
 					POSTGRES_PASSWORD: resolved.password,

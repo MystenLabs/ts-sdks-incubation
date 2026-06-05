@@ -199,18 +199,18 @@ export const decideRunAction = (
 	if (!configMatches) {
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'config-mismatch' }, policy);
 	}
+	// The only unclean exit the engine acts on is SIGKILL/137 (the
+	// unclean-shutdown signal, architecture §G1 / §13). `on-failure`:
+	// recreate. `never`: refuse. `on-config-change`: resume. Every other
+	// exit — clean (0/130) or any other non-137 code — falls through to
+	// resume its persisted writable layer (no recreate signal).
 	if (facts.lifecycle.exitCode === 137) {
-		// Unclean shutdown — see architecture §G1 / §13.
-		// `on-failure`: recreate. `never`: refuse. `on-config-change`:
-		// resume — caller wants stopped container kept until config
-		// changes, even if the prior exit was unclean.
 		if (policy === 'on-failure') {
 			return { kind: 'recreate', id: facts.id, reason: 'unclean-shutdown' };
 		}
 		if (policy === 'never') {
 			return { kind: 'refuse', reason: 'unclean-shutdown' };
 		}
-		return { kind: 'resume', id: facts.id };
 	}
 	return { kind: 'resume', id: facts.id };
 };

@@ -181,7 +181,10 @@ export { POSTGRES_TCP_ENDPOINT_NAME } from './routable.ts';
 export type { Postgres, PostgresServiceOptions } from './service.ts';
 // Sidecar boot seam — consumed by the sui plugin, which OWNS its
 // GraphQL-indexer postgres container as a sidecar rather than depending
-// on a user-declared `postgres(...)`.
+// on a user-declared `postgres(...)`. The owner passes a `configHash`
+// keyed to the validator's chain identity so a re-genesis recreates
+// (resets) the sidecar DB natively via `decideRunAction` — no chain-marker
+// / dropdb machinery.
 export { bootPostgresSidecar } from './service.ts';
 export type { PostgresConnectionBindings, PostgresConnectionParts } from './connection.ts';
 export type {

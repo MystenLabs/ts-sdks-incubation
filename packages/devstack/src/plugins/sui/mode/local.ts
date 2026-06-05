@@ -144,7 +144,13 @@ export const SUI_INDEXER_DB_ROLE = 'indexer-db' as const;
 
 /** Resolved indexer wiring for local mode. The URL is the PostgreSQL DSN
  *  (sui-owned sidecar by default, or the caller's BYO DB); `network` is
- *  the container network the validator joins to reach it. */
+ *  the container network the validator joins to reach it.
+ *
+ *  A chain re-genesis resets the sui-owned sidecar DB NATIVELY: the
+ *  sidecar's `configHash` keys off the validator's chain identity, so
+ *  `decideRunAction` recreates the mount-less sidecar (→ empty DB) on a
+ *  chain change and resumes it (→ rows preserved) otherwise. No post-boot
+ *  marker reconcile. */
 export interface LocalIndexer {
 	readonly url: string;
 	readonly network: string;
@@ -172,11 +178,19 @@ export const bootLocalMode = (
 	portBroker: PortBroker,
 	opts: SuiLocalOptions,
 	indexer: LocalIndexer | undefined,
+	// Pre-resolved validator image. The barrel resolves it BEFORE the
+	// indexer-db sidecar is provisioned (so the sidecar's `configHash` can
+	// fold the validator's image ref — see `provisionLocalIndexer`) and
+	// hands the SAME `ImageRef` here. Single source: the image the sidecar
+	// hashed and the image this container runs are byte-identical, so they
+	// cannot drift. `undefined` (the `indexer: false` / no-sidecar path)
+	// resolves it inline.
+	prebuiltImage?: ImageRef,
 ): Effect.Effect<LocalModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve image ---------------------------------------------
 		yield* setCurrentPluginPhase('resolving Sui local image');
-		const image = yield* resolveImage(runtime, identity, opts);
+		const image = prebuiltImage ?? (yield* resolveImage(runtime, identity, opts));
 
 		// ----- 2. Allocate ports + ensure container --------------------------
 		yield* setCurrentPluginPhase('creating Sui validator container');
@@ -784,9 +798,7 @@ const CATCH_UP_STABLE_POLLS_REQUIRED = 2;
 /** Fetch the latest checkpoint sequence number via raw JSON-RPC.
  *  Returns the number, or `undefined` when the listener answered but the
  *  result shape was unexpected (treated as "not yet sampleable"). */
-const fetchLatestCheckpoint = (
-	rpcUrl: string,
-): Effect.Effect<number | undefined, unknown> =>
+const fetchLatestCheckpoint = (rpcUrl: string): Effect.Effect<number | undefined, unknown> =>
 	Effect.tryPromise({
 		try: (signal) =>
 			globalThis.fetch(rpcUrl, {

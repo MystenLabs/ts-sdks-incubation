@@ -28,6 +28,11 @@ import { SpanAttr } from './observability/spans.ts';
  *  owner. */
 export const PER_APP_SHARED_STACK = '_per-app_' as const;
 
+/** Coerce a composed string to a Docker network / DNS-alias-safe form
+ *  (alphanumerics + hyphen). Identity strings are already network-safe;
+ *  this guards the literal composition (`devstack-${app}-${stack}-…`). */
+export const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
+
 export interface ManagedContainerIdentity {
 	readonly app: string;
 	readonly stack: string;
