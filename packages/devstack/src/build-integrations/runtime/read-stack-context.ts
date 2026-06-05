@@ -147,7 +147,10 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
 		manifestPath,
 		manifestVersion: envelope.manifestVersion,
 		endpoints: new EndpointRegistry(entries),
-		services: envelope.services,
+		// Legacy slot — the writer no longer emits `services`; default to
+		// `{}` so the public build-integration `StackContext.services`
+		// stays a record when the manifest omits the field.
+		services: envelope.services ?? {},
 		extras: envelope.extras,
 	};
 };

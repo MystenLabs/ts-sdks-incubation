@@ -1,16 +1,12 @@
 // Manifest emitter — endpoint-keyed envelope, atomic write.
 //
 // Architecture § Manifest data model. The envelope is L0 (`identity`
-// tuple, `manifestVersion`, `services` slot, `endpoints` lookup,
-// `extras`). The per-service projection lives in each plugin's
-// Codegenable contribution and is consumed by codegen output, not by
-// the manifest envelope itself.
+// tuple, `manifestVersion`, `endpoints` lookup, `extras`).
 //
 // The emitter:
-//   - Accepts per-plugin contributions through a `contribute` Effect.
-//   - Walks endpoint contributions to build the flat `endpoints`
-//     lookup keyed by `endpointKey`. Entries still carry the declared
-//     endpoint `name` for build-integration lookup.
+//   - Walks endpoint entries to build the flat `endpoints` lookup
+//     keyed by `endpointKey`. Entries carry the declared endpoint
+//     `name` for build-integration lookup.
 //   - Writes atomically via tempfile + fsync + rename. The atomic-
 //     write primitive lives in L0 (per architecture § Collapsed:
 //     "Three tempfile+rename impls → one atomic-write primitive").
@@ -18,10 +14,8 @@
 //   - Pins `manifestVersion` so future-proofing migrations have a
 //     compatibility seam. The pinned version is `1`.
 //
-// Discipline: zero service names. The writer iterates `pluginKey`-
-// indexed contributions and copies the bytes through. The schema
-// validates the envelope shape, not the per-plugin contents (which
-// are `Schema.Unknown`).
+// Discipline: zero service names. The schema validates the envelope
+// shape, not the per-plugin contents.
 
 import { Effect } from 'effect';
 import { Data } from 'effect';
@@ -72,37 +66,11 @@ export class ManifestError extends Data.TaggedError('ManifestError')<{
 }> {}
 
 // -----------------------------------------------------------------------------
-// Contribution shape
-// -----------------------------------------------------------------------------
-
-/**
- * One plugin's contribution to the manifest. Keyed by `pluginKey`
- * (branded), opaque `services` blob, plus a flat list of endpoint
- * entries the plugin owns.
- *
- * The writer copies `services` through to
- * `envelope.services[pluginKey]`. The renderer of the typed shape
- * lives in the plugin's Codegenable contribution — the manifest
- * doesn't decode it.
- */
-export interface PluginManifestContribution {
-	readonly pluginKey: PluginKey;
-	/** Plugin's structured slice — opaque to the writer. */
-	readonly services: unknown;
-	/** Endpoints owned by this plugin. The writer indexes these by
-	 *  `endpointKey` into the flat top-level lookup. */
-	readonly endpoints: ReadonlyArray<EndpointEntry>;
-	/** Optional app-facing extras merged into the top-level extras slot. */
-	readonly extras?: ManifestExtras;
-}
-
-// -----------------------------------------------------------------------------
 // Public writer interface
 // -----------------------------------------------------------------------------
 
 export interface WriteManifestInput {
 	readonly identity: ManifestEnvelope['identity'];
-	readonly contributions: ReadonlyArray<PluginManifestContribution>;
 	readonly endpoints?: ReadonlyArray<EndpointEntry>;
 	readonly extras?: ManifestExtras;
 	/** Per-stack codegen metadata (the resolved absolute `generatedDir`).
@@ -112,19 +80,17 @@ export interface WriteManifestInput {
 }
 
 /**
- * Build the envelope from per-plugin contributions. Pure; the writer
+ * Build the envelope from endpoint entries + extras. Pure; the writer
  * calls this and then atomically writes the JSON.
  *
- * `pluginKey` collisions are an error — two contributions for the
- * same plugin would silently overwrite. Endpoint-key collisions also
- * error: every endpoint has a unique `(pluginKey, dispatchId)` digest
- * by construction; a duplicate means a substrate bug.
+ * Endpoint-key collisions error: every endpoint has a unique
+ * `(pluginKey, dispatchId)` digest by construction; a duplicate means
+ * a substrate bug.
  */
 export const buildEnvelope = (
 	input: WriteManifestInput,
 ): Effect.Effect<ManifestEnvelope, ManifestError> =>
 	Effect.gen(function* () {
-		const services: Record<string, unknown> = {};
 		const endpoints: Record<string, EndpointEntry> = {};
 		const extras: Record<string, unknown> = { ...input.extras };
 
@@ -143,36 +109,6 @@ export const buildEnvelope = (
 				endpoints[ek] = ep;
 			});
 
-		for (const contribution of input.contributions) {
-			const key = contribution.pluginKey as string;
-			if (key in services) {
-				return yield* Effect.fail(
-					new ManifestError({
-						reason: 'duplicate-contribution',
-						path: '(in-memory envelope)',
-						detail: `pluginKey ${key} contributed twice`,
-					}),
-				);
-			}
-			services[key] = contribution.services;
-			if (contribution.extras !== undefined) {
-				for (const [extraKey, extraValue] of Object.entries(contribution.extras)) {
-					if (extraKey in extras) {
-						return yield* Effect.fail(
-							new ManifestError({
-								reason: 'duplicate-contribution',
-								path: '(in-memory envelope)',
-								detail: `extras key ${extraKey} contributed twice`,
-							}),
-						);
-					}
-					extras[extraKey] = extraValue;
-				}
-			}
-			for (const ep of contribution.endpoints) {
-				yield* addEndpoint(ep);
-			}
-		}
 		for (const ep of input.endpoints ?? []) {
 			yield* addEndpoint(ep);
 		}
@@ -180,7 +116,6 @@ export const buildEnvelope = (
 		return {
 			identity: input.identity,
 			manifestVersion: CURRENT_MANIFEST_VERSION,
-			services,
 			endpoints,
 			extras,
 			// Spread only when present so an omitted `codegen` yields the
@@ -235,8 +170,6 @@ const serializeEnvelope = (envelope: ManifestEnvelope): string =>
  * `ManifestEnvelopeSchema` and the pinned `CURRENT_MANIFEST_VERSION`.
  *
  * Used by:
- *   - Codegen (architecture §6) — consumes plugin slices off
- *     `envelope.services[pluginKey]`.
  *   - Build integrations (Vitest, Playwright, generated app code) — consumes
  *     `envelope.endpoints` lookup.
  *

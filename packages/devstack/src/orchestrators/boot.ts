@@ -703,7 +703,6 @@ export const buildProductionPostAcquireHook = (
 						stack: ctx.identity.stack,
 						chain: ctx.identity.chain,
 					},
-					contributions: [],
 					endpoints,
 					extras,
 					// Record the EXACT dirs codegen emits into for this stack so

@@ -2,8 +2,8 @@
 // from disk and projecting it for consumer code.
 //
 // Shape mirrors the envelope (`identity`, `services`, `endpoints`,
-// `extras`) without re-exporting the substrate's writer-only types
-// (`PluginManifestContribution`, etc). Consumers see:
+// `extras`) without re-exporting the substrate's writer-only types.
+// Consumers see:
 //
 //   - The identity tuple they keyed off (for assertions / display).
 //   - A typed `EndpointRegistry` for `byName` / `byKind` lookups (the

@@ -22,12 +22,11 @@ const makeManifestAt = (path: string, body: object): void => {
 	writeFileSync(path, JSON.stringify(body, null, 2));
 };
 
+// No `services` slot — the writer no longer emits it. Omitting it
+// exercises the optional-decode + `ctx.services ?? {}` back-compat path.
 const validEnvelope = (overrides: Partial<Record<string, unknown>> = {}): object => ({
 	identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
 	manifestVersion: CONSUMER_MANIFEST_VERSION,
-	services: {
-		'router/main': { hostnameSuffix: '.localhost' },
-	},
 	endpoints: {
 		'sui#0:rpc': {
 			name: 'rpc',
@@ -43,7 +42,7 @@ const validEnvelope = (overrides: Partial<Record<string, unknown>> = {}): object
 });
 
 describe('readStackContext (sync)', () => {
-	it('projects identity, endpoints, services, extras', () =>
+	it('projects identity, endpoints, extras (services defaults to {} when omitted)', () =>
 		withTempRootSync('devstack-read', (tmp) => {
 			const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
 			makeManifestAt(manifestPath, validEnvelope());
@@ -51,6 +50,9 @@ describe('readStackContext (sync)', () => {
 			expect(ctx.identity).toEqual({ app: 'demo', stack: 'main', chain: 'sui:local' });
 			expect(ctx.manifestPath).toBe(manifestPath);
 			expect(ctx.manifestVersion).toBe(CONSUMER_MANIFEST_VERSION);
+			// Manifest omits the legacy `services` slot — the reader defaults
+			// it to `{}` so the public build-integration surface stays a record.
+			expect(ctx.services).toEqual({});
 			const rpc = ctx.endpoints.byName('rpc');
 			expect(rpc).toBeDefined();
 			expect(rpc?.url).toBe('http://sui-rpc.demo.localhost:5174');
@@ -71,7 +73,6 @@ describe('readStackContext (sync)', () => {
 				};
 				const envelope = yield* buildEnvelope({
 					identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
-					contributions: [],
 					extras,
 				});
 				yield* writeManifest(envelope, manifestPath);

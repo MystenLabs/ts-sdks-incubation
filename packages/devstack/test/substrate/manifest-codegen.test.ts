@@ -40,7 +40,6 @@ describe('manifest codegen field', () => {
 				const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
 				const envelope = yield* buildEnvelope({
 					identity: IDENTITY,
-					contributions: [],
 					codegen: { generatedDir: GENERATED_DIR },
 				});
 				// buildEnvelope carries the field into the in-memory envelope.
@@ -62,7 +61,6 @@ describe('manifest codegen field', () => {
 				const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
 				const envelope = yield* buildEnvelope({
 					identity: IDENTITY,
-					contributions: [],
 					// No `codegen` — the additive field must be absent.
 				});
 				// Omitting `codegen` leaves the key off the envelope entirely
@@ -89,7 +87,6 @@ describe('manifest codegen field', () => {
 				const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
 				const envelope = yield* buildEnvelope({
 					identity: IDENTITY,
-					contributions: [],
 				});
 				yield* writeManifest(envelope, manifestPath);
 				const bytes = readFileSync(manifestPath, 'utf8');
@@ -97,10 +94,10 @@ describe('manifest codegen field', () => {
 				// What a pre-`codegen`-feature writer produced for the same
 				// inputs: the exact envelope object minus any codegen key,
 				// serialized with the same 2-space indent the emitter uses.
+				// The writer no longer emits the legacy `services` slot.
 				const preFeature = {
 					identity: IDENTITY,
 					manifestVersion: CURRENT_MANIFEST_VERSION,
-					services: {},
 					endpoints: {},
 					extras: {},
 				};

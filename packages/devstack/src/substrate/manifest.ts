@@ -6,8 +6,8 @@
 // envelope; codegen output carries the typed per-service slice.
 //
 // L0 owns:
-//   - the envelope (identity tuple, manifestVersion, services slot,
-//     endpoints lookup, opaque extras),
+//   - the envelope (identity tuple, manifestVersion, endpoints lookup,
+//     opaque extras),
 //   - the endpoint-declaration shape (decl emitted by Routable; the
 //     manifest writer at L3 walks them).
 
@@ -63,10 +63,7 @@ export interface ManifestCodegen {
 	readonly extrasDir?: string;
 }
 
-/** Manifest envelope. The `services` slot is open (`unknown`) at
- *  the envelope level; each plugin's Codegenable contribution
- *  emits a typed file the consumer imports for the typed shape.
- */
+/** Manifest envelope. */
 export interface ManifestEnvelope {
 	readonly identity: {
 		readonly app: string;
@@ -74,7 +71,11 @@ export interface ManifestEnvelope {
 		readonly chain: string;
 	};
 	readonly manifestVersion: number;
-	readonly services: Readonly<Record<string, unknown>>;
+	/** Legacy per-plugin service slot. The writer no longer emits it,
+	 *  but it stays decodable as optional so an old on-disk manifest
+	 *  (`services: {}`) still reads without a version bump. The read-side
+	 *  build-integration API surfaces `{}` when absent. */
+	readonly services?: Readonly<Record<string, unknown>>;
 	readonly endpoints: Readonly<Record<string, EndpointEntry>>;
 	readonly extras: Readonly<Record<string, unknown>>;
 	/** Per-stack codegen metadata. Optional — absent in older
@@ -158,7 +159,10 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 		chain: Schema.String,
 	}),
 	manifestVersion: Schema.Number,
-	services: Schema.Record(Schema.String, Schema.Unknown),
+	// Optional + back-compat — the writer no longer emits `services`, but
+	// an old on-disk manifest carrying `services: {}` must still decode
+	// without a `manifestVersion` bump.
+	services: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 	endpoints: Schema.Record(
 		Schema.String,
 		Schema.Struct({
