@@ -18,13 +18,7 @@ import {
 	makeProjectionRef,
 	type SupervisedStack,
 } from '../../substrate/runtime/index.ts';
-import {
-	buildProductionContributionDispatcher,
-	buildProductionPostAcquireHook,
-	extendBuiltInPluginContext,
-	layerBuiltInPluginRuntime,
-	superviseStackEffect,
-} from '../../orchestrators/boot.ts';
+import { superviseStackWithProductionBoot } from '../../orchestrators/boot.ts';
 import {
 	SnapshotOrchestratorService,
 	type SnapshotMetadata,
@@ -234,21 +228,22 @@ export const runSnapshotCaptureDirectLoaded = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const contributionDispatcher = yield* buildProductionContributionDispatcher();
-			const postAcquireHook = yield* buildProductionPostAcquireHook({
-				extras: stack.options.extras,
-			});
 			let captureExit: Exit.Exit<void, unknown> = Exit.succeed(undefined);
 			const capturedMeta: { current: SnapshotMetadata | null } = { current: null };
-			yield* superviseStackEffect(
+			// The contribution dispatcher + post-acquire hook + built-in
+			// plugin-context extension are assembled in ONE place
+			// (`orchestrators/boot.ts superviseStackWithProductionBoot`); this
+			// one-shot verb supplies only the per-caller inputs (`extras`,
+			// `lifetime: 'one-shot'`, and the capture `withinScope` hook).
+			// Result semantics are unchanged: the hook still tees the capture
+			// `Exit` + metadata into the closure cells read below.
+			yield* superviseStackWithProductionBoot(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
 				state,
 				{
-					contributionDispatcher,
-					postAcquireHook,
+					extras: stack.options.extras,
 					lifetime: 'one-shot',
-					extendContext: extendBuiltInPluginContext,
 					// Offline one-shot capture: the bounce gather → stop → commit →
 					// retag → hard-rm runs here; NO `resume` is injected because
 					// this supervise scope is `one-shot` (it closes right after) —
@@ -280,7 +275,7 @@ export const runSnapshotCaptureDirectLoaded = (
 							Effect.asVoid,
 						),
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime));
+			);
 			if (Exit.isFailure(captureExit)) {
 				yield* Effect.failCause(captureExit.cause);
 			}

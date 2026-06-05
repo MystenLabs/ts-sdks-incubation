@@ -24,13 +24,7 @@ import {
 	makeProjectionRef,
 	type SupervisedStack,
 } from '../../substrate/runtime/index.ts';
-import {
-	buildProductionContributionDispatcher,
-	buildProductionPostAcquireHook,
-	extendBuiltInPluginContext,
-	layerBuiltInPluginRuntime,
-	superviseStackEffect,
-} from '../../orchestrators/boot.ts';
+import { superviseStackWithProductionBoot } from '../../orchestrators/boot.ts';
 import {
 	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
@@ -140,10 +134,6 @@ export const runApplyLive = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const contributionDispatcher = yield* buildProductionContributionDispatcher();
-			const postAcquireHook = yield* buildProductionPostAcquireHook({
-				extras: stack.options.extras,
-			});
 			const stackPaths = yield* StackPathsService;
 			// Mirror the up-path recovery: resume any restore interrupted by a
 			// hard kill between the atomic swap and the image-promotion handoff
@@ -155,17 +145,22 @@ export const runApplyLive = (
 				liveRoot: stackPaths.stackRoot,
 				restoreSnapshot: (id) => snapshot.restore({ id }),
 			});
-			yield* superviseStackEffect(
+			// The contribution dispatcher + post-acquire hook + built-in
+			// plugin-context extension are assembled in ONE place
+			// (`orchestrators/boot.ts superviseStackWithProductionBoot`); this
+			// one-shot verb supplies only the per-caller inputs (`extras`,
+			// `lifetime: 'one-shot'`). Run-to-completion + result semantics are
+			// unchanged: the surrounding `matchCauseEffect` below still maps the
+			// supervised cause/success onto the `CommandResult`.
+			yield* superviseStackWithProductionBoot(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
 				state,
 				{
-					contributionDispatcher,
-					postAcquireHook,
+					extras: stack.options.extras,
 					lifetime: 'one-shot',
-					extendContext: extendBuiltInPluginContext,
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime));
+			);
 		});
 
 		return yield* program.pipe(

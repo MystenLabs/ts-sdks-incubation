@@ -46,6 +46,11 @@ export type {
 	SupervisorPostAcquireContext,
 	SupervisorPostAcquireHook,
 } from './state.ts';
+// The supervisor-owned readiness signal: `true` once every node is
+// ready-or-terminal (`ready || done`). The one-shot supervise path gates
+// on THIS rather than a per-node `awaitReady` (which hangs on a `done`-
+// status node whose ready-gate is unresolved — the S1 divergence).
+export { allReadyOrTerminal } from './state.ts';
 export { runToShutdown, startSupervisor, supervise } from './start-supervisor.ts';
 export type {
 	SupervisorHandle,

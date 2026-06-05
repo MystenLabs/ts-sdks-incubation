@@ -54,14 +54,10 @@ import type {
 	SupervisorHandle,
 } from '../substrate/runtime/supervisor/index.ts';
 import {
-	buildProductionContributionDispatcher,
-	buildProductionPostAcquireHook,
 	buildSubstrateLayers,
-	extendBuiltInPluginContext,
-	layerBuiltInPluginRuntime,
 	layerProductionOrchestrators,
 	resolveProductionCodegenOptions,
-	superviseStackEffect,
+	superviseStackWithProductionBoot,
 } from '../orchestrators/boot.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
@@ -398,10 +394,6 @@ export const runStackWithBoot = (
 	let publicHandle: RunHandle;
 
 	const supervised = Effect.gen(function* () {
-		const contributionDispatcher = yield* buildProductionContributionDispatcher();
-		const postAcquireHook = yield* buildProductionPostAcquireHook({
-			extras: stack.options.extras,
-		});
 		// Resolve the command-handler FACTORY against the seam's live
 		// substrate (in scope here via `Effect.provide(substrate)` below)
 		// BEFORE `startSupervisor` consumes the handler. The factory closes
@@ -410,17 +402,19 @@ export const runStackWithBoot = (
 		// (R = `never`, as the command loop requires) drives the LIVE state.
 		const commandHandler =
 			opts.commandHandler === undefined ? undefined : yield* opts.commandHandler;
-		yield* superviseStackEffect(supervisedStack, identity, state, {
-			contributionDispatcher,
-			commandHandler,
-			postAcquireHook,
-			extendContext: (ctx) =>
-				Effect.gen(function* () {
-					const builtInContext = yield* extendBuiltInPluginContext(ctx);
-					return opts.extendContext === undefined
-						? builtInContext
-						: yield* opts.extendContext(builtInContext);
-				}),
+		// The shared production-boot assembly (contribution dispatcher +
+		// post-acquire hook + built-in plugin-context extension, then
+		// `layerBuiltInPluginRuntime`) lives in ONE place
+		// (`orchestrators/boot.ts superviseStackWithProductionBoot`). This
+		// seam supplies only the LONG-RUNNING-specific wrapping: the
+		// resolved command handler, the public `runStack({ extendContext })`
+		// chained after the built-in, and the composed boot hooks below.
+		yield* superviseStackWithProductionBoot(supervisedStack, identity, state, {
+			extras: stack.options.extras,
+			...(commandHandler === undefined ? {} : { commandHandler }),
+			...(opts.extendContext === undefined
+				? {}
+				: { extendContextAfterBuiltIn: opts.extendContext }),
 			// ── COMPOSED `beforeInitialAcquire` (ONE ordered gen) ──────────
 			// ORDER (PR#21-load-bearing): BUILT-IN work first, THEN caller.
 			//   1. built-in: event-queue handoff + runCommand surface +
@@ -535,7 +529,7 @@ export const runStackWithBoot = (
 						yield* opts.boot.withinScope(buildInternalHandle(publicHandle, handle));
 					}
 				}),
-		}).pipe(Effect.provide(layerBuiltInPluginRuntime));
+		});
 	});
 
 	const loggerLayer = Logger.layer([]);
