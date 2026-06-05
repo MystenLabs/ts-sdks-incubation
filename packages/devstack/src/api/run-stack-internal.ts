@@ -35,10 +35,12 @@ import {
 	Effect,
 	Exit,
 	Fiber,
+	type FileSystem,
 	Layer,
 	Logger,
 	Queue,
 	Ref,
+	type Scope,
 	Stream,
 } from 'effect';
 
@@ -46,6 +48,8 @@ import { appName, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
 import type { EngineCommand, EngineEvent } from '../substrate/events.ts';
 import { makeProjectionRefSync } from '../substrate/runtime/index.ts';
+import type { StackPathsService } from '../substrate/runtime/paths.ts';
+import type { SnapshotOrchestratorService } from '../orchestrators/snapshot/index.ts';
 import type {
 	SupervisorCommandHandler,
 	SupervisorHandle,
@@ -92,16 +96,39 @@ export interface InternalRunHandle extends RunHandle {
 	readonly supervisor: SupervisorHandle;
 }
 
+/** The substrate services the seam already has in scope when it runs the
+ *  caller hooks (the composed `beforeInitialAcquire`/`withinScope` run
+ *  inside `superviseStackEffect`, which is `Effect.provide(substrate)`).
+ *  The bag hooks may yield these directly — the CLI `up` hooks drive the
+ *  ONE `SnapshotOrchestratorService` instance the supervisor's contribution
+ *  dispatcher registers participants on (so an operator `snapshot save`
+ *  captures the LIVE participant set, not an empty one off a sibling
+ *  orchestrator), plus `FileSystem`/`StackPathsService` for the warm +
+ *  interrupted-restore + roster paths. `Scope.Scope` lets a hook fork
+ *  scoped fibers (the IPC pump, the TUI mount) onto the supervised scope.
+ *  NON-PUBLIC: like `InternalRunHandle`, this never reaches the public
+ *  `runStack` facade. */
+export type BootHookServices =
+	| Scope.Scope
+	| SnapshotOrchestratorService
+	| FileSystem.FileSystem
+	| StackPathsService;
+
 /** Caller-injected boot hooks. Both run AFTER their built-in counterpart
  *  (see the PR#21 ordering note at the top of this file). Their failures
  *  fold into `BootError.cause` via the same `catchCause` tee the built-in
  *  work uses, so `handle.start` stays `Effect<void, BootError, never>` —
- *  the bag does NOT widen the public error channel. */
+ *  the bag does NOT widen the public error channel. The R-channel is
+ *  `BootHookServices` (substrate services the seam already provides), NOT
+ *  `never`: the hooks run inside the supervised scope and may drive the
+ *  seam's live substrate (notably the supervisor's snapshot orchestrator). */
 export interface RunStackBootBag {
 	readonly beforeInitialAcquire?: (
 		handle: InternalRunHandle,
-	) => Effect.Effect<void, unknown, never>;
-	readonly withinScope?: (handle: InternalRunHandle) => Effect.Effect<void, unknown, never>;
+	) => Effect.Effect<void, unknown, BootHookServices>;
+	readonly withinScope?: (
+		handle: InternalRunHandle,
+	) => Effect.Effect<void, unknown, BootHookServices>;
 }
 
 /** `RunStackOptions` plus the non-public injection points. `commandHandler`
