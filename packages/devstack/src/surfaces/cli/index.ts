@@ -19,7 +19,13 @@ import { readFileSync } from 'node:fs';
 
 import { commandSchema } from './command-tree.ts';
 import { type CliError, CliInternalError, CliUsageError, exitCodeFor } from './errors.ts';
-import { type CliRendererMode, ENV_VARS, type GlobalFlags, type OutputMode } from './flags.ts';
+import {
+	type CliRendererMode,
+	ENV_VARS,
+	type GlobalFlags,
+	type OutputMode,
+	type SnapshotStalePolicy,
+} from './flags.ts';
 import { ExitCode } from './sysexits.ts';
 import { parseDevstackNetworkName } from '../../api/inference-network.ts';
 import { type CliIO, emitFailure, emitSuccess, nodeProcessIO } from './output.ts';
@@ -173,7 +179,8 @@ interface ConfigFlags extends IdentityFlags {
 
 interface UpFlags extends ConfigFlags {
 	readonly renderer?: CliRendererMode;
-	readonly warm?: boolean;
+	readonly fromSnapshot?: string;
+	readonly snapshotStale?: SnapshotStalePolicy;
 }
 
 interface DestructiveFlags extends IdentityFlags {
@@ -271,6 +278,7 @@ const pruneFlagParams = {
 } as const;
 
 const rendererParser = buildChoiceParser(['tui', 'plain', 'silent'] as const);
+const snapshotStaleParser = buildChoiceParser(['warn', 'block', 'clean-start'] as const);
 
 const outputModeFrom = (
 	flags: Pick<IdentityFlags, 'json'>,
@@ -317,7 +325,8 @@ const makeGlobalFlags = (
 		configPath: optionalEnv(flags.config, ctx.env, ENV_VARS.CONFIG_PATH),
 		network,
 		renderer: flags.renderer,
-		warm: flags.warm,
+		fromSnapshot: flags.fromSnapshot,
+		snapshotStalePolicy: flags.snapshotStale,
 		dryRun: flags.dryRun === true,
 		confirm: {
 			assumeYes: flags.yes === true,
@@ -467,9 +476,14 @@ const upCommand = buildCommand<UpFlags, [], DevstackCliContext>({
 				placeholder: 'tui|plain|silent',
 				brief: 'Select the attached renderer',
 			},
-			warm: boolFlag(
-				'Warm boot: restore a fingerprinted baseline snapshot when inputs are unchanged, else cold-boot and capture one',
-			),
+			fromSnapshot: stringFlag('Start by restoring a named snapshot before acquire', 'name-or-id'),
+			snapshotStale: {
+				kind: 'parsed',
+				parse: snapshotStaleParser,
+				optional: true,
+				placeholder: 'warn|block|clean-start',
+				brief: 'Policy when --from-snapshot inputs differ from the current stack',
+			},
 		},
 	},
 	docs: {

@@ -217,21 +217,27 @@ describe('account signer variant surface', () => {
 		expect(member.dependsOn.map((dependency) => dependency.id)).toEqual(['sui', deep.id, dex.id]);
 	});
 
-	it('declares warm inputs for default and explicit funding', () => {
+	it('declares input identity for default and explicit funding', () => {
 		const deep = coin.known(DEEPBOOK_TESTNET_DEEP_COIN_TYPE);
 		const dex = deepbook({ mode: 'known', network: 'testnet' });
 
-		expect(account('alice').warmInputs).toEqual({
-			plugin: 'account',
-			name: 'alice',
-			variant: { kind: 'ephemeral' },
-			funding: [{ coin: 'sui', amountMist: '1000000000' }],
+		expect(account('alice').inputIdentity).toEqual({
+			kind: 'static',
+			value: {
+				plugin: 'account',
+				name: 'alice',
+				variant: { kind: 'ephemeral' },
+				funding: [{ coin: 'sui', amountMist: '1000000000' }],
+			},
 		});
-		expect(account('alice', { kind: 'ephemeral', funding: [] }).warmInputs).toEqual({
-			plugin: 'account',
-			name: 'alice',
-			variant: { kind: 'ephemeral' },
-			funding: [],
+		expect(account('alice', { kind: 'ephemeral', funding: [] }).inputIdentity).toEqual({
+			kind: 'static',
+			value: {
+				plugin: 'account',
+				name: 'alice',
+				variant: { kind: 'ephemeral' },
+				funding: [],
+			},
 		});
 		expect(
 			account('alice', {
@@ -240,26 +246,32 @@ describe('account signer variant surface', () => {
 					{ coin: 'sui', amount: 10_000_000_000n },
 					{ coin: deep, amount: 15_000_000n, via: dex },
 				],
-			}).warmInputs,
+			}).inputIdentity,
 		).toEqual({
-			plugin: 'account',
-			name: 'alice',
-			variant: { kind: 'ephemeral' },
-			funding: [
-				{ coin: 'sui', amountMist: '10000000000' },
-				{ coin: deep.id, amountMist: '15000000', via: [dex.id] },
-			],
+			kind: 'static',
+			value: {
+				plugin: 'account',
+				name: 'alice',
+				variant: { kind: 'ephemeral' },
+				funding: [
+					{ coin: 'sui', amountMist: '10000000000' },
+					{ coin: deep.id, amountMist: '15000000', via: [dex.id] },
+				],
+			},
 		});
 	});
 
-	it('declares signer identity in warm inputs', () => {
+	it('declares signer identity in input identity', () => {
 		const signer = Ed25519Keypair.generate();
 
-		expect(account('prod', { kind: 'signer', signer }).warmInputs).toEqual({
-			plugin: 'account',
-			name: 'prod',
-			variant: { kind: 'signer', address: signer.toSuiAddress() },
-			funding: [],
+		expect(account('prod', { kind: 'signer', signer }).inputIdentity).toEqual({
+			kind: 'static',
+			value: {
+				plugin: 'account',
+				name: 'prod',
+				variant: { kind: 'signer', address: signer.toSuiAddress() },
+				funding: [],
+			},
 		});
 	});
 });

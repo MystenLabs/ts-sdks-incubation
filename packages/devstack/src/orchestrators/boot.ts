@@ -222,6 +222,7 @@ const buildPluginContext = (): Effect.Effect<
  *  the supervisor-boot site. */
 export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never, HookE = never> {
 	readonly lifetime?: 'long-running' | 'one-shot';
+	readonly devstackVersion?: string;
 	readonly beforeInitialAcquire?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
 	readonly withinScope?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
 	readonly commandHandler?: SupervisorCommandHandler;
@@ -262,7 +263,12 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
 					opts.contributionDispatcher,
 					opts.commandHandler,
 					opts.postAcquireHook,
-					{ commandLoop: opts.lifetime !== 'one-shot' },
+					{
+						commandLoop: opts.lifetime !== 'one-shot',
+						...(opts.devstackVersion === undefined
+							? {}
+							: { devstackVersion: opts.devstackVersion }),
+					},
 				);
 				const { handle } = startup;
 				if (opts.beforeInitialAcquire !== undefined) {
@@ -813,6 +819,7 @@ export interface ProductionBootOptions<HookR = Scope.Scope, HookE = never, Exten
 	/** `'one-shot'` runs the acquire/codegen cycle then returns; the default
 	 *  `'long-running'` supervises until shutdown. */
 	readonly lifetime?: 'long-running' | 'one-shot';
+	readonly devstackVersion?: string;
 	/** Threaded into `buildProductionPostAcquireHook` — the stack's manifest
 	 *  `extras`. All three callers pass `stack.options.extras`. */
 	readonly extras?: ManifestExtrasInput;
@@ -870,6 +877,7 @@ export const superviseStackWithProductionBoot = <
 			contributionDispatcher,
 			postAcquireHook,
 			...(opts.lifetime === undefined ? {} : { lifetime: opts.lifetime }),
+			...(opts.devstackVersion === undefined ? {} : { devstackVersion: opts.devstackVersion }),
 			...(opts.commandHandler === undefined ? {} : { commandHandler: opts.commandHandler }),
 			...(opts.beforeInitialAcquire === undefined
 				? {}

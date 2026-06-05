@@ -35,6 +35,8 @@ import {
 	IdentityEmptyError,
 	SnapshotLayout,
 	SNAPSHOT_CONTRIBUTION_VERSION,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
+	SNAPSHOT_META_VERSION,
 	containerImagesBundlePath,
 	contributionPath,
 	resumeAfterCapture,
@@ -53,6 +55,12 @@ import {
 
 const TEMP_PREFIX = 'snapshot-capture-test';
 const imageBundlePath = containerImagesBundlePath();
+
+const graphInput = {
+	version: SNAPSHOT_GRAPH_INPUT_VERSION,
+	graphInputId: 'graph-fixture',
+	nodes: [],
+} as const;
 
 const label = (role: string): ContainerLabelTuple => ({
 	app: 'capture-app',
@@ -156,6 +164,7 @@ const runCaptureExit = (
 			app: 'capture-app',
 			stack: 'main',
 			network: 'sui:local',
+			graphInput,
 			runtimeStackRoot: join(root, 'runtime-stack'),
 			participants,
 			runtime,
@@ -670,6 +679,7 @@ describe('snapshot capture container images', () => {
 									app: stackTag,
 									stack: 'main',
 									network: 'sui:local',
+									graphInput,
 									runtimeStackRoot: join(root, `runtime-stack-${stackTag}`),
 									participants: [participant(['db'])],
 									runtime,
@@ -926,13 +936,14 @@ describe('snapshot capture container images', () => {
 // start) — symmetric with restore's retag-to-original + hard-rm + converge.
 describe('resumeAfterCapture — retag + hard-rm + resume', () => {
 	const meta = (containers: SnapshotMetadata['containers']): SnapshotMetadata => ({
-		version: 3,
+		version: SNAPSHOT_META_VERSION,
 		id: snapshotIdFromString('snap-resume'),
 		label: null,
 		createdAt: 0,
 		app: 'capture-app',
 		stack: 'main',
 		network: 'sui:local',
+		graphInput,
 		hostTreeIncluded: false,
 		subtrees: [],
 		containers,

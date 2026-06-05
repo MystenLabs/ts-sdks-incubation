@@ -111,6 +111,7 @@ export interface SupervisorStartup {
 
 export interface SupervisorStartupOptions {
 	readonly commandLoop?: boolean;
+	readonly devstackVersion?: string;
 	/** Per-service log-store tuning. Absent fields fall back to the
 	 *  `DEVSTACK_DASHBOARD_LOG_*` env vars, then the module defaults
 	 *  (2000 records/service, 256 services). Threaded into the
@@ -283,6 +284,8 @@ export const startSupervisor = (
 		const controlPlaneDomain = controlPlaneDomainFromContext({
 			pluginContext,
 			graph,
+			stackOptions: stack.options,
+			devstackVersion: options.devstackVersion ?? null,
 			registry,
 			logStore,
 		});

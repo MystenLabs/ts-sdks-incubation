@@ -2,8 +2,7 @@
 //
 // `cli/wirings/up.ts` no longer forks its own parallel supervised boot; it
 // builds its CLI concerns (the snapshot/wipe/prune `commandHandler` + the
-// recover→warm→IPC→roster→TUI `beforeInitialAcquire` hook + the warm-capture
-// `withinScope` hook) as a VALUE bundle via `buildUpBootBundle` and feeds them
+// recover→IPC→roster→TUI `beforeInitialAcquire` hook) as a VALUE bundle and feeds them
 // to the ONE boot seam, `runStackWithBoot`. `test/cli/main.test.ts` only runs
 // `up --help` — it never boots a supervisor — so this is the actual regression
 // gate that the cutover preserves the load-bearing CLI boot behavior.
@@ -71,7 +70,7 @@ const runFs = <A>(effect: Effect.Effect<A, unknown, FileSystem.FileSystem>): Pro
 	);
 
 /** The `ResolvedIdentity`-derived `Identity` the bundle threads into the
- *  roster/channel/warm paths — built the same way the CLI does. */
+ *  roster/channel paths — built the same way the CLI does. */
 const identityValue = identityValueFor({
 	app: APP,
 	stack: STACK,
@@ -82,8 +81,7 @@ const identityValue = identityValueFor({
 	rosterFile: '',
 });
 
-/** A minimal `SupervisedStack` shape the bundle only reads under `--warm`
- *  (gated off here), so its members/options are inert for this gate. */
+/** A minimal `SupervisedStack` shape for bundle construction. */
 const inertStack: SupervisedStack = {
 	_tag: 'Stack',
 	members: [],
@@ -98,9 +96,6 @@ const makeBundle = (runtimeRoot: string) =>
 		devstackVersion: '0.0.0-smoke',
 		// `plain` so `makeTuiSurface` never reaches for a TTY in CI.
 		rendererMode: 'plain',
-		// Warm OFF: the warm hooks are out of scope for this smoke gate (they
-		// have e2e coverage); keep the boot path cold + Docker-free.
-		warmEnabled: false,
 	});
 
 describe('cli/up boot smoke (Docker-free)', () => {

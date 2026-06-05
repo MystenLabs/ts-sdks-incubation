@@ -53,6 +53,7 @@ import {
 	type CapturedSubtree,
 	type ContributionDoc,
 	type IdentitySlice,
+	type SnapshotGraphInputIdentity,
 	type SnapshotMetadata,
 	type SnapshotId,
 	SNAPSHOT_META_VERSION,
@@ -536,6 +537,7 @@ export interface CaptureInputs {
 	readonly app: string;
 	readonly stack: string;
 	readonly network: string;
+	readonly graphInput: SnapshotGraphInputIdentity;
 	readonly runtimeStackRoot: string;
 	readonly participants: ReadonlyArray<SnapshotParticipant>;
 	readonly runtime: ContainerRuntime;
@@ -702,6 +704,7 @@ export const runCapture = (
 					app: inputs.app,
 					stack: inputs.stack,
 					network: inputs.network,
+					graphInput: inputs.graphInput,
 					hostTreeIncluded,
 					subtrees,
 					containers: capturedContainers,

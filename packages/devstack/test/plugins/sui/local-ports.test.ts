@@ -282,6 +282,7 @@ describe('Sui local port mapping', () => {
 				expect(specs).toHaveLength(1);
 				expect(specs[0]?.recreate).toBe('on-failure');
 				expect(specs[0]?.stopGraceSeconds).toBe(LOCAL_VALIDATOR_STOP_GRACE_SECONDS);
+				expect(specs[0]?.stopSignal).toBe('SIGINT');
 				// External indexer: join the postgres network + hand the DSN
 				// to the entrypoint.
 				expect(specs[0]?.networkAttach).toEqual([TEST_INDEXER.network]);

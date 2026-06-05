@@ -97,6 +97,9 @@ export interface EnsureContainerSpec {
 	 *  with RocksDB/WAL-backed data should request enough time to flush
 	 *  cleanly; the runtime default is 10 seconds. */
 	readonly stopGraceSeconds?: number;
+	/** Optional signal for the scope finalizer's `docker stop` call.
+	 *  Omit to use Docker's image/default stop signal. */
+	readonly stopSignal?: string;
 	/** How published host ports participate in existing-container
 	 *  reconciliation. Default `exact` treats a binding mismatch as
 	 *  config drift. `adopt-existing` lets a same-name, image-matching

@@ -10,8 +10,8 @@
 // Why a seam at all: the CLI `up` verb needs the SAME substrate Layer
 // composition + supervised body `runStack` builds, but wrapped with extra
 // `beforeInitialAcquire`/`withinScope` work (interrupted-restore recovery,
-// warm capture/restore, the roster lock, the command-channel IPC bridge, the
-// TUI surface). `runStackWithBoot` threads those as CALLER-INJECTED hooks so
+// the roster lock, the command-channel IPC bridge, and the TUI surface).
+// `runStackWithBoot` threads those as CALLER-INJECTED hooks so
 // the CLI consumes ONE boot core instead of forking it. Because the bag is
 // non-public, its hooks receive an `InternalRunHandle` that additionally
 // carries the live `SupervisorHandle` (the seam the CLI hooks drain) —
@@ -25,7 +25,7 @@
 // the whole composed `beforeInitialAcquire` ahead of `runInitialAcquire`).
 // For `withinScope` the built-in readiness-gate resolution (the status
 // scan that resolves `bootDeferred`) runs first, so a caller `withinScope`
-// (e.g. warm-capture) can never delay `handle.start`.
+// can never delay `handle.start`.
 
 import {
 	Cause,
@@ -98,7 +98,7 @@ export interface InternalRunHandle extends RunHandle {
  *  ONE `SnapshotOrchestratorService` instance the supervisor's contribution
  *  dispatcher registers participants on (so an operator `snapshot save`
  *  captures the LIVE participant set, not an empty one off a sibling
- *  orchestrator), plus `FileSystem`/`StackPathsService` for the warm +
+ *  orchestrator), plus `FileSystem`/`StackPathsService` for the
  *  interrupted-restore + roster paths. `Scope.Scope` lets a hook fork
  *  scoped fibers (the IPC pump, the TUI mount) onto the supervised scope.
  *  NON-PUBLIC: like `InternalRunHandle`, this never reaches the public
@@ -118,6 +118,7 @@ export type BootHookServices =
  *  `never`: the hooks run inside the supervised scope and may drive the
  *  seam's live substrate (notably the supervisor's snapshot orchestrator). */
 export interface RunStackBootBag {
+	readonly devstackVersion?: string;
 	readonly beforeInitialAcquire?: (
 		handle: InternalRunHandle,
 	) => Effect.Effect<void, unknown, BootHookServices>;
@@ -411,6 +412,9 @@ export const runStackWithBoot = (
 		// chained after the built-in, and the composed boot hooks below.
 		yield* superviseStackWithProductionBoot(supervisedStack, identity, state, {
 			extras: stack.options.extras,
+			...(opts.boot?.devstackVersion === undefined
+				? {}
+				: { devstackVersion: opts.boot.devstackVersion }),
 			...(commandHandler === undefined ? {} : { commandHandler }),
 			...(opts.extendContext === undefined
 				? {}
@@ -421,8 +425,8 @@ export const runStackWithBoot = (
 			//      command-pump fork + stop-bridge fork.
 			//   2. caller: `opts.boot?.beforeInitialAcquire(...)`.
 			// `superviseStackEffect` runs this whole composed effect BEFORE
-			// `runInitialAcquire`, so the caller hook (the CLI's recover/warm/
-			// roster/IPC/TUI bundle) runs before first acquire too; and because
+				// `runInitialAcquire`, so the caller hook (the CLI's recover/
+				// roster/IPC/TUI bundle) runs before first acquire too; and because
 			// the built-in stop-bridge is armed first, a `stop()` raised during
 			// a caller hook always has a command bridge.
 			beforeInitialAcquire: (handle) =>
@@ -472,8 +476,8 @@ export const runStackWithBoot = (
 			// ORDER: BUILT-IN readiness-gate resolution first, THEN caller.
 			//   1. built-in: the status scan that resolves `bootDeferred`.
 			//   2. caller: `opts.boot?.withinScope(...)`.
-			// Resolving the gate first means a caller `withinScope` (e.g.
-			// warm-capture) can never delay `handle.start`.
+				// Resolving the gate first means a caller `withinScope` can never
+				// delay `handle.start`.
 			withinScope: (handle) =>
 				// Resolve the boot gate from the SUPERVISOR-OWNED readiness
 				// signal. `superviseStackEffect` only calls `withinScope`

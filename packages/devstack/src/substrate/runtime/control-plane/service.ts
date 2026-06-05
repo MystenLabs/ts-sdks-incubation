@@ -41,6 +41,10 @@ export interface ControlPlaneSnapshotEntry {
 	readonly app: string | null;
 	readonly stack: string | null;
 	readonly network: string | null;
+	readonly snapshotGraphInputId: string | null;
+	readonly currentGraphInputId: string | null;
+	readonly graphInputStatus: 'matching' | 'stale' | 'unknown';
+	readonly graphInputWarning: string | null;
 	readonly participants: ReadonlyArray<string>;
 	readonly containerCount: number;
 	readonly subtreeCount: number;

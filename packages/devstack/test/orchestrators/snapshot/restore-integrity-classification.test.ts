@@ -18,6 +18,7 @@ import type {
 import {
 	RestorePhaseError,
 	runRestore,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	SnapshotLayout,
 	snapshotIdFromString,
@@ -52,6 +53,11 @@ const metadata = (): SnapshotMetadata => ({
 	app: runtimeIdentity.app,
 	stack: runtimeIdentity.stack,
 	network: runtimeIdentity.network,
+	graphInput: {
+		version: SNAPSHOT_GRAPH_INPUT_VERSION,
+		graphInputId: 'graph-fixture',
+		nodes: [],
+	},
 	hostTreeIncluded: false,
 	subtrees: [],
 	containers: [],

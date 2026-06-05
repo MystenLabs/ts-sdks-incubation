@@ -1,10 +1,8 @@
 // Runtime invalidation tracker.
 //
 // The tracker is intentionally substrate-level: low-level cache and container
-// decisions record when they had to produce/recreate state, while warm boot
-// reads the same tracker after acquire to decide whether a restored baseline
-// must be re-captured. It is optional for callers; outside a supervised boot the
-// helper functions are no-ops.
+// decisions record when they had to produce/recreate state. It is optional for
+// callers; outside a supervised boot the helper functions are no-ops.
 
 import { Context, Effect, Layer, Option, Ref } from 'effect';
 
@@ -34,7 +32,6 @@ export type RuntimeInvalidationReason =
 export interface RuntimeInvalidationTracker {
 	readonly record: (reason: RuntimeInvalidationReason) => Effect.Effect<void>;
 	readonly reasons: Effect.Effect<ReadonlyArray<RuntimeInvalidationReason>>;
-	readonly isDirty: Effect.Effect<boolean>;
 }
 
 export class RuntimeInvalidationTrackerService extends Context.Service<
@@ -48,7 +45,6 @@ export const makeRuntimeInvalidationTracker = (): Effect.Effect<RuntimeInvalidat
 		return {
 			record: (reason) => Ref.update(ref, (reasons) => [...reasons, reason]),
 			reasons: Ref.get(ref),
-			isDirty: Ref.get(ref).pipe(Effect.map((reasons) => reasons.length > 0)),
 		};
 	});
 
@@ -63,9 +59,3 @@ export const recordRuntimeInvalidation = (reason: RuntimeInvalidationReason): Ef
 			yield* tracker.value.record(reason);
 		}
 	});
-
-export const runtimeInvalidationDirty: Effect.Effect<boolean> = Effect.gen(function* () {
-	const tracker = yield* Effect.serviceOption(RuntimeInvalidationTrackerService);
-	if (Option.isNone(tracker)) return false;
-	return yield* tracker.value.isDirty;
-});

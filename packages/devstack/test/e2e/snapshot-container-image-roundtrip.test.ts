@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ContainerLabelTuple } from '../../src/contracts/snapshotable.ts';
 import {
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	resumeAfterCapture,
 	runCapture,
 	runRestore,
@@ -18,6 +19,12 @@ import { appName, stackName } from '../../src/substrate/brand.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
 import { dockerReachable, dockerSpawnSync, pruneManagedImagesForApp } from './docker-prune.ts';
+
+const graphInput = {
+	version: SNAPSHOT_GRAPH_INPUT_VERSION,
+	graphInputId: 'graph-fixture',
+	nodes: [],
+} as const;
 
 const docker = (args: ReadonlyArray<string>, timeout = 60_000): SpawnSyncReturns<string> =>
 	dockerSpawnSync(args, { timeout });
@@ -147,6 +154,7 @@ describe('snapshot container image roundtrip', () => {
 							app,
 							stack,
 							network: 'sui:local',
+							graphInput,
 							runtimeStackRoot: paths.stackRoot,
 							participants: [participant],
 							runtime,

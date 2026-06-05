@@ -21,6 +21,7 @@ import {
 	RestorePhaseError,
 	runRestore,
 	SNAPSHOT_CONTRIBUTION_VERSION,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	SnapshotLayout,
 	containerImagesBundlePath,
@@ -69,6 +70,11 @@ const metadata = (overrides: Partial<SnapshotMetadata> = {}): SnapshotMetadata =
 	app: runtimeIdentity.app,
 	stack: runtimeIdentity.stack,
 	network: runtimeIdentity.network,
+	graphInput: {
+		version: SNAPSHOT_GRAPH_INPUT_VERSION,
+		graphInputId: 'graph-fixture',
+		nodes: [],
+	},
 	hostTreeIncluded: false,
 	subtrees: [],
 	containers: [],
@@ -239,6 +245,10 @@ const runRestoreExit = (
 	sweepCalls: Array<Partial<ContainerLabelTuple>>,
 	runtime: ContainerRuntime = runtimeStub(sweepCalls),
 	participants: ReadonlyArray<RestoreParticipant> = restoreIdentityParticipants(),
+	graphInputCheck?: {
+		readonly currentGraphInput: SnapshotMetadata['graphInput'];
+		readonly graphInputMismatchPolicy: 'warn' | 'block';
+	},
 ) =>
 	Effect.gen(function* () {
 		seedDeployCacheAt(join(root, 'runtime-stack'));
@@ -254,11 +264,50 @@ const runRestoreExit = (
 				participants,
 				runtime,
 				runtimeIdentity: identity,
+				...(graphInputCheck ?? {}),
 			}),
 		);
 	});
 
 describe('snapshot restore safety', () => {
+	it.effect('blocks graph input mismatches before filesystem or container mutation', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const meta = metadata();
+				const exit = yield* runRestoreExit(
+					root,
+					meta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls),
+					restoreIdentityParticipants(),
+					{
+						currentGraphInput: {
+							version: SNAPSHOT_GRAPH_INPUT_VERSION,
+							graphInputId: 'different-graph',
+							nodes: [],
+						},
+						graphInputMismatchPolicy: 'block',
+					},
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value instanceof RestorePhaseError) {
+						expect(error.value.phase).toBe('graph-input-mismatch');
+					}
+				}
+				expect(sweepCalls).toEqual([]);
+				expect(existsSync(join(root, 'runtime-stack.bak'))).toBe(false);
+				expect(existsSync(join(root, 'runtime-stack.staging'))).toBe(false);
+			}),
+		),
+	);
+
 	it.effect('refuses mismatched metadata runtime identity before cleanup', () =>
 		Effect.gen(function* () {
 			const fields: ReadonlyArray<keyof SnapshotRuntimeIdentity> = ['app', 'stack', 'network'];
@@ -345,16 +394,12 @@ describe('snapshot restore safety', () => {
 	// -------------------------------------------------------------------------
 	// Boot-time / offline restore — NO live participants.
 	//
-	// The warm-boot hook, the interrupted-restore recovery, and the offline CLI
-	// verb all run restore BEFORE the supervisor registers any snapshot
-	// participant, so `participants === []`. The bug these pin: a
-	// participants-required contribution guard compared `meta.identity` against
-	// an empty live slice and ALWAYS failed `IdentityMissingLive`, which
-	// silently degraded `--warm` to cold and wedged the interrupted-restore
-	// recovery forever. The contract: with no live stack the cross-plugin
-	// contribution guard is SKIPPED (vacuously satisfied), but the runtime
-	// guard (app/stack/network) and the snapshot-side emptiness refusal STILL
-	// fire.
+		// Startup restore, interrupted-restore recovery, and the offline CLI verb
+		// all run restore BEFORE the supervisor registers any snapshot participant,
+		// so `participants === []`. The contract: with no live stack the
+		// cross-plugin contribution guard is SKIPPED (vacuously satisfied), but
+		// the runtime guard (app/stack/network) and the snapshot-side emptiness
+		// refusal STILL fire.
 	// -------------------------------------------------------------------------
 
 	it.effect('boot-time restore (no live participants) clears the contribution guard', () =>

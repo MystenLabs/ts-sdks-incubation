@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 
-import { Cause, Effect, Exit, FileSystem, Queue, Ref, Scope, Stream } from 'effect';
+import { Cause, Effect, Exit, FileSystem, Queue, Scope, Stream } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
 import type { EngineEvent } from '../../substrate/events.ts';
@@ -34,11 +34,10 @@ import {
 	runLifecyclePrune,
 } from '../../orchestrators/lifecycle-prune/index.ts';
 import {
+	computeSnapshotGraphInputFromStack,
 	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
 } from '../../orchestrators/snapshot/index.ts';
-import { computeWarmFingerprint } from '../../orchestrators/warm/fingerprint.ts';
-import { runWarmCapture, runWarmRestore } from '../../orchestrators/warm/hooks.ts';
 import type { Stack } from '../../api/define-devstack.ts';
 import {
 	runStackWithBoot,
@@ -49,7 +48,9 @@ import type { BootError } from '../../api/run-stack.ts';
 import {
 	type CliError,
 	CliInternalError,
+	CliSnapshotNotFoundError,
 	CliSupervisorLiveError,
+	CliUsageError,
 	type GlobalFlags,
 } from '../../surfaces/cli/index.ts';
 import type { CommandResult } from '../../surfaces/cli/commands/index.ts';
@@ -60,6 +61,7 @@ import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts'
 import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from '../up-lifecycle.ts';
 import { makeConfigLoader } from './config-loader.ts';
+import { makeSnapshotReader } from '../snapshot-reader.ts';
 import {
 	findCliSupervisorLiveError,
 	identityValueFor,
@@ -89,10 +91,16 @@ const rosterPathsFor = (stackRoot: string) => ({
  *  `startSupervisor` consumes the handler. */
 const makeSnapshotCommandHandler = (params: {
 	readonly runtimeRoot: string;
+	readonly stack: SupervisedStack;
+	readonly devstackVersion: string;
 }): CommandHandlerFactory =>
 	Effect.gen(function* () {
 		const snapshot = yield* SnapshotOrchestratorService;
 		const fs = yield* FileSystem.FileSystem;
+		const computeGraphInput = computeSnapshotGraphInputFromStack({
+			stack: params.stack,
+			devstackVersion: params.devstackVersion,
+		});
 		const handler: SupervisorCommandHandler = (cmd) => {
 			switch (cmd.tag) {
 				case 'snapshot.capture':
@@ -102,10 +110,15 @@ const makeSnapshotCommandHandler = (params: {
 					// graph), mirroring restore. So no `resume` is injected here.
 					return provideFileSystem(
 						fs,
-						snapshot.capture({
-							id: cmd.snapshotId,
-							...(cmd.name === undefined ? {} : { label: cmd.name }),
-						}),
+						computeGraphInput.pipe(
+							Effect.flatMap((graphInput) =>
+								snapshot.capture({
+									id: cmd.snapshotId,
+									...(cmd.name === undefined ? {} : { label: cmd.name }),
+									graphInput,
+								}),
+							),
+						),
 					).pipe(
 						Effect.map((meta) => [
 							{
@@ -117,7 +130,18 @@ const makeSnapshotCommandHandler = (params: {
 						]),
 					);
 				case 'snapshot.restore':
-					return provideFileSystem(fs, snapshot.restore({ id: cmd.snapshotId })).pipe(
+					return provideFileSystem(
+						fs,
+						computeGraphInput.pipe(
+							Effect.flatMap((currentGraphInput) =>
+								snapshot.restore({
+									id: cmd.snapshotId,
+									currentGraphInput,
+									graphInputMismatchPolicy: 'warn',
+								}),
+							),
+						),
+					).pipe(
 						Effect.map((meta) => [
 							{
 								tag: 'snapshot.restored',
@@ -198,7 +222,10 @@ export interface UpBootBundleInput {
 	readonly runtimeRoot: string;
 	readonly devstackVersion: string;
 	readonly rendererMode: import('../../surfaces/tui/mode-detect.ts').RendererMode;
-	readonly warmEnabled: boolean;
+	readonly startFromSnapshot?: {
+		readonly id: string;
+		readonly stalePolicy: 'warn' | 'block' | 'clean-start';
+	};
 }
 
 export interface UpBootBundle {
@@ -206,11 +233,12 @@ export interface UpBootBundle {
 	readonly boot: RunStackBootBag;
 }
 
+type StartFromSnapshot = NonNullable<UpBootBundleInput['startFromSnapshot']>;
+
 /**
  * Build the CLI's boot concerns as a VALUE bundle the seam consumes — the
  * snapshot/wipe/prune `commandHandler` plus the `beforeInitialAcquire`
- * (recover → warm-restore → IPC bridge → roster claim → TUI mount + event
- * tee, in that PR#21 order) and `withinScope` (warm-capture) hooks. Pure
+ * (recover → IPC bridge → roster claim → TUI mount + event tee). Pure
  * value construction: no substrate is touched here; the hooks pull the
  * SEAM's substrate services at boot (they run inside the supervised scope).
  *
@@ -219,18 +247,16 @@ export interface UpBootBundle {
  * non-e2e gate on the cutover (`main.test.ts` only runs `up --help`).
  */
 export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
-	const { stack, identityValue, runtimeRoot, devstackVersion, rendererMode, warmEnabled } = input;
+	const {
+		stack,
+		identityValue,
+		runtimeRoot,
+		devstackVersion,
+		rendererMode,
+		startFromSnapshot,
+	} = input;
 
-	// Warm-baseline state shared between the two boot hooks:
-	// `beforeInitialAcquire` (warm-restore) sets `warmRestored` when it
-	// restores the baseline and records the computed `warmFingerprint`;
-	// `withinScope` (baseline-capture) reads both to decide whether to
-	// capture, and reuses the fingerprint for the sidecar write. Both Refs
-	// are allocated synchronously here so the two hook closures — passed as
-	// values to `runStackWithBoot` — observe the same cells. (`Ref.make` is
-	// a pure sync effect; `runSync` is safe.)
-	const warmRestored = Effect.runSync(Ref.make(false));
-	const warmFingerprint = Effect.runSync(Ref.make<string | null>(null));
+	const computeGraphInput = computeSnapshotGraphInputFromStack({ stack, devstackVersion });
 
 	// The snapshot/wipe/prune `commandHandler` — a FACTORY the seam resolves
 	// against its LIVE substrate (the seam runs it before `startSupervisor`
@@ -239,14 +265,15 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 	// contribution dispatcher registers live participants on — so an operator
 	// `snapshot save` captures the LIVE chain/blob/db state, not an empty set
 	// off a sibling orchestrator. No Deferred hand-off.
-	const commandHandler = makeSnapshotCommandHandler({ runtimeRoot });
+	const commandHandler = makeSnapshotCommandHandler({ runtimeRoot, stack, devstackVersion });
 
 	const boot: RunStackBootBag = {
+		devstackVersion,
 		beforeInitialAcquire: (h) =>
 			Effect.gen(function* () {
 				// The seam's substrate services — the SAME instances the
 				// `commandHandler` factory closed over and the supervisor uses,
-				// driven here for the recover/warm/IPC/roster/TUI work.
+				// driven here for the recover/IPC/roster/TUI work.
 				const snapshot = yield* SnapshotOrchestratorService;
 				const fs = yield* FileSystem.FileSystem;
 				const stackPaths = yield* StackPathsService;
@@ -271,26 +298,38 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 					liveRoot: stackPaths.stackRoot,
 					restoreSnapshot: (id) => snapshot.restore({ id }),
 				});
-				// WARM-RESTORE. Gated on `--warm`. The hit/miss/stale
-				// decision (recompute fingerprint → match sidecar + artifact
-				// → restore IN PLACE of a cold boot, NO `resume`; else drop a
-				// stale baseline and fall through to cold) lives in
-				// `runWarmRestore`, dependency-injected so production and the
-				// e2e harness drive the identical path. It never fails (wraps
-				// itself in catch→log→continue), so a warm failure can't wedge
-				// boot — it degrades to cold.
-				if (warmEnabled) {
-					yield* runWarmRestore({
-						snapshot,
-						fs,
-						stackRoot: stackPaths.stackRoot,
-						computeFingerprint: computeWarmFingerprint({
-							stack,
-							devstackVersion,
-						}),
-						warmRestoredRef: warmRestored,
-						warmFingerprintRef: warmFingerprint,
-					});
+				if (startFromSnapshot !== undefined) {
+					const graphInput = yield* computeGraphInput;
+					if (startFromSnapshot.stalePolicy === 'clean-start') {
+						const catalog = yield* provideFileSystem(fs, snapshot.list);
+						const entry = catalog.find(
+							(snapshotEntry) => snapshotEntry.id === startFromSnapshot.id,
+						);
+						const snapshotGraphInputId = entry?.metadata?.graphInput.graphInputId ?? null;
+						if (snapshotGraphInputId !== graphInput.graphInputId) {
+							yield* Effect.logWarning(
+								`snapshot ${startFromSnapshot.id} graph input is stale; clean-start policy skipped restore`,
+							);
+						} else {
+							yield* provideFileSystem(
+								fs,
+								snapshot.restore({
+									id: startFromSnapshot.id,
+									currentGraphInput: graphInput,
+									graphInputMismatchPolicy: 'block',
+								}),
+							);
+						}
+					} else {
+						yield* provideFileSystem(
+							fs,
+							snapshot.restore({
+								id: startFromSnapshot.id,
+								currentGraphInput: graphInput,
+								graphInputMismatchPolicy: startFromSnapshot.stalePolicy,
+							}),
+						);
+					}
 				}
 				const commandChannel = yield* installCommandChannelBridge({
 					stackRoot: stackPaths.stackRoot,
@@ -327,39 +366,6 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 					),
 				);
 			}),
-		// BASELINE-CAPTURE. `withinScope` fires ONCE, only when the
-		// stack came fully up (boot.ts runs it after the booted race
-		// wins, never on shutdown). Capture the warm baseline unless this
-		// boot was a warm restore and runtime acquire stayed clean. NO
-		// `resume` — the stack is already live, so `capture`'s post-publish
-		// bounce re-converges it in place. Any failure is swallowed (log +
-		// continue): a warm-capture failure must not fail an
-		// otherwise-successful `up`. Runs AFTER the
-		// readiness gate resolves (the seam composes the built-in gate
-		// first), so a slow docker-commit can't delay `handle.start`.
-		withinScope: () =>
-			Effect.gen(function* () {
-				if (!warmEnabled) return;
-				const snapshot = yield* SnapshotOrchestratorService;
-				const fs = yield* FileSystem.FileSystem;
-				const stackPaths = yield* StackPathsService;
-				// Capture the baseline + write the sidecar unless this boot was a
-				// clean warm restore. The gate + capture + sidecar write live in
-				// `runWarmCapture` (the same effect the e2e harness runs); it
-				// swallows its own failure so a warm capture failure never fails
-				// an otherwise-successful `up`.
-				yield* runWarmCapture({
-					snapshot,
-					fs,
-					stackRoot: stackPaths.stackRoot,
-					computeFingerprint: computeWarmFingerprint({
-						stack,
-						devstackVersion,
-					}),
-					warmRestoredRef: warmRestored,
-					warmFingerprintRef: warmFingerprint,
-				});
-			}),
 	};
 
 	return { commandHandler, boot };
@@ -382,7 +388,8 @@ export const runUpLive = (
 	options: {
 		readonly renderer: GlobalFlags['renderer'];
 		readonly stdoutIsTty: boolean;
-		readonly warm?: boolean;
+		readonly fromSnapshot?: string;
+		readonly snapshotStalePolicy?: GlobalFlags['snapshotStalePolicy'];
 	},
 ): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
@@ -411,17 +418,11 @@ export const runUpLive = (
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
 		const appRoot = dirname(loaded.resolvedConfigPath);
 
-		// Warm boot-cache toggle: the CLI `--warm` flag (tri-state from
-		// main.ts) wins over the config's `defineDevstack({ warm })`; default
-		// off. When off, every warm hook below is skipped (zero behavior
-		// change). Evaluated AFTER the config loads so the config option is
-		// visible.
-		const warmEnabled = options.warm ?? stack.options.warm ?? false;
-		// devstack version — a fingerprint signal (an SDK upgrade must
-		// invalidate a stale baseline). Reuses the `surfaces/cli/index.ts`
+		// devstack version — a graph input signal (an SDK upgrade must
+		// invalidate stale snapshots). Reuses the `surfaces/cli/index.ts`
 		// `readFileSync(new URL('../../../package.json'))` pattern, relative
 		// to THIS file. Defensive: a missing/garbled package.json degrades to
-		// a sentinel rather than wedging boot — only consumed under `--warm`.
+		// a sentinel rather than wedging boot.
 		const devstackVersion = ((): string => {
 			try {
 				const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
@@ -436,9 +437,42 @@ export const runUpLive = (
 			stackRenderer: stack.options.renderer,
 			stdoutIsTty: options.stdoutIsTty,
 		});
+		let startFromSnapshot: StartFromSnapshot | undefined;
+		if (options.fromSnapshot !== undefined) {
+			const resolved = yield* makeSnapshotReader({ stackRoot: effectiveIdentity.stackRoot })
+				.resolve(options.fromSnapshot)
+				.pipe(
+					Effect.mapError(
+						(cause) =>
+							new CliInternalError({
+								message: 'snapshot lookup failed',
+								cause,
+							}),
+					),
+				);
+			switch (resolved.tag) {
+				case 'found':
+					startFromSnapshot = {
+						id: resolved.entry.snapshotId,
+						stalePolicy: options.snapshotStalePolicy ?? 'warn',
+					};
+					break;
+				case 'not-found':
+					return yield* Effect.fail(
+						new CliSnapshotNotFoundError({ snapshotRef: options.fromSnapshot }),
+					);
+				case 'ambiguous':
+					return yield* Effect.fail(
+						new CliUsageError({
+							message: `snapshot reference is ambiguous: ${resolved.snapshotRef}`,
+							hint: `matches: ${resolved.matches.map((entry) => entry.snapshotId).join(', ')}`,
+						}),
+					);
+			}
+		}
 
 		// The CLI concerns (snapshot/wipe/prune `commandHandler` + the
-		// recover/warm/roster/IPC/TUI boot hooks) as a value bundle — the
+		// recover/roster/IPC/TUI boot hooks) as a value bundle — the
 		// EXACT thing the seam consumes, extracted so the Docker-free CLI-boot
 		// smoke test can drive the real bundle (see `test/cli/up-boot-smoke`).
 		const { commandHandler, boot } = buildUpBootBundle({
@@ -447,14 +481,14 @@ export const runUpLive = (
 			runtimeRoot: effectiveIdentity.runtimeRoot,
 			devstackVersion,
 			rendererMode,
-			warmEnabled,
+			...(startFromSnapshot === undefined ? {} : { startFromSnapshot }),
 		});
 
 		// The ONE boot seam. `runStackWithBoot` owns the substrate Layer
 		// composition, the contribution dispatcher + post-acquire hook +
 		// `extendContext` assembly, the projection ref, and the
 		// forkDetach/Deferred boot lifecycle — `up` no longer forks its own
-		// parallel orchestration. The CLI concerns (warm/recover/roster/IPC/TUI
+		// parallel orchestration. The CLI concerns (recover/roster/IPC/TUI
 		// + snapshot handler) are passed as injected hooks + `commandHandler`.
 		const handle = runStackWithBoot(publicStack, {
 			identity: {

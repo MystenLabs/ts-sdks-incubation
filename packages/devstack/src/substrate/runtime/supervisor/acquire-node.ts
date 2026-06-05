@@ -527,19 +527,23 @@ export const acquireKeys = (
 					const entry = registry.entries.get(key);
 					if (entry === undefined) return yield* Effect.forkIn(Effect.void, parentScope);
 					const registeredGate = yield* Deferred.make<void, never>();
+					const readyToRegister = yield* Deferred.make<void, never>();
 					const guarded = Effect.gen(function* () {
 						const selfId = yield* Effect.fiberId;
-						yield* Deferred.await(registeredGate);
-						yield* acquireNode(
-							registry,
-							key,
-							ref,
-							hub,
-							pluginContext,
-							dispatcher,
-							logger,
-							identity,
-						).pipe(
+						yield* Effect.gen(function* () {
+							yield* Deferred.succeed(readyToRegister, void 0);
+							yield* Deferred.await(registeredGate);
+							yield* acquireNode(
+								registry,
+								key,
+								ref,
+								hub,
+								pluginContext,
+								dispatcher,
+								logger,
+								identity,
+							);
+						}).pipe(
 							Effect.onInterrupt(() => failIfAcquireInterruptedBeforeReady(registry, key, entry)),
 							Effect.ensuring(
 								registry
@@ -549,6 +553,7 @@ export const acquireKeys = (
 						);
 					});
 					const fiber = yield* Effect.forkIn(Scope.provide(guarded, parentScope), parentScope);
+					yield* Deferred.await(readyToRegister);
 					const registered = yield* registry
 						.setAcquireFiberIfEntry(key, entry, fiber)
 						.pipe(Effect.catch(() => Effect.succeed(false)));

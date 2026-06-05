@@ -30,7 +30,7 @@
 import { Effect, type Scope } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { definePlugin, resource, staticInputIdentity } from '../../api/define-plugin.ts';
 import {
 	bootPostgresSidecar,
 	credentialedUrl,
@@ -42,7 +42,11 @@ import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts'
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
+import type {
+	ContainerRuntime,
+	ContainerRuntimeError,
+	ImageRef,
+} from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { sanitizeAlias } from '../../substrate/runtime/managed-container.ts';
@@ -176,48 +180,32 @@ const DEFAULT_INDEXER_DATABASE = 'sui_indexer';
 /** In-network DNS alias siblings dial the indexer-db sidecar by. */
 const SUI_INDEXER_DB_ALIAS = 'sui-indexer-db';
 
-/** Compose the indexer-db sidecar's `configHash` from the re-genesis-
- *  determining inputs of the validator container. Stamped as the sidecar's
- *  `devstack.config-hash` label; `decideRunAction` does a `===` on the
- *  read-back label, so a match resumes (rows preserved) and a mismatch
- *  recreates the mount-less PGDATA-in-writable-layer sidecar (⇒ empty DB).
+const suiInputIdentity = (opts: SuiOptions): unknown => {
+	const { readyTimeout: _readyTimeout, ...authored } = opts;
+	if (authored.mode !== 'local') return { plugin: 'sui', ...authored };
+	return {
+		plugin: 'sui',
+		...authored,
+		indexer: authored.indexer !== false,
+		indexerDb:
+			authored.indexerDb === undefined
+				? undefined
+				: {
+						...authored.indexerDb,
+						database: authored.indexerDb.database ?? DEFAULT_INDEXER_DATABASE,
+					},
+	};
+};
+
+/** Compose the indexer-db sidecar's stable `configHash` from validator
+ *  inputs known before local mode starts. A validator image change recreates
+ *  the validator, so the sidecar's mount-less PGDATA must reset with it.
  *
- *  The token folds EXACTLY the inputs that make `decideRunAction` recreate
- *  the VALIDATOR (a validator recreate = fresh writable layer = re-genesis
- *  = NEW chain, so the sidecar must reset in lockstep):
- *
- *    - `chain` — the validator's pre-boot DISPOSITION (`readValidator-
- *      ChainConfig`): absent OR present-but-exited-137 ⇒ `fresh` (the two
- *      dispositions on which the runtime recreates an `on-failure` validator);
- *      `present` otherwise (running / clean / non-137 exit ⇒ resume).
- *    - `img` — the validator's resolved image ref (`<tag>` or `<digest>`
- *      fallback — the SAME string `decideRunAction` compares `facts.image`
- *      against). A pinned-image bump (or a build-context change that moves
- *      the content-addressed tag) recreates the validator on `image-mismatch`
- *      WHILE it is still present + non-137 — a disposition that reads
- *      `present`. Folding the image ref makes that bump flip the sidecar's
- *      token too, so it resets in lockstep instead of holding stale rows
- *      against the new chain.
- *
- *  Restore-safe: a snapshot/restore runs the committed validator whose
- *  resolved image ref is the SAME content-addressed value (and whose
- *  disposition reads `present`), so both segments are unchanged ⇒ resume
- *  (rows intact). The image ref changes ONLY on a real image bump, never on
- *  restore — that is why it is the correct input to fold.
- *
- *  Residual (NOT folded): the validator's published host ports + secondary
- *  network attachment. `decideRunAction` also recreates on a bare port or
- *  network-attachment change, but those are allocated/joined AFTER this
- *  sidecar is created (the validator joins the sidecar's network and brokers
- *  its host ports inside `bootLocalMode`, which runs after `provisionLocal-
- *  Indexer`), so they are not knowable at sidecar-hash time without
- *  reordering port allocation ahead of the sidecar. A bare port/network
- *  change with NO image change is a rare, dev-initiated config edit; it would
- *  recreate the validator (re-genesis) while the sidecar resumes stale rows.
- *  Folding it is deferred — it needs port allocation reordered ahead of the
- *  sidecar. Seal-idiom pipe-join (readable, deterministic). */
-export const composeIndexerConfigHash = (chainId: string | null, imageRef: string): string =>
-	['indexer-db', `chain=${chainId ?? 'fresh'}`, `img=${imageRef}`].join('|');
+ *  Validator data-layer resets that are not config values (absent validator
+ *  or last exit `137`) are handled by `validatorNeedsIndexerReset`, which
+ *  removes the sidecar before this hash is applied. */
+export const composeIndexerConfigHash = (imageRef: string): string =>
+	['indexer-db', `validator-img=${imageRef}`].join('|');
 
 /** Append a database segment to a BYO DSN only when it has no path (so a
  *  caller-supplied `.../mydb` is respected). Rebuilds via the URL object
@@ -242,44 +230,16 @@ const appendDatabaseIfMissing = (url: string, database: string): string => {
 	}
 };
 
-/** ONE of the two re-genesis-determining inputs the indexer-db sidecar's
- *  `configHash` folds: the validator container's DISPOSITION — read BEFORE
- *  the sidecar (and so the validator) boots. The OTHER input, the validator's
- *  resolved image ref, is folded by `composeIndexerConfigHash`'s caller (the
- *  barrel resolves it before this sidecar so an image bump resets the sidecar
- *  too). This function covers only the disposition segment.
+/** Whether the Sui-owned indexer DB must be deleted before boot.
  *
- *  Why disposition (presence + last-exit-code), the correct no-exec,
- *  restore-safe source for the chain segment:
- *    - The genesis-minted chain id is born INSIDE the validator post-boot,
- *      so it is not knowable at sidecar-create time (the sidecar is created
- *      first, so the validator can join its network + receive the DSN).
- *    - The chain id is invariant for exactly as long as the validator's
- *      writable layer (its genesis) persists. The runtime's `decideRunAction`
- *      RECREATES the validator (→ fresh layer → re-genesis → NEW chain) on
- *      two DISPOSITION signals: the container being ABSENT (`wipe`/`rm -f`/
- *      cold), or PRESENT but exited `137` — an unclean SIGKILL/OOM (the
- *      validator runs `recreate: 'on-failure'`). Both ⇒ "fresh chain
- *      incoming". Every other disposition — running, or a clean/non-137 exit
- *      (0/130/…) — keeps the writable layer → "same chain as before". (The
- *      runtime ALSO recreates on image-mismatch — that trigger is covered by
- *      the separately-folded image ref, not by this disposition probe.)
- *    - Presence alone is NOT enough: a 137-crashed validator is still PRESENT
- *      across the boot, yet the runtime re-genesises it, so a presence-only
- *      key would resume STALE rows against the new chain. Keying on the SAME
- *      137 signal the runtime recreates on closes that gap. Note: ONLY 137 —
- *      the runtime does not recreate on other non-zero exits, so neither do we.
- *    - Snapshot/restore replays the committed validator container running, so
- *      it reads `present` post-restore → same token the restored sidecar's
- *      label was committed with → resume (rows intact). Cross-chain restore is
- *      refused by the snapshot identity-guard before any mutation.
- *
- *  Returns `null` when the validator is absent OR present-but-137 (both ⇒
- *  re-genesis incoming → `chain=fresh`); the fixed `present` token otherwise. */
-export const readValidatorChainConfig = (
+ *  The validator's chain identity lives in its writable layer. If the
+ *  validator container is absent, the next boot creates a new layer and a
+ *  new chain. If it last exited `137`, the runtime's `on-failure` policy
+ *  also recreates it. Both cases make any existing indexer DB stale. */
+export const validatorNeedsIndexerReset = (
 	runtime: ContainerRuntime,
 	identity: Identity,
-): Effect.Effect<string | null, SuiPluginError> =>
+): Effect.Effect<boolean, ContainerRuntimeError> =>
 	runtime
 		.inspectByLabels({
 			app: identity.app,
@@ -290,19 +250,8 @@ export const readValidatorChainConfig = (
 		.pipe(
 			Effect.map((handles) => {
 				const validator = handles[0];
-				// Absent → re-genesis. Present + 137 (SIGKILL/OOM) → the runtime
-				// recreates it → re-genesis. Else (running / clean / non-137
-				// exit) → same chain. Gate on EXACTLY 137, mirroring the runtime.
-				if (validator === undefined || validator.lastExitCode === 137) return null;
-				return 'present';
+				return validator === undefined || validator.lastExitCode === 137;
 			}),
-			Effect.mapError((cause) =>
-				suiPluginError(
-					'container-start',
-					`sui local mode: failed to inspect the validator container: ${cause.reason}: ${cause.detail}`,
-					cause,
-				),
-			),
 		);
 
 /** Provision the GraphQL-indexer DB wiring for local mode.
@@ -310,14 +259,9 @@ export const readValidatorChainConfig = (
  *  Default: sui OWNS a postgres sidecar (labelled under sui) — boot it on
  *  a per-stack network and compose the DSN from its in-network alias (NOT
  *  the per-stack container DNS host, which isn't parallel-stack-portable).
- *  The sidecar's `configHash` folds the validator's re-genesis-determining
- *  inputs (`composeIndexerConfigHash`): its pre-boot disposition
- *  (`readValidatorChainConfig`: absent or exited-`137` ⇒ `chain=fresh`) AND
- *  its resolved image ref (`validatorImage` — a pinned-image bump flips the
- *  token while the disposition still reads `present`). Any change recreates
- *  the mount-less PGDATA-in-writable-layer sidecar — an EMPTY DB the fresh
- *  embedded indexer re-indexes — entirely via `decideRunAction`. No marker /
- *  dropdb machinery.
+ *  The sidecar resets on the same validator inputs that can make its rows
+ *  stale: absent/exited-`137` validator state removes the sidecar before
+ *  boot, and validator image identity is folded into its `configHash`.
  *
  *  `validatorImage` is the SAME `ImageRef` the barrel hands `bootLocalMode`
  *  for the validator container, so the image the sidecar hashed and the image
@@ -341,22 +285,22 @@ export const provisionLocalIndexer = (
 	}
 	const network = sanitizeAlias(`devstack-${identity.app}-${identity.stack}-sui-indexer`);
 	return Effect.gen(function* () {
-		// Pre-boot chain identity — read BEFORE the sidecar is created so the
-		// configHash reflects the validator's PRIOR chain, not the post-genesis
-		// value (the validator boots AFTER the sidecar). Absent OR exited-137
-		// (crash-recreate ⇒ re-genesis) ⇒ `fresh`. Folded alongside the
-		// validator's resolved image ref (`<tag>` or `<digest>` fallback — the
-		// exact string `decideRunAction` compares), so an image bump that
-		// recreates the validator while it still reads `present` also flips this
-		// sidecar's token ⇒ reset instead of stale rows against the new chain.
-		const chainConfig = yield* readValidatorChainConfig(runtime, identity);
+		const resetExistingSidecar = yield* validatorNeedsIndexerReset(runtime, identity);
+		if (resetExistingSidecar) {
+			yield* runtime.removeManagedContainers({
+				app: identity.app,
+				stack: identity.stack,
+				plugin: 'sui',
+				role: SUI_INDEXER_DB_ROLE,
+			});
+		}
 		const imageRef = validatorImage.tag ?? validatorImage.digest;
 		const { handle } = yield* bootPostgresSidecar(runtime, identity, {
 			network,
 			alias: SUI_INDEXER_DB_ALIAS,
 			role: SUI_INDEXER_DB_ROLE,
 			database,
-			configHash: composeIndexerConfigHash(chainConfig, imageRef),
+			configHash: composeIndexerConfigHash(imageRef),
 		});
 		return {
 			url: withDatabase(
@@ -501,6 +445,7 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		id: suiResource.id,
 		role: 'service',
 		section: 'service',
+		inputIdentity: staticInputIdentity(suiInputIdentity(opts)),
 		// Zero-arg `start` (no `dependsOn`); the substrate supplies the
 		// container runtime + identity via the plugin runtime context.
 		start: () =>

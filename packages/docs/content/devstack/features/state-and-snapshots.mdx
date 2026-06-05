@@ -32,6 +32,20 @@ and stores the artifact under a generated immutable id. If no name is supplied, 
 `manual-...` name. Names must be unique within a stack, so `restore before-migration` is
 deterministic. The generated id is still shown by `list` and can always be used as an escape hatch.
 
+To boot from a snapshot and then continue normal stack startup, use `up --from-snapshot`:
+
+```bash
+devstack up --from-snapshot before-migration
+devstack up --from-snapshot before-migration --snapshot-stale block
+devstack up --from-snapshot before-migration --snapshot-stale clean-start
+```
+
+`--from-snapshot` resolves the same name-or-id references as `snapshot restore`, restores before the
+initial acquire, and then lets the supervisor converge the stack. The default stale policy is `warn`:
+if the snapshot's graph input id differs from the current stack's graph input id, devstack logs a
+warning and proceeds. Use `block` to refuse the restore on graph-input drift, or `clean-start` to
+skip the restore and boot normally when the snapshot is stale.
+
 When you are already attached to `devstack up --renderer tui`, use the TUI shortcut instead of
 starting a second snapshot command. Press `s`, type a snapshot name, and press Enter. Press Enter on
 an empty prompt to use a generated `manual-...` name, or press Esc to cancel. The shortcut exists
@@ -61,6 +75,8 @@ contributions/<encoded-plugin>.json
 Supported behavior:
 
 - CLI save performs a one-shot stack boot and captures a snapshot of the selected stack.
+- `up --from-snapshot <name-or-id>` restores a selected snapshot before startup and supports
+  `--snapshot-stale warn|block|clean-start` for graph-input drift.
 - TUI save captures the currently attached stack and is intended for operator snapshots during
   `devstack up --renderer tui`.
 - Restore resolves a name or id, refuses to run while `devstack up` is live, then restores that
@@ -75,6 +91,9 @@ Important caveats:
 - Do not rely on cross-stack restore. Snapshot metadata carries app, stack, network, and plugin
   identity slices (including a Sui `mode` discriminator); restore refuses identity drift with a
   fail-closed `IdentityMismatchError` before any destructive change, never a silent restore.
+- Snapshots also record a graph input id derived from the stack graph, selected options, devstack
+  version, and plugin-authored input identity. A mismatch means the snapshot was captured for
+  different inputs; restore warns by default because it may create inconsistent state.
 - Product evidence for non-empty wallet, Seal, Walrus, and DeepBook roundtrips is still incomplete.
   These docs describe the supported CLI and artifact contract, not a claim that every service has
   full restore proof.

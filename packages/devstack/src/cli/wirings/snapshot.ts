@@ -6,6 +6,7 @@
 // `delete` are direct/offline only; they refuse to run when a
 // supervisor is live.
 
+import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { Effect, Exit, FileSystem, Logger } from 'effect';
@@ -20,6 +21,7 @@ import {
 } from '../../substrate/runtime/index.ts';
 import { superviseStackWithProductionBoot } from '../../orchestrators/boot.ts';
 import {
+	computeSnapshotGraphInputFromStack,
 	SnapshotOrchestratorService,
 	type SnapshotMetadata,
 } from '../../orchestrators/snapshot/index.ts';
@@ -40,6 +42,16 @@ import { provideFileSystem } from './provide-file-system.ts';
 const LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS = 60 * 60 * 1000;
 
 const mintCliSnapshotId = (): string => `snap-${Date.now()}-${mintRandomSuffix(8)}`;
+
+const readDevstackVersion = (): string => {
+	try {
+		const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
+		const pkg = JSON.parse(raw) as { readonly version?: unknown };
+		return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+	} catch {
+		return '0.0.0';
+	}
+};
 
 /** Structured payload that the supervisor's command-channel bridge
  *  attaches to the ack/error reply for `snapshot.capture`. Mirrors the
@@ -253,10 +265,15 @@ export const runSnapshotCaptureDirectLoaded = (
 						Effect.gen(function* () {
 							const snapshot = yield* SnapshotOrchestratorService;
 							const fs = yield* FileSystem.FileSystem;
+							const graphInput = yield* computeSnapshotGraphInputFromStack({
+								stack,
+								devstackVersion: readDevstackVersion(),
+							});
 							return yield* snapshot
 								.capture({
 									...(args.snapshotId === undefined ? {} : { id: args.snapshotId }),
 									...(args.name === undefined ? {} : { label: args.name }),
+									graphInput,
 								})
 								.pipe(Effect.provideService(FileSystem.FileSystem, fs));
 						}).pipe(

@@ -40,7 +40,8 @@ The dashboard is read-mostly, with a small set of guarded controls:
 - **Sui explorer** — addresses, objects, packages, and transactions, with resolve-first search.
 - **Walrus & Seal panels** — service status and live data for the storage and key-server plugins.
 - **Logs** — the cross-service log store.
-- **Snapshot & restore progress** — capture and restore narrated live.
+- **Snapshot & restore progress** — capture and restore narrated live, with each snapshot marked
+  `current`, `stale`, or `unknown` against the running stack's graph input id.
 - **Controls** — restart, shutdown, and advance-clock, each behind a confirmation.
 - **Faucet fund** — a one-click fund action: SUI funds a fixed amount; WAL and DEEP take an editable
   amount. Funding reuses the same registered in-process funding strategies the boot-time

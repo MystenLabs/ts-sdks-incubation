@@ -65,9 +65,14 @@ const commands = [
 				description: 'Select the attached renderer.',
 			},
 			{
-				name: 'warm',
-				description:
-					'Warm boot: restore a fingerprinted baseline snapshot when inputs are unchanged, else cold-boot and capture one.',
+				name: 'from-snapshot',
+				value: 'name-or-id',
+				description: 'Start by restoring a snapshot before the initial acquire.',
+			},
+			{
+				name: 'snapshot-stale',
+				value: 'warn|block|clean-start',
+				description: 'Policy when --from-snapshot inputs differ from the current stack.',
 			},
 		],
 	},

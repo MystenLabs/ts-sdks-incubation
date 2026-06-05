@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { makeSnapshotReader } from '../../../src/cli/snapshot-reader.ts';
 import {
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	SnapshotLayout,
 } from '../../../src/orchestrators/snapshot/index.ts';
@@ -303,6 +304,11 @@ const makeSnapshotCatalog = () => {
 				app: 'app',
 				stack: 'main',
 				network: 'sui:local',
+				graphInput: {
+					version: SNAPSHOT_GRAPH_INPUT_VERSION,
+					graphInputId: 'graph-fixture',
+					nodes: [],
+				},
 				hostTreeIncluded: false,
 				subtrees: [],
 				containers: [],
@@ -665,6 +671,11 @@ describe('dispatch', () => {
 					app: 'app',
 					stack: 'main',
 					network: 'sui:local',
+					graphInput: {
+						version: SNAPSHOT_GRAPH_INPUT_VERSION,
+						graphInputId: 'graph-fixture',
+						nodes: [],
+					},
 					hostTreeIncluded: false,
 					subtrees: [],
 					containers: [],

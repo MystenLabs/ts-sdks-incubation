@@ -21,6 +21,7 @@ import { Context, Effect, FileSystem } from 'effect';
 
 import type { ResolvedGraph } from '../lifecycle/index.ts';
 import { readResolvedSync, type PluginRegistry } from '../lifecycle/plugin-registry.ts';
+import type { DevstackOptions } from '../../options.ts';
 // Cross-layer seam (intentional): the control-plane domain is the single
 // place the substrate reads the L3 snapshot orchestrator, so the
 // supervisor core stays free of that import. This is a runtime VALUE import
@@ -29,6 +30,11 @@ import {
 	SnapshotOrchestratorService,
 	type SnapshotOrchestrator,
 } from '../../../orchestrators/snapshot/service.ts';
+import {
+	computeSnapshotGraphInputFromGraph,
+	graphInputMismatchDetail,
+	type SnapshotGraphInputIdentity,
+} from '../../../orchestrators/snapshot/index.ts';
 import type {
 	ControlPlaneDomain,
 	ControlPlaneResolvedValue,
@@ -66,20 +72,40 @@ const enumerateResolvedValues = (
 // Snapshot catalog projection
 // -----------------------------------------------------------------------------
 
-const snapshotEntryFrom = (entry: {
-	readonly id: string;
-	readonly metadata: {
-		readonly label?: string | null;
-		readonly createdAt?: number;
-		readonly app?: string;
-		readonly stack?: string;
-		readonly network?: string;
-		readonly participants?: ReadonlyArray<string>;
-		readonly containers?: ReadonlyArray<unknown>;
-		readonly subtrees?: ReadonlyArray<unknown>;
-	} | null;
-}): ControlPlaneSnapshotEntry => {
+const snapshotEntryFrom = (
+	entry: {
+		readonly id: string;
+		readonly metadata: {
+			readonly label?: string | null;
+			readonly createdAt?: number;
+			readonly app?: string;
+			readonly stack?: string;
+			readonly network?: string;
+			readonly graphInput?: {
+				readonly graphInputId?: string;
+			};
+			readonly participants?: ReadonlyArray<string>;
+			readonly containers?: ReadonlyArray<unknown>;
+			readonly subtrees?: ReadonlyArray<unknown>;
+		} | null;
+	},
+	currentGraphInput: SnapshotGraphInputIdentity | null,
+): ControlPlaneSnapshotEntry => {
 	const m = entry.metadata;
+	const snapshotGraphInputId = m?.graphInput?.graphInputId ?? null;
+	const currentGraphInputId = currentGraphInput?.graphInputId ?? null;
+	const graphInputStatus =
+		snapshotGraphInputId === null || currentGraphInputId === null
+			? 'unknown'
+			: snapshotGraphInputId === currentGraphInputId
+				? 'matching'
+				: 'stale';
+	const graphInputWarning =
+		snapshotGraphInputId === null ||
+		currentGraphInputId === null ||
+		graphInputStatus !== 'stale'
+			? null
+			: graphInputMismatchDetail(snapshotGraphInputId, currentGraphInputId);
 	return {
 		id: entry.id,
 		label: m?.label ?? null,
@@ -87,6 +113,10 @@ const snapshotEntryFrom = (entry: {
 		app: m?.app ?? null,
 		stack: m?.stack ?? null,
 		network: m?.network ?? null,
+		snapshotGraphInputId,
+		currentGraphInputId,
+		graphInputStatus,
+		graphInputWarning,
 		participants: m?.participants ?? [],
 		containerCount: m?.containers?.length ?? 0,
 		subtreeCount: m?.subtrees?.length ?? 0,
@@ -100,6 +130,8 @@ const snapshotEntryFrom = (entry: {
 
 export interface ControlPlaneDomainDeps {
 	readonly graph: ResolvedGraph;
+	readonly stackOptions: DevstackOptions;
+	readonly devstackVersion: string | null;
 	readonly registry: PluginRegistry;
 	/** Optional — present in production wiring (CLI / runStack), absent in
 	 *  bare smoke tests. Snapshot accessors degrade to empty when missing. */
@@ -112,25 +144,63 @@ export interface ControlPlaneDomainDeps {
 }
 
 export const buildControlPlaneDomain = (deps: ControlPlaneDomainDeps): ControlPlaneDomain => {
-	const { graph, registry, snapshotOrchestrator, fileSystem, logStore } = deps;
+	const {
+		graph,
+		stackOptions,
+		devstackVersion,
+		registry,
+		snapshotOrchestrator,
+		fileSystem,
+		logStore,
+	} = deps;
 
 	const provideFs = <A, E>(eff: Effect.Effect<A, E, FileSystem.FileSystem>): Effect.Effect<A, E> =>
 		fileSystem === null
 			? (Effect.die('control-plane: FileSystem unavailable') as Effect.Effect<A, E>)
 			: Effect.provideService(eff, FileSystem.FileSystem, fileSystem);
 
+	const currentGraphInput =
+		devstackVersion === null
+			? Effect.succeed(null)
+			: computeSnapshotGraphInputFromGraph({
+					graph,
+					options: stackOptions,
+					devstackVersion,
+				}).pipe(Effect.catchCause(() => Effect.succeed(null)));
+
 	const snapshots: ControlPlaneDomain['snapshots'] =
 		snapshotOrchestrator === null
 			? Effect.succeed([])
-			: provideFs(snapshotOrchestrator.list).pipe(
-					Effect.map((entries) => entries.map(snapshotEntryFrom)),
+			: provideFs(
+					Effect.all({
+						entries: snapshotOrchestrator.list,
+						currentGraphInput,
+					}),
+				).pipe(
+					Effect.map(({ entries, currentGraphInput }) =>
+						entries.map((entry) => snapshotEntryFrom(entry, currentGraphInput)),
+					),
 					Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<ControlPlaneSnapshotEntry>)),
 				);
 
 	const restoreSnapshot: ControlPlaneDomain['restoreSnapshot'] = (id) =>
 		snapshotOrchestrator === null
 			? Effect.succeed({ ok: false, detail: 'snapshot orchestrator unavailable' as string | null })
-			: provideFs(snapshotOrchestrator.restore({ id })).pipe(
+			: provideFs(
+					currentGraphInput.pipe(
+						Effect.flatMap((current) =>
+							snapshotOrchestrator.restore({
+								id,
+								...(current === null
+									? {}
+									: {
+											currentGraphInput: current,
+											graphInputMismatchPolicy: 'warn' as const,
+										}),
+							}),
+						),
+					),
+				).pipe(
 					Effect.map(() => ({ ok: true, detail: null as string | null })),
 					Effect.catchCause((cause) =>
 						Effect.succeed({ ok: false, detail: String(cause) as string | null }),
@@ -203,6 +273,8 @@ const readOptional = <S, I>(ctx: Context.Context<never>, tag: Context.Key<I, S>)
 export const controlPlaneDomainFromContext = (args: {
 	readonly pluginContext: Context.Context<never>;
 	readonly graph: ResolvedGraph;
+	readonly stackOptions: DevstackOptions;
+	readonly devstackVersion?: string | null;
 	readonly registry: PluginRegistry;
 	/** The supervisor's process-scoped log store, passed directly (it is
 	 *  created in the supervisor closure, not layered into `pluginContext`).
@@ -211,6 +283,8 @@ export const controlPlaneDomainFromContext = (args: {
 }): ControlPlaneDomain =>
 	buildControlPlaneDomain({
 		graph: args.graph,
+		stackOptions: args.stackOptions,
+		devstackVersion: args.devstackVersion ?? null,
 		registry: args.registry,
 		snapshotOrchestrator: readOptional(args.pluginContext, SnapshotOrchestratorService),
 		fileSystem: readOptional(args.pluginContext, FileSystem.FileSystem),

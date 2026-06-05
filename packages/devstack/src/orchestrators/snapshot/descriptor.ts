@@ -27,9 +27,18 @@
 //     stage-and-swap atomic rename — readers never observe a
 //     half-written tree.
 
-import { Schema } from 'effect';
+import { Effect, Schema } from 'effect';
 
 import type { Brand } from '../../substrate/brand.ts';
+import {
+	computeGraphInputIdentity,
+	computeStackGraphInputIdentity,
+	type GraphInputIdentity,
+	type StackGraphInputIdentityError,
+	type StackGraphInputSource,
+} from '../../substrate/runtime/lifecycle/graph-input-id.ts';
+import type { DevstackOptions } from '../../substrate/options.ts';
+import type { ResolvedGraph } from '../../substrate/runtime/lifecycle/dep-graph.ts';
 import { versionedDocSchema } from '../../substrate/versioned-doc-schema.ts';
 
 // -----------------------------------------------------------------------------
@@ -226,7 +235,59 @@ export type ContributionDoc = Schema.Schema.Type<typeof ContributionDocSchema>;
 
 /** Schema version of the metadata record. Bumped when the on-disk
  *  shape changes in a way that earlier readers cannot ignore. */
-export const SNAPSHOT_META_VERSION = 3 as const;
+export const SNAPSHOT_GRAPH_INPUT_VERSION = 1 as const;
+
+export const SnapshotNodeInputIdentitySchema = Schema.Struct({
+	key: Schema.String,
+	inputId: Schema.String,
+	upstreamInputIds: Schema.Array(
+		Schema.Struct({
+			key: Schema.String,
+			inputId: Schema.String,
+		}),
+	),
+});
+export type SnapshotNodeInputIdentity = Schema.Schema.Type<typeof SnapshotNodeInputIdentitySchema>;
+
+export const SnapshotGraphInputIdentitySchema = versionedDocSchema(SNAPSHOT_GRAPH_INPUT_VERSION, {
+	graphInputId: Schema.String,
+	nodes: Schema.Array(SnapshotNodeInputIdentitySchema),
+});
+export type SnapshotGraphInputIdentity = Schema.Schema.Type<
+	typeof SnapshotGraphInputIdentitySchema
+>;
+
+export const snapshotGraphInputFromIdentity = (
+	identity: GraphInputIdentity,
+): SnapshotGraphInputIdentity => ({
+	version: SNAPSHOT_GRAPH_INPUT_VERSION,
+	graphInputId: identity.graphInputId,
+	nodes: identity.nodes.map((node) => ({
+		key: node.key,
+		inputId: node.inputId,
+		upstreamInputIds: node.upstreamInputIds.map((upstream) => ({
+			key: upstream.key,
+			inputId: upstream.inputId,
+		})),
+	})),
+});
+
+export const computeSnapshotGraphInputFromGraph = (args: {
+	readonly graph: ResolvedGraph;
+	readonly options: DevstackOptions;
+	readonly devstackVersion: string;
+}): Effect.Effect<SnapshotGraphInputIdentity, StackGraphInputIdentityError> =>
+	computeGraphInputIdentity(args).pipe(Effect.map(snapshotGraphInputFromIdentity));
+
+export const computeSnapshotGraphInputFromStack = (args: {
+	readonly stack: StackGraphInputSource;
+	readonly devstackVersion: string;
+}): Effect.Effect<SnapshotGraphInputIdentity, StackGraphInputIdentityError> =>
+	computeStackGraphInputIdentity(args).pipe(Effect.map(snapshotGraphInputFromIdentity));
+
+/** Schema version of the metadata record. Bumped when the on-disk
+ *  shape changes in a way that earlier readers cannot ignore. */
+export const SNAPSHOT_META_VERSION = 4 as const;
 
 /** Top-level metadata record. Architecture § Snapshot — single canonical
  *  metadata; "metadata absent = do not trust this directory". */
@@ -239,6 +300,10 @@ export const SnapshotMetadataSchema = versionedDocSchema(SNAPSHOT_META_VERSION, 
 	app: Schema.String,
 	stack: Schema.String,
 	network: Schema.String,
+	/** Desired-input identity of the resolved stack graph at capture time.
+	 *  Restore/startup policy compares this with the current graph before
+	 *  deciding whether a snapshot is valid for the current inputs. */
+	graphInput: SnapshotGraphInputIdentitySchema,
 	/** Whether `host-tree.tar` is present in the artifact (false for
 	 *  the first-boot / empty-stack capture). */
 	hostTreeIncluded: Schema.Boolean,

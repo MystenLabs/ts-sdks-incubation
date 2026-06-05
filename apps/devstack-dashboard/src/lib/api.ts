@@ -599,6 +599,10 @@ const SnapshotsDoc = graphql(`
 			app
 			stack
 			network
+			snapshotGraphInputId
+			currentGraphInputId
+			graphInputStatus
+			graphInputWarning
 			createdAt
 			containerCount
 			subtreeCount

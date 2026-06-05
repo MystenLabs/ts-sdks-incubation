@@ -22,6 +22,7 @@ import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } 
 import { describe, expect, it } from '@effect/vitest';
 
 import { appName, pluginKey, stackName } from '../../../src/substrate/brand.ts';
+import type { EngineEvent } from '../../../src/substrate/events.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	Logger,
@@ -34,6 +35,8 @@ import {
 	type SupervisedStack,
 } from '../../../src/substrate/runtime/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
+import { acquireKeys } from '../../../src/substrate/runtime/supervisor/acquire-node.ts';
+import { noopLogger } from '../../../src/substrate/runtime/supervisor/wiring.ts';
 import { definePlugin } from '../../../src/substrate/plugin.ts';
 import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
@@ -927,6 +930,57 @@ describe('supervisor harvest loop', () => {
 					expect(yield* startup.handle.registry.getStatus(interruptedKey)).toBe('failed');
 
 					yield* Fiber.join(bootFiber);
+				}),
+			);
+		}),
+	);
+
+	it.effect('interrupt between acquire-fiber registration and gate open fails the ready gate', () =>
+		Effect.gen(function* () {
+			const starts = yield* Ref.make(0);
+			const interruptedKey = pluginKey('test:registered-before-gate#0');
+			const pluginInterrupted = definePlugin({
+				id: 'test:registered-before-gate',
+				role: 'service' as const,
+				section: 'service',
+				start: () => Ref.update(starts, (n) => n + 1).pipe(Effect.as({ ok: true })),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginInterrupted], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const scope = yield* Effect.scope;
+					const startup = yield* startSupervisor(stack, identity, state);
+					const events = yield* Queue.unbounded<EngineEvent>();
+					const registry = {
+						...startup.handle.registry,
+						setAcquireFiberIfEntry: (key, entry, fiber) =>
+							startup.handle.registry
+								.setAcquireFiberIfEntry(key, entry, fiber)
+								.pipe(
+									Effect.tap((registered) =>
+										registered ? Fiber.interrupt(fiber).pipe(Effect.asVoid) : Effect.void,
+									),
+								),
+					} satisfies typeof startup.handle.registry;
+
+					yield* acquireKeys(
+						registry,
+						[interruptedKey],
+						state,
+						events,
+						Context.empty(),
+						noopContributionDispatcher,
+						noopLogger,
+						identity,
+						scope,
+					);
+
+					const exit = yield* startup.handle.registry.awaitReady(interruptedKey).pipe(Effect.exit);
+					expect(exit._tag).toBe('Failure');
+					expect(yield* startup.handle.registry.getStatus(interruptedKey)).toBe('failed');
+					expect(yield* Ref.get(starts)).toBe(0);
 				}),
 			);
 		}),

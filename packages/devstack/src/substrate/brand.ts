@@ -18,6 +18,12 @@ export type EndpointKey = Brand<string, 'EndpointKey'>;
 /** Content-hash brand. Substrate folds the chain string into the final cache key. */
 export type ContentHash = Brand<string, 'ContentHash'>;
 
+/** Per-node input identity hash, computed from declared desired-state inputs. */
+export type NodeInputId = Brand<string, 'NodeInputId'>;
+
+/** Aggregate graph input identity hash, computed from graph shape + node input ids. */
+export type GraphInputId = Brand<string, 'GraphInputId'>;
+
 /** Stack identity triple components. Validated once at boot. */
 export type AppName = Brand<string, 'AppName'>;
 export type StackName = Brand<string, 'StackName'>;
@@ -28,5 +34,7 @@ export type StackName = Brand<string, 'StackName'>;
 export const pluginKey = (s: string): PluginKey => s as PluginKey;
 export const endpointKey = (s: string): EndpointKey => s as EndpointKey;
 export const contentHash = (s: string): ContentHash => s as ContentHash;
+export const nodeInputId = (s: string): NodeInputId => s as NodeInputId;
+export const graphInputId = (s: string): GraphInputId => s as GraphInputId;
 export const appName = (s: string): AppName => s as AppName;
 export const stackName = (s: string): StackName => s as StackName;

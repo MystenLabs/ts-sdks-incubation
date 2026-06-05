@@ -47,6 +47,7 @@ import {
 	parseSnapshotId,
 	type SnapshotId,
 	type SnapshotCatalogEntry,
+	type SnapshotGraphInputIdentity,
 	type SnapshotMetadata,
 } from './descriptor.ts';
 import {
@@ -122,6 +123,7 @@ export interface SnapshotOrchestrator {
 	readonly capture: (args: {
 		readonly id?: string;
 		readonly label?: string;
+		readonly graphInput: SnapshotGraphInputIdentity;
 		readonly participants?: ReadonlyArray<SnapshotParticipant>;
 		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
@@ -132,6 +134,8 @@ export interface SnapshotOrchestrator {
 	 *  rm → resume = recreate (the next boot / the injected converge). */
 	readonly restore: (args: {
 		readonly id: string;
+		readonly currentGraphInput?: SnapshotGraphInputIdentity;
+		readonly graphInputMismatchPolicy?: 'warn' | 'block';
 		readonly participants?: ReadonlyArray<RestoreParticipant>;
 		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
@@ -336,7 +340,13 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				);
 			}) as Effect.Effect<void, never, Scope.Scope>;
 
-		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, resume }) =>
+		const capture: SnapshotOrchestrator['capture'] = ({
+			id,
+			label,
+			graphInput,
+			participants,
+			resume,
+		}) =>
 			Effect.gen(function* () {
 				const snapshotId =
 					id === undefined ? yield* mintSnapshotId() : yield* validateSnapshotId('capture', id);
@@ -415,6 +425,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								app: identity.app,
 								stack: identity.stack,
 								network: identity.chain,
+								graphInput,
 								runtimeStackRoot: paths.stackRoot,
 								participants: effectiveParticipants,
 								runtime,
@@ -437,14 +448,20 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				return meta;
 			});
 
-		const restore: SnapshotOrchestrator['restore'] = ({ id, participants, resume }) =>
+		const restore: SnapshotOrchestrator['restore'] = ({
+			id,
+			currentGraphInput,
+			graphInputMismatchPolicy,
+			participants,
+			resume,
+		}) =>
 			Effect.gen(function* () {
 				const snapshotId = yield* validateSnapshotId('restore', id);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
-				// The effective participant set is the live registered set (or an
-				// explicit override). At BOOT TIME — the warm-restore hook, the
-				// interrupted-restore recovery, and the offline CLI verb — no plugin
-				// has registered yet, so this is EMPTY. `runRestore` reads an empty
+					// The effective participant set is the live registered set (or an
+					// explicit override). During startup restore, interrupted-restore
+					// recovery, and offline CLI restore, no plugin has registered yet,
+					// so this is EMPTY. `runRestore` reads an empty
 				// participant set as "no live stack to compare against" and skips
 				// ONLY the cross-plugin contribution guard (the runtime app/stack/
 				// network guard + the snapshot-side emptiness refusal still fire).
@@ -479,6 +496,8 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								stack: identity.stack,
 								network: identity.chain,
 							},
+							...(currentGraphInput === undefined ? {} : { currentGraphInput }),
+							...(graphInputMismatchPolicy === undefined ? {} : { graphInputMismatchPolicy }),
 						});
 					}),
 				);

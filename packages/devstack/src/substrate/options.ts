@@ -20,8 +20,5 @@ export interface DevstackOptions {
 		readonly stackSubdir?: string | null;
 	};
 	readonly renderer?: 'tui' | 'plain' | 'silent';
-	/** Reuse a fingerprinted baseline snapshot when config + inputs are
-	 *  unchanged (warm boot); a change re-captures. */
-	readonly warm?: boolean;
 	readonly extras?: ManifestExtrasInput;
 }

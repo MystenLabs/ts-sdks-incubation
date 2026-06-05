@@ -40,6 +40,7 @@ import {
 	type SnapshotId,
 	type CapturedContainer,
 	type IdentitySlice,
+	type SnapshotGraphInputIdentity,
 	type SnapshotMetadata,
 	isRestorableContainerImageName,
 	isSafeSnapshotPathSegment,
@@ -110,6 +111,7 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'pre-cleanup',
 			'resume',
 			'missing-subtree-fatal',
+			'graph-input-mismatch',
 		]),
 		plugin: Schema.optional(Schema.String),
 		detail: Schema.String,
@@ -146,7 +148,7 @@ export interface RestoreParticipant {
 	 *  side-state). Identity-guard runs FIRST and unilaterally; this
 	 *  is the plugin's extra hook. */
 	readonly preRestore?: Effect.Effect<void>;
-	/** Post-restore hook: re-validate, warm caches, etc. */
+		/** Post-restore hook: re-validate caches or plugin side state. */
 	readonly postRestore?: Effect.Effect<void>;
 }
 
@@ -843,9 +845,9 @@ export interface RestoreInputs {
 	readonly runtimeBackupPath: string;
 	/** Live-stack participants whose `liveIdentity` probes feed the
 	 *  cross-plugin CONTRIBUTION guard (`runIdentityGuard`). An EMPTY list
-	 *  means "no live stack to compare against" — the boot-time / offline
-	 *  restore case (warm boot, interrupted-restore recovery, the offline
-	 *  CLI verb, the live supervisor's own first acquire). In that case the
+		 *  means "no live stack to compare against" — startup restore,
+		 *  interrupted-restore recovery, the offline CLI verb, or the live
+		 *  supervisor's own first acquire. In that case the
 	 *  contribution guard is satisfied tautologically (there is nothing live
 	 *  to disagree with the snapshot's recorded identity) and is SKIPPED;
 	 *  the snapshot-side emptiness refusal (`requireIdentity`) and the
@@ -854,6 +856,8 @@ export interface RestoreInputs {
 	readonly participants: ReadonlyArray<RestoreParticipant>;
 	readonly runtime: ContainerRuntime;
 	readonly runtimeIdentity: SnapshotRuntimeIdentity;
+	readonly currentGraphInput?: SnapshotGraphInputIdentity;
+	readonly graphInputMismatchPolicy?: 'warn' | 'block';
 	// RESUME is intentionally NOT a field here. `runRestore` performs the
 	// destructive swap+load+hard-rm UNDER `stack.lock` (held by the caller).
 	// The resume re-converges the stack, and each plugin's re-acquire takes
@@ -863,6 +867,26 @@ export interface RestoreInputs {
 	// the lock scope closes; `runRestore` owns only the locked half of the
 	// bounce. NEVER `docker start` — the resume is recreate-from-restored-image.
 }
+
+export const graphInputMismatchDetail = (
+	snapshotGraphInputId: string,
+	currentGraphInputId: string,
+): string =>
+	`snapshot graph input id ${snapshotGraphInputId} does not match current graph input id ${currentGraphInputId}; restoring may create inconsistent state`;
+
+const checkGraphInputCompatibility = (
+	meta: SnapshotMetadata,
+	current: SnapshotGraphInputIdentity | undefined,
+	policy: 'warn' | 'block' | undefined,
+): Effect.Effect<void, RestorePhaseError> => {
+	if (current === undefined) return Effect.void;
+	if (meta.graphInput.graphInputId === current.graphInputId) return Effect.void;
+	const detail = graphInputMismatchDetail(meta.graphInput.graphInputId, current.graphInputId);
+	if (policy === 'block') {
+		return Effect.fail(new RestorePhaseError({ phase: 'graph-input-mismatch', detail }));
+	}
+	return Effect.logWarning(detail);
+};
 
 /**
  * Run the full restore. Routed through the unified reconcile as an
@@ -919,6 +943,11 @@ export const runRestore = (
 		// docker load, or container replacement.
 		const meta = yield* readMeta(inputs.artifactDir, inputs.snapshotId);
 		yield* verifyIntegrity(inputs.artifactDir);
+		yield* checkGraphInputCompatibility(
+			meta,
+			inputs.currentGraphInput,
+			inputs.graphInputMismatchPolicy,
+		);
 
 		// step0 — PRECONDITION: identity guard, FAIL-CLOSED before the FIRST
 		//    mutation. Compare the metadata's runtime identity and the merged
@@ -935,18 +964,15 @@ export const runRestore = (
 			inputs.runtimeIdentity,
 		);
 		// The cross-plugin CONTRIBUTION guard is conditional on there being a
-		// LIVE stack to compare against. A boot-time / offline restore (warm
-		// boot, interrupted-restore recovery, the offline CLI verb, the live
-		// supervisor's own initial acquire) runs with `participants === []`:
-		// the supervisor has not yet registered any snapshot participant, so
-		// there is no live identity to contribute. Running `runIdentityGuard`
-		// against an empty live slice would ALWAYS fail `IdentityMissingLive`
-		// (the snapshot recorded a key live did not contribute) — which is the
-		// bug that silently degraded `--warm` to cold and wedged the
-		// interrupted-restore recovery forever. With no live stack the
-		// comparison is vacuously satisfied (synthesizing the live slice FROM
-		// the snapshot's own recorded identity — what the offline CLI used to
-		// do explicitly — compares meta.identity against itself), so SKIP it.
+			// LIVE stack to compare against. Startup/offline restore
+			// (interrupted-restore recovery, the offline CLI verb, or the live
+			// supervisor's own initial acquire) runs with `participants === []`:
+			// the supervisor has not yet registered any snapshot participant, so
+			// there is no live identity to contribute. Running `runIdentityGuard`
+			// against an empty live slice would ALWAYS fail `IdentityMissingLive`
+			// because the snapshot recorded keys that no live participant has
+			// contributed yet. With no live stack the comparison is vacuously
+			// satisfied, so skip it.
 		// The snapshot-side emptiness refusal still fires: a snapshot that
 		// recorded NO identity is untrusted regardless of a live stack.
 		if (inputs.participants.length === 0) {

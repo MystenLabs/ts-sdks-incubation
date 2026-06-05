@@ -18,9 +18,8 @@
 //      RecreatePolicy is `on-failure` so the writable layer (chain
 //      state at `/root/.sui`) survives clean stop/start cycles, but an
 //      unclean SIGKILL/137 exit recreates instead of resuming a suspect
-//      RocksDB/checkpoint state. The image's entrypoint forwards SIGINT
-//      to a non-PID-1 sui child so clean shutdown (RocksDB checkpoint
-//      drain → exit 0/130) is the normal case.
+//      RocksDB/checkpoint state. The runtime stops the container with
+//      SIGINT so sui runs its ctrl-c shutdown path.
 //   3. Ready probe — RPC `getChainIdentifier`, faucet `GET /`, and
 //      GraphQL HTTP liveness. Per-fetch deadline + outer deadline.
 //   4. Fetch chain id from the now-responsive client (bounded timeout).
@@ -145,11 +144,10 @@ export const SUI_INDEXER_DB_ROLE = 'indexer-db' as const;
  *  (sui-owned sidecar by default, or the caller's BYO DB); `network` is
  *  the container network the validator joins to reach it.
  *
- *  A chain re-genesis resets the sui-owned sidecar DB NATIVELY: the
- *  sidecar's `configHash` keys off the validator's chain identity, so
- *  `decideRunAction` recreates the mount-less sidecar (→ empty DB) on a
- *  chain change and resumes it (→ rows preserved) otherwise. No post-boot
- *  marker reconcile. */
+ *  A chain re-genesis resets the sui-owned sidecar DB before boot:
+ *  absent or SIGKILLed validators cause the sidecar container to be
+ *  removed, while validator image identity is folded into the sidecar
+ *  `configHash` for image-driven re-genesis. Clean restarts resume it. */
 export interface LocalIndexer {
 	readonly url: string;
 	readonly network: string;
@@ -458,13 +456,11 @@ const ensureLocalValidatorContainerAttempt = (
 			name: params.containerName,
 			image: params.image,
 			// Keep the writable layer only after clean exits. If Docker
-			// escalates a previous stop to SIGKILL (137), resume can hang
-			// in RocksDB/checkpoint recovery with no RPC/faucet probes.
-			// `on-failure` routes that stale layer to recreate while still
-			// warm-resuming normal exit 0 / 130 stops. The longer grace
-			// gives the entrypoint time to flush RocksDB on stop.
+			// escalates stop to SIGKILL (137), recreate on the next boot
+			// instead of resuming suspect RocksDB/checkpoint state.
 			recreate: 'on-failure',
 			stopGraceSeconds: LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
+			stopSignal: 'SIGINT',
 			ports: params.ports,
 			portBindingReconciliation: params.reconciliation,
 			// Indexer (when on): join the indexer DB's network + hand the

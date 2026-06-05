@@ -1013,7 +1013,7 @@ export const ensureContainer = (
 						Effect.catch(() => Effect.succeed(null)),
 					);
 					if (current?.id === id) {
-						yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
+						yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10, spec.stopSignal);
 					}
 				}).pipe(Effect.uninterruptible),
 			);

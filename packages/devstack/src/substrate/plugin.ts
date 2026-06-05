@@ -127,6 +127,27 @@ export interface WatchDecl {
 	readonly cascade?: boolean;
 }
 
+export interface StaticNodeInputContribution {
+	readonly kind: 'static';
+	readonly value: unknown;
+}
+
+export interface ComputedNodeInputContribution {
+	readonly kind: 'computed';
+	readonly compute: () => Effect.Effect<unknown, unknown, never>;
+}
+
+export type NodeInputContribution = StaticNodeInputContribution | ComputedNodeInputContribution;
+
+export const staticInputIdentity = (value: unknown): StaticNodeInputContribution => ({
+	kind: 'static',
+	value,
+});
+
+export const computedInputIdentity = (
+	compute: () => Effect.Effect<unknown, unknown, never>,
+): ComputedNodeInputContribution => ({ kind: 'computed', compute });
+
 interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	readonly id: Id;
 	readonly role: PluginRole;
@@ -151,11 +172,10 @@ interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	 *  plugins set it. Full restart (`stack.restart` / CLI) drains
 	 *  everything regardless. */
 	readonly keepAliveOnRestore?: true;
-	/** Stable JSON-ish document folded into the warm-baseline graph key.
-	 *  Plugins that perform desired-state side effects not visible to
-	 *  lower-level cache/image/container invalidators use this to declare
-	 *  the static config that makes a restored baseline valid. */
-	readonly warmInputs?: unknown;
+	/** Desired-state inputs folded into this node's substrate input id.
+	 *  Dependencies' node input ids are included automatically; this field is
+	 *  for inputs owned by the node itself, including file hashes. */
+	readonly inputIdentity?: NodeInputContribution;
 }
 
 export type PluginSpec<
@@ -183,7 +203,7 @@ export interface Plugin<
 	readonly section: RowSection;
 	readonly endpointSection?: RowSection;
 	readonly keepAliveOnRestore?: true;
-	readonly warmInputs?: unknown;
+	readonly inputIdentity?: NodeInputContribution;
 }
 
 export type AnyPlugin = Plugin<
@@ -326,7 +346,7 @@ export function definePlugin(
 		...(spec.keepAliveOnRestore === undefined
 			? {}
 			: { keepAliveOnRestore: spec.keepAliveOnRestore }),
-		...(spec.warmInputs === undefined ? {} : { warmInputs: spec.warmInputs }),
+		...(spec.inputIdentity === undefined ? {} : { inputIdentity: spec.inputIdentity }),
 	} as AnyPlugin;
 }
 

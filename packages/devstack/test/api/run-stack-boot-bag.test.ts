@@ -10,7 +10,7 @@
 //        beforeInitialAcquire: built-in handoff/stop-bridge/command-pump →
 //          caller beforeInitialAcquire → FIRST ACQUIRE side effect.
 //        withinScope: built-in readiness-gate resolution → caller
-//          withinScope (so warm-capture can never delay `handle.start`).
+//          withinScope (so caller work can never delay `handle.start`).
 //      Proven two ways: (a) a shared label Ref records
 //      `caller-before → plugin-acquire → caller-within` in that exact
 //      order; (b) inside the caller `beforeInitialAcquire`, a command

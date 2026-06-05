@@ -38,6 +38,7 @@ import {
 	SnapshotIdError,
 	SnapshotLayout,
 	SnapshotOrchestratorService,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	layerSnapshotOrchestrator,
 } from '../../../src/orchestrators/snapshot/index.ts';
@@ -56,6 +57,12 @@ const identity: Identity = {
 	stack: stackName('main'),
 	chain: 'sui:local',
 };
+
+const graphInput = {
+	version: SNAPSHOT_GRAPH_INPUT_VERSION,
+	graphInputId: 'graph-fixture',
+	nodes: [],
+} as const;
 
 /** A container runtime whose `inspectByLabels` returns no containers —
  *  the `capture` flow never reaches the participants because we trip
@@ -82,6 +89,11 @@ const plantSnapshot = (snapshotDir: string, label: string): void => {
 		app: String(identity.app),
 		stack: String(identity.stack),
 		network: String(identity.chain),
+		graphInput: {
+			version: SNAPSHOT_GRAPH_INPUT_VERSION,
+			graphInputId: 'graph-fixture',
+			nodes: [],
+		},
 		hostTreeIncluded: false,
 		subtrees: [],
 		containers: [],
@@ -100,7 +112,9 @@ describe('SnapshotOrchestrator.capture — label uniqueness branch (TDZ regressi
 				plantSnapshot(snapshotDir, duplicateLabel);
 
 				const orchestrator = yield* SnapshotOrchestratorService;
-				const exit = yield* orchestrator.capture({ label: duplicateLabel }).pipe(Effect.exit);
+				const exit = yield* orchestrator
+					.capture({ label: duplicateLabel, graphInput })
+					.pipe(Effect.exit);
 
 				expect(Exit.isFailure(exit)).toBe(true);
 				const err = Exit.findErrorOption(exit);

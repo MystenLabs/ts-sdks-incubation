@@ -11,10 +11,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	composeIndexerConfigHash,
-	readValidatorChainConfig,
+	validatorNeedsIndexerReset,
 	sui,
 	provisionLocalIndexer,
 } from '../../../src/plugins/sui/index.ts';
+import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import { makeSnapshotable } from '../../../src/plugins/sui/snapshot.ts';
 import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
@@ -43,12 +44,13 @@ const BUMPED_VALIDATOR_IMAGE: ImageRef = { digest: 'sha256:validator2', tag: 'su
 // and exec returns exit 0 (pg_isready ready, createdb done).
 //
 // `inspectByLabels` returns one validator handle when `sink.validatorPresent`
-// is set (so `readValidatorChainConfig` reads `present`), else none (absent →
-// `null` → the `fresh` configHash token). `sink.validatorExitCode` surfaces a
-// `lastExitCode` on that handle so the present+137 crash-recreate gate is
-// testable (137 ⇒ re-genesis ⇒ `null`/`fresh`; any other code ⇒ `present`).
+// is set. `sink.validatorExitCode` surfaces a `lastExitCode` on that handle
+// so the reset gate is testable (137 means re-genesis, remove the sidecar;
+// any other code means resume the sidecar).
 const sidecarRuntime = (sink: {
 	spec?: EnsureContainerSpec;
+	removedLabels?: Partial<ContainerLabelTuple>;
+	removeCalls?: number;
 	readonly validatorPresent?: boolean;
 	readonly validatorExitCode?: number;
 }): ContainerRuntime =>
@@ -68,6 +70,11 @@ const sidecarRuntime = (sink: {
 			} satisfies ContainerHandle);
 		},
 		exec: () => Effect.succeed({ exitCode: 0, stdout: '1\n', stderr: '' }),
+		removeManagedContainers: (labels) => {
+			sink.removedLabels = labels;
+			sink.removeCalls = (sink.removeCalls ?? 0) + 1;
+			return Effect.succeed(1);
+		},
 		inspectByLabels: () =>
 			Effect.succeed(
 				sink.validatorPresent
@@ -226,78 +233,54 @@ describe('composeIndexerConfigHash (native sidecar reset/restore key)', () => {
 	const img = 'sui:local';
 	const img2 = 'sui:local-v2';
 
-	it('is STABLE for the same chain + same image (restart / restore → resume → rows kept)', () => {
-		expect(composeIndexerConfigHash('present', img)).toBe(composeIndexerConfigHash('present', img));
+	it('is stable for the same validator image (restart / restore resumes rows)', () => {
+		expect(composeIndexerConfigHash(img)).toBe(composeIndexerConfigHash(img));
 	});
 
-	it('DIFFERS for different chains (re-genesis → recreate → empty DB)', () => {
-		expect(composeIndexerConfigHash('present', img)).not.toBe(
-			composeIndexerConfigHash('other', img),
-		);
+	// The image-ref fold: an image bump recreates the validator. The token must change so the sidecar resets
+	// in lockstep through `on-config-change`.
+	it('differs for a different validator image (image bump recreates an empty DB)', () => {
+		expect(composeIndexerConfigHash(img)).not.toBe(composeIndexerConfigHash(img2));
 	});
 
-	it('null (validator absent OR exited-137 ⇒ regenesis) yields a DISTINCT `fresh` token', () => {
-		const fresh = composeIndexerConfigHash(null, img);
-		expect(fresh).toContain('chain=fresh');
-		expect(fresh).not.toBe(composeIndexerConfigHash('present', img));
-		expect(fresh).not.toBe(composeIndexerConfigHash('sui:0xabc', img));
-	});
-
-	// The image-ref fold: an image bump recreates the validator (image-mismatch
-	// → fresh layer → re-genesis) WHILE the disposition still reads `present`.
-	// The token must change so the sidecar resets in lockstep.
-	it('DIFFERS for a different validator image at the SAME present disposition (image bump → recreate → empty DB)', () => {
-		expect(composeIndexerConfigHash('present', img)).not.toBe(
-			composeIndexerConfigHash('present', img2),
-		);
-	});
-
-	it('is STABLE for the SAME image ref (restore replays the same content-addressed ref → resume)', () => {
-		// Restore runs the committed validator at the SAME resolved image ref, so
-		// `present` + same `img` ⇒ identical token ⇒ resume (rows intact).
-		expect(composeIndexerConfigHash('present', img)).toBe(composeIndexerConfigHash('present', img));
-	});
-
-	it('folds BOTH the chain disposition AND the image ref into the token shape', () => {
-		const token = composeIndexerConfigHash('present', img);
-		expect(token).toContain('chain=present');
-		expect(token).toContain(`img=${img}`);
+	it('folds the validator image ref into the token shape', () => {
+		const token = composeIndexerConfigHash(img);
+		expect(token).toContain(`validator-img=${img}`);
 	});
 });
 
-// The disposition → configHash mapping is what closes the gap: presence ≠
-// "same chain" when the validator was SIGKILLed (137) — the runtime recreates
-// it (re-genesis), so we must reset rather than resume stale rows. Gate on
-// EXACTLY 137, mirroring `decideRunAction`.
-describe('readValidatorChainConfig (pre-boot disposition → chain token)', () => {
-	const dispositionOf = (sink: {
+// Presence does not always mean "same chain": a 137-crashed validator is
+// still present, but the runtime will recreate it. Gate on exactly 137,
+// mirroring `decideRunAction`.
+describe('validatorNeedsIndexerReset', () => {
+	const needsReset = (sink: {
 		validatorPresent?: boolean;
 		validatorExitCode?: number;
-	}): Promise<string | null> =>
-		Effect.runPromise(readValidatorChainConfig(sidecarRuntime(sink), identity));
+	}): Promise<boolean> =>
+		Effect.runPromise(validatorNeedsIndexerReset(sidecarRuntime(sink), identity));
 
-	it('absent → null (fresh / wiped ⇒ re-genesis incoming)', async () => {
-		expect(await dispositionOf({ validatorPresent: false })).toBeNull();
+	it('absent validator resets the sidecar', async () => {
+		expect(await needsReset({ validatorPresent: false })).toBe(true);
 	});
 
-	it('present + running (no exit code) → `present` (same chain → resume)', async () => {
-		expect(await dispositionOf({ validatorPresent: true })).toBe('present');
+	it('present + running resumes the sidecar', async () => {
+		expect(await needsReset({ validatorPresent: true })).toBe(false);
 	});
 
-	it('present + 137 (SIGKILL/OOM crash-recreate) → null (re-genesis incoming)', async () => {
-		expect(await dispositionOf({ validatorPresent: true, validatorExitCode: 137 })).toBeNull();
+	it('present + 137 resets the sidecar', async () => {
+		expect(await needsReset({ validatorPresent: true, validatorExitCode: 137 })).toBe(true);
 	});
 
-	it('present + clean exit 0 → `present` (writable layer kept → same chain)', async () => {
-		expect(await dispositionOf({ validatorPresent: true, validatorExitCode: 0 })).toBe('present');
+	it('present + clean exit 0 resumes the sidecar', async () => {
+		expect(await needsReset({ validatorPresent: true, validatorExitCode: 0 })).toBe(false);
 	});
 
-	it('present + 130 (SIGINT) → `present` (non-137 ⇒ runtime resumes ⇒ same chain)', async () => {
-		expect(await dispositionOf({ validatorPresent: true, validatorExitCode: 130 })).toBe('present');
+	it('present + 130 (SIGINT) resumes the sidecar', async () => {
+		expect(await needsReset({ validatorPresent: true, validatorExitCode: 130 })).toBe(false);
 	});
 
-	it('present + other non-137 exit (1) → `present` (runtime does NOT recreate)', async () => {
-		expect(await dispositionOf({ validatorPresent: true, validatorExitCode: 1 })).toBe('present');
+	it('present + other non-137 exit (1) resumes the sidecar', async () => {
+		expect(await needsReset({ validatorPresent: true, validatorExitCode: 1 })).toBe(false);
 	});
 });
 
@@ -305,6 +288,8 @@ describe('provisionLocalIndexer stamps the sidecar configHash', () => {
 	const stampedHash = async (
 		sink: {
 			spec?: EnsureContainerSpec;
+			removedLabels?: Partial<ContainerLabelTuple>;
+			removeCalls?: number;
 			validatorPresent?: boolean;
 			validatorExitCode?: number;
 		},
@@ -321,45 +306,73 @@ describe('provisionLocalIndexer stamps the sidecar configHash', () => {
 	const imgRef = VALIDATOR_IMAGE.tag ?? VALIDATOR_IMAGE.digest;
 	const bumpedRef = BUMPED_VALIDATOR_IMAGE.tag ?? BUMPED_VALIDATOR_IMAGE.digest;
 
-	it('absent validator → the `fresh` configHash token (so a re-boot resets)', async () => {
-		const sink: { spec?: EnsureContainerSpec; validatorPresent?: boolean } = {
+	it('absent validator removes stale sidecar and stamps the stable image token', async () => {
+		const sink: {
+			spec?: EnsureContainerSpec;
+			removedLabels?: Partial<ContainerLabelTuple>;
+			removeCalls?: number;
+			validatorPresent?: boolean;
+		} = {
 			validatorPresent: false,
 		};
 		const hash = await stampedHash(sink);
+		expect(sink.removedLabels).toEqual({
+			app: 'app',
+			stack: 'stack',
+			plugin: 'sui',
+			role: 'indexer-db',
+		});
+		expect(sink.removeCalls).toBe(1);
 		expect(sink.spec?.recreate).toBe('on-config-change');
-		expect(hash).toBe(composeIndexerConfigHash(null, imgRef));
+		expect(hash).toBe(composeIndexerConfigHash(imgRef));
 	});
 
-	it('present validator → the `present` configHash token (so a restart resumes)', async () => {
-		expect(await stampedHash({ validatorPresent: true })).toBe(
-			composeIndexerConfigHash('present', imgRef),
-		);
+	it('present validator does not remove and stamps the same image token', async () => {
+		const sink: {
+			spec?: EnsureContainerSpec;
+			removedLabels?: Partial<ContainerLabelTuple>;
+			removeCalls?: number;
+			validatorPresent?: boolean;
+		} = { validatorPresent: true };
+		expect(await stampedHash(sink)).toBe(composeIndexerConfigHash(imgRef));
+		expect(sink.removeCalls ?? 0).toBe(0);
 	});
 
-	it('present + 137 → the `fresh` token, DIFFERING from present+clean (so the sidecar RECREATES)', async () => {
-		const crashed = await stampedHash({ validatorPresent: true, validatorExitCode: 137 });
-		const clean = await stampedHash({ validatorPresent: true, validatorExitCode: 0 });
-		expect(crashed).toBe(composeIndexerConfigHash(null, imgRef));
-		// present+137 ≠ present+clean ⇒ `decideRunAction` `===` mismatch ⇒ recreate.
-		expect(crashed).not.toBe(clean);
+	it('present + 137 removes stale sidecar before stamping the stable image token', async () => {
+		const crashedSink: {
+			spec?: EnsureContainerSpec;
+			removedLabels?: Partial<ContainerLabelTuple>;
+			removeCalls?: number;
+			validatorPresent?: boolean;
+			validatorExitCode?: number;
+		} = { validatorPresent: true, validatorExitCode: 137 };
+		const cleanSink: {
+			spec?: EnsureContainerSpec;
+			removedLabels?: Partial<ContainerLabelTuple>;
+			removeCalls?: number;
+			validatorPresent?: boolean;
+			validatorExitCode?: number;
+		} = { validatorPresent: true, validatorExitCode: 0 };
+		const crashed = await stampedHash(crashedSink);
+		const clean = await stampedHash(cleanSink);
+		expect(crashed).toBe(composeIndexerConfigHash(imgRef));
+		expect(clean).toBe(composeIndexerConfigHash(imgRef));
+		expect(crashedSink.removeCalls).toBe(1);
+		expect(cleanSink.removeCalls ?? 0).toBe(0);
 	});
 
-	// The closed door: a different validator image at the SAME present+clean
-	// disposition must stamp a DIFFERENT token, so an image bump (which recreates
-	// the present+non-137 validator → re-genesis) resets the sidecar instead of
-	// resuming stale rows against the new chain.
-	it('present + bumped image → DIFFERS from present + original image (image bump ⇒ recreate)', async () => {
+	it('present + bumped image differs from present + original image', async () => {
 		const original = await stampedHash({ validatorPresent: true, validatorExitCode: 0 });
 		const bumped = await stampedHash(
 			{ validatorPresent: true, validatorExitCode: 0 },
 			BUMPED_VALIDATOR_IMAGE,
 		);
-		expect(original).toBe(composeIndexerConfigHash('present', imgRef));
-		expect(bumped).toBe(composeIndexerConfigHash('present', bumpedRef));
+		expect(original).toBe(composeIndexerConfigHash(imgRef));
+		expect(bumped).toBe(composeIndexerConfigHash(bumpedRef));
 		expect(bumped).not.toBe(original);
 	});
 
-	it('present + SAME image (restart / restore) → SAME token (so the sidecar RESUMES, rows kept)', async () => {
+	it('present + same image stamps the same token', async () => {
 		const first = await stampedHash({ validatorPresent: true, validatorExitCode: 0 });
 		const second = await stampedHash({ validatorPresent: true, validatorExitCode: 0 });
 		expect(first).toBe(second);
@@ -368,6 +381,6 @@ describe('provisionLocalIndexer stamps the sidecar configHash', () => {
 	it('falls back to the digest when the resolved image has no tag', async () => {
 		const digestOnly: ImageRef = { digest: 'sha256:digest-only' };
 		const hash = await stampedHash({ validatorPresent: true, validatorExitCode: 0 }, digestOnly);
-		expect(hash).toBe(composeIndexerConfigHash('present', digestOnly.digest));
+		expect(hash).toBe(composeIndexerConfigHash(digestOnly.digest));
 	});
 });

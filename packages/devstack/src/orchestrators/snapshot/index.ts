@@ -23,7 +23,12 @@ export {
 } from './capture.ts';
 
 // Restore
-export { RestorePhaseError, runRestore, type RestoreParticipant } from './restore.ts';
+export {
+	graphInputMismatchDetail,
+	RestorePhaseError,
+	runRestore,
+	type RestoreParticipant,
+} from './restore.ts';
 
 // Interrupted-restore sentinel + boot-time auto-recovery
 export {
@@ -66,18 +71,25 @@ export {
 export {
 	containerImagesBundlePath,
 	contributionPath,
+	computeSnapshotGraphInputFromGraph,
+	computeSnapshotGraphInputFromStack,
 	DEPLOY_CACHE_NAMESPACES,
 	IntegrityFileSchema,
 	SnapshotDescriptorError,
+	SnapshotGraphInputIdentitySchema,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_CONTRIBUTION_VERSION,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_ID_RULE,
 	SNAPSHOT_INTEGRITY_VERSION,
 	SNAPSHOT_META_VERSION,
 	parseSnapshotId,
 	snapshotIdFromString,
+	snapshotGraphInputFromIdentity,
 	type IntegrityFile,
+	type SnapshotGraphInputIdentity,
+	type SnapshotNodeInputIdentity,
 	type SnapshotCatalogEntry,
 	type SnapshotId,
 	type SnapshotMetadata,

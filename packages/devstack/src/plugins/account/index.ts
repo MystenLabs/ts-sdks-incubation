@@ -41,7 +41,12 @@
 
 import { Effect } from 'effect';
 
-import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
+import {
+	definePlugin,
+	resource,
+	staticInputIdentity,
+	type AnyResourceRef,
+} from '../../api/define-plugin.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { suiResource, SuiLogAttr } from '../sui/index.ts';
@@ -196,20 +201,20 @@ const fundingAmountToBigInt = (
 const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
 	coin.symbol ?? coin.fullCoinType.split('::').at(-1) ?? coin.fullCoinType;
 
-const warmAmount = (amount: number | bigint): string => amount.toString();
+const inputAmount = (amount: number | bigint): string => amount.toString();
 
-const warmFundingProviderIds = (
+const inputFundingProviderIds = (
 	provider: CrossCuttingFundingProvider | undefined,
 ): ReadonlyArray<string> =>
 	fundingProviders(provider)
 		.map((ref) => ref.id)
 		.sort((a, b) => a.localeCompare(b));
 
-const warmFundingInputFor = (entry: AccountFundingEntry): unknown => {
+const inputFundingIdentityFor = (entry: AccountFundingEntry): unknown => {
 	if (entry.coin === 'sui') {
-		return { coin: 'sui', amountMist: warmAmount(entry.amount) };
+		return { coin: 'sui', amountMist: inputAmount(entry.amount) };
 	}
-	const via = warmFundingProviderIds(entry.via);
+	const via = inputFundingProviderIds(entry.via);
 	return {
 		coin: entry.coin.id,
 		amountMist: entry.amount.toString(),
@@ -217,18 +222,18 @@ const warmFundingInputFor = (entry: AccountFundingEntry): unknown => {
 	};
 };
 
-const accountWarmFundingInputs = (
+const accountFundingInputIdentity = (
 	opts: ResolvedAccountOptions,
 	fundingEntries: AccountFunding,
 ): ReadonlyArray<unknown> => {
-	const explicit = fundingEntries.map(warmFundingInputFor);
+	const explicit = fundingEntries.map(inputFundingIdentityFor);
 	if (opts.kind === 'ephemeral' && opts.funding === undefined) {
 		return [{ coin: 'sui', amountMist: DEFAULT_EPHEMERAL_FUND_MIST.toString() }, ...explicit];
 	}
 	return explicit;
 };
 
-const accountWarmVariantInput = (opts: ResolvedAccountOptions): unknown => {
+const accountVariantInputIdentity = (opts: ResolvedAccountOptions): unknown => {
 	switch (opts.kind) {
 		case 'ephemeral':
 			return { kind: 'ephemeral' };
@@ -242,14 +247,14 @@ const accountWarmVariantInput = (opts: ResolvedAccountOptions): unknown => {
 	}
 };
 
-const accountWarmInputs = (
+const accountInputIdentity = (
 	opts: ResolvedAccountOptions,
 	fundingEntries: AccountFunding,
 ): unknown => ({
 	plugin: 'account',
 	name: opts.name,
-	variant: accountWarmVariantInput(opts),
-	funding: accountWarmFundingInputs(opts, fundingEntries),
+	variant: accountVariantInputIdentity(opts),
+	funding: accountFundingInputIdentity(opts, fundingEntries),
 });
 
 // ---------------------------------------------------------------------------
@@ -305,7 +310,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// `done`.
 		role: 'task',
 		section: 'account',
-		warmInputs: accountWarmInputs(opts2, fundingEntryList),
+		inputIdentity: staticInputIdentity(accountInputIdentity(opts2, fundingEntryList)),
 		// `deps` auto-infers from the resolved `dependsOn`; `ctx` arrives
 		// via the `PluginContext` service.
 		start: (deps) =>
