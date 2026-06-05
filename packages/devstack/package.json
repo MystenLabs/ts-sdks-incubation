@@ -87,7 +87,7 @@
 		"effect": "catalog:",
 		"graphql": "catalog:",
 		"graphql-yoga": "catalog:",
-		"ink": "^7.0.0",
+		"ink": "catalog:",
 		"react": "catalog:"
 	},
 	"devDependencies": {

@@ -43,13 +43,15 @@
 		"prepublishOnly": "pnpm run build"
 	},
 	"dependencies": {
-		"@clack/prompts": "^1.0.0"
+		"ink": "catalog:",
+		"react": "catalog:"
 	},
 	"devDependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:^",
 		"@mysten-incubation/devstack": "workspace:^",
 		"@mysten-incubation/tsconfig": "workspace:^",
 		"@types/node": "catalog:",
+		"@types/react": "catalog:",
 		"tsdown": "^0.21.10",
 		"typescript": "catalog:",
 		"vitest": "^4.1.6"
