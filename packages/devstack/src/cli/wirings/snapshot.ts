@@ -34,7 +34,7 @@ import {
 	resolvedIdentityForStack,
 	type ResolvedIdentity,
 } from './identity.ts';
-import { buildDirectSnapshotLayers, buildVerbLayers } from './build-verb-layers.ts';
+import { buildDirectSnapshotLayers, buildVerbLayers } from '../../orchestrators/layers.ts';
 import { provideFileSystem } from './provide-file-system.ts';
 
 const LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS = 60 * 60 * 1000;

@@ -47,7 +47,7 @@ export { claim, heartbeatFiber, release } from './cross-process/roster.ts';
 // ---------------------------------------------------------------------
 // Supervisor — handle/types and `startSupervisor` / `supervise` entry
 // points.
-// Consumers: CLI wirings (up, apply, snapshot, build-verb-layers,
+// Consumers: CLI wirings (up, apply, snapshot, wipe,
 // config-loader, identity, main) + supervisor tests + integration tests.
 // ---------------------------------------------------------------------
 export { startSupervisor, supervise } from './supervisor/index.ts';

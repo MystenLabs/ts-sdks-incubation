@@ -15,7 +15,7 @@ import {
 import { removeRouterDispatchFilesForStack } from '../../orchestrators/router/cleanup.ts';
 
 import { ensureNoLiveSupervisor, identityValueFor, type ResolvedIdentity } from './identity.ts';
-import { buildDirectSnapshotLayers } from './build-verb-layers.ts';
+import { buildDirectSnapshotLayers } from '../../orchestrators/layers.ts';
 import { provideFileSystem } from './provide-file-system.ts';
 
 export const runWipeDirect = (identity: ResolvedIdentity): Effect.Effect<void, unknown> =>

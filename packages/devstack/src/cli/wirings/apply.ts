@@ -42,7 +42,7 @@ import {
 	stackRootFor,
 	type ResolvedIdentity,
 } from './identity.ts';
-import { buildVerbLayers } from './build-verb-layers.ts';
+import { buildVerbLayers } from '../../orchestrators/layers.ts';
 
 const LIVE_APPLY_ACK_TIMEOUT_MILLIS = 10 * 60 * 1000;
 

@@ -317,7 +317,7 @@ export interface ProductionCodegenOptions {
 /**
  * The ONE boot seam that maps a stack's codegen config to the production
  * codegen orchestrator options. Both composition entry points
- * (`api/run-stack.ts` and `cli/wirings/build-verb-layers.ts`) call this so
+ * (`api/run-stack.ts` and `orchestrators/layers.ts`) call this so
  * the primary-vs-secondary output-dir branch (via `resolveCodegenOutput`)
  * is wired exactly once: primary run → `<appRoot>/src/generated`; a
  * secondary `--stack` run → `<appRoot>/.devstack/stacks/<stack>/generated`,
