@@ -595,6 +595,17 @@ const promoteStagedImages = (
 ): Effect.Effect<void, RestorePhaseError> =>
 	Effect.gen(function* () {
 		for (const image of images) {
+			// Image GC: the promote below moves `image.captured.imageName` from
+			// the layer it currently resolves to (a prior restore/capture of the
+			// same name, now superseded) onto the freshly-staged snapshot layer.
+			// The previous layer is then orphaned — no tag references it — and
+			// would dangle forever. Read the old layer's digest BEFORE the promote
+			// so we can drop it AFTER. A null here (first restore: nothing tagged
+			// that name yet) means there is no orphan to collect. Mirrors capture's
+			// `resumeAfterCapture` GC exactly.
+			const oldDigest = yield* runtime
+				.inspectImageDigest(image.captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
 			yield* runtime
 				.tagImage(image.stagedRef, image.captured.imageName, {
 					removeSourceAfterTag: true,
@@ -608,6 +619,37 @@ const promoteStagedImages = (
 						),
 					),
 				);
+			// ORDERING INVARIANT: GC runs strictly AFTER the promote succeeds.
+			// Removing the old layer before the promote would destroy the live
+			// image if the promote then failed. Now `imageName` resolves to the
+			// new staged layer; read that digest to confirm the orphan is
+			// genuinely distinct.
+			const newDigest = yield* runtime
+				.inspectImageDigest(image.captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
+			// Two guards before removal:
+			//   - null guard: no previous layer to collect (first restore).
+			//   - equal-digest guard: the staged image is an identical layer id,
+			//     so `imageName` still resolves to it — removing `oldDigest` would
+			//     delete the LIVE layer. Skip the no-op case.
+			if (oldDigest !== null && oldDigest !== newDigest) {
+				// Digest-only target: `removeImage` resolves `tag ?? digest`, so a
+				// digest-only ref drops the orphaned layer by id, NOT the live
+				// `imageName` tag. Best-effort — any failure (image-in-use,
+				// multiple tags, ImageRemoveFailed) is logged and swallowed; it
+				// must NEVER fail the restore. Mirrors capture's GC swallow.
+				yield* runtime
+					.removeImage({ digest: oldDigest })
+					.pipe(
+						Effect.catch((cause) =>
+							Effect.logWarning(
+								`GC of superseded image layer ${oldDigest} for ${image.captured.imageName} failed (best-effort): ${String(
+									cause,
+								)}`,
+							),
+						),
+					);
+			}
 		}
 	});
 

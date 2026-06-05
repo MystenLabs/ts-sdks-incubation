@@ -147,7 +147,14 @@ const runtimeStub = (
 		readonly tagError?: ContainerRuntimeError;
 		readonly tagErrorFor?: (newTag: string) => ContainerRuntimeError | undefined;
 		readonly removeImageCalls?: Array<ImageRef>;
+		readonly removeImageErrorFor?: (ref: ImageRef) => ContainerRuntimeError | undefined;
 		readonly events?: Array<string>;
+		/** Drive the promote-GC: resolves a name to the digest it points at.
+		 *  Each successive call for the same name reads the next element of the
+		 *  queued list (old digest BEFORE promote, new digest AFTER). A name
+		 *  absent from the map resolves to `null` (default — no orphan to GC), so
+		 *  existing tests are unaffected. */
+		readonly inspectDigestsFor?: Map<string, Array<string | null>>;
 	} = {},
 ): ContainerRuntime => ({
 	ensureImage: () => Effect.die('ensureImage not used'),
@@ -198,11 +205,20 @@ const runtimeStub = (
 			}
 		}),
 	removeImage: (ref) =>
-		Effect.sync(() => {
+		Effect.gen(function* () {
 			opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
 			opts.removeImageCalls?.push(ref);
+			const removeError = opts.removeImageErrorFor?.(ref);
+			if (removeError !== undefined) {
+				return yield* Effect.fail(removeError);
+			}
 		}),
-	inspectImageDigest: () => Effect.succeed(null),
+	inspectImageDigest: (ref) =>
+		Effect.sync(() => {
+			const queue = opts.inspectDigestsFor?.get(ref);
+			if (queue === undefined || queue.length === 0) return null;
+			return queue.shift() ?? null;
+		}),
 	stop: () => Effect.die('stop not used'),
 	removeManagedContainers: (labelMatch) =>
 		Effect.sync(() => {
@@ -1777,6 +1793,159 @@ describe('snapshot restore safety', () => {
 						stack: runtimeIdentity.stack,
 						plugin: 'postgres',
 						role: 'worker',
+					},
+				]);
+			}),
+		),
+	);
+
+	// -------------------------------------------------------------------------
+	// Promote-time image GC — drop the layer the captured imageName resolved to
+	// BEFORE the promote retag (its superseded prior restore/capture layer).
+	// `promoteStagedImages` retags `image.captured.imageName` onto the freshly-
+	// staged layer; the layer the name USED to resolve to is then orphaned and
+	// would dangle forever. Mirrors capture's `resumeAfterCapture` GC: inspect
+	// old → promote → inspect new → best-effort remove old IFF non-null + !=new.
+	// -------------------------------------------------------------------------
+
+	it.effect('restore promote removes the superseded layer at the captured imageName', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const imageName = 'devstack-build:postgres-original';
+				const meta = metadata({
+					containers: [capturedContainer({ imageName })],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// imageName resolved to an OLD layer before promote; resolves to a
+				// distinct NEW layer after. The old layer is the orphan to GC.
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					inspectDigestsFor: new Map([
+						[imageName, ['sha256:old-layer', 'sha256:new-layer']],
+					]),
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// The superseded old layer is removed exactly once, by digest-only
+				// ref (drops the orphan layer, never the live imageName tag).
+				const gcRemovals = removeImageCalls.filter(
+					(ref) => ref.tag === undefined && ref.digest === 'sha256:old-layer',
+				);
+				expect(gcRemovals).toEqual([{ digest: 'sha256:old-layer' }]);
+				// Ordering: the GC removal runs strictly AFTER the promote retag.
+				const promoteIdx = events.indexOf(`tag:${imageName}`);
+				const gcIdx = events.indexOf('remove-image:sha256:old-layer');
+				expect(promoteIdx).toBeGreaterThanOrEqual(0);
+				expect(gcIdx).toBeGreaterThan(promoteIdx);
+				// Restore still completes — containers swept.
+				expect(sweepCalls).toEqual([
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres',
+						role: 'db',
+					},
+				]);
+			}),
+		),
+	);
+
+	it.effect('restore promote does not remove an identical (unchanged) layer', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const imageName = 'devstack-build:postgres-original';
+				const meta = metadata({
+					containers: [capturedContainer({ imageName })],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// Old digest === new digest: the staged layer is byte-identical, so
+				// imageName still resolves to it after the promote. Removing the
+				// "old" digest would delete the LIVE layer — the equal-digest guard
+				// must skip it. (A null first read is also a no-GC case, covered by
+				// the default stub in every other passing test.)
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					inspectDigestsFor: new Map([
+						[imageName, ['sha256:same-layer', 'sha256:same-layer']],
+					]),
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// No GC removal of the captured layer digest.
+				expect(removeImageCalls.some((ref) => ref.digest === 'sha256:same-layer')).toBe(false);
+				expect(events).not.toContain('remove-image:sha256:same-layer');
+			}),
+		),
+	);
+
+	it.effect('restore promote GC failure is swallowed and does not fail the restore', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const imageName = 'devstack-build:postgres-original';
+				const meta = metadata({
+					containers: [capturedContainer({ imageName })],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// The orphan digest is distinct (GC fires), but removeImage REFUSES
+				// for that digest. The best-effort catch must log+swallow so the
+				// restore still succeeds and the container sweep still runs.
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					inspectDigestsFor: new Map([
+						[imageName, ['sha256:old-layer', 'sha256:new-layer']],
+					]),
+					removeImageErrorFor: (ref) =>
+						ref.digest === 'sha256:old-layer' && ref.tag === undefined
+							? {
+									_tag: 'ContainerRuntimeError',
+									reason: 'image-remove-failed',
+									detail: 'image in use',
+								}
+							: undefined,
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				// Restore SUCCEEDS despite the GC removal failing.
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// The GC removal WAS attempted (then swallowed).
+				expect(
+					removeImageCalls.some(
+						(ref) => ref.tag === undefined && ref.digest === 'sha256:old-layer',
+					),
+				).toBe(true);
+				// And the container sweep — which runs AFTER promotion — still ran.
+				expect(sweepCalls).toEqual([
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres',
+						role: 'db',
 					},
 				]);
 			}),
