@@ -9,7 +9,7 @@
 // ARCHITECTURE.md §"Layer composition lives at L3, not L0".
 //
 // This module is the THIN PUBLIC FACADE. The implementation — plus the
-// non-public boot-injection seam the CLI `up` verb routes through (S3) —
+// non-public boot-injection seam the CLI `up` verb routes through —
 // lives in `run-stack-internal.ts`. `runStack` delegates there with a
 // zero-`boot` bag, so the public surface (`RunHandle`, `RunStackOptions`,
 // `BootError`) and the zero-`boot` path stay byte-identical. The substrate
@@ -89,41 +89,73 @@ export interface BootError {
 	readonly cause: Cause.Cause<unknown>;
 }
 
-/** Programmatic handle. Symmetric with the attached CLI surface:
- *  `events`, `state`, and `awaitShutdown` are the same primitives the
- *  TUI consumes in-process. */
+/**
+ * The programmatic handle `runStack` returns. It is a small bag of Effect
+ * values + readable refs — a functional surface, not an object with methods:
+ * each lifecycle action (`start` / `stop` / `awaitShutdown`) is an
+ * `Effect` you run, and each observation channel (`events` / `state`) is a
+ * value you read. Returned synchronously, BEFORE any fiber is forked, so a
+ * caller can subscribe to `state` / `events` ahead of `start`.
+ *
+ * Symmetric with the attached CLI surface: `events`, `state`, and
+ * `awaitShutdown` are the SAME in-process primitives the TUI consumes.
+ *
+ * Typical use:
+ *
+ *   const handle = runStack(stack, opts);
+ *   await Effect.runPromise(handle.start);          // boot → all ready
+ *   const snapshot = await Effect.runPromise(SubscriptionRef.get(handle.state));
+ *   await Effect.runPromise(handle.stop);           // graceful shutdown
+ *   await Effect.runPromise(handle.awaitShutdown);  // finalizers done
+ */
 export interface RunHandle {
-	/** Boot the supervisor and resolve when every plugin reaches
-	 *  `ready`. Fails with `BootError` if any plugin's acquire path
-	 *  fails. */
+	/** Fork the supervisor fiber and resolve once EVERY plugin reaches
+	 *  `ready` (or a terminal `done`). Fails with `BootError` if any
+	 *  plugin's initial-acquire path fails. Idempotent: a second `start`
+	 *  is a no-op that just awaits the same boot gate. */
 	readonly start: Effect.Effect<void, BootError, never>;
-	/** Trigger graceful shutdown: enqueues `shutdown.requested` onto
-	 *  the supervisor's command channel, then awaits the fiber. */
+	/** Request graceful shutdown: publishes `shutdown.requested` onto the
+	 *  supervisor's command channel (driving scope finalizers), then awaits
+	 *  the fiber. Safe to call before `start` (returns immediately) and
+	 *  more than once. */
 	readonly stop: Effect.Effect<void, never, never>;
 	/** Resolve when the supervisor fiber exits. Succeeds on a clean
 	 *  shutdown; fails with the captured `Cause` if the supervisor died
-	 *  mid-run after boot completed (e.g. a plugin scope finalizer
-	 *  defect). Boot-time failures still surface via `start`. */
+	 *  mid-run AFTER boot completed (e.g. a plugin scope-finalizer defect).
+	 *  Boot-time failures surface via `start`, not here — so a host that
+	 *  blocks the process on this Effect stays up for the supervisor's
+	 *  whole lifetime and learns of a post-boot death. */
 	readonly awaitShutdown: Effect.Effect<void, unknown, never>;
-	/** Tail of typed engine events from the supervisor's hub. The
-	 *  upstream is a `Queue.Dequeue`; consume via `Stream.run...`. */
+	/** Tail of typed engine events off the supervisor's hub. SINGLE
+	 *  CONSUMER: the upstream is a `Queue.Dequeue`, so taking an event
+	 *  removes it — running this stream from two places SPLITS the events
+	 *  between them rather than fanning out. Consume it once (e.g. via
+	 *  `Stream.runForEach`) and tee downstream if you need multiple sinks.
+	 *  Empty until `start` wires the hub. */
 	readonly events: Stream.Stream<EngineEvent, never, never>;
-	/** The supervisor's live projection. Renderers + tests read this
-	 *  directly; changes flow through `SubscriptionRef.changes`. */
+	/** The supervisor's live projection — the single read-model of stack
+	 *  state (identity, per-plugin lifecycle, cycle phase, log tail). Live
+	 *  for the supervisor's whole process lifetime: snapshot it with
+	 *  `SubscriptionRef.get`, or observe updates via `SubscriptionRef.changes`.
+	 *  Renderers + tests read it directly; nothing writes through it. */
 	readonly state: SubscriptionRef.SubscriptionRef<SubscribableState>;
-	/** Enqueue side of the supervisor's command channel — the same queue
-	 *  the supervisor consumes. An in-process TUI / out-of-process IPC
-	 *  bridge publishes `EngineCommand`s here (`shutdown.requested`,
-	 *  `selective-restart.requested`, snapshot verbs, …). The signal
-	 *  handler and the `stop` bridge already publish onto this queue. */
+	/** Fire-and-forget publish side of the supervisor's command channel —
+	 *  enqueue an `EngineCommand` (`shutdown.requested`,
+	 *  `selective-restart.requested`, snapshot/wipe/prune verbs, …) and
+	 *  return immediately. The same queue the supervisor drains; the signal
+	 *  handler and the `stop` bridge publish here too. Use `runCommand` when
+	 *  you need to await the command's outcome. */
 	readonly commands: Queue.Enqueue<EngineCommand>;
-	/** Submit-and-await dispatch: offers `command` onto the supervisor's
-	 *  in-band command queue and resolves when the command-loop finishes
-	 *  it (re-failing with the handler's cause). The IPC layer adds ack
-	 *  correlation on top of this later. */
+	/** Submit-and-AWAIT dispatch: publishes `command` in-band on the
+	 *  supervisor's command loop and resolves when the loop finishes
+	 *  handling it, re-failing with the handler's cause. Use this (over
+	 *  `commands`) when the caller must know the command succeeded —
+	 *  e.g. a destructive `snapshot.restore`. (The cross-process IPC bridge
+	 *  layers ack-correlation on top of this.) */
 	readonly runCommand: (command: EngineCommand) => Effect.Effect<void, unknown, never>;
-	/** The resolved `Identity` (app / stack / chain) this handle booted
-	 *  with. Available synchronously, before `start`. */
+	/** The resolved `Identity` — app / stack / network — this handle booted
+	 *  with, after all option > env > inference resolution. Available
+	 *  synchronously, BEFORE `start`. */
 	readonly identity: Identity;
 }
 
@@ -135,15 +167,19 @@ export interface RunHandle {
  * Boot a `Stack` for programmatic embedding. Returns a `RunHandle`
  * synchronously; the supervisor fiber is forked on `start`.
  *
- * Lifecycle:
+ * Programmatic contract — call, then drive the returned handle's Effects:
  *
- *   1. `runStack(stack, opts)` — synchronous; no fiber forked yet.
- *   2. `await Effect.runPromise(handle.start)` — forks the supervisor,
- *      blocks until every plugin reaches `ready` (or fails with
- *      `BootError`).
- *   3. Use `handle.events` / `handle.state` to observe.
+ *   1. `runStack(stack, opts)` — synchronous; NO fiber forked yet. Safe to
+ *      read `handle.identity` and subscribe to `handle.state` /
+ *      `handle.events` right away.
+ *   2. `await Effect.runPromise(handle.start)` — forks the supervisor and
+ *      blocks until every plugin reaches `ready` (or fails with `BootError`).
+ *   3. Observe via `handle.state` (snapshot / changes) and `handle.events`
+ *      (single-consumer tail); drive via `handle.commands` /
+ *      `handle.runCommand`.
  *   4. `await Effect.runPromise(handle.stop)` — graceful shutdown.
- *   5. `handle.awaitShutdown` resolves once finalizers complete.
+ *   5. `await Effect.runPromise(handle.awaitShutdown)` — resolves once scope
+ *      finalizers complete (or re-raises a post-boot supervisor death).
  *
  * Thin facade: delegates to `runStackWithBoot` (in `run-stack-internal.ts`)
  * with a zero-`boot` bag and no `commandHandler`, so this public path is

@@ -5,19 +5,17 @@
 // with a zero-`boot` bag, so the public surface (`RunHandle`,
 // `RunStackOptions`, `BootError`) and the zero-`boot` path stay
 // byte-identical. This module owns the supervised-body construction and
-// the caller-injectable boot hook seam the CLI `up` verb routes through in
-// a later step (S3).
+// the caller-injectable boot hook seam the CLI `up` verb routes through.
 //
-// Why a seam at all: `cli/wirings/up.ts:runUpLive` re-implements the SAME
-// substrate Layer composition + supervised body `runStack` already builds,
-// only to wrap it with extra `beforeInitialAcquire`/`withinScope` work
-// (interrupted-restore recovery, warm capture/restore, the roster lock, the
-// command-channel IPC bridge, the TUI surface). `runStackWithBoot` threads
-// those as CALLER-INJECTED hooks so the CLI consumes one boot core instead
-// of forking it. Because the bag is non-public, its hooks receive an
-// `InternalRunHandle` that additionally carries the live `SupervisorHandle`
-// (the seam the CLI hooks drain) — substrate detail that NEVER reaches the
-// public `RunHandle`.
+// Why a seam at all: the CLI `up` verb needs the SAME substrate Layer
+// composition + supervised body `runStack` builds, but wrapped with extra
+// `beforeInitialAcquire`/`withinScope` work (interrupted-restore recovery,
+// warm capture/restore, the roster lock, the command-channel IPC bridge, the
+// TUI surface). `runStackWithBoot` threads those as CALLER-INJECTED hooks so
+// the CLI consumes ONE boot core instead of forking it. Because the bag is
+// non-public, its hooks receive an `InternalRunHandle` that additionally
+// carries the live `SupervisorHandle` (the seam the CLI hooks drain) —
+// substrate detail that NEVER reaches the public `RunHandle`.
 //
 // PR#21 boot-ordering invariant (do not reorder): the composed hooks run
 // the BUILT-IN work FIRST, then the caller's. For `beforeInitialAcquire`
@@ -25,7 +23,7 @@
 // before any caller hook runs (so a `stop()` during a caller hook always
 // has a bridge) AND before the first acquire (`superviseStackEffect` runs
 // the whole composed `beforeInitialAcquire` ahead of `runInitialAcquire`).
-// For `withinScope` the built-in readiness-gate resolution (the S1 status
+// For `withinScope` the built-in readiness-gate resolution (the status
 // scan that resolves `bootDeferred`) runs first, so a caller `withinScope`
 // (e.g. warm-capture) can never delay `handle.start`.
 
@@ -42,6 +40,7 @@ import {
 	Ref,
 	type Scope,
 	Stream,
+	type SubscriptionRef,
 } from 'effect';
 
 import { appName, stackName } from '../substrate/brand.ts';
@@ -131,11 +130,38 @@ export interface RunStackBootBag {
 	) => Effect.Effect<void, unknown, BootHookServices>;
 }
 
+/** The substrate services a {@link CommandHandlerFactory} may yield — the
+ *  same singletons the contribution dispatcher + boot hooks see, minus
+ *  `Scope.Scope` (the factory runs before the supervised scope opens, so it
+ *  forks nothing). A handler closes over `SnapshotOrchestratorService` to
+ *  capture the LIVE participant set and `FileSystem` to thread it into the
+ *  snapshot I/O. */
+type CommandHandlerServices =
+	| SnapshotOrchestratorService
+	| FileSystem.FileSystem
+	| StackPathsService;
+
+/** A FACTORY for the supervisor command handler. The seam runs it ONCE,
+ *  inside the supervised body (so `CommandHandlerServices` — notably the live
+ *  `SnapshotOrchestratorService` + `FileSystem` — are in scope), BEFORE it
+ *  hands `startSupervisor` the resolved handler. So the resulting handler
+ *  (whose own R-channel is `never`, as the supervisor command loop requires)
+ *  closes over the seam's REAL substrate instances directly — no Deferred
+ *  hand-off. Resolving the snapshot orchestrator here yields the SAME
+ *  instance the contribution dispatcher registers live participants on, so an
+ *  operator `snapshot save` captures the LIVE chain/blob/db state, not an
+ *  empty set off a sibling orchestrator. */
+export type CommandHandlerFactory = Effect.Effect<
+	SupervisorCommandHandler,
+	never,
+	CommandHandlerServices
+>;
+
 /** `RunStackOptions` plus the non-public injection points. `commandHandler`
- *  threads straight into `superviseStackEffect`'s existing slot; `boot`
- *  carries the caller-injected hooks. */
+ *  is a FACTORY the seam resolves against its live substrate (see
+ *  {@link CommandHandlerFactory}); `boot` carries the caller-injected hooks. */
 export interface RunStackOptionsWithBoot extends RunStackOptions {
-	readonly commandHandler?: SupervisorCommandHandler;
+	readonly commandHandler?: CommandHandlerFactory;
 	readonly boot?: RunStackBootBag;
 }
 
@@ -177,6 +203,86 @@ const toBootError = (cause: Cause.Cause<unknown>): BootError => ({
 	_tag: 'BootError',
 	cause,
 });
+
+// -----------------------------------------------------------------------------
+// Boot-time handle slots
+// -----------------------------------------------------------------------------
+
+/** The mutable cells + ref the handle's lifecycle effects close over. Every
+ *  field is allocated SYNCHRONOUSLY in `makeRunHandleSlots` (see its
+ *  sync-safety contract) so the public handle can expose a live `state` /
+ *  `commands` queue and let callers subscribe to `state.changes` BEFORE
+ *  `start` ever forks the supervisor fiber. */
+interface RunHandleSlots {
+	/** The supervisor's live projection. Seeded sync; populated by the
+	 *  supervised body once it boots. */
+	readonly state: SubscriptionRef.SubscriptionRef<
+		import('../substrate/projection.ts').SubscribableState
+	>;
+	/** Resolved (or failed with `BootError`) by the readiness gate; `start`
+	 *  awaits it. */
+	readonly bootDeferred: Deferred.Deferred<void, BootError>;
+	/** Set by `stop`; the built-in stop-bridge awaits it and offers
+	 *  `shutdown.requested` onto the supervisor's command channel. */
+	readonly stopRequested: Deferred.Deferred<void>;
+	/** Handed the supervisor's event dequeue by `beforeInitialAcquire`; the
+	 *  public `events` stream unwraps it. */
+	readonly eventQueueRef: Deferred.Deferred<Queue.Dequeue<EngineEvent>>;
+	/** Public command channel, pumped onto the supervisor's own queue once it
+	 *  boots — the TUI/IPC publish target. */
+	readonly commandQueue: Queue.Queue<EngineCommand>;
+	/** Handed the supervisor's submit-and-await dispatch by
+	 *  `beforeInitialAcquire`; the public `runCommand` awaits it. */
+	readonly runCommandRef: Deferred.Deferred<
+		(command: EngineCommand) => Effect.Effect<void, unknown, never>
+	>;
+	/** Holds the forked supervisor fiber; `stop`/`awaitShutdown` await it. */
+	readonly fiberRef: Deferred.Deferred<Fiber.Fiber<void, never>>;
+	/** Single-fire guard so a second `start` is a no-op. */
+	readonly startClaim: Ref.Ref<boolean>;
+	/** Tee for a mid-run defect/failure raised AFTER boot completed, so
+	 *  `awaitShutdown` can re-surface it (a post-boot `Deferred.fail` is a
+	 *  no-op). */
+	readonly midRunCauseRef: Ref.Ref<Cause.Cause<unknown> | null>;
+}
+
+/**
+ * Allocate every boot-time handle slot in ONE place.
+ *
+ * SYNC-SAFETY CONTRACT (the reason this is a sync constructor, not an
+ * `Effect`): the handle must expose a real `state` / `commands` queue and
+ * be subscribable BEFORE `start` forks the supervisor. `Deferred.make`,
+ * `Queue.unbounded`, and `Ref.make` are pure sync effects (no side effects,
+ * no async), so `Effect.runSync` is safe for all of them. The projection ref
+ * goes through the explicit `makeProjectionRefSync` so the sync contract is
+ * pinned at the substrate constructor — if `makeProjectionRef` ever picks up
+ * an async/Layer wrapper (`withSpan`, annotation), `makeProjectionRefSync`
+ * must stay sync-only or this whole allocation must move behind a
+ * Deferred-handoff seam.
+ */
+const makeRunHandleSlots = (): RunHandleSlots => ({
+	state: makeProjectionRefSync(),
+	bootDeferred: Effect.runSync(Deferred.make<void, BootError>()),
+	stopRequested: Effect.runSync(Deferred.make<void>()),
+	eventQueueRef: Effect.runSync(Deferred.make<Queue.Dequeue<EngineEvent>>()),
+	commandQueue: Effect.runSync(Queue.unbounded<EngineCommand>()),
+	runCommandRef: Effect.runSync(
+		Deferred.make<(command: EngineCommand) => Effect.Effect<void, unknown, never>>(),
+	),
+	fiberRef: Effect.runSync(Deferred.make<Fiber.Fiber<void, never>>()),
+	startClaim: Effect.runSync(Ref.make(false)),
+	midRunCauseRef: Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null)),
+});
+
+/** Compose the public handle + the live `SupervisorHandle` into the
+ *  `InternalRunHandle` the caller boot hooks receive. The two composed hooks
+ *  build it identically; factored here so the closure-soundness note (the
+ *  hooks only deref `publicHandle` at boot, after the body assigns it) lives
+ *  in one place. */
+const buildInternalHandle = (
+	publicHandle: RunHandle,
+	supervisor: SupervisorHandle,
+): InternalRunHandle => ({ ...publicHandle, supervisor });
 
 // -----------------------------------------------------------------------------
 // runStackWithBoot
@@ -235,42 +341,21 @@ export const runStackWithBoot = (
 		options: engineStack.options,
 	};
 
-	// State + handle slots are created at `runStackWithBoot(...)` time so
-	// the caller can subscribe to `state.changes` BEFORE `start` runs.
-	// `Deferred.make` is sync-effect (no side-effects, no async);
-	// `Effect.runSync` is safe for it. The projection ref is allocated
-	// via the explicit `makeProjectionRefSync` so the sync contract is
-	// pinned at the substrate constructor — if `makeProjectionRef`
-	// ever picks up an async/Layer wrapper (`withSpan`, annotation),
-	// `makeProjectionRefSync` must remain sync-only or be replaced by
-	// a Deferred-handoff seam at this boot-time call site.
-	const state = makeProjectionRefSync();
-	const bootDeferred = Effect.runSync(Deferred.make<void, BootError>());
-	const stopRequested = Effect.runSync(Deferred.make<void>());
-	const eventQueueRef = Effect.runSync(Deferred.make<Queue.Dequeue<EngineEvent>>());
-	// Public command channel. Allocated eagerly (like `state`) so the
-	// handle exposes a real `Queue.Enqueue<EngineCommand>` synchronously,
-	// before `start`. Everything offered here is pumped onto the
-	// supervisor's own command queue once it boots (see the pump in
-	// `beforeInitialAcquire`), so a publish always lands on the seam the
-	// supervisor drains — the TUI/IPC publish target.
-	const commandQueue = Effect.runSync(Queue.unbounded<EngineCommand>());
-	// `runCommand` is the supervisor's submit-and-await dispatch; only
-	// knowable once `startSupervisor` runs. Surfaced via a Deferred the
-	// same way `eventQueueRef` is. The IPC ack-correlation layers on top
-	// of this later.
-	const runCommandRef = Effect.runSync(
-		Deferred.make<(command: EngineCommand) => Effect.Effect<void, unknown, never>>(),
-	);
-	const fiberRef = Effect.runSync(Deferred.make<Fiber.Fiber<void, never>>());
-	const startClaim = Effect.runSync(Ref.make(false));
-	// Tee for mid-run defects/failures. `Deferred.fail(bootDeferred, …)`
-	// below is a no-op once `bootDeferred` has succeeded (post-boot), so
-	// without this sibling ref a late scope-finalizer defect would
-	// otherwise leave the supervised fiber exiting `Success(void)` and
-	// `awaitShutdown` resolving clean — the operator would have no
-	// signal. `awaitShutdown` re-raises whatever this ref captured.
-	const midRunCauseRef = Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null));
+	// Every boot-time handle slot is allocated in ONE place (the sync-safety
+	// contract lives on `makeRunHandleSlots`): the handle must expose a live
+	// `state` / `commands` queue and be subscribable BEFORE `start` forks the
+	// supervisor fiber.
+	const {
+		state,
+		bootDeferred,
+		stopRequested,
+		eventQueueRef,
+		commandQueue,
+		runCommandRef,
+		fiberRef,
+		startClaim,
+		midRunCauseRef,
+	} = makeRunHandleSlots();
 
 	// Resolve the per-stack codegen output location through the ONE shared
 	// boot seam: primary run (effective stack === config `stackName`) →
@@ -317,9 +402,17 @@ export const runStackWithBoot = (
 		const postAcquireHook = yield* buildProductionPostAcquireHook({
 			extras: stack.options.extras,
 		});
+		// Resolve the command-handler FACTORY against the seam's live
+		// substrate (in scope here via `Effect.provide(substrate)` below)
+		// BEFORE `startSupervisor` consumes the handler. The factory closes
+		// over the same `SnapshotOrchestratorService` the contribution
+		// dispatcher registers participants on, so the resulting handler
+		// (R = `never`, as the command loop requires) drives the LIVE state.
+		const commandHandler =
+			opts.commandHandler === undefined ? undefined : yield* opts.commandHandler;
 		yield* superviseStackEffect(supervisedStack, identity, state, {
 			contributionDispatcher,
-			commandHandler: opts.commandHandler,
+			commandHandler,
 			postAcquireHook,
 			extendContext: (ctx) =>
 				Effect.gen(function* () {
@@ -332,12 +425,12 @@ export const runStackWithBoot = (
 			// ORDER (PR#21-load-bearing): BUILT-IN work first, THEN caller.
 			//   1. built-in: event-queue handoff + runCommand surface +
 			//      command-pump fork + stop-bridge fork.
-			//   2. caller: `opts.boot?.beforeInitialAcquire(internalHandle)`.
+			//   2. caller: `opts.boot?.beforeInitialAcquire(...)`.
 			// `superviseStackEffect` runs this whole composed effect BEFORE
-			// `runInitialAcquire`, so the caller hook (recover/warm/roster/
-			// IPC/TUI in S3) runs before first acquire too; and because the
-			// built-in stop-bridge is armed first, a `stop()` raised during a
-			// caller hook always has a command bridge.
+			// `runInitialAcquire`, so the caller hook (the CLI's recover/warm/
+			// roster/IPC/TUI bundle) runs before first acquire too; and because
+			// the built-in stop-bridge is armed first, a `stop()` raised during
+			// a caller hook always has a command bridge.
 			beforeInitialAcquire: (handle) =>
 				Effect.gen(function* () {
 					yield* Deferred.succeed(eventQueueRef, handle.events).pipe(
@@ -378,17 +471,13 @@ export const runStackWithBoot = (
 					// armed. Its failures fold into the supervised body's
 					// `catchCause` below (and thence into `BootError`).
 					if (opts.boot?.beforeInitialAcquire !== undefined) {
-						const internalHandle: InternalRunHandle = {
-							...publicHandle,
-							supervisor: handle,
-						};
-						yield* opts.boot.beforeInitialAcquire(internalHandle);
+						yield* opts.boot.beforeInitialAcquire(buildInternalHandle(publicHandle, handle));
 					}
 				}),
 			// ── COMPOSED `withinScope` (ONE ordered gen) ───────────────────
 			// ORDER: BUILT-IN readiness-gate resolution first, THEN caller.
-			//   1. built-in: the S1 status scan that resolves `bootDeferred`.
-			//   2. caller: `opts.boot?.withinScope(internalHandle)`.
+			//   1. built-in: the status scan that resolves `bootDeferred`.
+			//   2. caller: `opts.boot?.withinScope(...)`.
 			// Resolving the gate first means a caller `withinScope` (e.g.
 			// warm-capture) can never delay `handle.start`.
 			withinScope: (handle) =>
@@ -443,11 +532,7 @@ export const runStackWithBoot = (
 					// surfaces on `awaitShutdown` (mid-run), not `start` — the
 					// same place a built-in `withinScope` failure would land.
 					if (opts.boot?.withinScope !== undefined) {
-						const internalHandle: InternalRunHandle = {
-							...publicHandle,
-							supervisor: handle,
-						};
-						yield* opts.boot.withinScope(internalHandle);
+						yield* opts.boot.withinScope(buildInternalHandle(publicHandle, handle));
 					}
 				}),
 		}).pipe(Effect.provide(layerBuiltInPluginRuntime));
