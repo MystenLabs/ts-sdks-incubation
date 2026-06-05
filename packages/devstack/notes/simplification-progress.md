@@ -71,9 +71,19 @@ Sequenced steps (each independently green; supervisor core + contribution pipeli
   - **e2e BLOCKED by a PRE-EXISTING infra failure (NOT Step 3):** `private-content-boot` + `snapshot-restore-matrix` fail at the sui Docker image build — `FROM ${SUI_TOOLS_IMAGE}` resolves empty → `sui#0` never ready → `[{key:'sui#0'},…(10)] !== []`. **PROVEN pre-existing:** reproduced the identical failure on the pre-Step-3 commit `5c597fc4`. Step 3 never touched the sui-image/docker-build path (empty diff vs `5c597fc4`); base image `mysten/sui-tools:eced…-arm64` IS present locally; the build-arg is constructed correctly (unit test green) yet empty at actual build time. Owned by the sui-tools migration (`adaf37e1`) workstream. id-stability for Step 3 is instead proven by: restore/CacheService/preRestore/identity-guard UNTOUCHED (verified) + the restore/id-parity UNIT tests green.
 **Guards:** do NOT inline operational-endpoints (name-blindness `faucet` leak into acquire-node); S4 test is a hard prereq before the registry collapse.
 
-## Step 4 — runStack-as-seam  `[ ]`
-- `[ ]` Invert so CLI/TUI consume `runStack`'s RunHandle (one boot path); dedupe the Deferred/fork machinery.
-- `[-]` ~~Deepbook on-demand fetch~~ — MOOT (done early): bundled Move + `move-assets` shipping + fetch/build scripts already DELETED in step 1a. Explicit deepbook publishes via `localPackage` and needs no bundled Move, so there is nothing to fetch.
+## Step 4 — runStack-as-seam  `[~] IN PROGRESS`
+**Full plan: `notes/step4-runstack-seam-plan.md`** (14-agent design + adversarial stress). DIAGNOSIS: runStack (424) + the CLI `up` verb (709) are TWO independent orchestrations of the SAME supervised boot (layers + dispatcher/hook/extendContext + projection-ref-before-supervise + boot-gate/stop-bridge/error-tee, duplicated verbatim). Inversion: runStack = the ONE seam; CLI passes its concerns as injected hooks + commandHandler; TUI becomes a pure consumer of `handle.state`/`events`/`commands`. Public runStack contract preserved (boot bag in non-exported `runStackWithBoot`).
+**TWO blockers the architects missed (synthesis fixed):** (1) runStack's per-node `awaitReady` gate HANGS on `done` run-to-completion nodes → would silently hang `up`; fix = unify onto the supervisor's own `runInitialAcquire`/`allReadyOrTerminal` gate (delete + correctness fix). (2) the `up` boot path has ZERO non-e2e coverage (`main.test.ts` only runs `up --help`) → plan ADDS Docker-free gates (hook-order, gate-equivalence, roster→exit-40, restart-cycle). Also found a THIRD parallel boot orchestration in `test/e2e/boot-config-impl.ts` (follow-up).
+**OWNER DECISIONS (2026-06-04):** validation → proceed w/ Docker-free gates (e2e blocked by pre-existing sui-image-build); apply/snapshot → **INCLUDE** (route one-shot verbs through shared boot-core too → Step 5); facade/warm-CLI-only/boot-config-impl-followup → recommendations. **Net ≈ −115** (architecture-quality win > LOC win). Risk HIGH, concentrated in the S3 up.ts cutover.
+Sequenced (each independently green via tsc + named UNIT tests; e2e excluded):
+- `[ ]` S0 hoist `buildVerbLayers` → orchestrators/boot.ts (re-export for apply/snapshot); fixes api/→cli/ import inversion (+0)
+- `[ ]` S1 unify readiness gate onto supervisor's `runInitialAcquire` (blocker fix) + add `commands`/`runCommand`/`identity` to RunHandle (+12); NEW done-node gate-equivalence test
+- `[ ]` S2 non-exported `runStackWithBoot` + boot injection bag + commandHandler; fold hook failures into BootError.cause (+45); NEW hook-order + roster→exit-40 tests
+- `[ ]` S3 cut up.ts over to runStackWithBoot; delete the parallel program/dispatcher/makeProjectionRef/matchCause (−150, HIGH risk); NEW CLI-boot-smoke test
+- `[ ]` S4 delete dead plumbing + minimality sweep (−20)
+- `[ ]` S5 route apply/snapshot through shared boot-core (one assembly site, lifetime-parameterized) (−40)
+**Guards:** PR#21 ordering lives inside superviseStackEffect (unchanged — move WHO supplies hooks, not WHEN); projection-ref process-lifetime (handle.state = makeProjectionRefSync, CLI moves onto it — strictly safer); fork untouched (sui-plugin concern); runStack public contract (start stays Effect<void,BootError>).
+- `[-]` ~~Deepbook on-demand fetch~~ — MOOT (done early in step 1a).
 
 ## Step 5 — follow-ups  `[-]`
 - `[-]` Revisit **postgres** delete (after the external-pg work settles + owner confirms).
