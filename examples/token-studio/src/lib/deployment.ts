@@ -17,9 +17,8 @@
 // accounts the active wallet exposes in any build.
 //
 // `coins.managed_coin.{treasuryCapId, metadataId, fullCoinType}` are populated
-// by coin auto-discovery on every publish (see
-// `packages/devstack/notes/coin-auto-discovery.md`); the generated key
-// follows the witness struct name.
+// by coin auto-discovery on every publish; the generated key follows the
+// witness struct name.
 
 import { coins } from '@generated/coins.js';
 

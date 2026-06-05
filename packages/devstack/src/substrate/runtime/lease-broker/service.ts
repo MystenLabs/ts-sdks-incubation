@@ -1,14 +1,11 @@
 // Lease broker — substrate-level service interface.
 //
-// Architecture (`notes/redesign/architecture.md` § "L0 substrate
-// primitives"): the substrate owns a generic lease primitive keyed by
-// an opaque resource identifier. Any caller that needs at-most-one-
-// in-flight serialization on a resource yields this service and calls
-// `acquire(key, owner)`. The first canonical consumer is the per-
-// address sequence-number lock (`plugins/account/address-lock.ts`,
-// today plugin-local; PR3 lifts it to consume this primitive);
-// callers in the same shape — sign+execute pipelines, per-connection
-// gate, per-slot work queue — share the same seam.
+// Generic lease primitive keyed by an opaque resource identifier. Any caller
+// that needs at-most-one-in-flight serialization on a resource yields this
+// service and calls `acquire(key, owner)`. The first canonical consumer is the
+// per-address sequence-number lock (`plugins/account/address-lock.ts`);
+// callers in the same shape — sign+execute pipelines, per-connection gate,
+// per-slot work queue — share the same seam.
 //
 // Substrate name-blindness: the broker has no concept of what a
 // `LeaseKey` represents. The plugin author chooses the key shape; the

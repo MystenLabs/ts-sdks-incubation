@@ -691,11 +691,9 @@ const jsonRequested = (
  * `io.touched()` and short-circuits this projection in `dispatch`
  * before `flushBufferedProcess` is reached.
  *
- * The historic implementation collapsed ANY non-zero `code` to
- * `USAGE` (64), but that was wrong: it could only ever observe a
- * Stricli parse failure (the only writer to this field), so the
- * `USAGE` mapping holds by construction. Kept as a named function
- * so the invariant is documented at the call site.
+ * A non-zero value here means Stricli rejected argv before any verb
+ * ran, so mapping to `USAGE` holds by construction. Kept as a named
+ * function so the invariant is documented at the call site.
  */
 const normalizeStricliExitCode = (code: number | string | null | undefined): number => {
 	if (typeof code === 'number' && code !== 0) return ExitCode.USAGE;

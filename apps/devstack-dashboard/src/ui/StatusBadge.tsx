@@ -17,8 +17,7 @@ export interface StatusBadgeProps {
 
 /**
  * Pill badge for a plugin/row lifecycle status. Derives its color token, label,
- * and pulse from the canonical `statusDisplay` seam — not the handoff's legacy
- * status vocabulary.
+ * and pulse from the canonical `statusDisplay` helper.
  */
 export const StatusBadge = ({ status, sm }: StatusBadgeProps) => {
 	const { token, label, pulse } = statusDisplay(status);

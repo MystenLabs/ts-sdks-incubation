@@ -1,9 +1,8 @@
 // Port broker — substrate-level service.
 //
-// Architecture (`notes/redesign/architecture.md` § "What's collapsed"):
-// resource broker for host ports. Plugins that need to bind a host
-// HTTP server or publish a container port on the host yield this
-// service and call `allocate({...})`. The broker:
+// Resource broker for host ports. Plugins that need to bind a host HTTP server
+// or publish a container port on the host yield this service and call
+// `allocate({...})`. The broker:
 //
 //   1. Tracks in-process allocations in a `Ref<Map<port, Holder>>` so
 //      two sibling plugins in the same stack don't both pick the same
@@ -163,15 +162,9 @@ interface Holder {
 
 type State = ReadonlyMap<number, Holder>;
 
-// Reservation-doc shape. NOTE: this changed incompatibly from an
-// earlier `{ version: 1, kind, ... }` to `{ version: 1, owner, ... }`
-// without bumping the version. A version bump alone would NOT recover
-// a SIGKILL'd prior-version leftover (an old body still fails decode
-// under any new schema and would block its port forever). Instead the
-// recovery is behavioural: `acquirePortReservation` treats an EEXIST
-// file it cannot decode as a stale artifact and self-heals it
-// (best-effort unlink + retry), so a leftover incompatible reservation
-// clears itself on the next allocate of that port.
+// Reservation-doc shape. Decode failures are treated as stale artifacts:
+// `acquirePortReservation` self-heals them with a best-effort unlink +
+// retry so one corrupt reservation file cannot block a port forever.
 const PORT_RESERVATION_VERSION = 1 as const;
 
 const PortReservationDocSchema = versionedDocSchema(PORT_RESERVATION_VERSION, {
@@ -423,11 +416,10 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 		 *  interrupt, typed failure, or a non-`kept` success outcome.
 		 *  Without this, an interrupt landing between the reservation write
 		 *  (in `acquirePortReservation`) and the finalizer arm (in
-		 *  `finishAllocation`) left the file on disk while the old release
-		 *  only dropped the in-process slot — leaking
-		 *  `port-locks/<port>.json`. Its `holder` is this still-alive
-		 *  process, so every future `allocate` of that port then saw
-		 *  `checkHolderLiveness` report `alive`, marking it busy for the
+		 *  `finishAllocation`) would leave `port-locks/<port>.json` on disk
+		 *  while only dropping the in-process slot. Its `holder` is this
+		 *  still-alive process, so every future `allocate` of that port then
+		 *  sees `checkHolderLiveness` report `alive`, marking it busy for the
 		 *  whole supervisor lifetime.
 		 *
 		 *  The only path that intentionally KEEPS both the slot and the

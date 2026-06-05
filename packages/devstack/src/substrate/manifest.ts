@@ -71,15 +71,12 @@ export interface ManifestEnvelope {
 		readonly chain: string;
 	};
 	readonly manifestVersion: number;
-	/** Legacy per-plugin service slot. The writer no longer emits it,
-	 *  but it stays decodable as optional so an old on-disk manifest
-	 *  (`services: {}`) still reads without a version bump. The read-side
-	 *  build-integration API surfaces `{}` when absent. */
+	/** Optional per-plugin service slot. The read-side build-integration API
+	 *  surfaces `{}` when absent. */
 	readonly services?: Readonly<Record<string, unknown>>;
 	readonly endpoints: Readonly<Record<string, EndpointEntry>>;
 	readonly extras: Readonly<Record<string, unknown>>;
-	/** Per-stack codegen metadata. Optional — absent in older
-	 *  manifests; the reader falls back to `src/generated/`. */
+	/** Per-stack codegen metadata. When absent, readers use `src/generated/`. */
 	readonly codegen?: ManifestCodegen;
 }
 

@@ -1,14 +1,13 @@
-// Manifest `codegen` field — round-trip + back-compat regression.
+// Manifest `codegen` field — round-trip + optional-field coverage.
 //
 // The supervisor records the resolved absolute codegen output dir at
 // `manifest.codegen.generatedDir` so the read-side Vite plugin aliases
 // `@generated` at the EXACT dir codegen emitted into for this stack.
-// The field is OPTIONAL + ADDITIVE (src/substrate/manifest.ts):
+// The field is optional (src/substrate/manifest.ts):
 //   - `buildEnvelope` spreads `codegen` ONLY when supplied, so an
-//     omitted `codegen` yields byte-identical serialized JSON to a
-//     pre-field manifest (no churn for stacks that don't record it).
+//     omitted `codegen` leaves serialized JSON clean.
 //   - `ManifestEnvelopeSchema` declares `codegen` as `Schema.optional`,
-//     so a manifest written before the field existed still decodes.
+//     so codegen-less manifests still decode.
 //
 // We drive the real serialize → schema-decode path through
 // `writeManifest` + `readManifest` (both go through
@@ -57,7 +56,7 @@ describe('manifest codegen field', () => {
 			),
 	);
 
-	it.effect('a manifest WITHOUT codegen still decodes (back-compat) and omits the key', () =>
+	it.effect('a manifest WITHOUT codegen still decodes and omits the key', () =>
 		withTempRoot('devstack-manifest-codegen', (tmp) =>
 			Effect.gen(function* () {
 				const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
@@ -75,8 +74,8 @@ describe('manifest codegen field', () => {
 				const onDisk: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
 				expect(Object.prototype.hasOwnProperty.call(onDisk, 'codegen')).toBe(false);
 
-				// And the codegen-less manifest still decodes (the schema's
-				// optional field tolerates the absence — back-compat).
+				// And the codegen-less manifest still decodes: the schema's
+				// optional field tolerates the absence.
 				const decoded = yield* readManifest(manifestPath);
 				expect(decoded.codegen).toBeUndefined();
 			}).pipe(Effect.provide(NodeFileSystem.layer)),

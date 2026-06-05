@@ -320,12 +320,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				// (app, stack). Label-free builds (no owner — e.g.
 				// `move-summary-runner`) stay UNSCOPED.
 				//
-				// MIGRATION: this changes the on-host tag namespace only (not the
-				// committed image digest, host-tree cache ids, or container
-				// image-match). Snapshots captured BEFORE this upgrade recorded an
-				// unscoped `imageName`; on restore the promote target won't match
-				// the now-scoped boot tag. The decision (owner) is DOCUMENT-only:
-				// re-capture old snapshots after upgrading. No compat shim.
 				const hash = buildContentHash(effectiveCtx);
 				const owner = effectiveCtx.owner;
 				const scope =

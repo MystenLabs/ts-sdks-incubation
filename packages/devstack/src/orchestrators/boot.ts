@@ -721,12 +721,10 @@ export const buildProductionPostAcquireHook = (
 					// Record the EXACT dirs codegen emits into for this stack so
 					// the read-side `@generated` / `@devstack-dev` aliases (the
 					// Vite plugin) point where the files actually are — one
-					// decision, one source of truth
-					// (notes/per-stack-codegen-design.md §"Resolved: read and
-					// write share one gate"). `paths.outputDir` is the resolved,
-					// stack-subdir-applied absolute path the runtime tree writes
-					// to; `paths.extrasDir` is the dev-only `generated-extras`
-					// tree the `@devstack-dev` alias resolves.
+					// decision, one source of truth. `paths.outputDir` is the
+					// resolved, stack-subdir-applied absolute path the runtime tree
+					// writes to; `paths.extrasDir` is the dev-only
+					// `generated-extras` tree the `@devstack-dev` alias resolves.
 					codegen: { generatedDir: paths.outputDir, extrasDir: paths.extrasDir },
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');

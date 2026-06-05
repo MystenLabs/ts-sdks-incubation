@@ -59,13 +59,13 @@ add their key under the existing prefix scheme rather than expanding the allowli
 `test/substrate/name-blindness.test.ts` enforces the rule + tracks the small permanent allowlist
 (including the `account/` / `package/` / `wallet/` projection-key prefix carve-out above).
 
-### `ContainerRuntimeService` re-export indirection
+### `ContainerRuntimeService` public entry point
 
 The root barrel re-exports `ContainerRuntimeService` from `substrate/runtime/container-runtime.ts` —
-a thin shim that itself re-exports from `runtime/docker/service.ts`. The shim exists so the public
-API doesn't name `runtime/docker/` directly. The abstraction is one consumer deep: internal callers
-(plugins, orchestrators) import from `runtime/docker/service.ts` directly. L1 is Docker — a backend
-swap (podman, firecracker) is a major rewrite of the docker adapter, not a layer re-point.
+a public entry point that forwards to `runtime/docker/service.ts`. The public API does not name
+`runtime/docker/` directly. The abstraction is one consumer deep: internal callers (plugins,
+orchestrators) import from `runtime/docker/service.ts` directly. L1 is Docker — a backend swap
+(podman, firecracker) is a major rewrite of the docker adapter, not a layer re-point.
 
 ---
 
@@ -378,7 +378,7 @@ L0 substrate         — name-blind kernel: events/commands, paths, atomic-write
                        cache, strategy-registry, manifest envelope.
 
 L1 runtime adapters  — Docker. One backend. The `ContainerRuntimeService`
-                       shim names it for the public API; internal callers
+                       entry point names it for the public API; internal callers
                        reach `runtime/docker/service.ts` directly.
 
 L2 plugins           — sui, walrus, seal, account, faucet, package,

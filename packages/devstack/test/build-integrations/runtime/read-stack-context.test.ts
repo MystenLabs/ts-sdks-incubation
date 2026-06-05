@@ -22,8 +22,8 @@ const makeManifestAt = (path: string, body: object): void => {
 	writeFileSync(path, JSON.stringify(body, null, 2));
 };
 
-// No `services` slot — the writer no longer emits it. Omitting it
-// exercises the optional-decode + `ctx.services ?? {}` back-compat path.
+// No `services` slot. Omitting it exercises the optional-decode +
+// `ctx.services ?? {}` default path.
 const validEnvelope = (overrides: Partial<Record<string, unknown>> = {}): object => ({
 	identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
 	manifestVersion: CONSUMER_MANIFEST_VERSION,
@@ -50,8 +50,8 @@ describe('readStackContext (sync)', () => {
 			expect(ctx.identity).toEqual({ app: 'demo', stack: 'main', chain: 'sui:local' });
 			expect(ctx.manifestPath).toBe(manifestPath);
 			expect(ctx.manifestVersion).toBe(CONSUMER_MANIFEST_VERSION);
-			// Manifest omits the legacy `services` slot — the reader defaults
-			// it to `{}` so the public build-integration surface stays a record.
+			// Manifest omits `services`; the reader defaults it to `{}` so the
+			// public build-integration surface stays a record.
 			expect(ctx.services).toEqual({});
 			const rpc = ctx.endpoints.byName('rpc');
 			expect(rpc).toBeDefined();

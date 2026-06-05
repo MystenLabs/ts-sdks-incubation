@@ -1,12 +1,11 @@
 // Per-stack codegen output-location resolver.
 //
-// notes/per-stack-codegen-design.md §"Output-location rule": two stacks
-// of the same app must not emit Move codegen into the SAME
-// `src/generated/` dir — the second stack's `codegen.emitted` would
-// clobber the first's package-id / wallet-pair-token literals and break
-// the already-running app. This pure function is the single decision
-// point: it maps (appRoot, effective stack, primary stack) → the output
-// dir codegen owns for THIS stack.
+// Two stacks of the same app must not emit Move codegen into the SAME
+// `src/generated/` dir — the second stack's `codegen.emitted` would clobber
+// the first's package-id / wallet-pair-token literals and break the
+// already-running app. This pure function is the single decision point: it
+// maps (appRoot, effective stack, primary stack) → the output dir codegen owns
+// for THIS stack.
 //
 //   - Primary stack (`effectiveStack === primaryStack`, no explicit
 //     `--stack`/`$DEVSTACK_STACK` override) → `<appRoot>/src/generated`
