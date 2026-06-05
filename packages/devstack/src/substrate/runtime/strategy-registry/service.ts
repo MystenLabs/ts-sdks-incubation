@@ -13,13 +13,12 @@
 // entries die with it (the architecture's "scope-local, never
 // module-level" rule).
 
-import { Context, Effect, Layer, Scope } from 'effect';
+import { Context, Effect, Layer, Ref, Scope } from 'effect';
 
 import type { StrategyRegistry } from '../../../contracts/strategy-contributor.ts';
 import { StrategyNotFoundError } from '../errors.ts';
-import { makeScopedMultimap } from '../scoped-registry/index.ts';
 
-/** One registered strategy under a capability key. The multimap stamps
+/** One registered strategy under a capability key. The store stamps
  *  the registration `seq`; the payload carries the strategy + its
  *  visibility/priority. We keep the LIST (not the single winner)
  *  because:
@@ -32,6 +31,32 @@ interface Entry {
 	readonly autoMounted: boolean;
 	readonly priority: number;
 }
+
+/** One stored entry: the caller's `Entry` plus the monotonic `seq` the
+ *  store stamped it with. The `seq` is the identity the finalizer drops
+ *  on and the winner-fold tiebreaks on.
+ *
+ *  Why a per-key LIST tagged by a monotonic seq (rather than a single
+ *  value-per-key with prior-restore):
+ *
+ *    - Parallel / sibling-scope safety. The naive "remember the prior
+ *      value, restore it on close" finalizer is only correct under
+ *      strict LIFO nesting. With sibling scopes it clobbers a still-live
+ *      registration: scope A installs `X`, sibling B overwrites `X`
+ *      (capturing A's value as its `prior`), then A closes first and its
+ *      finalizer — holding `prior = nothing` — DELETES `X`, dropping B's
+ *      live overlay.
+ *
+ *    - The seq-tagged list makes every finalizer remove ONLY the entry
+ *      it added — it never touches a newer registration for the same
+ *      key. "Who wins right now" is a pure function of the surviving
+ *      entries (priority, then seq), so close order does not matter. */
+interface StoredEntry {
+	readonly value: Entry;
+	readonly seq: number;
+}
+
+type Store = ReadonlyMap<string, ReadonlyArray<StoredEntry>>;
 
 export class StrategyRegistryService extends Context.Service<
 	StrategyRegistryService,
@@ -46,7 +71,23 @@ export class StrategyRegistryService extends Context.Service<
 export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer.effect(
 	StrategyRegistryService,
 	Effect.gen(function* () {
-		const store = yield* makeScopedMultimap<string, Entry>();
+		// Scope-local seq-tagged store. The backing `Ref`s are private to
+		// this build effect, so they die with the stack scope (the
+		// architecture's "scope-local, never module-level" rule). `seqRef`
+		// stamps a fresh monotonic seq per registration; `ref` holds the
+		// per-key LIST of surviving seq-tagged entries.
+		const ref = yield* Ref.make<Store>(new Map());
+		const seqRef = yield* Ref.make(0);
+
+		// `entriesFor` — surviving entries under one key, in registration
+		// order (ascending seq). Empty array when the key is absent.
+		const entriesFor = (key: string): Effect.Effect<ReadonlyArray<StoredEntry>> =>
+			Ref.get(ref).pipe(Effect.map((current) => current.get(key) ?? []));
+
+		// `keys` — keys with at least one surviving entry.
+		const keys: Effect.Effect<ReadonlyArray<string>> = Ref.get(ref).pipe(
+			Effect.map((current) => [...current.keys()]),
+		);
 
 		const register: StrategyRegistry['register'] = <Key extends string, S>(
 			key: Key,
@@ -59,19 +100,42 @@ export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer
 					autoMounted: options?.autoMounted ?? false,
 					priority: options?.priority ?? 0,
 				};
-				// The multimap stamps the seq and wires the drop-by-seq
-				// finalizer — parallel registrations stay isolated.
-				yield* store.register([{ key, value: entry }]);
-			}) as Effect.Effect<void, never, Scope.Scope>;
+				// Stamp a fresh monotonic seq, append the entry under `key`,
+				// and wire a drop-by-seq finalizer onto the CALLER's scope.
+				// The append + finalizer-wire pair is `uninterruptible`, so an
+				// interrupt arriving between the two can't leak an entry past
+				// scope close. The finalizer touches only the entry THIS
+				// registration added — never a newer registration for the same
+				// key — so sibling-scope close order is irrelevant.
+				const seq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
+				yield* Ref.update(ref, (current) => {
+					const next = new Map(current);
+					const existing = next.get(key) ?? [];
+					next.set(key, [...existing, { value: entry, seq }]);
+					return next;
+				});
+				yield* Effect.addFinalizer((_exit) =>
+					Ref.update(ref, (current) => {
+						const next = new Map(current);
+						const existing = next.get(key);
+						if (existing) {
+							const filtered = existing.filter((e) => e.seq !== seq);
+							if (filtered.length === 0) next.delete(key);
+							else next.set(key, filtered);
+						}
+						return next;
+					}),
+				);
+			}).pipe(Effect.uninterruptible) as Effect.Effect<void, never, Scope.Scope>;
 
 		const get: StrategyRegistry['get'] = <Key extends string, S>(key: Key) =>
 			Effect.gen(function* () {
-				const entries = yield* store.entriesFor(key);
+				const entries = yield* entriesFor(key);
 				if (entries.length === 0) {
-					const keys = yield* store.keys;
+					const registeredKeys = yield* keys;
 					return yield* new StrategyNotFoundError({
 						capabilityKey: key,
-						registeredKeys: keys,
+						registeredKeys,
 					});
 				}
 				// Resolution policy:
@@ -94,7 +158,7 @@ export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer
 				return best.value.strategy as S;
 			});
 
-		const list: StrategyRegistry['list'] = () => store.keys;
+		const list: StrategyRegistry['list'] = () => keys;
 
 		return StrategyRegistryService.of({
 			get: get as StrategyRegistry['get'],
