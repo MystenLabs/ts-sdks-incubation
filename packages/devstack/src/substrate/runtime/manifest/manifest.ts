@@ -59,7 +59,7 @@ export class ManifestError extends Data.TaggedError('ManifestError')<{
 		| 'read-failed'
 		| 'decode-failed'
 		| 'version-mismatch'
-		| 'duplicate-contribution';
+		| 'duplicate-endpoint';
 	readonly path: string;
 	readonly detail?: string;
 	readonly cause?: unknown;
@@ -100,7 +100,7 @@ export const buildEnvelope = (
 				if (ek in endpoints) {
 					return yield* Effect.fail(
 						new ManifestError({
-							reason: 'duplicate-contribution',
+							reason: 'duplicate-endpoint',
 							path: '(in-memory envelope)',
 							detail: `endpointKey ${ek} contributed twice`,
 						}),
