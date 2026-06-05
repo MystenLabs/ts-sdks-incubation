@@ -65,17 +65,6 @@ substrate `StrategyNotFoundError` (see [Substrate](#substrate)).
 - `PublishError` — `phase: 'hash' | 'scrub' | 'build' | 'publish-tx' | 'parse' | 'verify'`. Single
   tag covers the full `localPackage(...)` publish path.
 
-## Postgres
-
-- `PostgresPluginError` —
-  `phase: 'network-create' | 'image-build' | 'container-start' | 'ready-probe' | 'db-ensure' | 'unknown'`.
-- `PostgresConfigError` — invalid `postgres(...)` options (empty `databases`, `route` + `hostPort`
-  conflict).
-- `PostgresConnectionTimeout` — `pg_isready` did not succeed before the deadline. Carries
-  `attempts`, `elapsedMs`, last exit code, and captured stdout/stderr.
-- `DatabaseCreateFailed` — `op: 'exists-check' | 'createdb'`. Typical root cause: case-sensitivity
-  collision in Postgres identifier folding.
-
 ## Seal
 
 - `SealError` —

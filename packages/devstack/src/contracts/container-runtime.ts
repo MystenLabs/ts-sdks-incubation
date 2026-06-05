@@ -240,10 +240,8 @@ export interface ContainerRuntime {
 
 	/** Run a one-shot command inside a running container and capture
 	 *  its output. The runtime does NOT promote a non-zero exit to
-	 *  failure — the caller is the policy holder (the postgres plugin
-	 *  treats non-zero from `pg_isready` as "retry", but non-zero from
-	 *  `createdb` as a typed plugin error). Only daemon-level failures
-	 *  (no such container, daemon unreachable) surface as
+	 *  failure — the caller is the policy holder. Only daemon-level
+	 *  failures (no such container, daemon unreachable) surface as
 	 *  `ContainerRuntimeError`. */
 	readonly exec: (
 		handle: ContainerHandle,
@@ -308,9 +306,7 @@ export interface ContainerRuntime {
 	 *  BEFORE a retag (the soon-to-be-superseded layer) and the layer it
 	 *  resolves to AFTER (the freshly-committed one), so the orphaned
 	 *  previous layer can be GC'd without touching the live tag. */
-	readonly inspectImageDigest: (
-		ref: string,
-	) => Effect.Effect<string | null, ContainerRuntimeError>;
+	readonly inspectImageDigest: (ref: string) => Effect.Effect<string | null, ContainerRuntimeError>;
 
 	readonly stop: (
 		handle: ContainerHandle,

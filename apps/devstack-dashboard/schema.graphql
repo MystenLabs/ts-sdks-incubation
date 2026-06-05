@@ -317,28 +317,6 @@ enum PluginRole {
   task
 }
 
-"""
-Postgres wire-protocol stats (db size, connections, per-table). Gathered by exec; the browser cannot speak the PG protocol.
-"""
-type PostgresStats {
-  available: Boolean!
-  connectionCount: Int!
-  database: String!
-  databaseBytes: Float!
-  detail: String
-  plainUrl: String!
-  pluginKey: String!
-  tables: [PostgresTable!]!
-}
-
-"""Per-table row estimate + total size (bytes)."""
-type PostgresTable {
-  name: String!
-  rowEstimate: Float!
-  schema: String!
-  totalBytes: Float!
-}
-
 type Query {
   accounts(after: String, before: String, first: Int, last: Int): QueryAccountsConnection!
   coinCaps: [CoinCap!]!
@@ -351,7 +329,6 @@ type Query {
   nodes(ids: [ID!]!): [Node]!
   packages(after: String, before: String, first: Int, last: Int): QueryPackagesConnection!
   ping: String!
-  postgresStats: [PostgresStats!]!
   sealInfo: [SealInfo!]!
   services(after: String, before: String, first: Int, last: Int): QueryServicesConnection!
   snapshots: [SnapshotEntry!]!

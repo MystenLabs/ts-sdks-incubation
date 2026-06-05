@@ -399,6 +399,7 @@ export const startSupervisor = (
 				dispatcher,
 				logger,
 				identity,
+				supervisorScope,
 			);
 			if (yield* Ref.get(shutdownLatch)) return;
 			const initialReady = yield* allReadyOrTerminal(graph, registry);

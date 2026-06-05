@@ -673,26 +673,6 @@ const FundableCoinsDoc = graphql(`
 		}
 	}
 `);
-const PostgresStatsDoc = graphql(`
-	query PostgresStats {
-		postgresStats {
-			pluginKey
-			available
-			database
-			plainUrl
-			databaseBytes
-			connectionCount
-			detail
-			tables {
-				schema
-				name
-				rowEstimate
-				totalBytes
-			}
-		}
-	}
-`);
-
 /** Snapshot catalog entries (orchestrator `list`). */
 export type SnapshotEntry = ResultOf<typeof SnapshotsDoc>['snapshots'][number];
 /** A DeepBook deployment + its pools. */
@@ -703,8 +683,6 @@ export type SealInfo = ResultOf<typeof SealInfoDoc>['sealInfo'][number];
 export type CoinCap = ResultOf<typeof CoinCapsDoc>['coinCaps'][number];
 /** A coin the faucet can fund right now (drives the Faucet panel). */
 export type FundableCoin = ResultOf<typeof FundableCoinsDoc>['fundableCoins'][number];
-/** Postgres wire-protocol stats for one plugin instance. */
-export type PostgresStats = ResultOf<typeof PostgresStatsDoc>['postgresStats'][number];
 /** Resolved stack mode (`local` | `fork` | `live`), or null when unset. */
 export type StackMode = ResultOf<typeof ModeDoc>['mode'];
 
@@ -732,10 +710,6 @@ export const fetchCoinCaps = (endpoint: string): Promise<ReadonlyArray<CoinCap>>
  *  their plugin registered a funding strategy). */
 export const fetchFundableCoins = (endpoint: string): Promise<ReadonlyArray<FundableCoin>> =>
 	execute(endpoint, FundableCoinsDoc).then((d) => d.fundableCoins);
-
-/** Postgres stats per plugin instance. */
-export const fetchPostgresStats = (endpoint: string): Promise<ReadonlyArray<PostgresStats>> =>
-	execute(endpoint, PostgresStatsDoc).then((d) => d.postgresStats);
 
 // Chain reads are NOT proxied through this control-plane API — the browser
 // queries the Sui node directly over gRPC (`client.core.*`); see `lib/chain.ts`.

@@ -144,8 +144,7 @@
   - **Postgres password format changed.** `derivePassword(app, stack, stackRoot)` now incorporates
     the stack's on-disk runtime root and an sha256 short hash. Existing dev databases created
     against the previous `pg-${app+stack}` format will fail to authenticate on first `pg_isready`
-    probe. Either delete the existing container (`docker rm -f`) and let devstack recreate it, OR
-    set `password` explicitly on `PostgresServiceOptions` for stable credentials across the upgrade.
+    probe. Delete the existing container (`docker rm -f`) and let devstack recreate it.
     Multi-checkout shells of the same `(app, stack)` now derive distinct passwords by design.
   - **CLI argv-parse failures now exit with code 64 (`USAGE`), not 1 (`GENERIC`).** Tests / CI
     scripts that pattern-match exit codes for "user error vs internal error" should treat 64 the

@@ -10,7 +10,17 @@
 //   - `acquireKeys` / `acquireFullGraph` — fan out per-node acquires
 //     in parallel; each node waits on its own upstream ready gate.
 
-import { Cause, Context, Effect, Exit, Queue, Scope, SubscriptionRef } from 'effect';
+import {
+	Cause,
+	Context,
+	Deferred,
+	Effect,
+	Exit,
+	Fiber,
+	Queue,
+	Scope,
+	SubscriptionRef,
+} from 'effect';
 
 import type { CodegenableDecl } from '../../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../../contracts/projection.ts';
@@ -470,6 +480,29 @@ export const acquireNode = (
 		}
 	});
 
+class PluginAcquireInterruptedBeforeReady extends Error {
+	readonly _tag = 'PluginAcquireInterruptedBeforeReady' as const;
+	constructor(readonly pluginKey: PluginKey) {
+		super(`plugin '${pluginKey}' acquire was interrupted before readiness`);
+		this.name = 'PluginAcquireInterruptedBeforeReady';
+	}
+}
+
+const failIfAcquireInterruptedBeforeReady = (
+	registry: PluginRegistry,
+	key: PluginKey,
+	entry: PluginEntry,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		if (registry.entries.get(key) !== entry) return;
+		const status = yield* registry
+			.getStatus(key)
+			.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus | null>(null)));
+		if (registry.entries.get(key) !== entry) return;
+		if (status !== 'pending' && status !== 'acquiring') return;
+		yield* bestEffort(registry.markFailed(key, new PluginAcquireInterruptedBeforeReady(key)));
+	});
+
 // -----------------------------------------------------------------------------
 // Acquire a key set in parallel. Each node waits on its own upstreams,
 // so downstream nodes begin as soon as their dependencies are ready
@@ -485,11 +518,60 @@ export const acquireKeys = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
+	parentScope: Scope.Scope,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		yield* Effect.all(
+		const fibers = yield* Effect.all(
 			keys.map((key) =>
-				acquireNode(registry, key, ref, hub, pluginContext, dispatcher, logger, identity),
+				Effect.gen(function* () {
+					const entry = registry.entries.get(key);
+					if (entry === undefined) return yield* Effect.forkIn(Effect.void, parentScope);
+					const registeredGate = yield* Deferred.make<void, never>();
+					const guarded = Effect.gen(function* () {
+						const selfId = yield* Effect.fiberId;
+						yield* Deferred.await(registeredGate);
+						yield* acquireNode(
+							registry,
+							key,
+							ref,
+							hub,
+							pluginContext,
+							dispatcher,
+							logger,
+							identity,
+						).pipe(
+							Effect.onInterrupt(() => failIfAcquireInterruptedBeforeReady(registry, key, entry)),
+							Effect.ensuring(
+								registry
+									.clearAcquireFiberIfEntry(key, entry, selfId)
+									.pipe(Effect.catch(() => Effect.void)),
+							),
+						);
+					});
+					const fiber = yield* Effect.forkIn(Scope.provide(guarded, parentScope), parentScope);
+					const registered = yield* registry
+						.setAcquireFiberIfEntry(key, entry, fiber)
+						.pipe(Effect.catch(() => Effect.succeed(false)));
+					if (!registered) {
+						yield* Fiber.interrupt(fiber).pipe(Effect.asVoid);
+						return fiber;
+					}
+					yield* Deferred.succeed(registeredGate, void 0);
+					return fiber;
+				}),
+			),
+			{ concurrency: 'unbounded' },
+		);
+		yield* Effect.all(
+			fibers.map((fiber) =>
+				Fiber.await(fiber).pipe(
+					Effect.flatMap((exit) => {
+						if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {
+							return Effect.void;
+						}
+						return Effect.failCause(exit.cause);
+					}),
+				),
 			),
 			{ concurrency: 'unbounded', discard: true },
 		);
@@ -504,6 +586,7 @@ export const acquireFullGraph = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
+	parentScope: Scope.Scope,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		yield* acquireKeys(
@@ -515,5 +598,6 @@ export const acquireFullGraph = (
 			dispatcher,
 			logger,
 			identity,
+			parentScope,
 		);
 	});

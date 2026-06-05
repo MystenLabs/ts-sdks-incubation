@@ -215,7 +215,7 @@ export const runSnapshotCaptureDirectLoaded = (
 	args: { readonly snapshotId?: string; readonly name?: string },
 ): Effect.Effect<{ readonly snapshotId: string; readonly name: string }, unknown> =>
 	Effect.gen(function* () {
-		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
 		const appRoot = dirname(loaded.resolvedConfigPath);
@@ -310,7 +310,7 @@ export const runSnapshotCaptureLiveAware = (
 			return yield* runSnapshotCaptureDirect(identity, args);
 		}
 		const loaded = yield* makeConfigLoader().load(args.configPath);
-		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
 		const live = yield* runSnapshotCaptureAgainstLiveSupervisor(effectiveIdentity, args);
 		if (live !== null) return live;

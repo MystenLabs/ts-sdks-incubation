@@ -698,7 +698,6 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-
 	it.effect('hot restart reacquires with a fresh scope and ready gate', () =>
 		Effect.gen(function* () {
 			const starts = yield* Ref.make(0);
@@ -835,6 +834,151 @@ describe('supervisor harvest loop', () => {
 					yield* startup.handle.awaitShutdown;
 					const shuttingDown = yield* SubscriptionRef.get(state);
 					expect(shuttingDown.cycle.phase).toBe('shutting-down');
+				}),
+			);
+		}),
+	);
+
+	it.effect('selective restart interrupts an in-flight acquire before re-acquire', () =>
+		Effect.gen(function* () {
+			const starts = yield* Ref.make(0);
+			const firstAcquireStarted = yield* Deferred.make<void>();
+			const firstAcquireFinalizers = yield* Ref.make(0);
+			const restartableKey = pluginKey('test:restart-acquiring#0');
+			const pluginRestartable = definePlugin({
+				id: 'test:restart-acquiring',
+				role: 'service' as const,
+				section: 'service',
+				start: () =>
+					Effect.gen(function* () {
+						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
+						if (run === 1) {
+							yield* Effect.addFinalizer(() => Ref.update(firstAcquireFinalizers, (n) => n + 1));
+							yield* Deferred.succeed(firstAcquireStarted, void 0).pipe(Effect.ignore);
+							return yield* Effect.never;
+						}
+						return { run };
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestartable], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					const bootFiber = yield* Effect.forkScoped(startup.runInitialAcquire);
+					yield* Deferred.await(firstAcquireStarted);
+					expect(yield* startup.handle.registry.getStatus(restartableKey)).toBe('acquiring');
+
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'selective-restart.requested',
+						pluginKey: restartableKey,
+					});
+
+					while (true) {
+						const event = yield* Queue.take(startup.handle.events);
+						if (
+							event.tag === 'restart.completed' &&
+							event.target !== 'stack' &&
+							event.target.pluginKey === restartableKey
+						) {
+							break;
+						}
+					}
+
+					const acquired = yield* startup.handle.registry.awaitReady(restartableKey);
+					expect(acquired).toEqual({ run: 2 });
+					expect(yield* Ref.get(starts)).toBe(2);
+					expect(yield* Ref.get(firstAcquireFinalizers)).toBe(1);
+					expect(yield* startup.handle.registry.getStatus(restartableKey)).toBe('ready');
+					yield* Fiber.join(bootFiber);
+				}),
+			);
+		}),
+	);
+
+	it.effect('interrupted in-flight acquire fails the ready gate', () =>
+		Effect.gen(function* () {
+			const acquireStarted = yield* Deferred.make<void>();
+			const interruptedKey = pluginKey('test:interrupted-acquire#0');
+			const pluginInterrupted = definePlugin({
+				id: 'test:interrupted-acquire',
+				role: 'service' as const,
+				section: 'service',
+				start: () =>
+					Effect.gen(function* () {
+						yield* Deferred.succeed(acquireStarted, void 0).pipe(Effect.ignore);
+						return yield* Effect.never;
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginInterrupted], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					const bootFiber = yield* Effect.forkScoped(startup.runInitialAcquire);
+					yield* Deferred.await(acquireStarted);
+
+					yield* startup.handle.registry.interruptAcquire(interruptedKey);
+
+					const exit = yield* startup.handle.registry.awaitReady(interruptedKey).pipe(Effect.exit);
+					expect(exit._tag).toBe('Failure');
+					expect(yield* startup.handle.registry.getStatus(interruptedKey)).toBe('failed');
+
+					yield* Fiber.join(bootFiber);
+				}),
+			);
+		}),
+	);
+
+	it.effect('acquire fiber registration refuses stale restart generations', () =>
+		Effect.gen(function* () {
+			const restartableKey = pluginKey('test:restart-generation#0');
+			const pluginRestartable = definePlugin({
+				id: 'test:restart-generation',
+				role: 'service' as const,
+				section: 'service',
+				start: () => Effect.succeed({ ok: true }),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestartable], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const scope = yield* Effect.scope;
+					const startup = yield* startSupervisor(stack, identity, state);
+					const staleEntry = startup.handle.registry.entries.get(restartableKey);
+					expect(staleEntry).toBeDefined();
+					if (staleEntry === undefined) return;
+
+					yield* startup.handle.registry.resetForRestart(restartableKey, scope);
+
+					const staleFiber = yield* Effect.forkScoped(
+						Effect.never as Effect.Effect<void, never, never>,
+					);
+					const staleRegistered = yield* startup.handle.registry.setAcquireFiberIfEntry(
+						restartableKey,
+						staleEntry,
+						staleFiber,
+					);
+					expect(staleRegistered).toBe(false);
+
+					const currentEntry = startup.handle.registry.entries.get(restartableKey);
+					expect(currentEntry).toBeDefined();
+					if (currentEntry === undefined) return;
+					const currentFiber = yield* Effect.forkScoped(
+						Effect.never as Effect.Effect<void, never, never>,
+					);
+					const currentRegistered = yield* startup.handle.registry.setAcquireFiberIfEntry(
+						restartableKey,
+						currentEntry,
+						currentFiber,
+					);
+					expect(currentRegistered).toBe(true);
+
+					yield* startup.handle.registry.interruptAcquire(restartableKey);
+					yield* Fiber.interrupt(staleFiber);
 				}),
 			);
 		}),

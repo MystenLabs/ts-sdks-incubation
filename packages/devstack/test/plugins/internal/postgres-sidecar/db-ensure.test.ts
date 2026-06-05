@@ -17,8 +17,11 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import type { ContainerExec, ExecResult } from '../../../src/plugins/postgres/db-ensure.ts';
-import { ensureDatabase } from '../../../src/plugins/postgres/db-ensure.ts';
+import type {
+	ContainerExec,
+	ExecResult,
+} from '../../../../src/plugins/internal/postgres-sidecar/db-ensure.ts';
+import { ensureDatabase } from '../../../../src/plugins/internal/postgres-sidecar/db-ensure.ts';
 
 const captureExec = (
 	respond: (argv: ReadonlyArray<string>) => ExecResult,

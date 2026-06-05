@@ -7,7 +7,7 @@ test('renders localnet trader shell and generated coin proof', async ({ page }) 
 	await page.goto('/');
 
 	await expect(page.getByRole('heading', { name: 'DeepBook Trader' })).toBeVisible();
-	await expect(page.getByTestId('localnet-mode')).toHaveText('local');
+	await expect(page.getByTestId('localnet-mode')).toHaveText('localnet');
 	await expect(page.getByTestId('localnet-rpc')).toContainText('localhost');
 	await expect(page.getByTestId('deepbook-local-status')).toHaveText('configured');
 	await expect(page.getByTestId('deepbook-pool')).toHaveText('DEEP_SUI');

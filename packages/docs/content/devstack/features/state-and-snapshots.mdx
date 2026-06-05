@@ -75,9 +75,9 @@ Important caveats:
 - Do not rely on cross-stack restore. Snapshot metadata carries app, stack, network, and plugin
   identity slices (including a Sui `mode` discriminator); restore refuses identity drift with a
   fail-closed `IdentityMismatchError` before any destructive change, never a silent restore.
-- Product evidence for non-empty wallet, Seal, Walrus, Postgres, and DeepBook roundtrips is still
-  incomplete. These docs describe the supported CLI and artifact contract, not a claim that every
-  service has full restore proof.
+- Product evidence for non-empty wallet, Seal, Walrus, and DeepBook roundtrips is still incomplete.
+  These docs describe the supported CLI and artifact contract, not a claim that every service has
+  full restore proof.
 - The supported snapshot surface is the CLI and the on-disk artifact described above. Treat
   `meta.json`, `state.json`, `host-tree.tar`, and `containers/images.tar` as the artifact contract;
   everything else under the snapshot directory is implementation detail and not load-bearing for app

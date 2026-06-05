@@ -30,10 +30,8 @@ import {
 	fetchDeepbookInfo,
 	fetchFundableCoins,
 	fetchMode,
-	fetchPostgresStats,
 	fetchSealInfo,
 	type FundableCoin,
-	type PostgresStats,
 	type SealInfo,
 	type StackMode,
 } from './api.ts';
@@ -267,17 +265,6 @@ export const useCoinCaps = (
 	useQuery({
 		queryKey: ['domain', network, endpoint, 'coinCaps'],
 		queryFn: () => fetchCoinCaps(endpoint),
-		staleTime: DOMAIN_STALE_MS,
-	});
-
-/** Postgres wire-protocol stats per plugin instance. */
-export const usePostgresStats = (
-	endpoint: string,
-	network: string,
-): UseQueryResult<ReadonlyArray<PostgresStats>> =>
-	useQuery({
-		queryKey: ['domain', network, endpoint, 'postgresStats'],
-		queryFn: () => fetchPostgresStats(endpoint),
 		staleTime: DOMAIN_STALE_MS,
 	});
 

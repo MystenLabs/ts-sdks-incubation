@@ -95,8 +95,6 @@ const makeBundle = (runtimeRoot: string) =>
 		stack: inertStack,
 		identityValue,
 		runtimeRoot,
-		appRoot: runtimeRoot,
-		resolvedConfigPath: join(runtimeRoot, 'devstack.config.ts'),
 		devstackVersion: '0.0.0-smoke',
 		// `plain` so `makeTuiSurface` never reaches for a TTY in CI.
 		rendererMode: 'plain',

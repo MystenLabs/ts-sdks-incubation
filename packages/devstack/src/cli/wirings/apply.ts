@@ -108,7 +108,7 @@ export const runApplyLive = (
 			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
 		}
 		const loaded = loadExit.value;
-		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 		// Re-derive the identity against the EFFECTIVE stack (explicit
 		// `--stack`/`$DEVSTACK_STACK` > `config.stackName` > inferred) so
 		// the live-supervisor probe + roster paths target the same stack

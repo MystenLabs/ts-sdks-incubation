@@ -39,6 +39,7 @@ import {
 } from '../../orchestrators/snapshot/index.ts';
 import { computeWarmFingerprint } from '../../orchestrators/warm/fingerprint.ts';
 import { runWarmCapture, runWarmRestore } from '../../orchestrators/warm/hooks.ts';
+import type { Stack } from '../../api/define-devstack.ts';
 import {
 	runStackWithBoot,
 	type CommandHandlerFactory,
@@ -195,8 +196,6 @@ export interface UpBootBundleInput {
 	readonly stack: SupervisedStack;
 	readonly identityValue: Identity;
 	readonly runtimeRoot: string;
-	readonly appRoot: string;
-	readonly resolvedConfigPath: string;
 	readonly devstackVersion: string;
 	readonly rendererMode: import('../../surfaces/tui/mode-detect.ts').RendererMode;
 	readonly warmEnabled: boolean;
@@ -220,16 +219,7 @@ export interface UpBootBundle {
  * non-e2e gate on the cutover (`main.test.ts` only runs `up --help`).
  */
 export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
-	const {
-		stack,
-		identityValue,
-		runtimeRoot,
-		appRoot,
-		resolvedConfigPath,
-		devstackVersion,
-		rendererMode,
-		warmEnabled,
-	} = input;
+	const { stack, identityValue, runtimeRoot, devstackVersion, rendererMode, warmEnabled } = input;
 
 	// Warm-baseline state shared between the two boot hooks:
 	// `beforeInitialAcquire` (warm-restore) sets `warmRestored` when it
@@ -296,8 +286,6 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 						stackRoot: stackPaths.stackRoot,
 						computeFingerprint: computeWarmFingerprint({
 							stack,
-							appRoot,
-							configPath: resolvedConfigPath,
 							devstackVersion,
 						}),
 						warmRestoredRef: warmRestored,
@@ -318,9 +306,7 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 					mode: rendererMode,
 					publishCommand: makeQueueCommandPublisher(h.commands),
 				});
-				yield* Effect.addFinalizer(() =>
-					renderer.flush.pipe(Effect.catch(() => Effect.void)),
-				);
+				yield* Effect.addFinalizer(() => renderer.flush.pipe(Effect.catch(() => Effect.void)));
 				yield* Effect.forkScoped(
 					renderer.mount(h.state, Stream.fromQueue(rendererEvents)).pipe(
 						Effect.catch((cause) =>
@@ -343,12 +329,12 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 			}),
 		// BASELINE-CAPTURE. `withinScope` fires ONCE, only when the
 		// stack came fully up (boot.ts runs it after the booted race
-		// wins, never on shutdown). Capture the warm baseline UNLESS
-		// this boot was itself a warm restore (no point re-capturing an
-		// identical tree). NO `resume` — the stack is already live, so
-		// `capture`'s post-publish bounce re-converges it in place. Any
-		// failure is swallowed (log + continue): a warm-capture failure
-		// must not fail an otherwise-successful `up`. Runs AFTER the
+		// wins, never on shutdown). Capture the warm baseline unless this
+		// boot was a warm restore and runtime acquire stayed clean. NO
+		// `resume` — the stack is already live, so `capture`'s post-publish
+		// bounce re-converges it in place. Any failure is swallowed (log +
+		// continue): a warm-capture failure must not fail an
+		// otherwise-successful `up`. Runs AFTER the
 		// readiness gate resolves (the seam composes the built-in gate
 		// first), so a slow docker-commit can't delay `handle.start`.
 		withinScope: () =>
@@ -357,19 +343,17 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 				const snapshot = yield* SnapshotOrchestratorService;
 				const fs = yield* FileSystem.FileSystem;
 				const stackPaths = yield* StackPathsService;
-				// Capture the baseline + write the sidecar UNLESS this boot
-				// was itself a warm restore. The gate + capture + sidecar
-				// write live in `runWarmCapture` (the same effect the e2e
-				// harness runs); it swallows its own failure so a warm
-				// capture failure never fails an otherwise-successful `up`.
+				// Capture the baseline + write the sidecar unless this boot was a
+				// clean warm restore. The gate + capture + sidecar write live in
+				// `runWarmCapture` (the same effect the e2e harness runs); it
+				// swallows its own failure so a warm capture failure never fails
+				// an otherwise-successful `up`.
 				yield* runWarmCapture({
 					snapshot,
 					fs,
 					stackRoot: stackPaths.stackRoot,
 					computeFingerprint: computeWarmFingerprint({
 						stack,
-						appRoot,
-						configPath: resolvedConfigPath,
 						devstackVersion,
 					}),
 					warmRestoredRef: warmRestored,
@@ -408,7 +392,10 @@ export const runUpLive = (
 			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
 		}
 		const loaded = loadExit.value;
-		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const publicStack = (loaded as LoadedConfig & {
+			readonly stack: Stack<SupervisedStack['members']>;
+		}).stack;
+		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 
 		// Re-derive the identity against the EFFECTIVE stack (explicit
 		// `--stack`/`$DEVSTACK_STACK` > `config.stackName` > inferred) so
@@ -420,9 +407,8 @@ export const runUpLive = (
 		// supervisor (`error: supervisor live for <app>/<stack>`, exit 40).
 		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
-
 		const appRoot = dirname(loaded.resolvedConfigPath);
-		const resolvedConfigPath = loaded.resolvedConfigPath;
+
 		// Warm boot-cache toggle: the CLI `--warm` flag (tri-state from
 		// main.ts) wins over the config's `defineDevstack({ warm })`; default
 		// off. When off, every warm hook below is skipped (zero behavior
@@ -457,8 +443,6 @@ export const runUpLive = (
 			stack,
 			identityValue,
 			runtimeRoot: effectiveIdentity.runtimeRoot,
-			appRoot,
-			resolvedConfigPath,
 			devstackVersion,
 			rendererMode,
 			warmEnabled,
@@ -470,7 +454,7 @@ export const runUpLive = (
 		// forkDetach/Deferred boot lifecycle — `up` no longer forks its own
 		// parallel orchestration. The CLI concerns (warm/recover/roster/IPC/TUI
 		// + snapshot handler) are passed as injected hooks + `commandHandler`.
-		const handle = runStackWithBoot(stack, {
+		const handle = runStackWithBoot(publicStack, {
 			identity: {
 				app: String(identityValue.app),
 				stack: String(identityValue.stack),
@@ -512,13 +496,14 @@ export const runUpLive = (
 					}),
 				);
 				yield* handle.awaitShutdown.pipe(
-					Effect.catchCause((cause): Effect.Effect<never, CliError> =>
-						Effect.fail(
-							new CliInternalError({
-								message: 'stack failed',
-								cause: Cause.pretty(cause as Cause.Cause<unknown>),
-							}),
-						),
+					Effect.catchCause(
+						(cause): Effect.Effect<never, CliError> =>
+							Effect.fail(
+								new CliInternalError({
+									message: 'stack failed',
+									cause: Cause.pretty(cause as Cause.Cause<unknown>),
+								}),
+							),
 					),
 				);
 				return { exitCode: ExitCode.OK } satisfies CommandResult;

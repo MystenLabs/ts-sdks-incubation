@@ -56,6 +56,7 @@ import {
 	PostAcquireTasksService,
 	layerPostAcquireTasks,
 } from '../substrate/runtime/post-acquire-tasks.ts';
+import { layerRuntimeInvalidationTracker } from '../substrate/runtime/invalidation-tracker.ts';
 import {
 	allReadyOrTerminal,
 	startSupervisor,
@@ -146,6 +147,7 @@ export const buildSubstrateLayers = (identity: Identity, runtimeRoot: string) =>
 		layerDockerHostDefault,
 		layerDockerCycleInitial,
 		layerStrategyRegistry,
+		layerRuntimeInvalidationTracker,
 	);
 
 	const childProcessSpawnerWired = NodeChildProcessSpawner.layer.pipe(

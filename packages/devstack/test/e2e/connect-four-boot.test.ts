@@ -27,13 +27,13 @@
 // non-trivial). 180s timeout because the action's executeTransaction
 // adds a finality-wait gate on top of the cold-boot path.
 
-import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 import { runBoot } from './boot-config-impl.ts';
+import { dockerReachable } from './docker-prune.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(
@@ -46,17 +46,6 @@ const CONFIG_PATH = resolve(
 	'connect-four',
 	'devstack.config.ts',
 );
-
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
 
 describe('connect-four boots end-to-end', () => {
 	it('every plugin reaches `ready` and openLobby returns a real digest', async () => {

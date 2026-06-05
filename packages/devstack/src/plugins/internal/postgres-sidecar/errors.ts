@@ -1,10 +1,7 @@
-// Postgres plugin — typed errors.
+// Internal Postgres sidecar — typed errors.
 //
-// Per-plugin tagged errors (architecture § Effect; substrate-redesign
-// directive: errors live with the plugin that raises and consumes
-// them). Postgres is a topological leaf — every raise site AND every
-// consumer is inside `src/plugins/postgres/`, so this file owns the
-// complete error surface.
+// These errors are not part of the public root barrel. They are raised by the
+// internal sidecar and wrapped by the owning plugin's error channel.
 //
 // Phase tags mirror the lifecycle states from the distilled doc
 // (10-postgres § Lifecycle states): one phase per failure boundary
@@ -15,7 +12,10 @@
 // `Effect.catchTag` / `catchTags` match on the `_tag` literal — we do
 // NOT subclass an Effect base class. See architecture § Effect.
 
-import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
+import {
+	defineConfigError,
+	type ConfigIssue,
+} from '../../../substrate/runtime/config-validation.ts';
 
 /** Phases for `PostgresPluginError`. Closed sum — additions land in
  *  the distilled-doc catalog first. */
@@ -95,21 +95,3 @@ export interface DatabaseCreateFailed {
 export const databaseCreateFailed = (
 	parts: Omit<DatabaseCreateFailed, '_tag'>,
 ): DatabaseCreateFailed => ({ _tag: 'DatabaseCreateFailed', ...parts });
-
-/** Union of every error a Postgres-plugin caller may encounter. */
-export type PostgresError =
-	| PostgresPluginError
-	| PostgresConfigError
-	| PostgresConnectionTimeout
-	| DatabaseCreateFailed;
-
-/** The catchable error tags this plugin exposes. Consumed by the
- *  acquire-body `passthroughOrWrap` (to let typed postgres failures
- *  through unwrapped) and pinned against the user-facing error catalog
- *  by the error-catalog-parity test. */
-export const POSTGRES_ERROR_TAGS: ReadonlyArray<PostgresError['_tag']> = [
-	'PostgresPluginError',
-	'PostgresConfigError',
-	'PostgresConnectionTimeout',
-	'DatabaseCreateFailed',
-] as const;

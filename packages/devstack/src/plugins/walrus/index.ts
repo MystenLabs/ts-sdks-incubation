@@ -210,8 +210,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 				);
 				const suiRpcUrlInNetwork = sui.hostGateway.rpcUrl;
 				// sui-faucet v2 endpoint — `/v2/gas` is the supported path
-				// on devnet-v1.71.0+ (the binary still answers `/v1/gas`
-				// for backwards-compat but new code targets v2).
+				// on devnet-v1.71.0+.
 				const suiFaucetUrlInNetwork = sui.hostGateway.faucetUrl;
 				if (suiFaucetUrlInNetwork === null) {
 					return yield* Effect.fail(

@@ -34,8 +34,6 @@ import type {
 	DashboardDeepbookInfo,
 	DashboardDeepbookPool,
 	DashboardFundableCoin,
-	DashboardPostgresStats,
-	DashboardPostgresTable,
 	DashboardSealInfo,
 	DashboardSealKeyServer,
 } from '../domain.ts';
@@ -319,8 +317,8 @@ export const HealthSummary = builder.objectRef<HealthSummarySource>('HealthSumma
 // Sources are the app-agnostic `ControlPlane*` shapes the supervisor
 // populates from resolved plugin values. These cover only what the browser
 // cannot reach directly: codegen capability ids, in-process plugin state,
-// the snapshot catalog, and PG wire-protocol stats. Numeric counts/sizes
-// are carried as Float (GraphQL Int caps at 2^31; pg sizes can exceed it).
+// and the snapshot catalog. Numeric counts/sizes are carried as Float
+// (GraphQL Int caps at 2^31).
 
 export const SnapshotEntry = builder
 	.objectRef<ControlPlaneSnapshotEntry>('SnapshotEntry')
@@ -424,33 +422,6 @@ export const FundableCoin = builder.objectRef<DashboardFundableCoin>('FundableCo
 		/** True when funding requires the recipient to BE a resolved account
 		 *  (the swap spends that account's own SUI). SUI is false. */
 		requiresAccountSigner: t.exposeBoolean('requiresAccountSigner'),
-	}),
-});
-
-export const PostgresTable = builder.objectRef<DashboardPostgresTable>('PostgresTable').implement({
-	description: 'Per-table row estimate + total size (bytes).',
-	fields: (t) => ({
-		schema: t.exposeString('schema'),
-		name: t.exposeString('name'),
-		rowEstimate: t.exposeFloat('rowEstimate'),
-		totalBytes: t.exposeFloat('totalBytes'),
-	}),
-});
-
-export const PostgresStats = builder.objectRef<DashboardPostgresStats>('PostgresStats').implement({
-	description:
-		'Postgres wire-protocol stats (db size, connections, per-table). Gathered by exec; the browser cannot speak the PG protocol.',
-	fields: (t) => ({
-		pluginKey: t.exposeString('pluginKey'),
-		database: t.exposeString('database'),
-		// Plain (password-less) DSN only — the credentialed form never leaves
-		// the backend.
-		plainUrl: t.exposeString('plainUrl'),
-		databaseBytes: t.exposeFloat('databaseBytes'),
-		connectionCount: t.exposeInt('connectionCount'),
-		tables: t.field({ type: [PostgresTable], resolve: (p) => p.tables }),
-		available: t.exposeBoolean('available'),
-		detail: t.exposeString('detail', { nullable: true }),
 	}),
 });
 

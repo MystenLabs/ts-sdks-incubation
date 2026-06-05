@@ -118,8 +118,7 @@ const parseAndDecode = (raw: string, manifestPath: string): ManifestEnvelope => 
 			message:
 				`[devstack] manifest at ${manifestPath} has version ${decoded.manifestVersion}, ` +
 				`but this consumer was built for version ${CONSUMER_MANIFEST_VERSION}. ` +
-				`RECOVERY: upgrade your devstack consumer dependency, or \`rm ${manifestPath} && devstack up\` ` +
-				`to regenerate against the new version.`,
+				`RECOVERY: \`rm ${manifestPath} && devstack up\` to regenerate.`,
 		});
 	}
 	return decoded;
@@ -147,9 +146,7 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
 		manifestPath,
 		manifestVersion: envelope.manifestVersion,
 		endpoints: new EndpointRegistry(entries),
-		// Legacy slot — the writer no longer emits `services`; default to
-		// `{}` so the public build-integration `StackContext.services`
-		// stays a record when the manifest omits the field.
+		// Default to an empty record when the manifest omits services.
 		services: envelope.services ?? {},
 		extras: envelope.extras,
 	};

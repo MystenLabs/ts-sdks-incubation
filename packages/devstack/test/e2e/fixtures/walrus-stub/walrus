@@ -3,9 +3,10 @@
 #
 #   - `deploy ...`  → emit parseable deploy output + per-node config
 #                      files; exit 0.
-#   - (no args)     → bind TCP on WALRUS_ROUTER_PORT (9185) and stay
-#                      alive, so the storage-node `nc -z 127.0.0.1
-#                      9185` ready probe succeeds.
+#   - (no args)     → bind HTTP on WALRUS_ROUTER_PORT (9185), answer
+#                      `/v1/health` with an Active nodeStatus, and stay
+#                      alive, so the storage-node write-ready probe
+#                      succeeds.
 #
 # The real `walrus` binary uses subcommands; the plugin's argv path
 # always starts with `deploy` for the one-shot. Anything else is
@@ -86,17 +87,14 @@ EOF
 		exit 0
 		;;
 	*)
-		# Storage-node mode. Bind TCP on 9185 and hold the listener.
-		# busybox `nc -lk -p PORT -e CMD` accepts connections in a
-		# loop; `-e` runs a command per accept so the probe gets a
-		# clean close. Use `/bin/true` so the connection closes
-		# immediately with no payload — `nc -z` only cares about the
-		# TCP handshake.
+		# Storage-node mode. Bind HTTP on 9185 and hold the listener.
+		# The production ready-gate first checks TCP with `nc -z`, then
+		# fetches `/v1/health` and classifies `nodeStatus`. Serve a small
+		# Active health body so the stub models a write-ready node.
 		port="${WALRUS_CONTAINER_PORT:-9185}"
-		# busybox `nc` doesn't support `-k` everywhere; fall back to
-		# a loop that respawns the listener after each connect.
-		while true; do
-			nc -l -p "$port" -e /bin/true >/dev/null 2>&1 || true
-		done
+		root="/tmp/walrus-stub-http"
+		mkdir -p "$root/v1"
+		printf '{"nodeStatus":"Active"}\n' > "$root/v1/health"
+		exec httpd -f -p "$port" -h "$root"
 		;;
 esac

@@ -119,7 +119,6 @@ describe('Sui local indexer wiring', () => {
 				provisionLocalIndexer(
 					sidecarRuntime({}),
 					identity,
-					'/stack/root',
 					{
 						mode: 'local',
 						indexerDb: { url: 'postgres://u:p@host:5432', network: 'caller-net' },
@@ -138,7 +137,6 @@ describe('Sui local indexer wiring', () => {
 				provisionLocalIndexer(
 					sidecarRuntime({}),
 					identity,
-					'/stack/root',
 					{
 						mode: 'local',
 						indexerDb: { url: 'postgres://u:p@host:5432/mydb', network: 'caller-net' },
@@ -154,13 +152,7 @@ describe('Sui local indexer wiring', () => {
 		const sink: { spec?: EnsureContainerSpec } = {};
 		const indexer = await Effect.runPromise(
 			Effect.scoped(
-				provisionLocalIndexer(
-					sidecarRuntime(sink),
-					identity,
-					'/stack/root',
-					{ mode: 'local' },
-					VALIDATOR_IMAGE,
-				),
+				provisionLocalIndexer(sidecarRuntime(sink), identity, { mode: 'local' }, VALIDATOR_IMAGE),
 			),
 		);
 		// DSN dials the alias `sui-indexer-db`, not `app-stack-indexer-db`.
@@ -191,7 +183,6 @@ describe('appendDatabaseIfMissing (BYO DSN normalization)', () => {
 				provisionLocalIndexer(
 					sidecarRuntime({}),
 					identity,
-					'/stack/root',
 					{
 						mode: 'local',
 						indexerDb: { url, network: 'caller-net' },
@@ -321,13 +312,7 @@ describe('provisionLocalIndexer stamps the sidecar configHash', () => {
 	): Promise<string | undefined> => {
 		await Effect.runPromise(
 			Effect.scoped(
-				provisionLocalIndexer(
-					sidecarRuntime(sink),
-					identity,
-					'/stack/root',
-					{ mode: 'local' },
-					image,
-				),
+				provisionLocalIndexer(sidecarRuntime(sink), identity, { mode: 'local' }, image),
 			),
 		);
 		return sink.spec?.configHash;

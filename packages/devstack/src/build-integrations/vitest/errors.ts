@@ -33,8 +33,8 @@ export class VitestManifestNotFoundError extends Data.TaggedError('VitestManifes
  *  the "manifest looks like garbage / your envelope was wrong" recovery
  *  ("regenerate the manifest"); the version-mismatch tag carries the
  *  "build-integration and supervisor are at different versions"
- *  recovery (upgrade the consumer dependency). Splitting the two lets
- *  callers `catchTag` independently and surface a precise hint. */
+ *  recovery. Splitting the two lets callers `catchTag`
+ *  independently and surface a precise hint. */
 export class VitestManifestShapeError extends Data.TaggedError('VitestManifestShapeError')<{
 	readonly message: string;
 	readonly path: string;
@@ -46,8 +46,7 @@ export class VitestManifestShapeError extends Data.TaggedError('VitestManifestSh
 /** The manifest exists, decodes structurally, but its `manifestVersion`
  *  doesn't match what this consumer build was compiled for. Distinct
  *  from `VitestManifestShapeError` so callers can `catchTag` the two
- *  separately — the recovery action is "upgrade your devstack
- *  consumer dependency" rather than "regenerate the manifest". */
+ *  separately. */
 export class VitestManifestVersionMismatchError extends Data.TaggedError(
 	'VitestManifestVersionMismatchError',
 )<{

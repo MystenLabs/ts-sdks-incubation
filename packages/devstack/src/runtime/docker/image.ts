@@ -28,6 +28,7 @@ import { Effect, Fiber, Schema, Stream } from 'effect';
 
 import type { ContentHash } from '../../substrate/brand.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
+import { recordRuntimeInvalidation } from '../../substrate/runtime/invalidation-tracker.ts';
 import { decodeJsonTextSync } from '../../substrate/runtime/runtime-decode.ts';
 import type { ImageRef, LoadedImageBundle } from '../../contracts/container-runtime.ts';
 import { DockerHost, DockerSpawner, dockerCommand, dockerRun, dockerRunOk } from './client.ts';
@@ -147,7 +148,9 @@ export const pull = (
 		yield* dockerRun('pull', [ref], { onStdoutLine: onLine }).pipe(
 			Effect.mapError(wrapPullError(ref)),
 		);
-		return yield* inspectDigest(ref);
+		const digest = yield* inspectDigest(ref);
+		yield* recordRuntimeInvalidation({ kind: 'docker-image-pulled', ref, digest });
+		return digest;
 	});
 
 // -----------------------------------------------------------------------------
@@ -553,6 +556,7 @@ export const ensureImageCached = (
 			return onHost;
 		}
 		const digest = yield* build(opts);
+		yield* recordRuntimeInvalidation({ kind: 'docker-image-built', tag: opts.tag });
 		yield* cache
 			.write(
 				{ namespace: key.namespace, chain: key.chain, contentHash: key.contentHash },

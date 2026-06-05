@@ -159,9 +159,7 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 		chain: Schema.String,
 	}),
 	manifestVersion: Schema.Number,
-	// Optional + back-compat — the writer no longer emits `services`, but
-	// an old on-disk manifest carrying `services: {}` must still decode
-	// without a `manifestVersion` bump.
+	// Optional service map for read-side integrations.
 	services: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 	endpoints: Schema.Record(
 		Schema.String,
@@ -175,9 +173,8 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 		}),
 	),
 	extras: Schema.Record(Schema.String, Schema.Unknown),
-	// Optional + additive — a manifest written before this field
-	// existed still decodes (the key is simply absent). The Vite plugin
-	// reads `codegen.generatedDir` to point its `@generated` alias; on a
+	// Optional codegen metadata. The Vite plugin reads
+	// `codegen.generatedDir` to point its `@generated` alias; on a
 	// miss it falls back to `src/generated/`.
 	codegen: Schema.optional(
 		Schema.Struct({

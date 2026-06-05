@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ContainerLabelTuple } from '../../src/contracts/snapshotable.ts';
 import {
+	resumeAfterCapture,
 	runCapture,
 	runRestore,
 	snapshotIdFromString,
@@ -16,10 +17,10 @@ import { ContainerRuntimeService } from '../../src/runtime/docker/index.ts';
 import { appName, stackName } from '../../src/substrate/brand.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
-import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
+import { dockerReachable, dockerSpawnSync, pruneManagedImagesForApp } from './docker-prune.ts';
 
 const docker = (args: ReadonlyArray<string>, timeout = 60_000): SpawnSyncReturns<string> =>
-	spawnSync('docker', [...args], { encoding: 'utf8', timeout });
+	dockerSpawnSync(args, { timeout });
 
 const prepareImage = (
 	sourceTag: string,
@@ -156,11 +157,18 @@ describe('snapshot container image roundtrip', () => {
 						const tarPath = join(artifactDir, captured.containers[0]!.tarPath);
 						expect(statSync(tarPath).size).toBeGreaterThan(0);
 
+						yield* resumeAfterCapture(captured, {
+							runtime,
+							app,
+							stack,
+						});
+
+						const resumedHandle = yield* runtime.ensureContainer(spec);
 						const inspected = yield* runtime.inspectByLabels(labels);
 						expect(inspected[0]?.status).toBe('running');
 						expect(snapshotTempTagsFor(containerName)).toEqual([]);
 
-						const dirtyMarker = yield* runtime.exec(handle, [
+						const dirtyMarker = yield* runtime.exec(resumedHandle, [
 							'sh',
 							'-c',
 							'printf dirty > /snapshot-marker',

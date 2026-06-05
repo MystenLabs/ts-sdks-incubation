@@ -372,4 +372,26 @@ describe('connectAs', () => {
 
 		expect(calls).toEqual(['select:bob']);
 	});
+
+	it('waits for the injected dapp-kit slot to appear after page load', async () => {
+		const calls: string[] = [];
+		let evaluateCalls = 0;
+		const page = {
+			evaluate: async <T>(fn: (arg: unknown) => T, arg?: unknown): Promise<T> => {
+				evaluateCalls += 1;
+				if (evaluateCalls === 1) {
+					return { ok: false, reason: 'slot-not-populated' } as T;
+				}
+				setDappKitSlot({
+					selectAccount: (name: string) => calls.push(`select:${name}`),
+				});
+				return fn(arg);
+			},
+		};
+
+		await connectAs(page, 'alice');
+
+		expect(evaluateCalls).toBe(2);
+		expect(calls).toEqual(['select:alice']);
+	});
 });

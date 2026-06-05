@@ -13,6 +13,10 @@
 // No service names appear here. No stderr-pattern classification —
 // that's in `wrap.ts`. This file is mechanical argv + spawn.
 
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Context, Effect, Layer } from 'effect';
 import { ChildProcess } from 'effect/unstable/process';
 import { ChildProcessSpawner } from 'effect/unstable/process';
@@ -64,11 +68,72 @@ export class DockerSpawner extends Context.Service<
 // Argv construction
 // -----------------------------------------------------------------------------
 
-const buildEnv = (host: DockerHostShape): Record<string, string> => {
-	const env: Record<string, string> = {};
+let sanitizedDockerConfig: {
+	readonly sourceDir: string;
+	readonly dir: string;
+} | null = null;
+
+const sourceDockerConfigDir = (): string => process.env.DOCKER_CONFIG ?? join(homedir(), '.docker');
+
+const originalDockerConfig = (sourceDir: string): Record<string, unknown> => {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(sourceDir, 'config.json'), 'utf8'));
+		if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+			return { ...(parsed as Record<string, unknown>) };
+		}
+	} catch {
+		// Missing or malformed Docker config: let the CLI fall back to defaults.
+	}
+	return {};
+};
+
+const symlinkDockerConfigDir = (sourceDir: string, targetDir: string, name: string): void => {
+	const source = join(sourceDir, name);
+	if (!existsSync(source)) return;
+	try {
+		symlinkSync(source, join(targetDir, name));
+	} catch {
+		// Best effort. Docker can still run without these; buildx/context
+		// preservation only avoids changing behavior for Desktop/remote users.
+	}
+};
+
+const dockerConfigDir = (): string => {
+	const source = sourceDockerConfigDir();
+	if (sanitizedDockerConfig !== null && sanitizedDockerConfig.sourceDir === source) {
+		return sanitizedDockerConfig.dir;
+	}
+	const dir = mkdtempSync(join(tmpdir(), 'devstack-docker-config-'));
+	for (const name of ['cli-plugins', 'buildx', 'contexts']) {
+		symlinkDockerConfigDir(source, dir, name);
+	}
+	// Docker Desktop's `credsStore: "desktop"` helper can block forever on
+	// public image metadata resolution. Give the CLI a process-local config with
+	// credential helpers stripped while preserving static auth entries, proxies,
+	// custom headers, contexts, and other non-helper Docker config.
+	const {
+		credsStore: _credsStore,
+		credHelpers: _credHelpers,
+		...config
+	} = originalDockerConfig(source);
+	if (!('auths' in config)) config.auths = {};
+	writeFileSync(join(dir, 'config.json'), `${JSON.stringify(config)}\n`, {
+		mode: 0o600,
+	});
+	process.once('exit', () => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+	sanitizedDockerConfig = { sourceDir: source, dir };
+	return dir;
+};
+
+export const dockerCliEnv = (host: DockerHostShape = {}): Record<string, string> => {
+	const env: Record<string, string> = { DOCKER_CONFIG: dockerConfigDir() };
 	if (host.dockerHost !== undefined) env.DOCKER_HOST = host.dockerHost;
 	return env;
 };
+
+const buildEnv = (host: DockerHostShape): Record<string, string> => dockerCliEnv(host);
 
 /** Grace period between the scope-close SIGTERM and the escalation
  *  SIGKILL. Without `forceKillAfter` the Node spawner sends ONE SIGTERM

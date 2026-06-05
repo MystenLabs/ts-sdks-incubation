@@ -6,9 +6,8 @@
 // whose ancestor chain doesn't extend to a real stack root) would
 // silently return `/` and the bind-mount would publish the host root
 // into the container. Review fix phase 22a switched to explicit
-// `stackRoot` injection (matching the postgres / sui / seal /
-// wallet plugins' existing `paths.stackRoot` thread) plus an
-// assertion that the deploy dir is a descendant of `stackRoot`.
+// `stackRoot` injection plus an assertion that the deploy dir is a
+// descendant of `stackRoot`.
 
 import { describe, expect, it } from 'vitest';
 
@@ -73,8 +72,6 @@ describe('walrusDeployMountPaths', () => {
 			mountTarget: '/opt/walrus/runtime',
 		});
 		expect(result.sourceHostPath).toBe('/home/dev/.devstack/main');
-		expect(result.outputDirInContainer).toBe(
-			'/opt/walrus/runtime/walrus/walrus/deploy',
-		);
+		expect(result.outputDirInContainer).toBe('/opt/walrus/runtime/walrus/walrus/deploy');
 	});
 });

@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
@@ -22,6 +22,7 @@ import {
 import { appName, stackName } from '../../src/substrate/brand.ts';
 import { renderNetworkLabels } from '../../src/runtime/docker/index.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
+import { dockerReachable, dockerSpawnSync } from './docker-prune.ts';
 
 const SERVICE_IMAGE = 'busybox:1.36';
 const SERVICE_PORT = 8080;
@@ -29,15 +30,7 @@ const ENTRYPOINT_NAME = 'router-real-http';
 const ROUTER_NETWORK_APP_LABEL = 'devstack-router';
 
 const docker = (args: ReadonlyArray<string>, timeout = 60_000): SpawnSyncReturns<string> =>
-	spawnSync('docker', [...args], { encoding: 'utf8', timeout });
-
-const dockerReachable = (): { readonly ok: boolean; readonly detail: string } => {
-	const res = docker(['info', '--format', '{{.ServerVersion}}'], 5_000);
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
+	dockerSpawnSync(args, { timeout });
 
 const chooseHighPort = (): Promise<number> =>
 	new Promise((resolve, reject) => {

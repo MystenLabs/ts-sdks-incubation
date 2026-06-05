@@ -50,7 +50,9 @@ import {
 import {
 	layerTraefikContainerOpsDocker,
 	layerTraefikContainerOpsStub,
+	TraefikContainerOpsService,
 } from '../../src/orchestrators/router/traefik-container.ts';
+import { ROUTER_CONTAINER_NAME_PREFIX } from '../../src/orchestrators/router/sentinels.ts';
 import {
 	MoveCodegenService,
 	MoveSummaryRunnerService,
@@ -76,6 +78,7 @@ import {
 	PostAcquireTasksService,
 	layerPostAcquireTasks,
 } from '../../src/substrate/runtime/post-acquire-tasks.ts';
+import { layerRuntimeInvalidationTracker } from '../../src/substrate/runtime/invalidation-tracker.ts';
 import {
 	LeaseBrokerService,
 	layerLeaseBroker,
@@ -112,6 +115,7 @@ import {
 	layerDockerCycleInitial,
 	layerDockerHostDefault,
 } from '../../src/runtime/docker/index.ts';
+import { dockerSpawnSync } from './docker-prune.ts';
 
 /** Context surfaced to `withinScope` callbacks. Carries every handle a
  *  test needs to assert against a still-running stack — resolved
@@ -188,15 +192,13 @@ export type BootOptions = BootSource & {
 	 *  warm-capture hook runs AFTER the stack is up + the test `withinScope`
 	 *  (capturing the baseline + writing the sidecar unless this boot was a
 	 *  restore) — the EXACT closures `cli/wirings/up.ts` runs, so this puts
-	 *  the e2e on the same warm path as `devstack up --warm`. The warm
-	 *  fingerprint sha256s `configPath`'s bytes as its primary signal, so the
-	 *  config file MUST exist (an unreadable config degrades to a cold boot).
-	 *  `appRoot` roots watched Move-source discovery; `devstackVersion`
-	 *  defaults to a stable sentinel. Pair with a persisted `runtimeRoot`
-	 *  across invocations so a later boot observes the on-disk baseline. */
+	 *  the e2e on the same warm path as `devstack up --warm`. The warm graph
+	 *  key is computed from the resolved stack graph; runtime invalidation
+	 *  decisions decide whether a restored baseline needs recapture.
+	 *  `devstackVersion` defaults to a stable sentinel. Pair with a persisted
+	 *  `runtimeRoot` across invocations so a later boot observes the on-disk
+	 *  baseline. */
 	readonly warm?: {
-		readonly appRoot: string;
-		readonly configPath: string;
 		readonly devstackVersion?: string;
 	};
 };
@@ -238,6 +240,22 @@ const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcess
 		}),
 	);
 
+const removeDevstackRoutersForRealRouterE2e = (): void => {
+	try {
+		const listed = dockerSpawnSync(
+			['ps', '-aq', '--filter', `name=${ROUTER_CONTAINER_NAME_PREFIX}`],
+			{ timeout: 30_000 },
+		);
+		if (listed.status !== 0) return;
+		const ids = listed.stdout.split(/\s+/).filter((id) => id !== '');
+		if (ids.length === 0) return;
+		dockerSpawnSync(['rm', '-f', ...ids], { timeout: 60_000 });
+	} catch {
+		// Best-effort: if cleanup fails, router boot reports the concrete
+		// Docker error, including any port holder.
+	}
+};
+
 export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	const identity: Identity = {
 		app: appName(opts.appName),
@@ -264,6 +282,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		layerDockerHostDefault,
 		layerDockerCycleInitial,
 		layerStrategyRegistry,
+		layerRuntimeInvalidationTracker,
 	);
 
 	const childProcessSpawnerWired = NodeChildProcessSpawner.layer.pipe(
@@ -383,6 +402,8 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		const postAcquireTasks = yield* PostAcquireTasksService;
 		const router = yield* RouterService;
 		const codegen = yield* CodegenOrchestratorService;
+		const traefikOps =
+			opts.useRealRouter === true ? yield* TraefikContainerOpsService : null;
 
 		const pluginContext = Context.empty().pipe(
 			Context.add(IdentityContext, identityCtx),
@@ -455,10 +476,12 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		// ── Warm boot-cache hooks (opt-in via `opts.warm`) ────────────────────
 		// Drive the EXACT production warm path (`cli/wirings/up.ts`): restore the
 		// baseline before the initial acquire on a fingerprint HIT, capture it
-		// after the stack is up unless this boot was a restore. The two shared
-		// Refs are the same cells the production hooks pass — `warmRestoredRef`
-		// flags a restore so the capture skips; `warmFingerprintRef` carries the
-		// restore-phase fingerprint into the sidecar write. The snapshot ops
+		// after the stack is up unless this boot was a restore with no runtime
+		// invalidation. The two shared Refs are the same cells the production
+		// hooks pass — `warmRestoredRef` records the restore path;
+		// `warmFingerprintRef` carries the restore-phase fingerprint into the
+		// sidecar write. The runtime invalidation tracker decides whether a
+		// restored boot changed enough state to recapture. The snapshot ops
 		// inject `resume: resumeStack` lazily (read at call time): warm-restore
 		// runs BEFORE `supervise()` so `resumeStack` is still `void` then (the
 		// `supervise()` acquire IS the converge, mirroring production's
@@ -471,9 +494,9 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 			snapshot: {
 				list: snapshot.list,
 				restore: (args: { readonly id: string }) =>
-					snapshot.restore({ id: args.id, resume: Effect.orDie(resumeStack) }).pipe(
-						Effect.tap(() => refreshResolvedValues),
-					),
+					snapshot
+						.restore({ id: args.id, resume: Effect.orDie(resumeStack) })
+						.pipe(Effect.tap(() => refreshResolvedValues)),
 				delete: (id: string) => snapshot.delete(id),
 				capture: (args: { readonly id: string; readonly label?: string }) =>
 					snapshot
@@ -488,8 +511,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 			stackRoot: stackPaths.stackRoot,
 			computeFingerprint: computeWarmFingerprint({
 				stack: { _tag: 'Stack' as const, members: stack.members, options: stack.options },
-				appRoot: warmOpts.appRoot,
-				configPath: warmOpts.configPath,
 				devstackVersion: warmOpts.devstackVersion ?? '0.0.0-e2e',
 			}),
 			warmRestoredRef,
@@ -505,6 +526,19 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				// fake upstream resolver, while using the same sink delivery
 				// path as production. Production boots the router via the same
 				// `router.boot()` call (see boot.ts dispatcher).
+				if (traefikOps !== null) {
+					yield* Effect.sync(removeDevstackRoutersForRealRouterE2e);
+					yield* traefikOps.forceRemove(routerProfile.containerName).pipe(
+						Effect.catch(() => Effect.void),
+						Effect.asVoid,
+					);
+					yield* Effect.addFinalizer(() =>
+						traefikOps.forceRemove(routerProfile.containerName).pipe(
+							Effect.catch(() => Effect.void),
+							Effect.asVoid,
+						),
+					);
+				}
 				yield* router.boot().pipe(Effect.orDie);
 				// WARM-RESTORE — runs BEFORE the initial acquire (the `supervise()`
 				// below), exactly like production's `beforeInitialAcquire`. On a
@@ -581,13 +615,15 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				}
 
 				if (opts.withinScope !== undefined) {
-					yield* opts.withinScope({
-						resolvedValues: readyValues,
-						containerRuntime,
-						strategyRegistry: registry,
-						identity,
-						snapshot: snapshotFacade,
-					}).pipe(Effect.orDie);
+					yield* opts
+						.withinScope({
+							resolvedValues: readyValues,
+							containerRuntime,
+							strategyRegistry: registry,
+							identity,
+							snapshot: snapshotFacade,
+						})
+						.pipe(Effect.orDie);
 				}
 
 				// WARM-CAPTURE — runs AFTER the stack is up + the test `withinScope`

@@ -32,6 +32,7 @@ import type {
 	PortBindingReconciliation,
 	RecreatePolicy,
 } from '../../contracts/container-runtime.ts';
+import { recordRuntimeInvalidation } from '../../substrate/runtime/invalidation-tracker.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import {
 	ContainerCreateFailed,
@@ -746,7 +747,13 @@ const recreateAfterResumeFailure = (
 			return yield* Effect.fail(new RecreateRefused({ name: spec.name, reason: routed.reason }));
 		}
 		yield* forceRemoveOwned(spec.name, id, spec.labels);
-		return yield* createWithCollisionRecovery(spec, deps);
+		const created = yield* createWithCollisionRecovery(spec, deps);
+		yield* recordRuntimeInvalidation({
+			kind: 'container-created',
+			name: spec.name,
+			cause: 'resume-recreate',
+		});
+		return created;
 	});
 
 const effectivePortsCompatible = (facts: InspectFacts, spec: EnsureContainerSpec): boolean => {
@@ -964,11 +971,7 @@ export const withSerializedContainerOp = <A, E, R>(
 export const ensureContainer = (
 	spec: EnsureContainerSpec,
 	deps: EnsureContainerDeps,
-): Effect.Effect<
-	ContainerHandle,
-	DockerRuntimeError,
-	DockerHost | DockerSpawner | Scope.Scope
-> =>
+): Effect.Effect<ContainerHandle, DockerRuntimeError, DockerHost | DockerSpawner | Scope.Scope> =>
 	Effect.gen(function* () {
 		// Per-name lock holds the inspect → applyAction → finalizer-registration
 		// window. The lock CANNOT be released before the stop-on-scope-close
@@ -1137,10 +1140,17 @@ const applyAction = (
 			}
 			case 'recreate': {
 				yield* forceRemoveOwned(spec.name, action.id, spec.labels);
+				const created = yield* createWithCollisionRecovery(spec, deps);
+				yield* recordRuntimeInvalidation({
+					kind: 'container-created',
+					name: spec.name,
+					cause: 'recreate',
+				});
+				return created;
+			}
+			case 'fresh': {
 				return yield* createWithCollisionRecovery(spec, deps);
 			}
-			case 'fresh':
-				return yield* createWithCollisionRecovery(spec, deps);
 			case 'refuse':
 				return yield* Effect.fail(new RecreateRefused({ name: spec.name, reason: action.reason }));
 		}

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # devstack-rewrite vendored postgres image.
 #
 # Single load-bearing modification: relocate PGDATA off the upstream

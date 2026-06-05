@@ -80,7 +80,7 @@ export type IdentityContributionValue =
  *  use a string-literal `kind` and JSON-serializable values; see the
  *  top-of-file convention section. The `[field]` index signature is
  *  permissive so existing payloads with `ReadonlyArray<string>` or
- *  nested object fields (e.g. postgres's `databases`) typecheck without
+ *  nested object fields typecheck without
  *  per-plugin schema duplication. */
 export interface IdentityContributionShape {
 	readonly kind: string;

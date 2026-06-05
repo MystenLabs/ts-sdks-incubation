@@ -1,4 +1,4 @@
-// Postgres plugin — idempotent logical-database creation via
+// Internal Postgres sidecar — idempotent logical-database creation via
 // `docker exec ... psql`.
 //
 // Why exec, not a TS pg client:
@@ -43,7 +43,7 @@ import {
 	ProbeTimeoutError,
 	exitCodeProbeResult,
 	waitForProbe,
-} from '../../substrate/runtime/probes.ts';
+} from '../../../substrate/runtime/probes.ts';
 
 /** One captured exec invocation. Mirrors the shape returned by
  *  `docker exec` (stdout + stderr + exit code), without naming docker
@@ -63,9 +63,7 @@ export interface ExecResult {
  *  exit codes (eg `pg_isready` not ready yet) are returned in the
  *  `ExecResult` for the caller to interpret. */
 export interface ContainerExec {
-	readonly run: (
-		argv: ReadonlyArray<string>,
-	) => Effect.Effect<ExecResult, PostgresPluginError>;
+	readonly run: (argv: ReadonlyArray<string>) => Effect.Effect<ExecResult, PostgresPluginError>;
 }
 
 const READY_PROBE_INTERVAL_MS = 500;
@@ -113,8 +111,7 @@ export const awaitReady = (
 				}),
 		}).pipe(
 			Effect.mapError((cause) => {
-				const lastError =
-					cause instanceof ProbeTimeoutError ? cause.lastError : (cause as unknown);
+				const lastError = cause instanceof ProbeTimeoutError ? cause.lastError : (cause as unknown);
 				return postgresConnectionTimeout({
 					database,
 					attempts: cause instanceof ProbeTimeoutError ? cause.attempts : attempts,

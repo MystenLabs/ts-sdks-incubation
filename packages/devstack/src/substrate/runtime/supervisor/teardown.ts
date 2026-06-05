@@ -65,6 +65,7 @@ export const teardownNode = (
 	Effect.gen(function* () {
 		const entry = registry.entries.get(key);
 		if (entry === undefined) return;
+		yield* registry.interruptAcquire(key).pipe(Effect.catch(() => Effect.void));
 		const status = yield* registry
 			.getStatus(key)
 			.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus>('pending')));
@@ -144,6 +145,7 @@ export const doSelectiveRestart = (
 			dispatcher,
 			logger,
 			identity,
+			parentScope,
 		);
 		for (const root of roots) {
 			yield* publish(ref, hub, {

@@ -31,7 +31,11 @@ import { Effect, type Scope } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
-import { bootPostgresSidecar, credentialedUrl, withDatabase } from '../postgres/index.ts';
+import {
+	bootPostgresSidecar,
+	credentialedUrl,
+	withDatabase,
+} from '../internal/postgres-sidecar/index.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
@@ -325,7 +329,6 @@ export const readValidatorChainConfig = (
 export const provisionLocalIndexer = (
 	runtime: ContainerRuntime,
 	identity: Identity,
-	stackRoot: string,
 	opts: SuiLocalOptions,
 	validatorImage: ImageRef,
 ): Effect.Effect<LocalIndexer, SuiPluginError, Scope.Scope> => {
@@ -348,7 +351,7 @@ export const provisionLocalIndexer = (
 		// sidecar's token ⇒ reset instead of stale rows against the new chain.
 		const chainConfig = yield* readValidatorChainConfig(runtime, identity);
 		const imageRef = validatorImage.tag ?? validatorImage.digest;
-		const { handle } = yield* bootPostgresSidecar(runtime, identity, stackRoot, {
+		const { handle } = yield* bootPostgresSidecar(runtime, identity, {
 			network,
 			alias: SUI_INDEXER_DB_ALIAS,
 			role: SUI_INDEXER_DB_ROLE,
@@ -510,7 +513,6 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 				}
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
-				const paths = yield* StackPathsService;
 				// Resolve the validator image ONCE, before the sidecar — single
 				// source for both the sidecar's configHash (it folds the resolved
 				// image ref so an image bump resets the indexer DB) and the
@@ -524,13 +526,7 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 				// teardown/retry. Benign and intentional — the stable name +
 				// labels mean a retry ADOPTS the existing sidecar container
 				// (no scope-threading machinery needed).
-				const indexer = yield* provisionLocalIndexer(
-					runtime,
-					identity,
-					paths.stackRoot,
-					opts,
-					validatorImage,
-				);
+				const indexer = yield* provisionLocalIndexer(runtime, identity, opts, validatorImage);
 				return yield* bootAndEmit(opts, indexer, validatorImage);
 			}),
 	});

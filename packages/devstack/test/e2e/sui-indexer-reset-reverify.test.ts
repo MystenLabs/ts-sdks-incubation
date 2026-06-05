@@ -29,7 +29,6 @@
 //       post-rm boot reads the validator absent → `chain=fresh`), so the
 //       sidecar is RECREATED (new container id), the indexer re-indexes.
 
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +39,7 @@ import { describe, expect, it } from 'vitest';
 import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.ts';
 import { sui } from '../../src/plugins/sui/index.ts';
 import { runBoot, type BootScopeContext } from './boot-config-impl.ts';
+import { dockerSpawnSync } from './docker-prune.ts';
 
 const APP = 'sui-native-cfghash';
 const STACK = 'native1';
@@ -48,10 +48,7 @@ const VALIDATOR = `devstack-${APP}-${STACK}-sui-validator`;
 const SIDECAR = `${APP}-${STACK}-indexer-db`;
 
 const dockerOk = (): boolean =>
-	spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	}).status === 0;
+	dockerSpawnSync(['info', '--format', '{{.ServerVersion}}'], { timeout: 5_000 }).status === 0;
 
 const suiChainOf = (ctx: BootScopeContext): string =>
 	(findSui(ctx) as { readonly chain: string }).chain;
@@ -65,10 +62,7 @@ const findSui = (ctx: BootScopeContext): unknown => {
 
 /** `docker inspect -f '<fmt>' <name>` → trimmed stdout, or null on miss. */
 const inspectField = (name: string, fmt: string): string | null => {
-	const res = spawnSync('docker', ['inspect', '-f', fmt, name], {
-		encoding: 'utf8',
-		timeout: 15_000,
-	});
+	const res = dockerSpawnSync(['inspect', '-f', fmt, name], { timeout: 15_000 });
 	return res.status === 0 ? res.stdout.trim() : null;
 };
 
@@ -161,15 +155,9 @@ describe('sui indexer-db native configHash reset/restore @e2e', () => {
 			// re-genesis → NEW chain. Presence-only keying would have RESUMED
 			// stale rows here; disposition keying reads present+137 → `chain=fresh`
 			// ≠ the live `chain=present` label → RECREATE the sidecar.
-			const start = spawnSync('docker', ['start', VALIDATOR], {
-				encoding: 'utf8',
-				timeout: 30_000,
-			});
+			const start = dockerSpawnSync(['start', VALIDATOR], { timeout: 30_000 });
 			expect(start.status, `docker start validator: ${start.stderr}`).toBe(0);
-			const kill = spawnSync('docker', ['kill', '--signal=KILL', VALIDATOR], {
-				encoding: 'utf8',
-				timeout: 30_000,
-			});
+			const kill = dockerSpawnSync(['kill', '--signal=KILL', VALIDATOR], { timeout: 30_000 });
 			expect(kill.status, `docker kill validator: ${kill.stderr}`).toBe(0);
 			// Prove the validator really exited 137 before re-booting.
 			expect(inspectField(VALIDATOR, '{{ .State.ExitCode }}'), 'validator exit code').toBe('137');
@@ -251,10 +239,7 @@ describe('sui indexer-db native configHash reset/restore @e2e', () => {
 
 			// (d) Reset-on-regenesis — rm -f the validator so its writable layer
 			// (chain state) is gone, forcing a fresh genesis on the next boot.
-			const rm = spawnSync('docker', ['rm', '-f', VALIDATOR], {
-				encoding: 'utf8',
-				timeout: 30_000,
-			});
+			const rm = dockerSpawnSync(['rm', '-f', VALIDATOR], { timeout: 30_000 });
 			expect(rm.status, `docker rm -f validator: ${rm.stderr}`).toBe(0);
 
 			let chain4 = '';
@@ -281,9 +266,8 @@ describe('sui indexer-db native configHash reset/restore @e2e', () => {
 			);
 		} finally {
 			// Clean up every container/network/volume + the temp dirs.
-			spawnSync('docker', ['rm', '-f', VALIDATOR, SIDECAR], { encoding: 'utf8', timeout: 30_000 });
-			spawnSync('docker', ['network', 'rm', `devstack-${APP}-${STACK}-sui-indexer`], {
-				encoding: 'utf8',
+			dockerSpawnSync(['rm', '-f', VALIDATOR, SIDECAR], { timeout: 30_000 });
+			dockerSpawnSync(['network', 'rm', `devstack-${APP}-${STACK}-sui-indexer`], {
 				timeout: 15_000,
 			});
 		}

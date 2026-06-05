@@ -5,7 +5,7 @@
 // Discovery, decode, and version-gate live in `runtime/`; this module
 // only:
 //   - resolves the vitest-flavored env contract (`DEVSTACK_RUNTIME_ROOT`
-//     plus legacy `DEVSTACK_STATE_DIR` alias),
+//     plus `DEVSTACK_STATE_DIR` alias),
 //   - exposes the manifest plus `endpoint(name)` / `displayEndpoint(name)`
 //     convenience accessors test bodies use,
 //   - re-shapes the canonical error tags into the vitest-flavored union
@@ -53,7 +53,7 @@ export interface LoadStackContextOptions {
 	/** Stack name override. Defaults to `process.env.DEVSTACK_STACK`
 	 *  with a final fallback to `'main'`. */
 	readonly stack?: string;
-	/** Runtime root override (legacy `.devstack` directory). Defaults
+	/** Runtime root override. Defaults
 	 *  to `process.env.DEVSTACK_RUNTIME_ROOT` /
 	 *  `process.env.DEVSTACK_STATE_DIR` with a final fallback to
 	 *  `'.devstack'`. */
@@ -156,20 +156,13 @@ export const loadStackContext = (opts: LoadStackContextOptions = {}): StackConte
 		if (err instanceof ManifestShapeError) {
 			// The runtime tags decode-failure, structural drift, and
 			// version-mismatch as `phase: 'parse' | 'shape' | 'version'`.
-			// We surface them as TWO distinct error tags so consumers can
-			// `catchTag` independently — the recovery actions diverge:
-			//
-			//   - parse/shape → regenerate the manifest (the file is wrong)
-			//   - version     → upgrade the consumer dependency (your
-			//                   build and the supervisor are out of sync)
+			// We surface them as two distinct error tags so callers can
+			// distinguish malformed manifests from version mismatches.
 			if (err.phase === 'version') {
 				throw new VitestManifestVersionMismatchError({
 					path: err.path,
 					message: err.message,
-					recovery:
-						`upgrade @mysten-incubation/devstack to a build that matches the ` +
-						`supervisor's manifestVersion, or run \`devstack up\` to regenerate ` +
-						`the manifest with this consumer's version.`,
+					recovery: `run \`devstack up\` to regenerate the manifest.`,
 					cause: err,
 				});
 			}

@@ -49,7 +49,6 @@
 //
 // Prerequisites: docker reachable on the host. Soft-skips otherwise.
 
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -64,7 +63,7 @@ import {
 	WalletHttpPath,
 } from '../../src/plugins/wallet/protocol.ts';
 import type { WalletValue } from '../../src/plugins/wallet/service.ts';
-import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
+import { dockerReachable, dockerSpawnSync, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot, type BootResult } from './boot-config-impl.ts';
 
 const PRIVATE_CONTENT_APP_ORIGIN =
@@ -95,10 +94,7 @@ const buildStubImage = (
 	tag: string,
 	dockerfileDir: string,
 ): { readonly ok: boolean; readonly detail: string } => {
-	const res = spawnSync('docker', ['build', '-t', tag, dockerfileDir], {
-		encoding: 'utf8',
-		timeout: 120_000,
-	});
+	const res = dockerSpawnSync(['build', '-t', tag, dockerfileDir], { timeout: 120_000 });
 	if (res.status !== 0) {
 		return {
 			ok: false,

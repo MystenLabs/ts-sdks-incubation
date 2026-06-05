@@ -31,11 +31,16 @@ import {
 } from '../../../src/orchestrators/warm/hooks.ts';
 import {
 	WARM_BASELINE_SIDECAR_FILE,
+	clearWarmBaseline,
 	readWarmBaseline,
 	writeWarmBaseline,
 	type WarmBaselineSidecar,
 } from '../../../src/orchestrators/warm/baseline.ts';
 import { WARM_BASELINE_SNAPSHOT_ID } from '../../../src/orchestrators/warm/fingerprint.ts';
+import {
+	layerRuntimeInvalidationTracker,
+	recordRuntimeInvalidation,
+} from '../../../src/substrate/runtime/invalidation-tracker.ts';
 import type {
 	SnapshotCatalogEntry,
 	SnapshotMetadata,
@@ -84,7 +89,10 @@ const recordingOps = (
 			}),
 		capture: (args) =>
 			Effect.sync(() => {
-				rec.captures.push({ id: args.id, ...(args.label === undefined ? {} : { label: args.label }) });
+				rec.captures.push({
+					id: args.id,
+					...(args.label === undefined ? {} : { label: args.label }),
+				});
 				return fakeMeta(args.id);
 			}),
 	};
@@ -159,8 +167,20 @@ describe('warm hooks — hit/miss/stale', () => {
 					catalog: [catalogEntry(WARM_BASELINE_SNAPSHOT_ID)],
 					fingerprint: FP_CURRENT,
 				});
+				const wipingRestoreDeps: WarmHookDeps = {
+					...deps,
+					snapshot: {
+						...deps.snapshot,
+						restore: (args) =>
+							Effect.gen(function* () {
+								const meta = yield* deps.snapshot.restore(args);
+								yield* clearWarmBaseline(stackRoot);
+								return meta;
+							}),
+					},
+				};
 
-				yield* runWarmRestore(deps);
+				yield* runWarmRestore(wipingRestoreDeps);
 
 				// Restore happened; nothing was deleted.
 				expect(rec.restores).toEqual([WARM_BASELINE_SNAPSHOT_ID]);
@@ -205,15 +225,51 @@ describe('warm hooks — hit/miss/stale', () => {
 
 				// The follow-on capture captures the baseline + writes a sidecar.
 				yield* runWarmCapture(deps);
-				expect(rec.captures).toEqual([
-					{ id: WARM_BASELINE_SNAPSHOT_ID, label: 'warm-baseline' },
-				]);
+				expect(rec.captures).toEqual([{ id: WARM_BASELINE_SNAPSHOT_ID, label: 'warm-baseline' }]);
 				const sc = yield* readWarmBaseline(stackRoot);
 				expect(sc).not.toBeNull();
 				expect(sc?.fingerprint).toBe(FP_CURRENT);
 				expect(sc?.snapshotId).toBe(WARM_BASELINE_SNAPSHOT_ID);
 			}),
 		).pipe(Effect.provide(NodeFileSystem.layer)),
+	);
+
+	it.effect('HIT + runtime invalidation: restored boot recaptures a fresh baseline', () =>
+		withTempRoot('warm-hooks-hit-dirty', (root) =>
+			Effect.gen(function* () {
+				const fs = yield* FileSystem.FileSystem;
+				const stackRoot = join(root, 'stack');
+				yield* fs.makeDirectory(stackRoot, { recursive: true });
+				yield* writeWarmBaseline(stackRoot, {
+					version: 1,
+					fingerprint: FP_CURRENT,
+					snapshotId: WARM_BASELINE_SNAPSHOT_ID,
+					capturedAt: 111,
+				});
+				const { deps, rec, warmRestoredRef } = yield* makeDeps({
+					fs,
+					stackRoot,
+					catalog: [catalogEntry(WARM_BASELINE_SNAPSHOT_ID)],
+					fingerprint: FP_CURRENT,
+				});
+
+				yield* runWarmRestore(deps);
+				expect(yield* Ref.get(warmRestoredRef)).toBe(true);
+				yield* recordRuntimeInvalidation({
+					kind: 'artifact-produced',
+					namespace: 'package',
+					chain: 'sui:localnet',
+					contentHash: 'changed',
+					cause: 'cache-miss',
+				});
+
+				yield* runWarmCapture(deps);
+				expect(rec.captures).toEqual([{ id: WARM_BASELINE_SNAPSHOT_ID, label: 'warm-baseline' }]);
+				const sc = yield* readWarmBaseline(stackRoot);
+				expect(sc?.fingerprint).toBe(FP_CURRENT);
+				expect(sc?.capturedAt).not.toBe(111);
+			}),
+		).pipe(Effect.provide(layerRuntimeInvalidationTracker), Effect.provide(NodeFileSystem.layer)),
 	);
 
 	it.effect('STALE: sidecar fingerprint differs → delete + clear, then recapture', () =>
@@ -249,9 +305,7 @@ describe('warm hooks — hit/miss/stale', () => {
 				// The follow-on capture recaptures + writes a NEW sidecar with the
 				// CURRENT fingerprint.
 				yield* runWarmCapture(deps);
-				expect(rec.captures).toEqual([
-					{ id: WARM_BASELINE_SNAPSHOT_ID, label: 'warm-baseline' },
-				]);
+				expect(rec.captures).toEqual([{ id: WARM_BASELINE_SNAPSHOT_ID, label: 'warm-baseline' }]);
 				const sc = yield* readWarmBaseline(stackRoot);
 				expect(sc?.fingerprint).toBe(FP_CURRENT);
 				expect(sc?.fingerprint).not.toBe(FP_STALE);

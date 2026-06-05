@@ -361,7 +361,7 @@ export const startStorageNodes = (
 				//
 				// `exec` only fails on daemon-level errors; a non-zero exit code
 				// (port not yet bound, health not yet serving) is treated as
-				// "retry" (the same policy postgres uses for `pg_isready`). The
+				// "retry". The
 				// health body is captured to stdout and classified by
 				// `isWriteReadyHealthBody`; a not-yet-serving status surfaces as
 				// `ready:false` so the gate keeps polling until the deadline.

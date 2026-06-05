@@ -18,7 +18,6 @@ import {
 	LogFilterInput,
 	LogRecordType,
 	Package,
-	PostgresStats,
 	SealInfo,
 	Service,
 	SnapshotEntry,
@@ -30,10 +29,7 @@ import type { DashboardContext } from './builder.ts';
 import type { PluginKey } from '../../../substrate/brand.ts';
 import type { EngineCommand } from '../../../substrate/events.ts';
 import type { SubscribableState } from '../../../substrate/projection.ts';
-import type {
-	LogFilter,
-	LogLevel,
-} from '../../../substrate/runtime/observability/index.ts';
+import type { LogFilter, LogLevel } from '../../../substrate/runtime/observability/index.ts';
 
 const readSnapshot = (
 	state: SubscriptionRef.SubscriptionRef<SubscribableState>,
@@ -203,13 +199,6 @@ builder.queryType({
 			type: [FundableCoin],
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.fundableCoins),
 		}),
-		/** Postgres wire-protocol stats per instance (db size, connections,
-		 *  per-table rows/size). The browser cannot speak the PG protocol. */
-		postgresStats: t.field({
-			type: [PostgresStats],
-			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.postgresStats),
-		}),
-
 		// --- Observability (Console "Logs" tab) ---------------------------
 		/** Cross-service queryable log history. Filterable server-side by
 		 *  service / level / substring / time window; returns most-recent

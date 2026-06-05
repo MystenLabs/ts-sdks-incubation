@@ -23,7 +23,6 @@ import type {
 	ControlPlaneDomain,
 	ControlPlaneResolvedValue,
 } from '../../../src/substrate/runtime/control-plane/service.ts';
-import type { Identity } from '../../../src/substrate/identity.ts';
 import { StrategyNotFoundError } from '../../../src/substrate/runtime/errors.ts';
 import type { StrategyRegistry } from '../../../src/contracts/strategy-contributor.ts';
 
@@ -41,8 +40,6 @@ const makeDomain = (coinValue: unknown): DashboardDomain => {
 	};
 	return buildDashboardDomain({
 		control,
-		identity: { app: 'demo', stack: 'main', chain: 'localnet' } as unknown as Identity,
-		containerRuntime: null,
 		strategyRegistry: null,
 	});
 };
@@ -68,8 +65,6 @@ const makeFundDomain = (args: {
 }): DashboardDomain =>
 	buildDashboardDomain({
 		control: { ...emptyControlPlaneDomain, resolvedValues: Effect.succeed(args.resolved) },
-		identity: { app: 'demo', stack: 'main', chain: 'localnet' } as unknown as Identity,
-		containerRuntime: null,
 		strategyRegistry: args.registry,
 	});
 
@@ -172,14 +167,11 @@ describe('dashboard mintCoin action', () => {
 });
 
 describe('dashboard narrowing fail-loud (E2)', () => {
-	/** A dashboard domain over arbitrary resolved values + no container/registry
-	 *  (so postgresStats degrades to the unavailable path but still runs the
-	 *  postgres narrow). */
+	/** A dashboard domain over arbitrary resolved values + no registry for
+	 *  exercising structural narrowing. */
 	const makeNarrowDomain = (resolved: ReadonlyArray<ControlPlaneResolvedValue>): DashboardDomain =>
 		buildDashboardDomain({
 			control: { ...emptyControlPlaneDomain, resolvedValues: Effect.succeed(resolved) },
-			identity: { app: 'demo', stack: 'main', chain: 'localnet' } as unknown as Identity,
-			containerRuntime: null,
 			strategyRegistry: null,
 		});
 
@@ -205,31 +197,6 @@ describe('dashboard narrowing fail-loud (E2)', () => {
 		// …while the drift is surfaced fail-loud.
 		expect(info!.narrowingFault).toContain('deepbook.mode');
 		expect(info!.narrowingFault).toContain('broken');
-	});
-
-	it('postgres missing port records a narrowingFault in detail but still resolves', async () => {
-		const domain = makeNarrowDomain([
-			{
-				pluginKey: 'postgres',
-				id: 'postgres',
-				value: {
-					databases: ['appdb'],
-					networkAlias: 'pg-host',
-					user: 'app',
-					name: 'pg-main',
-					// port intentionally absent
-				},
-			},
-		]);
-		const [stats] = await Effect.runPromise(domain.postgresStats);
-		expect(stats).toBeDefined();
-		// Container runtime is null → degrades to unavailable, never throws.
-		expect(stats!.available).toBe(false);
-		// The missing-port narrowing fault rides into the detail channel.
-		expect(stats!.detail).toContain('postgres.port');
-		expect(stats!.detail).toContain('missing');
-		// Safe display fallback (5432) still used for the DSN.
-		expect(stats!.plainUrl).toBe('postgres://pg-host:5432');
 	});
 
 	it('coin missing fullCoinType records a narrowingFault but still resolves', async () => {

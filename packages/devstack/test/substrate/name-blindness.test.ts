@@ -3,7 +3,7 @@
 // ARCHITECTURE.md §"Substrate name-blindness" requires substrate code
 // (`src/substrate/**`) to NEVER mention plugin names — `sui`, `walrus`,
 // `seal`, `wallet`, `account`, `coin`, `package`, `faucet`, `deepbook`,
-// `pyth`, `postgres`, `action`, `host`. A small permanent allowlist
+// `pyth`, `action`, `host`. A small permanent allowlist
 // covers (a) network-host overloads (NOT the plugin-host), (b) substrate
 // field shapes that name plugin-domain values by design (projection
 // field set, supervisor's branded account-resource-id literal). Each
@@ -37,7 +37,6 @@ const PLUGIN_NAMES = [
 	'faucet',
 	'deepbook',
 	'pyth',
-	'postgres',
 	'action',
 	'host',
 ] as const;

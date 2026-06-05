@@ -1,18 +1,19 @@
 // Warm boot-cache hooks — the hit/miss/stale decision, extracted.
 //
 // `--warm` captures a baseline snapshot after the first good cold boot and,
-// on a later boot whose fingerprinted inputs are UNCHANGED, RESTORES that
-// baseline in place of a cold boot. The two effects here are the entire
-// decision surface:
+// on a later boot with the same graph key, restores that baseline before the
+// initial acquire. Runtime invalidation decisions during acquire decide whether
+// a restored baseline needs to be captured again. The two effects here are the
+// entire decision surface:
 //
 //   - `runWarmRestore` — runs BEFORE the supervisor's initial acquire.
 //     Recompute the input fingerprint; on a HIT (sidecar fingerprint matches
 //     AND the artifact is in the catalog) restore the baseline and flag
-//     `warmRestored` so the post-boot capture knows to skip. On a MISS
-//     (absent/stale sidecar) drop any stale artifact + sidecar and fall
-//     through to a cold boot.
-//   - `runWarmCapture` — runs AFTER the stack is up. Unless THIS boot was
-//     itself a restore, capture the baseline + write the sidecar.
+//     `warmRestored`. On a MISS (absent/stale sidecar) drop any stale artifact
+//     + sidecar and fall through to a cold boot.
+//   - `runWarmCapture` — runs AFTER the stack is up. Capture the baseline +
+//     write the sidecar unless this boot was a restore and runtime acquire did
+//     not produce/recreate state.
 //
 // Both are DEPENDENCY-INJECTED: the snapshot ops, the filesystem, the stack
 // root, the fingerprint effect, and the two shared Refs all come in via
@@ -24,8 +25,8 @@
 // `up.ts` bodies):
 //   - the whole restore phase is wrapped in `catchCause → logWarning →
 //     continue`, so a warm failure NEVER wedges boot; it degrades to cold.
-//   - a fingerprint failure (unreadable config) is caught inside and degrades
-//     to cold WITHOUT recording a fingerprint.
+//   - a fingerprint failure is caught inside and degrades to cold WITHOUT
+//     recording a fingerprint.
 //   - restore is run with NO `resume` — the supervisor's initial acquire is
 //     the converge (mirrors `recoverInterruptedRestore`).
 //   - the capture phase swallows its own failure (`log + continue`): a warm
@@ -33,6 +34,7 @@
 
 import { Cause, Effect, Exit, FileSystem, Ref } from 'effect';
 
+import { runtimeInvalidationDirty } from '../../substrate/runtime/invalidation-tracker.ts';
 import type { SnapshotCatalogEntry, SnapshotMetadata } from '../snapshot/index.ts';
 import { clearWarmBaseline, readWarmBaseline, writeWarmBaseline } from './baseline.ts';
 import { WARM_BASELINE_SNAPSHOT_ID, type WarmFingerprintError } from './fingerprint.ts';
@@ -43,11 +45,7 @@ import { WARM_BASELINE_SNAPSHOT_ID, type WarmFingerprintError } from './fingerpr
  *  still carries `FileSystem.FileSystem` in its environment exactly like the
  *  orchestrator — `provideFileSystem`-style threading happens in the hook. */
 export interface WarmSnapshotOps {
-	readonly list: Effect.Effect<
-		ReadonlyArray<SnapshotCatalogEntry>,
-		unknown,
-		FileSystem.FileSystem
-	>;
+	readonly list: Effect.Effect<ReadonlyArray<SnapshotCatalogEntry>, unknown, FileSystem.FileSystem>;
 	readonly restore: (args: {
 		readonly id: string;
 	}) => Effect.Effect<SnapshotMetadata, unknown, FileSystem.FileSystem>;
@@ -59,9 +57,9 @@ export interface WarmSnapshotOps {
 }
 
 /** Everything the two warm hooks need, injected. `computeFingerprint` is the
- *  fully-bound fingerprint effect (production binds `computeWarmFingerprint`
- *  over `{ stack, appRoot, configPath, devstackVersion }`; a test stubs it),
- *  so the hooks carry no knowledge of the stack/config shape. The two Refs are
+ *  fully-bound graph-key effect (production binds `computeWarmFingerprint`
+ *  over `{ stack, devstackVersion }`; a test stubs it),
+ *  so the hooks carry no knowledge of the stack shape. The two Refs are
  *  the shared cells the restore phase writes and the capture phase reads —
  *  they live in the CALLER'S scope so the same two closures observe them. */
 export interface WarmHookDeps {
@@ -103,8 +101,8 @@ export const runWarmRestore = (deps: WarmHookDeps): Effect.Effect<void, never> =
 	Effect.gen(function* () {
 		const fingerprintExit = yield* Effect.exit(withFs(deps.fs, deps.computeFingerprint));
 		if (Exit.isFailure(fingerprintExit)) {
-			// Only `WarmFingerprintError` is expected (unreadable config); any
-			// cause degrades to cold boot WITHOUT recording a fingerprint.
+			// Only `WarmFingerprintError` is expected; any cause degrades to cold
+			// boot WITHOUT recording a fingerprint.
 			yield* Effect.logWarning(
 				`warm: fingerprint failed → cold boot: ${Cause.pretty(fingerprintExit.cause)}`,
 			);
@@ -130,6 +128,11 @@ export const runWarmRestore = (deps: WarmHookDeps): Effect.Effect<void, never> =
 			// always failed `IdentityMissingLive` and silently degraded `--warm`
 			// to cold on every boot.
 			yield* withFs(deps.fs, deps.snapshot.restore({ id: WARM_BASELINE_SNAPSHOT_ID }));
+			// Restore swaps the stack root from the snapshot host-tree. The warm
+			// sidecar is not captured in that host-tree, so rewrite the matched
+			// sidecar after restore to keep the baseline discoverable without
+			// changing its original `capturedAt`.
+			yield* withFs(deps.fs, writeWarmBaseline(deps.stackRoot, sidecar));
 			yield* Ref.set(deps.warmRestoredRef, true);
 			yield* Effect.logInfo('warm: restored baseline (fingerprint match)');
 			return;
@@ -150,8 +153,8 @@ export const runWarmRestore = (deps: WarmHookDeps): Effect.Effect<void, never> =
 /**
  * BASELINE-CAPTURE phase. Runs AFTER the stack is up.
  *
- * Skip if this boot was itself a warm restore (no point re-capturing an
- * identical tree). Otherwise capture the baseline under
+ * Skip if this boot was itself a warm restore and the runtime invalidation
+ * tracker stayed clean. Otherwise capture the baseline under
  * `WARM_BASELINE_SNAPSHOT_ID` and write the sidecar, reusing the fingerprint
  * the restore phase recorded (recomputing only if the restore phase never ran
  * / failed to record one). Any failure is swallowed (`log + continue`): a warm
@@ -161,8 +164,15 @@ export const runWarmRestore = (deps: WarmHookDeps): Effect.Effect<void, never> =
  */
 export const runWarmCapture = (deps: WarmHookDeps): Effect.Effect<void, never> =>
 	Effect.gen(function* () {
-		if (yield* Ref.get(deps.warmRestoredRef)) return;
+		const warmRestored = yield* Ref.get(deps.warmRestoredRef);
+		const dirtyAfterRestore = yield* runtimeInvalidationDirty;
+		if (warmRestored && !dirtyAfterRestore) return;
 		yield* Effect.gen(function* () {
+			// `warm-baseline` is a fixed id. A recapture replaces the old artifact;
+			// if capture fails after this point, clearing the sidecar prevents a
+			// later restore from pointing at a missing or stale baseline.
+			yield* withFs(deps.fs, clearWarmBaseline(deps.stackRoot));
+			yield* withFs(deps.fs, deps.snapshot.delete(WARM_BASELINE_SNAPSHOT_ID));
 			yield* withFs(
 				deps.fs,
 				deps.snapshot.capture({ id: WARM_BASELINE_SNAPSHOT_ID, label: 'warm-baseline' }),

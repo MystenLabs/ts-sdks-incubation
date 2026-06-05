@@ -32,6 +32,7 @@ import type { Cache, CacheEntry, CacheKey } from '../../../primitives/cache.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { setCurrentPluginPhase } from '../current-plugin.ts';
 import { CacheError } from '../errors.ts';
+import { recordRuntimeInvalidation } from '../invalidation-tracker.ts';
 import { StackPathsService } from '../paths.ts';
 import { decodeJsonText, parseJsonTextSync } from '../runtime-decode.ts';
 import { CacheEntryDoc } from './schema.ts';
@@ -195,6 +196,7 @@ export const layerCache: Layer.Layer<
 					contentHash: spec.contentHash,
 				}).pipe(Effect.catch(() => Effect.succeed(null)));
 
+				let produceCause: 'cache-miss' | 'cache-corrupt' | 'verify-failed' = 'cache-miss';
 				if (hit !== null) {
 					// Decode the cached `Produced` BEFORE verify so the
 					// plugin's verify Effect can key its on-chain probe
@@ -223,6 +225,9 @@ export const layerCache: Layer.Layer<
 							);
 							return cached;
 						}
+						produceCause = 'verify-failed';
+					} else {
+						produceCause = 'cache-corrupt';
 					}
 				}
 
@@ -256,6 +261,13 @@ export const layerCache: Layer.Layer<
 					);
 				}
 				const produced = yield* spec.produce;
+				yield* recordRuntimeInvalidation({
+					kind: 'artifact-produced',
+					namespace: spec.namespace,
+					chain: spec.chain,
+					contentHash: String(spec.contentHash),
+					cause: produceCause,
+				});
 
 				// 4. Cache write — best-effort. Architecture: a write
 				//    failure must NOT roll back the on-chain effect.

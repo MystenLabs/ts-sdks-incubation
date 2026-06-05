@@ -213,7 +213,7 @@ export const pluginRowPrefix = (pluginKey: string): string =>
  * Find the projection row backing a plugin. Matches the row whose `key` is
  * exactly the plugin's row prefix, or is namespaced beneath it by a separator:
  * `<prefix>:…` (e.g. `deepbook:dex`), `<prefix>#…` (instance suffix, e.g.
- * `postgres#3`), `<prefix>-…`, or `<prefix>.…`. A plain substring match would
+ * `sui#3`), `<prefix>-…`, or `<prefix>.…`. A plain substring match would
  * be fragile — e.g. `seal` would wrongly match an unrelated `unseal` row.
  */
 export const rowForPlugin = (rows: ReadonlyArray<Row>, pluginKey: string): Row | null => {

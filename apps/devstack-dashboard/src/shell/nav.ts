@@ -30,7 +30,6 @@ export const PLUGINS: ReadonlyArray<{ key: string; label: string; icon: IconName
 	{ key: 'walrus', label: 'Walrus', icon: 'database' },
 	{ key: 'seal', label: 'Seal', icon: 'plug' },
 	{ key: 'coins', label: 'Coins', icon: 'coins' },
-	{ key: 'postgres', label: 'Postgres', icon: 'database' },
 ];
 
 /** A nav item for a single plugin key, using its registry label + icon. */

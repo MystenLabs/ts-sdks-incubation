@@ -113,8 +113,8 @@ design-comment reasons, use a trailing `void <name>;` line.
 
 ## 6. Naming
 
-- Plugin factories: **lowercase** (`sui`, `walrus`, `postgres`, `account`, `localPackage`,
-  `knownPackage`, `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`).
+- Plugin factories: **lowercase** (`sui`, `walrus`, `account`, `localPackage`, `knownPackage`,
+  `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`).
 - Capability contracts: **PascalCase** (`Snapshotable`, `Routable`, `Codegenable`, `ChainProbe`,
   `StrategyContributor`, `Projection`, `Renderer`, `ContainerRuntime`).
 - Tagged errors: PascalCase. See §2 for `Error` suffix discipline.

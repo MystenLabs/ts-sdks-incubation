@@ -14,7 +14,13 @@ export {
 } from './service.ts';
 
 // Configuration / wiring services
-export { DockerHost, DockerSpawner, layerDockerHost, layerDockerHostDefault } from './client.ts';
+export {
+	dockerCliEnv,
+	DockerHost,
+	DockerSpawner,
+	layerDockerHost,
+	layerDockerHostDefault,
+} from './client.ts';
 
 // Typed errors — plugins that want precise tags can catchTag on these
 // BEFORE the contract projection collapses them to the narrow envelope.

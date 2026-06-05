@@ -15,7 +15,7 @@ Every component lives in exactly one layer. The allowed-imports column is the co
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | **L0 substrate**                 | Kernel: scheduler, lifecycle SM, event/command channels, brokers (port/lease/lock), atomic-write, cache, cross-process protocol, decode helpers, retry policy, process supervisor, observability primitives, manifest envelope, ArtifactPublisher. Name-blind.             | External libs only (`effect`, `@effect/*`, Node stdlib).                                                                         | L1+. Plugin or capability-decl names.                       |
 | **L1 runtime adapters**          | `ContainerRuntime` (Docker). One backend; a swap is a major rewrite, not a layer re-point. The `ContainerRuntimeService` re-export shim exists so the public API doesn't name `runtime/docker/` directly, but internal callers reach `runtime/docker/service.ts` directly. | L0.                                                                                                                              | L2+. Named plugins.                                         |
-| **L2 plugins**                   | sui, postgres, walrus, seal, account, faucet, package, coin, wallet, action, deepbook, host-service. One folder each exposing `definePlugin({...})`. (TUI renderers live in L4 surfaces, not L2.)                                                                          | L0, L1, other plugins through public resource refs at factory boundaries (never internal modules).                               | Other plugins' internal modules.                            |
+| **L2 plugins**                   | sui, walrus, seal, account, faucet, package, coin, wallet, action, deepbook, host-service. One folder each exposing `definePlugin({...})`. (TUI renderers live in L4 surfaces, not L2.)                                                                                    | L0, L1, other plugins through public resource refs at factory boundaries (never internal modules).                               | Other plugins' internal modules.                            |
 | **L3 orchestrators**             | snapshot, router (Traefik file-provider), watch-dispatcher, network resolver, manifest writer, codegen. Each walks a registry of plugin capability contributions; never names services.                                                                                    | L0, L1, capability decls from `contracts/`.                                                                                      | L2 internals, named plugins, hardcoded paths.               |
 | **L4 surfaces**                  | CLI (`surfaces/cli/`), TUI (`surfaces/tui/`), programmable API, bin entry (`cli/main.ts`). Symmetric peers: subscribe to typed event stream + publish typed commands.                                                                                                      | L0 (events/commands/manifest schema), L3 capability decls + manifest writer output. Cascade-formatter.                           | L1 directly, any L2 module, any direct engine method calls. |
 | **L5 build integrations + apps** | `build-integrations/{vitest,playwright,runtime}/` — host-facing integration packages. Example apps.                                                                                                                                                                        | Shared `build-integrations/runtime/` helpers, on-disk manifest, codegen-emitted files, env vars, typed global Playwright bridge. | L0–L3 directly. Engine subscription.                        |
@@ -219,8 +219,8 @@ not a persistent cache.
 ## ArtifactPublisher
 
 Pattern: `cache → verify(cached) → produce → register`. Substrate primitive at
-`primitives/artifact-publisher.ts` + `substrate/runtime/cache/`. The produce body shape
-is plugin-owned — write what fits the on-chain operation.
+`primitives/artifact-publisher.ts` + `substrate/runtime/cache/`. The produce body shape is
+plugin-owned — write what fits the on-chain operation.
 
 ---
 
@@ -381,7 +381,7 @@ L1 runtime adapters  — Docker. One backend. The `ContainerRuntimeService`
                        shim names it for the public API; internal callers
                        reach `runtime/docker/service.ts` directly.
 
-L2 plugins           — sui, postgres, walrus, seal, account, faucet, package,
+L2 plugins           — sui, walrus, seal, account, faucet, package,
                        coin, wallet, action, deepbook, host-service.
                        Plugin A → Plugin B goes through index.ts barrels
                        OR substrate contracts. Sui / Account /

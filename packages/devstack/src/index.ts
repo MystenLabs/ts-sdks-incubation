@@ -287,23 +287,6 @@ export {
 	type HostServiceValue,
 } from './plugins/host-service/index.ts';
 
-// --- Postgres -----------------------------------------------------------
-
-export {
-	postgres,
-	type PostgresPluginOptions,
-	type Postgres,
-	type PostgresServiceOptions,
-	type PostgresConnectionBindings,
-	type PostgresConnectionParts,
-	type PostgresError,
-	type PostgresPluginError,
-	type PostgresConfigError,
-	type PostgresConnectionTimeout,
-	type DatabaseCreateFailed,
-	type PostgresPhase,
-} from './plugins/postgres/index.ts';
-
 // --- Faucet -------------------------------------------------------------
 
 export {

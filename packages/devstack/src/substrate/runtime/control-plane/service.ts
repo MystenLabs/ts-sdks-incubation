@@ -16,7 +16,7 @@
 // `publishCommand`), the cross-service observability rings, and a single
 // generic `resolvedValues` accessor that hands out resolved plugin VALUES
 // WITHOUT interpreting them. Plugin-name-aware shaping (deepbook/seal/coin/
-// postgres/mode/mint) lives ABOVE the substrate in the dashboard plugin,
+// mode/mint/plugin-specific shaping lives ABOVE the substrate in the dashboard plugin,
 // which is allowed to name plugins. The projection (`SubscribableState`)
 // stays CLOSED — none of this leaks into it. Each accessor is a
 // self-contained `Effect` the supervisor populates from the resolved
