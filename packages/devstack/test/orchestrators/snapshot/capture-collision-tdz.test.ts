@@ -44,6 +44,7 @@ import {
 import { ContainerRuntimeService } from '../../../src/runtime/docker/index.ts';
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
 import { layerIdentity, layerRuntimeRoot, layerStackPaths } from '../../../src/substrate/runtime/paths.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
 const identity: Identity = {
@@ -56,25 +57,9 @@ const identity: Identity = {
  *  the `capture` flow never reaches the participants because we trip
  *  the label-uniqueness branch before any runtime work fires. The
  *  other methods are `Effect.die` to surface accidental reach. */
-const unusedContainerRuntime: ContainerRuntime = {
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
+const unusedContainerRuntime: ContainerRuntime = makeContainerRuntimeStub({
 	inspectByLabels: () => Effect.succeed([]),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Effect.die('saveImages not used') as never,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-};
+});
 
 const containerRuntimeLayer = Layer.succeed(ContainerRuntimeService)(unusedContainerRuntime);
 

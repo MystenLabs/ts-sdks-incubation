@@ -40,6 +40,7 @@ import {
 	type CommandRecord,
 	type EventRecord,
 } from '../../../src/substrate/runtime/cross-process/command-channel/index.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 import { dockerSaveBundleTarWithLateMetadata, writeImageBundle } from './image-bundle-fixtures.ts';
 
@@ -156,80 +157,70 @@ const runtimeStub = (
 		 *  existing tests are unaffected. */
 		readonly inspectDigestsFor?: Map<string, Array<string | null>>;
 	} = {},
-): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.empty,
-	loadImage: (tar) =>
-		Stream.runCollect(tar).pipe(
-			Effect.mapError(
-				(cause): ContainerRuntimeError => ({
-					_tag: 'ContainerRuntimeError',
-					reason: 'image-load-failed',
-					detail: String(cause),
+): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		saveImages: () => Stream.empty,
+		loadImage: (tar) =>
+			Stream.runCollect(tar).pipe(
+				Effect.mapError(
+					(cause): ContainerRuntimeError => ({
+						_tag: 'ContainerRuntimeError',
+						reason: 'image-load-failed',
+						detail: String(cause),
+					}),
+				),
+				Effect.flatMap((chunks) => {
+					for (const chunk of chunks) {
+						opts.loadBytes?.push(...chunk);
+					}
+					opts.events?.push('load');
+					return opts.loadError !== undefined
+						? Effect.fail(opts.loadError)
+						: Effect.succeed({
+								refs: opts.loadedRefs ?? [
+									opts.loadedRef ?? {
+										digest: 'sha256:loaded-postgres-db',
+										tag: 'devstack-snapshot:postgres-db',
+									},
+									{
+										digest: 'sha256:loaded-postgres-worker',
+										tag: 'devstack-snapshot:postgres-worker',
+									},
+								],
+							});
 				}),
 			),
-			Effect.flatMap((chunks) => {
-				for (const chunk of chunks) {
-					opts.loadBytes?.push(...chunk);
+		tagImage: (src, newTag, tagOpts) =>
+			Effect.gen(function* () {
+				opts.events?.push(`tag:${newTag}`);
+				opts.tagCalls?.push({ src, newTag, opts: tagOpts });
+				const tagError = opts.tagErrorFor?.(newTag) ?? opts.tagError;
+				if (tagError !== undefined) {
+					return yield* Effect.fail(tagError);
 				}
-				opts.events?.push('load');
-				return opts.loadError !== undefined
-					? Effect.fail(opts.loadError)
-					: Effect.succeed({
-							refs: opts.loadedRefs ?? [
-								opts.loadedRef ?? {
-									digest: 'sha256:loaded-postgres-db',
-									tag: 'devstack-snapshot:postgres-db',
-								},
-								{
-									digest: 'sha256:loaded-postgres-worker',
-									tag: 'devstack-snapshot:postgres-worker',
-								},
-							],
-						});
 			}),
-		),
-	tagImage: (src, newTag, tagOpts) =>
-		Effect.gen(function* () {
-			opts.events?.push(`tag:${newTag}`);
-			opts.tagCalls?.push({ src, newTag, opts: tagOpts });
-			const tagError = opts.tagErrorFor?.(newTag) ?? opts.tagError;
-			if (tagError !== undefined) {
-				return yield* Effect.fail(tagError);
-			}
-		}),
-	removeImage: (ref) =>
-		Effect.gen(function* () {
-			opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
-			opts.removeImageCalls?.push(ref);
-			const removeError = opts.removeImageErrorFor?.(ref);
-			if (removeError !== undefined) {
-				return yield* Effect.fail(removeError);
-			}
-		}),
-	inspectImageDigest: (ref) =>
-		Effect.sync(() => {
-			const queue = opts.inspectDigestsFor?.get(ref);
-			if (queue === undefined || queue.length === 0) return null;
-			return queue.shift() ?? null;
-		}),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: (labelMatch) =>
-		Effect.sync(() => {
-			opts.events?.push(`remove:${labelMatch.plugin}/${labelMatch.role}`);
-			sweepCalls.push(labelMatch);
-			return 1;
-		}),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+		removeImage: (ref) =>
+			Effect.gen(function* () {
+				opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
+				opts.removeImageCalls?.push(ref);
+				const removeError = opts.removeImageErrorFor?.(ref);
+				if (removeError !== undefined) {
+					return yield* Effect.fail(removeError);
+				}
+			}),
+		inspectImageDigest: (ref) =>
+			Effect.sync(() => {
+				const queue = opts.inspectDigestsFor?.get(ref);
+				if (queue === undefined || queue.length === 0) return null;
+				return queue.shift() ?? null;
+			}),
+		removeManagedContainers: (labelMatch) =>
+			Effect.sync(() => {
+				opts.events?.push(`remove:${labelMatch.plugin}/${labelMatch.role}`);
+				sweepCalls.push(labelMatch);
+				return 1;
+			}),
+	});
 
 /** Seed a live deploy-cache namespace under a runtime-stack root so the
  *  PR#1 cache-existence preflight (fail-closed when the sole source of the

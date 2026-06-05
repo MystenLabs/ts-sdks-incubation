@@ -1,10 +1,11 @@
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 import { describe, expect, it } from 'vitest';
 
-import type { ContainerRuntime, ImageRef } from '../../../src/contracts/container-runtime.ts';
+import type { ImageRef } from '../../../src/contracts/container-runtime.ts';
 import { resolveImage } from '../../../src/plugins/sui/mode/local.ts';
 import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 
 const TEST_IDENTITY: Identity = {
 	app: appName('test-app'),
@@ -17,26 +18,7 @@ const EXPECTED_SUI_TOOLS_IMAGE = `mysten/sui-tools:eced02468444d429a4e9a2b9622b7
 	process.arch === 'arm64' ? '-arm64' : ''
 }`;
 
-const unusedRuntime = (overrides: Partial<ContainerRuntime> = {}): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.die('saveImages not used'),
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-	...overrides,
-});
+const unusedRuntime = makeContainerRuntimeStub;
 
 describe('Sui local image resolution', () => {
 	it('uses the runtime pullImage path for image.pull', async () => {

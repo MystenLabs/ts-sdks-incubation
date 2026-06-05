@@ -1,10 +1,11 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 
 import type {
 	ContainerRuntime,
 	EnsureContainerSpec,
 } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { bootPostgresService } from '../../../src/plugins/postgres/service.ts';
 import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
@@ -17,36 +18,25 @@ const identity: Identity = {
 
 const FAKE_STACK_ROOT = '/tmp/fake-test-stack-root';
 
-const runtimeCapturingPostgresSpec = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
-	ensureImage: () => Effect.succeed({ digest: 'sha256:postgres', tag: 'devstack-postgres:test' }),
-	ensureNetwork: () => Effect.succeed('postgres-net'),
-	ensureContainer: (spec) =>
-		Effect.sync(() => {
-			specs.push(spec);
-			return {
-				id: 'postgres-container-id',
-				name: spec.name,
-				imageName: spec.image.tag ?? spec.image.digest,
-				status: 'running' as const,
-				ips: [],
-				labels: spec.labels,
-			};
-		}),
-	exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+const runtimeCapturingPostgresSpec = (specs: EnsureContainerSpec[]): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		ensureImage: () =>
+			Effect.succeed({ digest: 'sha256:postgres', tag: 'devstack-postgres:test' }),
+		ensureNetwork: () => Effect.succeed('postgres-net'),
+		ensureContainer: (spec) =>
+			Effect.sync(() => {
+				specs.push(spec);
+				return {
+					id: 'postgres-container-id',
+					name: spec.name,
+					imageName: spec.image.tag ?? spec.image.digest,
+					status: 'running' as const,
+					ips: [],
+					labels: spec.labels,
+				};
+			}),
+		exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
+	});
 
 describe('bootPostgresService', () => {
 	it.effect('threads the default WAL-flush grace into the Docker container spec', () =>

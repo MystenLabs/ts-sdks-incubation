@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Layer, Option, Stream } from 'effect';
+import { Effect, Exit, Layer, Option } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import type {
 	ArtifactPublisher,
 	ArtifactSpec,
@@ -46,48 +47,35 @@ const signer: AccountValue = {
 	withTransactionSigner: () => Effect.die('withTransactionSigner not used'),
 };
 
-const runtimeStub = (events: string[]): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: (spec) =>
-		Effect.sync(() => {
-			events.push(`ensure:${spec.configHash ?? ''}`);
-			return {
-				id: 'container-id',
-				name: spec.name,
-				labels: spec.labels,
-				imageName: spec.image.tag ?? spec.image.digest,
-				status: 'running' as const,
-				ips: [],
-			};
-		}),
-	exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
-	runOneShot: () =>
-		Effect.sync(() => {
-			events.push('keygen');
-			return {
-				exitCode: 0,
-				stdout:
-					// 64-char hex (BLS12-381 master key) and 192-char hex
-					// (BLS12-381 public key) — matches the bounded patterns in
-					// `parseSealKeygenOutput`.
-					`Master key: ${'1'.repeat(64)}\nPublic key: ${'3'.repeat(192)}\n`,
-				stderr: '',
-			};
-		}),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+const runtimeStub = (events: string[]): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		ensureContainer: (spec) =>
+			Effect.sync(() => {
+				events.push(`ensure:${spec.configHash ?? ''}`);
+				return {
+					id: 'container-id',
+					name: spec.name,
+					labels: spec.labels,
+					imageName: spec.image.tag ?? spec.image.digest,
+					status: 'running' as const,
+					ips: [],
+				};
+			}),
+		exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
+		runOneShot: () =>
+			Effect.sync(() => {
+				events.push('keygen');
+				return {
+					exitCode: 0,
+					stdout:
+						// 64-char hex (BLS12-381 master key) and 192-char hex
+						// (BLS12-381 public key) — matches the bounded patterns in
+						// `parseSealKeygenOutput`.
+						`Master key: ${'1'.repeat(64)}\nPublic key: ${'3'.repeat(192)}\n`,
+					stderr: '',
+				};
+			}),
+	});
 
 const publisherStub = (events: string[]): ArtifactPublisher => ({
 	publish: <Produced, Verified>(spec: ArtifactSpec<Produced, Verified>) =>

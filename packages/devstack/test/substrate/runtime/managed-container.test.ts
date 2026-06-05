@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Option, Stream } from 'effect';
+import { Effect, Exit, Option } from 'effect';
 
 import type {
 	ContainerRuntime,
@@ -9,28 +9,11 @@ import {
 	ensureManagedContainer,
 	managedContainerLabels,
 } from '../../../src/substrate/runtime/managed-container.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 
 const runtimeFromEnsure = (
 	ensureContainer: ContainerRuntime['ensureContainer'],
-): ContainerRuntime => ({
-	ensureImage: () => Effect.die('unused'),
-	ensureNetwork: () => Effect.die('unused'),
-	ensureContainer,
-	exec: () => Effect.die('unused'),
-	runOneShot: () => Effect.die('unused'),
-	inspectByLabels: () => Effect.die('unused'),
-	pauseAndCommit: () => Effect.die('unused'),
-	saveImages: () => Stream.die('unused'),
-	loadImage: () => Effect.die('unused'),
-	tagImage: () => Effect.die('unused'),
-	removeImage: () => Effect.die('unused'),
-	inspectImageDigest: () => Effect.die('unused'),
-	stop: () => Effect.die('unused'),
-	removeManagedContainers: () => Effect.die('unused'),
-	removeManagedImages: () => Effect.die('unused'),
-	removeManagedNetworks: () => Effect.die('unused'),
-	removeManagedVolumes: () => Effect.die('unused'),
-});
+): ContainerRuntime => makeContainerRuntimeStub({ ensureContainer });
 
 describe('managed container helper', () => {
 	it('builds the standard ownership label tuple', () => {

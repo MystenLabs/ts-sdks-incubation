@@ -43,6 +43,7 @@ import {
 	type SnapshotMetadata,
 	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 import {
 	dockerSaveBundleTar,
@@ -98,58 +99,48 @@ interface RuntimeStubOpts {
 	readonly committedRefFor?: (handle: ContainerHandle) => ImageRef & { readonly tag: string };
 }
 
-const runtimeStub = (opts: RuntimeStubOpts): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: (labels) => {
-		const matched = opts.handlesByRole[labels.role] ?? [];
-		return Effect.succeed(Array.isArray(matched) ? matched : [matched]);
-	},
-	pauseAndCommit: (handle) =>
-		Effect.gen(function* () {
-			const error = opts.commitErrorFor?.(handle);
-			if (error !== undefined) return yield* Effect.fail(error);
+const runtimeStub = (opts: RuntimeStubOpts): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		inspectByLabels: (labels) => {
+			const matched = opts.handlesByRole[labels.role] ?? [];
+			return Effect.succeed(Array.isArray(matched) ? matched : [matched]);
+		},
+		pauseAndCommit: (handle) =>
+			Effect.gen(function* () {
+				const error = opts.commitErrorFor?.(handle);
+				if (error !== undefined) return yield* Effect.fail(error);
+				return (
+					opts.committedRefFor?.(handle) ?? {
+						digest: `sha256:${handle.name}`,
+						tag: `snapshot:${handle.name}`,
+					}
+				);
+			}),
+		saveImages: (refs) => {
+			opts.saveCalls?.push(...refs);
 			return (
-				opts.committedRefFor?.(handle) ?? {
-					digest: `sha256:${handle.name}`,
-					tag: `snapshot:${handle.name}`,
-				}
+				opts.saveImages?.(refs) ??
+				Stream.make(dockerSaveBundleTar(refs.map((ref) => ref.tag ?? ref.digest)))
 			);
-		}),
-	saveImages: (refs) => {
-		opts.saveCalls?.push(...refs);
-		return (
-			opts.saveImages?.(refs) ??
-			Stream.make(dockerSaveBundleTar(refs.map((ref) => ref.tag ?? ref.digest)))
-		);
-	},
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: (ref) =>
-		Effect.gen(function* () {
-			opts.removeImageCalls?.push(ref);
-			const error = opts.removeImageErrorFor?.(ref);
-			if (error !== undefined) return yield* Effect.fail(error);
-		}),
-	inspectImageDigest: (ref) =>
-		Effect.sync(() => {
-			opts.inspectDigestCalls?.push(ref);
-			return opts.inspectImageDigest?.(ref) ?? null;
-		}),
-	stop: (handle) =>
-		Effect.gen(function* () {
-			opts.stopCalls?.push(handle.name);
-			const error = opts.stopErrorFor?.(handle);
-			if (error !== undefined) return yield* Effect.fail(error);
-		}),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+		},
+		removeImage: (ref) =>
+			Effect.gen(function* () {
+				opts.removeImageCalls?.push(ref);
+				const error = opts.removeImageErrorFor?.(ref);
+				if (error !== undefined) return yield* Effect.fail(error);
+			}),
+		inspectImageDigest: (ref) =>
+			Effect.sync(() => {
+				opts.inspectDigestCalls?.push(ref);
+				return opts.inspectImageDigest?.(ref) ?? null;
+			}),
+		stop: (handle) =>
+			Effect.gen(function* () {
+				opts.stopCalls?.push(handle.name);
+				const error = opts.stopErrorFor?.(handle);
+				if (error !== undefined) return yield* Effect.fail(error);
+			}),
+	});
 
 const runCaptureExit = (
 	root: string,

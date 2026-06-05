@@ -3,48 +3,37 @@ import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import { runPrune, runWipe } from '../../../src/orchestrators/snapshot/index.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
-const runtimeStub = (events: string[]): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: (match: Partial<ContainerLabelTuple>) =>
-		Effect.sync(() => {
-			events.push(`containers:${match.app}/${match.stack}`);
-			return 2;
-		}),
-	removeManagedImages: (match: Partial<ContainerLabelTuple>) =>
-		Effect.sync(() => {
-			events.push(`images:${match.app}/${match.stack}:${match.role ?? '<no-role>'}`);
-			return 3;
-		}),
-	removeManagedNetworks: (match: Partial<ContainerLabelTuple>) =>
-		Effect.sync(() => {
-			events.push(`networks:${match.app}/${match.stack}`);
-			return 1;
-		}),
-	removeManagedVolumes: (match: Partial<ContainerLabelTuple>) =>
-		Effect.sync(() => {
-			events.push(`volumes:${match.app}/${match.stack}`);
-			return 1;
-		}),
-});
+const runtimeStub = (events: string[]): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		removeManagedContainers: (match: Partial<ContainerLabelTuple>) =>
+			Effect.sync(() => {
+				events.push(`containers:${match.app}/${match.stack}`);
+				return 2;
+			}),
+		removeManagedImages: (match: Partial<ContainerLabelTuple>) =>
+			Effect.sync(() => {
+				events.push(`images:${match.app}/${match.stack}:${match.role ?? '<no-role>'}`);
+				return 3;
+			}),
+		removeManagedNetworks: (match: Partial<ContainerLabelTuple>) =>
+			Effect.sync(() => {
+				events.push(`networks:${match.app}/${match.stack}`);
+				return 1;
+			}),
+		removeManagedVolumes: (match: Partial<ContainerLabelTuple>) =>
+			Effect.sync(() => {
+				events.push(`volumes:${match.app}/${match.stack}`);
+				return 1;
+			}),
+	});
 
 describe('snapshot cleanup orchestration', () => {
 	it.effect(

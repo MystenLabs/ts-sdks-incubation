@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 
 import { afterEach, describe, expect, it } from '@effect/vitest';
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 
 import type {
 	ContainerBuildContext,
@@ -14,6 +14,7 @@ import {
 	DEFAULT_WALRUS_REF,
 	resolveCargoImage,
 } from '../../../src/plugins/walrus/bootstrap-assets/cargo-image.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 
 const ORIGINAL_WALRUS_CARGO_IMAGE_OVERRIDE = process.env.WALRUS_CARGO_IMAGE_OVERRIDE;
 
@@ -22,27 +23,8 @@ const restoreEnvVar = (name: string, value: string | undefined) => {
 	else process.env[name] = value;
 };
 
-const unusedRuntimeMethod = () => Effect.die('not used');
-
-const makeRuntimeStub = (ensureImage: ContainerRuntime['ensureImage']): ContainerRuntime => ({
-	ensureImage,
-	ensureNetwork: unusedRuntimeMethod,
-	ensureContainer: unusedRuntimeMethod,
-	exec: unusedRuntimeMethod,
-	runOneShot: unusedRuntimeMethod,
-	inspectByLabels: unusedRuntimeMethod,
-	pauseAndCommit: unusedRuntimeMethod,
-	saveImages: () => Stream.empty,
-	loadImage: unusedRuntimeMethod,
-	tagImage: unusedRuntimeMethod,
-	removeImage: unusedRuntimeMethod,
-	inspectImageDigest: unusedRuntimeMethod,
-	stop: unusedRuntimeMethod,
-	removeManagedContainers: unusedRuntimeMethod,
-	removeManagedImages: unusedRuntimeMethod,
-	removeManagedNetworks: unusedRuntimeMethod,
-	removeManagedVolumes: unusedRuntimeMethod,
-});
+const makeRuntimeStub = (ensureImage: ContainerRuntime['ensureImage']): ContainerRuntime =>
+	makeContainerRuntimeStub({ ensureImage });
 
 afterEach(() => {
 	restoreEnvVar('WALRUS_CARGO_IMAGE_OVERRIDE', ORIGINAL_WALRUS_CARGO_IMAGE_OVERRIDE);

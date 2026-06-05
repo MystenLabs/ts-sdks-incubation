@@ -26,6 +26,7 @@ import {
 	type SnapshotMetadata,
 	type SnapshotRuntimeIdentity,
 } from '../../../src/orchestrators/snapshot/index.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
 const runtimeIdentity: SnapshotRuntimeIdentity = {
@@ -65,26 +66,15 @@ const writeArtifact = (root: string, meta: SnapshotMetadata): string => {
 	return artifactDir;
 };
 
-const runtimeStub = (): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: (_src: ImageRef, _newTag: string, _opts: TagImageOptions | undefined) =>
-		Effect.die('tagImage not used'),
-	removeImage: () => Effect.void,
-	inspectImageDigest: () => Effect.succeed(null),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.succeed(0),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+const runtimeStub = (): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		saveImages: () => Stream.empty,
+		tagImage: (_src: ImageRef, _newTag: string, _opts: TagImageOptions | undefined) =>
+			Effect.die('tagImage not used'),
+		removeImage: () => Effect.void,
+		inspectImageDigest: () => Effect.succeed(null),
+		removeManagedContainers: () => Effect.succeed(0),
+	});
 
 const runRestoreExit = (root: string, artifactDir: string, meta: SnapshotMetadata) =>
 	Effect.exit(

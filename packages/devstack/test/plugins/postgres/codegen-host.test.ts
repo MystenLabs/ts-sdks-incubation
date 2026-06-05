@@ -13,7 +13,7 @@
 //    bindings (Stage B: emitted inline via `ctx.codegen`, replacing
 //    the legacy `capabilities` closure).
 
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import type {
@@ -22,6 +22,7 @@ import type {
 	CodegenableDecl,
 } from '../../../src/contracts/codegenable.ts';
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { postgres } from '../../../src/plugins/postgres/index.ts';
 import type { Postgres, PostgresServiceOptions } from '../../../src/plugins/postgres/service.ts';
 import { appName, stackName } from '../../../src/substrate/brand.ts';
@@ -48,7 +49,7 @@ const identity: Identity = {
  *  parallel-stack-portable `<name>-<stack>` alias. The two MUST differ
  *  for the test to discriminate the bug. Mirrors the fake in
  *  `service.test.ts`; only the methods `start` reaches are live. */
-const fakeRuntime: ContainerRuntime = {
+const fakeRuntime: ContainerRuntime = makeContainerRuntimeStub({
 	ensureImage: () => Effect.succeed({ digest: 'sha256:postgres', tag: 'devstack-postgres:test' }),
 	ensureNetwork: () => Effect.succeed('postgres-net'),
 	ensureContainer: (spec) =>
@@ -62,20 +63,7 @@ const fakeRuntime: ContainerRuntime = {
 		})),
 	// pg_isready: ready immediately.
 	exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-};
+});
 
 /** A complete-enough `StackPaths` stub. `start` reads only `stackRoot`;
  *  the helper fields are present to satisfy the service shape. */

@@ -6,7 +6,7 @@
 // per-stack container DNS host). `indexer: false` opts out; `indexerDb`
 // points GraphQL at a Postgres the caller already runs (no sidecar).
 
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -24,6 +24,7 @@ import type {
 	EnsureContainerSpec,
 	ImageRef,
 } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 
 const identity: Identity = {
 	app: appName('app'),
@@ -50,52 +51,41 @@ const sidecarRuntime = (sink: {
 	spec?: EnsureContainerSpec;
 	readonly validatorPresent?: boolean;
 	readonly validatorExitCode?: number;
-}): ContainerRuntime => ({
-	ensureImage: () => Effect.succeed({ digest: 'sha256:pg', tag: 'postgres:local' }),
-	ensureNetwork: () => Effect.succeed('net-id'),
-	ensureContainer: (spec) => {
-		sink.spec = spec;
-		return Effect.succeed({
-			id: 'pg-id',
-			name: spec.name,
-			labels: spec.labels,
-			imageName: spec.image.tag ?? spec.image.digest,
-			status: 'running',
-			ips: [],
-			ports: spec.ports,
-		} satisfies ContainerHandle);
-	},
-	exec: () => Effect.succeed({ exitCode: 0, stdout: '1\n', stderr: '' }),
-	inspectByLabels: () =>
-		Effect.succeed(
-			sink.validatorPresent
-				? [
-						{
-							id: 'validator-id',
-							name: 'devstack-app-stack-sui-validator',
-							imageName: 'sui:local',
-							status: 'running',
-							ips: [],
-							...(sink.validatorExitCode !== undefined
-								? { lastExitCode: sink.validatorExitCode }
-								: {}),
-						} satisfies ContainerHandle,
-					]
-				: [],
-		),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.die('saveImages not used'),
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-});
+}): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		ensureImage: () => Effect.succeed({ digest: 'sha256:pg', tag: 'postgres:local' }),
+		ensureNetwork: () => Effect.succeed('net-id'),
+		ensureContainer: (spec) => {
+			sink.spec = spec;
+			return Effect.succeed({
+				id: 'pg-id',
+				name: spec.name,
+				labels: spec.labels,
+				imageName: spec.image.tag ?? spec.image.digest,
+				status: 'running',
+				ips: [],
+				ports: spec.ports,
+			} satisfies ContainerHandle);
+		},
+		exec: () => Effect.succeed({ exitCode: 0, stdout: '1\n', stderr: '' }),
+		inspectByLabels: () =>
+			Effect.succeed(
+				sink.validatorPresent
+					? [
+							{
+								id: 'validator-id',
+								name: 'devstack-app-stack-sui-validator',
+								imageName: 'sui:local',
+								status: 'running',
+								ips: [],
+								...(sink.validatorExitCode !== undefined
+									? { lastExitCode: sink.validatorExitCode }
+									: {}),
+							} satisfies ContainerHandle,
+						]
+					: [],
+			),
+	});
 
 describe('Sui local indexer wiring', () => {
 	it('plain sui() declares no sibling dependsOn', () => {

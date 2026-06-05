@@ -4,12 +4,13 @@
 // is a load-bearing bug. Tests pin the shape.
 
 import { describe, expect, it } from 'vitest';
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 
 import type {
 	ContainerRuntime,
 	EnsureContainerSpec,
 } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { deriveWalrusSubnetPrefix } from '../../../src/plugins/walrus/index.ts';
 import { withSubnetAddressing } from '../../../src/substrate/runtime/subnet-broker.ts';
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
@@ -25,38 +26,24 @@ import {
 	type WalrusStorageNode,
 } from '../../../src/plugins/walrus/storage-nodes.ts';
 
-const runtimeCapturingStorageNodeSpecs = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: (spec) =>
-		Effect.sync(() => {
-			specs.push(spec);
-			return {
-				id: `container-${spec.name}`,
-				name: spec.name,
-				imageName: spec.image.tag ?? spec.image.digest,
-				status: 'running' as const,
-				ips: [],
-				labels: spec.labels,
-			};
-		}),
-	// The boot ready-gate execs a TCP bind check + a `/v1/health` fetch; the
-	// stub returns a write-ready (`Active`) health body so the gate passes.
-	exec: () => Effect.succeed({ exitCode: 0, stdout: '{"nodeStatus":"Active"}', stderr: '' }),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
-	stop: () => Effect.die('stop not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+const runtimeCapturingStorageNodeSpecs = (specs: EnsureContainerSpec[]): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		ensureContainer: (spec) =>
+			Effect.sync(() => {
+				specs.push(spec);
+				return {
+					id: `container-${spec.name}`,
+					name: spec.name,
+					imageName: spec.image.tag ?? spec.image.digest,
+					status: 'running' as const,
+					ips: [],
+					labels: spec.labels,
+				};
+			}),
+		// The boot ready-gate execs a TCP bind check + a `/v1/health` fetch; the
+		// stub returns a write-ready (`Active`) health body so the gate passes.
+		exec: () => Effect.succeed({ exitCode: 0, stdout: '{"nodeStatus":"Active"}', stderr: '' }),
+	});
 
 describe('computePublicHostname', () => {
 	it('main stack omits the stack segment', () => {

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { Deferred, Effect, Fiber, Ref, Stream } from 'effect';
+import { Deferred, Effect, Fiber, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import type {
@@ -14,8 +14,7 @@ import {
 	acquireChainBuildContainer,
 	moveBuildLockPathFor,
 } from '../../../src/plugins/sui/chain-build-container.ts';
-
-const unusedRuntimeMethod = () => Effect.die('not used');
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 
 const handleFor = (spec: EnsureContainerSpec): ContainerHandle => ({
 	id: 'build-container-id',
@@ -26,25 +25,11 @@ const handleFor = (spec: EnsureContainerSpec): ContainerHandle => ({
 	ips: [],
 });
 
-const runtimeFromExec = (exec: ContainerRuntime['exec']): ContainerRuntime => ({
-	ensureImage: unusedRuntimeMethod,
-	ensureNetwork: unusedRuntimeMethod,
-	ensureContainer: (spec) => Effect.succeed(handleFor(spec)),
-	exec,
-	runOneShot: unusedRuntimeMethod,
-	inspectByLabels: unusedRuntimeMethod,
-	pauseAndCommit: unusedRuntimeMethod,
-	saveImages: () => Stream.empty,
-	loadImage: unusedRuntimeMethod,
-	tagImage: unusedRuntimeMethod,
-	removeImage: unusedRuntimeMethod,
-	inspectImageDigest: unusedRuntimeMethod,
-	stop: unusedRuntimeMethod,
-	removeManagedContainers: unusedRuntimeMethod,
-	removeManagedImages: unusedRuntimeMethod,
-	removeManagedNetworks: unusedRuntimeMethod,
-	removeManagedVolumes: unusedRuntimeMethod,
-});
+const runtimeFromExec = (exec: ContainerRuntime['exec']): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		ensureContainer: (spec) => Effect.succeed(handleFor(spec)),
+		exec,
+	});
 
 const runtimeCapturingEnsureSpec = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
 	...runtimeFromExec(() => Effect.succeed(okExecResult)),
