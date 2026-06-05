@@ -139,7 +139,7 @@ export const runApplyLive = (
 			const stackPaths = yield* StackPathsService;
 			const computeGraphInput = computeSnapshotGraphInputFromStack({
 				stack,
-				devstackVersion: readDevstackVersion(),
+				devstackVersion: readDevstackVersion({ fallback: '0.0.0' }),
 			});
 			// Mirror the up-path recovery: resume any restore interrupted by a
 			// hard kill between the atomic swap and the image-promotion handoff

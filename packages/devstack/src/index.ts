@@ -162,9 +162,8 @@ export {
 // ===========================================================================
 //
 // Every L2 plugin's public surface re-exported here. There are no
-// `/plugins/<name>` subpaths — tree-shaking handles unused plugins via
-// the package's `sideEffects: false`. See ARCHITECTURE.md §"L2 plugins"
-// for the layering rules these exports honour.
+// `/plugins/<name>` subpaths. See ARCHITECTURE.md §"L2 plugins" for
+// the layering rules these exports honour.
 
 // --- Sui ----------------------------------------------------------------
 

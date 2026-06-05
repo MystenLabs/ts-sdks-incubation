@@ -254,7 +254,7 @@ export const runSnapshotCaptureDirectLoaded = (
 							const fs = yield* FileSystem.FileSystem;
 							const graphInput = yield* computeSnapshotGraphInputFromStack({
 								stack,
-								devstackVersion: readDevstackVersion(),
+								devstackVersion: readDevstackVersion({ fallback: '0.0.0' }),
 							});
 							return yield* snapshot
 								.capture({

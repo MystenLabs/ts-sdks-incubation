@@ -48,7 +48,7 @@ export const makeLocalKeygenSnapshotable = (inputs: {
 		// Subtree under runtime/. The substrate roots this under the
 		// per-stack runtime-dir; `seal` is plugin-blind from the
 		// orchestrator's POV (just a path segment).
-		subtrees: [`seal`],
+		subtrees: ['seal/'],
 		managedContainers: [labelTuple],
 		// The key-server's Docker stop grace is owned by key-server.ts; the
 		// capture bounce's graceful stop flushes its state before commit.
