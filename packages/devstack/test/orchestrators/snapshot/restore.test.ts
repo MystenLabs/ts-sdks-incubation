@@ -202,6 +202,7 @@ const runtimeStub = (
 			opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
 			opts.removeImageCalls?.push(ref);
 		}),
+	inspectImageDigest: () => Effect.succeed(null),
 	stop: () => Effect.die('stop not used'),
 	removeManagedContainers: (labelMatch) =>
 		Effect.sync(() => {

@@ -24,6 +24,7 @@ const runtimeFromEnsure = (
 	loadImage: () => Effect.die('unused'),
 	tagImage: () => Effect.die('unused'),
 	removeImage: () => Effect.die('unused'),
+	inspectImageDigest: () => Effect.die('unused'),
 	stop: () => Effect.die('unused'),
 	removeManagedContainers: () => Effect.die('unused'),
 	removeManagedImages: () => Effect.die('unused'),

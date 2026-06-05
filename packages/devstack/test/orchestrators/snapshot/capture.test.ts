@@ -85,6 +85,14 @@ interface RuntimeStubOpts {
 	readonly stopCalls?: Array<string>;
 	readonly saveCalls?: Array<ImageRef>;
 	readonly removeImageCalls?: Array<ImageRef>;
+	/** Records every `inspectImageDigest(ref)` query. */
+	readonly inspectDigestCalls?: Array<string>;
+	/** Per-ref digest oracle. Returning successive values across calls is
+	 *  done by closing over a mutable cursor in the test. `undefined` ⇒
+	 *  null (ref does not resolve). */
+	readonly inspectImageDigest?: (ref: string) => string | null;
+	/** Fail the image `removeImage` GC removal (best-effort path). */
+	readonly removeImageErrorFor?: (ref: ImageRef) => ContainerRuntimeError | undefined;
 	readonly stopErrorFor?: (handle: ContainerHandle) => ContainerRuntimeError | undefined;
 	readonly commitErrorFor?: (handle: ContainerHandle) => ContainerRuntimeError | undefined;
 	readonly committedRefFor?: (handle: ContainerHandle) => ImageRef & { readonly tag: string };
@@ -121,8 +129,15 @@ const runtimeStub = (opts: RuntimeStubOpts): ContainerRuntime => ({
 	loadImage: () => Effect.die('loadImage not used'),
 	tagImage: () => Effect.die('tagImage not used'),
 	removeImage: (ref) =>
-		Effect.sync(() => {
+		Effect.gen(function* () {
 			opts.removeImageCalls?.push(ref);
+			const error = opts.removeImageErrorFor?.(ref);
+			if (error !== undefined) return yield* Effect.fail(error);
+		}),
+	inspectImageDigest: (ref) =>
+		Effect.sync(() => {
+			opts.inspectDigestCalls?.push(ref);
+			return opts.inspectImageDigest?.(ref) ?? null;
 		}),
 	stop: (handle) =>
 		Effect.gen(function* () {
@@ -947,6 +962,126 @@ describe('resumeAfterCapture — retag + hard-rm + resume', () => {
 			expect(Exit.isSuccess(exit)).toBe(true);
 			expect(tagCalls).toEqual(['devstack-build:seal']);
 			expect(removeCalls).toEqual(['seal/key-server']);
+		}),
+	);
+
+	it.effect('second capture removes the first capture\'s orphaned layer', () =>
+		Effect.gen(function* () {
+			const removeImageCalls: ImageRef[] = [];
+			// `imageName` resolves to the OLD committed layer before the retag,
+			// then the NEW one after. inspectImageDigest is called twice for the
+			// same ref — first returns oldDigest, then newDigest.
+			let inspectCursor = 0;
+			const digests = ['sha256:old-layer', 'sha256:new-layer'];
+			const runtime: ContainerRuntime = {
+				...runtimeStub({ handlesByRole: {}, removeImageCalls }),
+				inspectImageDigest: (_ref) =>
+					Effect.sync(() => digests[inspectCursor++] ?? null),
+				tagImage: () => Effect.void,
+				removeManagedContainers: () => Effect.succeed(1),
+			};
+
+			const exit = yield* Effect.exit(
+				resumeAfterCapture(
+					meta([
+						{
+							plugin: 'walrus',
+							role: 'storage-node-0',
+							imageName: 'devstack-build:walrus-node-0',
+							snapshotTag: 'snapshot:walrus-node-0',
+							tarPath: imageBundlePath,
+						},
+					]),
+					{ runtime, app: 'capture-app', stack: 'main' },
+				),
+			);
+
+			expect(Exit.isSuccess(exit)).toBe(true);
+			// The orphaned previous layer is GC'd by DIGEST exactly once — never
+			// by the live `imageName` tag.
+			expect(removeImageCalls).toEqual([{ digest: 'sha256:old-layer' }]);
+		}),
+	);
+
+	it.effect('identical layer is NOT removed', () =>
+		Effect.gen(function* () {
+			const removeImageCalls: ImageRef[] = [];
+			// The commit produced a layer id identical to the one `imageName`
+			// already pointed at: inspect returns the SAME digest before + after
+			// the retag, so removing it would delete the LIVE layer. Must skip.
+			const runtime: ContainerRuntime = {
+				...runtimeStub({ handlesByRole: {}, removeImageCalls }),
+				inspectImageDigest: (_ref) => Effect.succeed('sha256:same-layer'),
+				tagImage: () => Effect.void,
+				removeManagedContainers: () => Effect.succeed(1),
+			};
+
+			const exit = yield* Effect.exit(
+				resumeAfterCapture(
+					meta([
+						{
+							plugin: 'seal',
+							role: 'key-server',
+							imageName: 'devstack-build:seal',
+							snapshotTag: 'snapshot:seal',
+							tarPath: imageBundlePath,
+						},
+					]),
+					{ runtime, app: 'capture-app', stack: 'main' },
+				),
+			);
+
+			expect(Exit.isSuccess(exit)).toBe(true);
+			expect(removeImageCalls).toEqual([]);
+		}),
+	);
+
+	it.effect('GC removal failure does not fail the capture', () =>
+		Effect.gen(function* () {
+			let resumed = false;
+			let inspectCursor = 0;
+			const digests = ['sha256:old-layer', 'sha256:new-layer'];
+			const runtime: ContainerRuntime = {
+				...runtimeStub({ handlesByRole: {} }),
+				inspectImageDigest: (_ref) =>
+					Effect.sync(() => digests[inspectCursor++] ?? null),
+				tagImage: () => Effect.void,
+				// The image GC removal fails — must be logged + swallowed, never
+				// surfaced as a capture failure.
+				removeImage: () =>
+					Effect.fail({
+						_tag: 'ContainerRuntimeError' as const,
+						reason: 'image-remove-failed' as const,
+						detail: 'simulated GC removal failure',
+					}),
+				removeManagedContainers: () => Effect.succeed(1),
+			};
+
+			const exit = yield* Effect.exit(
+				resumeAfterCapture(
+					meta([
+						{
+							plugin: 'walrus',
+							role: 'storage-node-0',
+							imageName: 'devstack-build:walrus-node-0',
+							snapshotTag: 'snapshot:walrus-node-0',
+							tarPath: imageBundlePath,
+						},
+					]),
+					{
+						runtime,
+						app: 'capture-app',
+						stack: 'main',
+						resume: Effect.sync(() => {
+							resumed = true;
+						}),
+					},
+				),
+			);
+
+			// Capture still succeeds + resume still ran despite the GC failure.
+			expect(Exit.isSuccess(exit)).toBe(true);
+			expect(resumed).toBe(true);
 		}),
 	);
 });

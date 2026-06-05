@@ -302,6 +302,16 @@ export interface ContainerRuntime {
 	 *  treated as already-cleaned. */
 	readonly removeImage: (ref: ImageRef) => Effect.Effect<void, ContainerRuntimeError>;
 
+	/** Resolve a ref (tag or digest) to the image id/digest it currently
+	 *  points at, or `null` when the ref does not exist on-host. Snapshot
+	 *  capture-resume uses this to identify the layer a name resolved to
+	 *  BEFORE a retag (the soon-to-be-superseded layer) and the layer it
+	 *  resolves to AFTER (the freshly-committed one), so the orphaned
+	 *  previous layer can be GC'd without touching the live tag. */
+	readonly inspectImageDigest: (
+		ref: string,
+	) => Effect.Effect<string | null, ContainerRuntimeError>;
+
 	readonly stop: (
 		handle: ContainerHandle,
 		grace: Duration.Duration,

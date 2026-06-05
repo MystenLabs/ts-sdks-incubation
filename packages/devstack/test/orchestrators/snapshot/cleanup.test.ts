@@ -22,6 +22,7 @@ const runtimeStub = (events: string[]): ContainerRuntime => ({
 	loadImage: () => Effect.die('loadImage not used'),
 	tagImage: () => Effect.die('tagImage not used'),
 	removeImage: () => Effect.die('removeImage not used'),
+	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
 	stop: () => Effect.die('stop not used'),
 	removeManagedContainers: (match: Partial<ContainerLabelTuple>) =>
 		Effect.sync(() => {

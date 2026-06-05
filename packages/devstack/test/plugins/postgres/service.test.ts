@@ -40,6 +40,7 @@ const runtimeCapturingPostgresSpec = (specs: EnsureContainerSpec[]): ContainerRu
 	loadImage: () => Effect.die('loadImage not used'),
 	tagImage: () => Effect.die('tagImage not used'),
 	removeImage: () => Effect.die('removeImage not used'),
+	inspectImageDigest: () => Effect.die('inspectImageDigest not used'),
 	stop: () => Effect.die('stop not used'),
 	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
 	removeManagedImages: () => Effect.die('removeManagedImages not used'),

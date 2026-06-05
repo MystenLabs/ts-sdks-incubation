@@ -36,6 +36,7 @@ const makeRuntimeStub = (ensureImage: ContainerRuntime['ensureImage']): Containe
 	loadImage: unusedRuntimeMethod,
 	tagImage: unusedRuntimeMethod,
 	removeImage: unusedRuntimeMethod,
+	inspectImageDigest: unusedRuntimeMethod,
 	stop: unusedRuntimeMethod,
 	removeManagedContainers: unusedRuntimeMethod,
 	removeManagedImages: unusedRuntimeMethod,

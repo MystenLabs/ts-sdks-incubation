@@ -756,6 +756,16 @@ export const resumeAfterCapture = (
 		// imageName onto it (removeSourceAfterTag drops the temp snapshot
 		// tag — its label-owned image is now reachable by the original name).
 		for (const captured of meta.containers) {
+			// Image GC: the retag below moves `imageName` from the layer it
+			// currently resolves to (the now-superseded previous capture) onto
+			// the freshly-committed snapshot layer. The previous layer is then
+			// orphaned — no tag references it — and would dangle forever. Read
+			// the old layer's digest BEFORE the retag so we can drop it AFTER.
+			// A null here (first capture: nothing tagged that name yet) means
+			// there is no orphan to collect.
+			const oldDigest = yield* inputs.runtime
+				.inspectImageDigest(captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
 			// The contract's `tagImage` resolves the source by `tag ?? digest`
 			// (runtime/docker/service.ts), so the snapshot tag is the operative
 			// source; `digest` mirrors it to satisfy the `ImageRef` shape.
@@ -772,6 +782,37 @@ export const resumeAfterCapture = (
 						),
 					),
 				);
+			// ORDERING INVARIANT: GC runs strictly AFTER the retag succeeds.
+			// Removing the old layer before the retag would destroy the live
+			// image if the retag then failed. Now `imageName` resolves to the
+			// new committed layer; read that digest to confirm the orphan is
+			// genuinely distinct.
+			const newDigest = yield* inputs.runtime
+				.inspectImageDigest(captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
+			// Two guards before removal:
+			//   - null guard: no previous layer to collect (first capture).
+			//   - equal-digest guard: the commit produced an identical layer
+			//     id, so `imageName` still resolves to it — removing `oldDigest`
+			//     would delete the LIVE layer. Skip the no-op case.
+			if (oldDigest !== null && oldDigest !== newDigest) {
+				// Digest-only target: `removeImage` resolves `tag ?? digest`, so
+				// a digest-only ref drops the orphaned layer by id, NOT the live
+				// `imageName` tag. Best-effort — any failure (image-in-use,
+				// multiple tags, ImageRemoveFailed) is logged and swallowed; it
+				// must NEVER fail the capture. Mirrors `cleanupCommittedRefs`.
+				yield* inputs.runtime
+					.removeImage({ digest: oldDigest })
+					.pipe(
+						Effect.catch((cause) =>
+							Effect.logWarning(
+								`GC of superseded image layer ${oldDigest} for ${captured.imageName} failed (best-effort): ${String(
+									cause,
+								)}`,
+							),
+						),
+					);
+			}
 		}
 		// HARD-rm the stopped containers (claim-bypassing) so the resume's
 		// recreate sees facts:null → fresh → `docker run` the original name,

@@ -63,6 +63,8 @@ const stubRuntime: ContainerRuntime = {
 		}),
 	tagImage: () => Effect.void,
 	removeImage: () => Effect.void,
+	inspectImageDigest: (ref) =>
+		Effect.succeed(ref === 'present:latest' ? 'sha256:resolved' : null),
 	stop: () => Effect.void,
 	removeManagedContainers: () => Effect.succeed(0),
 	removeManagedImages: () => Effect.succeed(0),
@@ -108,6 +110,13 @@ describe('ContainerRuntime contract surface', () => {
 	it.effect('removeImage returns Effect<void, ContainerRuntimeError>', () =>
 		Effect.gen(function* () {
 			yield* stubRuntime.removeImage({ digest: 'sha256:abc', tag: 'devstack-snapshot:abc' });
+		}),
+	);
+
+	it.effect('inspectImageDigest resolves a ref to its digest or null', () =>
+		Effect.gen(function* () {
+			expect(yield* stubRuntime.inspectImageDigest('present:latest')).toBe('sha256:resolved');
+			expect(yield* stubRuntime.inspectImageDigest('absent:latest')).toBe(null);
 		}),
 	);
 

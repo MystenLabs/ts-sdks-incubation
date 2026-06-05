@@ -32,6 +32,7 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 	loadImage: unusedRuntimeMethod,
 	tagImage: unusedRuntimeMethod,
 	removeImage: unusedRuntimeMethod,
+	inspectImageDigest: unusedRuntimeMethod,
 	stop: unusedRuntimeMethod,
 	removeManagedContainers: unusedRuntimeMethod,
 	removeManagedImages: unusedRuntimeMethod,

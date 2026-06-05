@@ -48,6 +48,7 @@ import { toContractError } from './errors.ts';
 import { dockerExec, dockerRunOneShot } from './exec.ts';
 import {
 	ensureImageCached,
+	imageExists,
 	loadImage as loadImageImpl,
 	pull as pullImageImpl,
 	refOf,
@@ -534,6 +535,18 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			);
 		};
 
+		// Reuse `image.ts::imageExists` — `docker image inspect --format
+		// {{.Id}}`, returning the resolved id or null. No new docker
+		// invocation logic; the contract entry point just projects the
+		// subsystem's narrow error to the contract error.
+		const inspectImageDigestContractImpl = (
+			ref: string,
+		): Effect.Effect<string | null, ContainerRuntimeError> =>
+			imageExists(ref).pipe(
+				mapToContractError,
+				Effect.provide(baseCtx),
+			);
+
 		const runOneShotImpl = (
 			spec: OneShotSpec,
 		): Effect.Effect<ExecResult, ContainerRuntimeError, import('effect').Scope.Scope> =>
@@ -573,6 +586,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			loadImage: loadImageContractImpl,
 			tagImage: tagImageContractImpl,
 			removeImage: removeImageContractImpl,
+			inspectImageDigest: inspectImageDigestContractImpl,
 			stop: stopImpl,
 			removeManagedContainers: removeManagedContainersImpl,
 			removeManagedImages: removeManagedImagesImpl,

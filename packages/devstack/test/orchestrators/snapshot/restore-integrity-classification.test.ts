@@ -78,6 +78,7 @@ const runtimeStub = (): ContainerRuntime => ({
 	tagImage: (_src: ImageRef, _newTag: string, _opts: TagImageOptions | undefined) =>
 		Effect.die('tagImage not used'),
 	removeImage: () => Effect.void,
+	inspectImageDigest: () => Effect.succeed(null),
 	stop: () => Effect.die('stop not used'),
 	removeManagedContainers: () => Effect.succeed(0),
 	removeManagedImages: () => Effect.die('removeManagedImages not used'),
