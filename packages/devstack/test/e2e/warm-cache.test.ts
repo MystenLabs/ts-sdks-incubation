@@ -52,7 +52,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Effect } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { account, defineDevstack, localPackage, sui, wallet } from '../../src/index.ts';
 import { readStackEngine, type Stack } from '../../src/api/define-devstack.ts';
@@ -83,6 +83,32 @@ const dockerReachable = (): { ok: boolean; detail: string } => {
 		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
 	}
 	return { ok: true, detail: res.stdout.trim() };
+};
+
+// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
+// `devstack-snapshot:*` images this test's boots minted, scoped by
+// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
+// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
+// user's other devstack images. Best-effort: swallow all failures so a missing
+// docker or an empty match can't fail the suite.
+const pruneManagedImagesForApp = (app: string): void => {
+	try {
+		spawnSync(
+			'docker',
+			[
+				'image',
+				'prune',
+				'-f',
+				'--filter',
+				`label=devstack.app=${app}`,
+				'--filter',
+				'label=devstack.managed=true',
+			],
+			{ encoding: 'utf8', timeout: 60_000 },
+		);
+	} catch {
+		// cleanup must never throw
+	}
 };
 
 // Defensively clear any leaked image-override env so the warm fingerprint
@@ -237,6 +263,11 @@ const mintChainMarker = (
 const BOOT_TIMEOUT = 1_800_000;
 
 describe('warm boot cache — real services @e2e', () => {
+	// Sweep the managed build/snapshot images this test's three boots minted
+	// (all under `appName: STACK_NAME`). Label-scoped so it can only reap images
+	// THIS test created, never the user's stacks.
+	afterAll(() => pruneManagedImagesForApp(STACK_NAME));
+
 	it('cold→capture, warm→restore, change→recapture across three boots @e2e', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {

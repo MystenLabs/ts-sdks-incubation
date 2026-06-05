@@ -56,7 +56,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Effect } from 'effect';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import {
 	WALLET_AUTH_HEADER,
@@ -69,6 +69,8 @@ import { runBoot, type BootResult } from './boot-config-impl.ts';
 const PRIVATE_CONTENT_APP_ORIGIN =
 	'http://dev.private-content.private-content.localhost:5175' as const;
 const PRIVATE_CONTENT_APP_PORT = 5170;
+// The app this boot runs under (`runBoot({ appName: PRIVATE_CONTENT_APP })`).
+const PRIVATE_CONTENT_APP = 'private-content';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(
 	HERE,
@@ -97,6 +99,35 @@ const dockerReachable = (): { ok: boolean; detail: string } => {
 		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
 	}
 	return { ok: true, detail: res.stdout.trim() };
+};
+
+// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
+// `devstack-snapshot:*` images this boot minted, scoped by
+// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
+// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
+// user's other devstack images. Best-effort: swallow all failures so a missing
+// docker or an empty match can't fail the suite. NB: the walrus/seal STUB
+// images are plain `docker build -t walrus-test-stub:latest` (no devstack
+// labels), so this prune deliberately does NOT touch them — they are not
+// managed devstack-build images and are reused across runs.
+const pruneManagedImagesForApp = (app: string): void => {
+	try {
+		spawnSync(
+			'docker',
+			[
+				'image',
+				'prune',
+				'-f',
+				'--filter',
+				`label=devstack.app=${app}`,
+				'--filter',
+				'label=devstack.managed=true',
+			],
+			{ encoding: 'utf8', timeout: 60_000 },
+		);
+	} catch {
+		// cleanup must never throw
+	}
 };
 
 const buildStubImage = (
@@ -279,7 +310,7 @@ const runPrivateContentBoot = async (opts: {
 	let accountFunding: Readonly<Record<string, AccountFundingEvidence>> = {};
 	const result = await runBoot({
 		configPath: CONFIG_PATH,
-		appName: 'private-content',
+		appName: PRIVATE_CONTENT_APP,
 		stackName: 'private-content',
 		runtimeRoot: opts.runtimeRoot,
 		routerStateRoot: opts.routerStateRoot,
@@ -574,6 +605,11 @@ const accountAddress = (values: ReadonlyMap<string, unknown>, key: string): stri
 };
 
 describe('private-content boots end-to-end @e2e', () => {
+	// Sweep the managed build/snapshot images this boot minted (under
+	// `appName: PRIVATE_CONTENT_APP`, across the cold + warm boots). Label-scoped
+	// so it can only reap images THIS test created, never the user's stacks.
+	afterAll(() => pruneManagedImagesForApp(PRIVATE_CONTENT_APP));
+
 	it('every plugin reaches `ready` on cold boot and warm restart', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {

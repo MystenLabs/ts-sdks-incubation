@@ -31,7 +31,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { runBoot } from './boot-config-impl.ts';
 import type {
@@ -65,7 +65,41 @@ const dockerReachable = (): { ok: boolean; detail: string } => {
 const TREASURY_CAP_RE = /::coin::TreasuryCap<.+>$/;
 const COIN_METADATA_RE = /::coin::CoinMetadata<.+>$/;
 
+// The app this boot runs under (`runBoot({ appName: TOKEN_STUDIO_APP })`).
+const TOKEN_STUDIO_APP = 'token-studio';
+
+// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
+// `devstack-snapshot:*` images this boot minted, scoped by
+// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
+// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
+// user's other devstack images. Best-effort: swallow all failures so a missing
+// docker or an empty match can't fail the suite.
+const pruneManagedImagesForApp = (app: string): void => {
+	try {
+		spawnSync(
+			'docker',
+			[
+				'image',
+				'prune',
+				'-f',
+				'--filter',
+				`label=devstack.app=${app}`,
+				'--filter',
+				'label=devstack.managed=true',
+			],
+			{ encoding: 'utf8', timeout: 60_000 },
+		);
+	} catch {
+		// cleanup must never throw
+	}
+};
+
 describe('token-studio boots end-to-end', () => {
+	// Sweep the managed build/snapshot images this boot minted (under
+	// `appName: TOKEN_STUDIO_APP`). Label-scoped so it can only reap images
+	// THIS test created, never the user's stacks.
+	afterAll(() => pruneManagedImagesForApp(TOKEN_STUDIO_APP));
+
 	it('every plugin reaches `ready` and managed_coin publish output carries TreasuryCap + CoinMetadata', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {
@@ -75,7 +109,7 @@ describe('token-studio boots end-to-end', () => {
 
 		const result = await runBoot({
 			configPath: CONFIG_PATH,
-			appName: 'token-studio',
+			appName: TOKEN_STUDIO_APP,
 			stackName: 'main',
 		});
 

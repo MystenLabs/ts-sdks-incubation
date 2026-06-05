@@ -37,7 +37,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect } from 'effect';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { readStackEngine } from '../../src/api/define-devstack.ts';
 import { runBoot } from './boot-config-impl.ts';
@@ -88,6 +88,36 @@ const ensureRealImages = (): void => {
 const PACKAGE_ID_RE = /packageId:\s*['"](0x[0-9a-fA-F]+)['"]/;
 const CONFIG_FILE = 'config.ts';
 
+// The codegen test boots under this app (`appName: CODEGEN_APP`); the matrix
+// invariant boots under `STACK_APP`. Both must be swept in `afterAll`.
+const CODEGEN_APP = 'snapshot-matrix-codegen';
+
+// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
+// `devstack-snapshot:*` images this file's boots minted, scoped by
+// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
+// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
+// user's other devstack images. Best-effort: swallow all failures so a missing
+// docker or an empty match can't fail the suite.
+const pruneManagedImagesForApp = (app: string): void => {
+	try {
+		spawnSync(
+			'docker',
+			[
+				'image',
+				'prune',
+				'-f',
+				'--filter',
+				`label=devstack.app=${app}`,
+				'--filter',
+				'label=devstack.managed=true',
+			],
+			{ encoding: 'utf8', timeout: 60_000 },
+		);
+	} catch {
+		// cleanup must never throw
+	}
+};
+
 const readCodegenPackageId = (outputDir: string): string => {
 	const file = join(outputDir, CONFIG_FILE);
 	const m = PACKAGE_ID_RE.exec(readFileSync(file, 'utf8'));
@@ -107,6 +137,14 @@ const corruptCodegenPackageId = (outputDir: string): void => {
 };
 
 describe('snapshot/restore matrix — real services @e2e', () => {
+	// Sweep the managed build/snapshot images this file's boots minted, scoped
+	// to the two test-owned apps (codegen test + matrix invariant). Label-scoped
+	// so it can only reap images THIS file created, never the user's stacks.
+	afterAll(() => {
+		pruneManagedImagesForApp(CODEGEN_APP);
+		pruneManagedImagesForApp(STACK_APP);
+	});
+
 	// Codegen output is a pure projection of the deployed packageId — NOT
 	// snapshot state. It lives OUTSIDE the runtime stack root (`<runtimeRoot>/
 	// codegen` here; `<appRoot>/src/generated` in production), so a restore does
@@ -128,7 +166,7 @@ describe('snapshot/restore matrix — real services @e2e', () => {
 		}
 		ensureRealImages();
 
-		const ident = 'snapshot-matrix-codegen';
+		const ident = CODEGEN_APP;
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'snapshot-matrix-codegen-runtime-'));
 		const routerStateRoot = mkdtempSync(join(tmpdir(), 'snapshot-matrix-codegen-router-'));
 		const engine = readStackEngine(buildMatrixStack({ deepbook: false, stackName: ident }));

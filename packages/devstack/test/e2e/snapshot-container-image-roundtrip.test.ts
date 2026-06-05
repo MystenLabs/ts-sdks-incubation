@@ -58,12 +58,41 @@ const snapshotTempTagsFor = (containerName: string): ReadonlyArray<string> => {
 		.filter((line) => line.length > 0 && line.includes(containerName));
 };
 
-const cleanupDockerArtifacts = (containerName: string, imageTag: string): void => {
+// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
+// `devstack-snapshot:*` images stamped with THIS test's unique app
+// (`devstack.app=<app>` + `devstack.managed=true`). Never tag-prefix, never
+// unfiltered — the app filter is the safety boundary so it can NEVER touch
+// the user's other devstack images. Best-effort: swallow all failures so a
+// missing docker or an empty match can't fail the suite.
+const pruneManagedImagesForApp = (app: string): void => {
+	try {
+		docker(
+			[
+				'image',
+				'prune',
+				'-f',
+				'--filter',
+				`label=devstack.app=${app}`,
+				'--filter',
+				'label=devstack.managed=true',
+			],
+			20_000,
+		);
+	} catch {
+		// cleanup must never throw
+	}
+};
+
+const cleanupDockerArtifacts = (containerName: string, imageTag: string, app: string): void => {
 	docker(['rm', '-f', containerName], 20_000);
 	for (const tag of snapshotTempTagsFor(containerName)) {
 		docker(['image', 'rm', '-f', tag], 20_000);
 	}
 	docker(['image', 'rm', '-f', imageTag], 20_000);
+	// Sweep the managed build/snapshot images this test minted (label-scoped
+	// to its unique app), so committed `devstack-build:*` / `devstack-snapshot:*`
+	// layers don't accumulate across runs.
+	pruneManagedImagesForApp(app);
 };
 
 describe('snapshot container image roundtrip', () => {
@@ -199,7 +228,7 @@ describe('snapshot container image roundtrip', () => {
 				program.pipe(Effect.provide(buildSubstrateLayers(identity, runtimeRoot))),
 			);
 		} finally {
-			cleanupDockerArtifacts(containerName, imageTag);
+			cleanupDockerArtifacts(containerName, imageTag, app);
 			rmSync(runtimeRoot, { recursive: true, force: true });
 		}
 	}, 180_000);
