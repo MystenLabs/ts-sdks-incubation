@@ -131,9 +131,7 @@ const makeCoinRegistry = (): Effect.Effect<CoinRegistry> =>
 					}),
 				),
 			byType: (fullCoinType) =>
-				Ref.get(store).pipe(
-					Effect.map((state) => state.get(coinKey(fullCoinType))?.value ?? null),
-				),
+				Ref.get(store).pipe(Effect.map((state) => state.get(coinKey(fullCoinType))?.value ?? null)),
 			list: () => Ref.get(store).pipe(Effect.map(ordered)),
 		};
 	});

@@ -209,8 +209,7 @@ export const bootActionService = (
 					//    lands on the typed channel rather than crashing
 					//    the produce step.
 					const defect = Cause.findDefect(cause);
-					const defectValue =
-						defect._tag === 'Success' ? defect.success : Cause.squash(cause);
+					const defectValue = defect._tag === 'Success' ? defect.success : Cause.squash(cause);
 					return Effect.fail(
 						actionError('sign', {
 							actionName: inputs.actionName,

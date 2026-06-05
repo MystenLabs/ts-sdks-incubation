@@ -74,7 +74,5 @@ export const ensureManagedContainer = <E>(
 			...options.spec,
 			labels,
 		})
-		.pipe(
-			Effect.mapError(options.mapError),
-		);
+		.pipe(Effect.mapError(options.mapError));
 };

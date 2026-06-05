@@ -112,9 +112,7 @@ const resolveAt = (
 	location: OutputLocation,
 	outputPath: string,
 ): Effect.Effect<string, CodegenPathConflict> =>
-	location === 'generated-extras'
-		? paths.resolveExtras(outputPath)
-		: paths.resolve(outputPath);
+	location === 'generated-extras' ? paths.resolveExtras(outputPath) : paths.resolve(outputPath);
 
 const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
 	decl.outputLocation ?? 'generated';
@@ -516,9 +514,7 @@ const runEmitCycleInner = (
 			...fileEmitters
 				.filter(
 					(d) =>
-						d.sensitive === true &&
-						d.aggregateOnly !== true &&
-						declLocation(d) === 'generated',
+						d.sensitive === true && d.aggregateOnly !== true && declLocation(d) === 'generated',
 				)
 				.map((d) => d.outputPath),
 			...aggregateFiles

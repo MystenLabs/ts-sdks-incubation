@@ -63,8 +63,7 @@ const stubRuntime: ContainerRuntime = {
 		}),
 	tagImage: () => Effect.void,
 	removeImage: () => Effect.void,
-	inspectImageDigest: (ref) =>
-		Effect.succeed(ref === 'present:latest' ? 'sha256:resolved' : null),
+	inspectImageDigest: (ref) => Effect.succeed(ref === 'present:latest' ? 'sha256:resolved' : null),
 	stop: () => Effect.void,
 	removeManagedContainers: () => Effect.succeed(0),
 	removeManagedImages: () => Effect.succeed(0),

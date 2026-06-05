@@ -69,10 +69,7 @@ import {
 	type StageAndSwapError,
 	type StageAndSwapPreservedPath,
 } from '../../substrate/runtime/stage-and-swap/index.ts';
-import {
-	executeFsPlan,
-	type ReconcileFsOp,
-} from '../../substrate/runtime/reconcile/index.ts';
+import { executeFsPlan, type ReconcileFsOp } from '../../substrate/runtime/reconcile/index.ts';
 import {
 	COMMAND_CHANNEL_COMMANDS_FILE_NAME,
 	COMMAND_CHANNEL_EVENTS_FILE_NAME,

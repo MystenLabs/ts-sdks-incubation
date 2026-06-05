@@ -68,14 +68,22 @@ const runStatusFromCwd = async (
 	cwd: string,
 	argv: ReadonlyArray<string>,
 	envOverrides: Readonly<Record<string, string>> = {},
-): Promise<{ readonly present: boolean; readonly stderr: string; readonly exitCode: number | undefined }> => {
+): Promise<{
+	readonly present: boolean;
+	readonly stderr: string;
+	readonly exitCode: number | undefined;
+}> => {
 	const previousExitCode = process.exitCode;
 	const previousCwd = process.cwd();
 	const previousEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 	const stdout: Array<string> = [];
 	const stderr: Array<string> = [];
-	const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(captureProcessWrite(stdout));
-	const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(captureProcessWrite(stderr));
+	const stdoutSpy = vi
+		.spyOn(process.stdout, 'write')
+		.mockImplementation(captureProcessWrite(stdout));
+	const stderrSpy = vi
+		.spyOn(process.stderr, 'write')
+		.mockImplementation(captureProcessWrite(stderr));
 	try {
 		process.exitCode = undefined;
 		for (const k of ENV_KEYS) delete process.env[k];

@@ -392,9 +392,11 @@ export const runUpLive = (
 			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
 		}
 		const loaded = loadExit.value;
-		const publicStack = (loaded as LoadedConfig & {
-			readonly stack: Stack<SupervisedStack['members']>;
-		}).stack;
+		const publicStack = (
+			loaded as LoadedConfig & {
+				readonly stack: Stack<SupervisedStack['members']>;
+			}
+		).stack;
 		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 
 		// Re-derive the identity against the EFFECTIVE stack (explicit

@@ -89,11 +89,7 @@ export {
 	type SealResourceId,
 } from './registry-publish.ts';
 export type { SealKeyManager } from './key-manager.ts';
-export {
-	type SealError,
-	type SealAnyError,
-	type SealConfigError,
-} from './errors.ts';
+export { type SealError, type SealAnyError, type SealConfigError } from './errors.ts';
 export type { SealBindings } from './codegen.ts';
 
 // ---------------------------------------------------------------------------

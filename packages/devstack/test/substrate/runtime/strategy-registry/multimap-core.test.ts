@@ -99,9 +99,7 @@ describe('strategy-registry seq-tagged multimap core', () => {
 				const registry = yield* StrategyRegistryService;
 
 				expect(yield* registry.list()).not.toContain('cap:nope');
-				const exit = yield* Effect.exit(
-					registry.get<'cap:nope', StubStrategy>('cap:nope'),
-				);
+				const exit = yield* Effect.exit(registry.get<'cap:nope', StubStrategy>('cap:nope'));
 				expect(Exit.isFailure(exit)).toBe(true);
 				const err = Exit.findErrorOption(exit);
 				expect(err._tag).toBe('Some');

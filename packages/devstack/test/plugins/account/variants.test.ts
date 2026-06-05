@@ -131,9 +131,7 @@ describe('account signer variant surface', () => {
 		//     Ed25519Keypair.fromSecretKey(process.env.ALICE_PRIVATE_KEY!) })
 		const keypair = Ed25519Keypair.generate();
 
-		const resolved = await Effect.runPromise(
-			resolveSignerVariant({ name: 'ci', signer: keypair }),
-		);
+		const resolved = await Effect.runPromise(resolveSignerVariant({ name: 'ci', signer: keypair }));
 
 		expect(resolved.address).toBe(keypair.toSuiAddress());
 		expect(resolved.scheme).toBe('ed25519');

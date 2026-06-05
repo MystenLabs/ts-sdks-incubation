@@ -137,9 +137,7 @@ const restoreBackupRename = (args: {
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		// Reap a non-empty destination so the rollback rename can't ENOTEMPTY.
-		yield* fs
-			.remove(args.targetPath, { recursive: true, force: true })
-			.pipe(Effect.ignore);
+		yield* fs.remove(args.targetPath, { recursive: true, force: true }).pipe(Effect.ignore);
 		yield* fs.rename(args.backupPath, args.targetPath).pipe(
 			Effect.catch((cause) =>
 				Effect.logWarning('stage-and-swap rollback-backup restore did not complete').pipe(

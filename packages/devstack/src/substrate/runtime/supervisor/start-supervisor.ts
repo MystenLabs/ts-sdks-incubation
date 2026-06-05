@@ -223,10 +223,9 @@ export const startSupervisor = (
 		// Forked into `supervisorScope` (below) via `Effect.forkIn`, interrupted
 		// via `Fiber.interrupt`. (Snapshot capture/restore run inline in the
 		// command loop now — the bounce — so they have no forked slot.)
-		const stackRestartTask: BackgroundTaskSlot = yield* Ref.make<Fiber.Fiber<
-			void,
-			never
-		> | null>(null);
+		const stackRestartTask: BackgroundTaskSlot = yield* Ref.make<Fiber.Fiber<void, never> | null>(
+			null,
+		);
 		const shutdownLatch = yield* Ref.make(false);
 		const shutdownComplete = yield* Deferred.make<void>();
 		const initialAcquireStarted = yield* Ref.make(false);

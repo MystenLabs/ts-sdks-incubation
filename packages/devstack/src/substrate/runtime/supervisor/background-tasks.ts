@@ -147,7 +147,9 @@ const forkIntoSlot = (
 			const selfId = yield* Effect.fiberId;
 			yield* body.pipe(
 				Effect.ensuring(
-					Ref.update(slot, (current) => (current !== null && current.id === selfId ? null : current)),
+					Ref.update(slot, (current) =>
+						current !== null && current.id === selfId ? null : current,
+					),
 				),
 			);
 		});
@@ -204,8 +206,7 @@ export const startBackgroundStackRestart = (
 
 export const requestBackgroundStackRestartInterrupt = (
 	deps: Pick<SupervisorState, 'stackRestartTask'>,
-): Effect.Effect<void, never, never> =>
-	interruptSlot(deps.stackRestartTask);
+): Effect.Effect<void, never, never> => interruptSlot(deps.stackRestartTask);
 
 // -----------------------------------------------------------------------------
 // Post-acquire hook

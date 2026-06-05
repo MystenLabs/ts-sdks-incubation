@@ -73,10 +73,7 @@ export type ReconcileScope =
 
 import type { Effect as EffectT, FileSystem } from 'effect';
 
-import type {
-	StageAndSwapError,
-	StageAndSwapPreservedPath,
-} from '../stage-and-swap/index.ts';
+import type { StageAndSwapError, StageAndSwapPreservedPath } from '../stage-and-swap/index.ts';
 
 /** A per-op failure mapper: turns an underlying defect into the caller's
  *  phase-tagged error so routing a flow through the executor preserves

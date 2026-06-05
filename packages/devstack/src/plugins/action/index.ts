@@ -58,7 +58,6 @@ import {
 	type ActionReceipt,
 } from './service.ts';
 
-
 // ---------------------------------------------------------------------------
 // Resource — one per declared action, keyed by symbolic name
 // ---------------------------------------------------------------------------

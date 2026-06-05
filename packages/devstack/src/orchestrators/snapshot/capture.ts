@@ -261,9 +261,7 @@ const commitStoppedContainer = (
 		const stoppedHandle: ContainerHandle = { ...handle, status: 'exited' };
 		const imageRef = yield* runtime
 			.pauseAndCommit(stoppedHandle)
-			.pipe(
-				Effect.catch(failPhase('commit', `commit failed for ${handle.name}`, plugin)),
-			);
+			.pipe(Effect.catch(failPhase('commit', `commit failed for ${handle.name}`, plugin)));
 		const snapshotTag = imageRef.tag;
 		yield* registerCommittedRef(imageRef);
 		if (!isRestorableContainerImageName(snapshotTag)) {
@@ -460,11 +458,7 @@ export interface GatheredCapture {
  */
 export const gatherCaptureParticipants = (
 	participants: ReadonlyArray<SnapshotParticipant>,
-): Effect.Effect<
-	GatheredCapture,
-	IdentityGuardError | IdentityContributionConflictError,
-	never
-> =>
+): Effect.Effect<GatheredCapture, IdentityGuardError | IdentityContributionConflictError, never> =>
 	Effect.gen(function* () {
 		const identityContributions: IdentityContribution[] = [];
 		const gathered: GatheredParticipant[] = [];
@@ -590,9 +584,7 @@ export const runCapture = (
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const grace = Duration.seconds(
-			inputs.stopGraceSeconds ?? DEFAULT_CAPTURE_STOP_GRACE_SECONDS,
-		);
+		const grace = Duration.seconds(inputs.stopGraceSeconds ?? DEFAULT_CAPTURE_STOP_GRACE_SECONDS);
 
 		// 0. GATHER (plugins live) — identity fail-closed BEFORE any stop.
 		const gathered = yield* gatherCaptureParticipants(inputs.participants);
@@ -633,7 +625,9 @@ export const runCapture = (
 						inputs.runtime
 							.stop(entry.handle, grace)
 							.pipe(
-								Effect.catch(failPhase('stop', `graceful stop failed for ${entry.handle.name}`, entry.plugin)),
+								Effect.catch(
+									failPhase('stop', `graceful stop failed for ${entry.handle.name}`, entry.plugin),
+								),
 							),
 					{ concurrency: 'unbounded', discard: true },
 				);

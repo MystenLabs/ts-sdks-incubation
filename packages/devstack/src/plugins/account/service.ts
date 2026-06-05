@@ -702,8 +702,7 @@ const buildClosures = (
 				}),
 			);
 		return {
-			signAndExecute: (tx) =>
-				withTransactionSigner((locked) => locked.signAndExecute(tx)),
+			signAndExecute: (tx) => withTransactionSigner((locked) => locked.signAndExecute(tx)),
 			withTransactionSigner,
 			signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
 			signPersonalMessage: refuse<{ readonly bytes: string; readonly signature: string }>,

@@ -15,10 +15,7 @@
 // is no graph-axis reconcile wrapper — `plan` is pure ordering.
 
 import type { PluginKey } from '../../brand.ts';
-import {
-	orderByLevel,
-	type ResolvedGraph,
-} from '../lifecycle/index.ts';
+import { orderByLevel, type ResolvedGraph } from '../lifecycle/index.ts';
 
 // -----------------------------------------------------------------------------
 // plan — the single dep-ordering body

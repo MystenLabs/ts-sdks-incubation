@@ -193,9 +193,12 @@ it.effect('records user-facing labels in metadata without using them as artifact
 		Effect.gen(function* () {
 			const runtime = runtimeStub({ handlesByRole: {} });
 			mkdirSync(join(root, 'artifact'), { recursive: true });
-			const exit = yield* runCaptureExit(root, runtime, [participant([])], 'release candidate').pipe(
-				Effect.provide(NodeFileSystem.layer),
-			);
+			const exit = yield* runCaptureExit(
+				root,
+				runtime,
+				[participant([])],
+				'release candidate',
+			).pipe(Effect.provide(NodeFileSystem.layer));
 
 			expect(Exit.isSuccess(exit)).toBe(true);
 			if (!Exit.isSuccess(exit)) return;
@@ -445,7 +448,9 @@ describe('snapshot capture container images', () => {
 						},
 					},
 					saveImages: (refs) =>
-						Stream.make(dockerSaveBundleTarWithLateMetadata(refs.map((ref) => ref.tag ?? ref.digest))),
+						Stream.make(
+							dockerSaveBundleTarWithLateMetadata(refs.map((ref) => ref.tag ?? ref.digest)),
+						),
 					removeImageCalls,
 				});
 
@@ -626,67 +631,69 @@ describe('snapshot capture container images', () => {
 		),
 	);
 
-	it.effect('two (app, stack)-distinct stacks with identical build content capture DISTINCT imageNames (no collapse)', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				// The (app, stack) TAG-scoping fix gives each stack a distinct
-				// build tag even when the build CONTENT is byte-identical. Capture
-				// records each container's `imageName` (the scoped tag it booted
-				// on) straight through — so two stacks' captures never alias onto
-				// one image. Here we simulate the two captures and assert their
-				// recorded imageNames AND snapshotTags are disjoint, while each
-				// run's per-(plugin/role) collision detector stays green.
-				const captureStack = (
-					stackTag: string,
-					containerName: string,
-				): Effect.Effect<readonly [string, string], never, never> =>
-					Effect.gen(function* () {
-						const runtime = runtimeStub({
-							handlesByRole: {
-								db: {
-									id: `${containerName}-id`,
-									name: containerName,
-									// Distinct scoped build tag per stack, identical content.
-									imageName: `devstack-build:${stackTag}-deadbeefcafe1234`,
-									status: 'running',
-									ips: [],
+	it.effect(
+		'two (app, stack)-distinct stacks with identical build content capture DISTINCT imageNames (no collapse)',
+		() =>
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					// The (app, stack) TAG-scoping fix gives each stack a distinct
+					// build tag even when the build CONTENT is byte-identical. Capture
+					// records each container's `imageName` (the scoped tag it booted
+					// on) straight through — so two stacks' captures never alias onto
+					// one image. Here we simulate the two captures and assert their
+					// recorded imageNames AND snapshotTags are disjoint, while each
+					// run's per-(plugin/role) collision detector stays green.
+					const captureStack = (
+						stackTag: string,
+						containerName: string,
+					): Effect.Effect<readonly [string, string], never, never> =>
+						Effect.gen(function* () {
+							const runtime = runtimeStub({
+								handlesByRole: {
+									db: {
+										id: `${containerName}-id`,
+										name: containerName,
+										// Distinct scoped build tag per stack, identical content.
+										imageName: `devstack-build:${stackTag}-deadbeefcafe1234`,
+										status: 'running',
+										ips: [],
+									},
 								},
-							},
+							});
+							const stagingDir = join(root, stackTag);
+							mkdirSync(stagingDir, { recursive: true });
+							const exit = yield* Effect.exit(
+								runCapture({
+									stagingDir,
+									snapshotId: snapshotIdFromString(`snap-${stackTag}`),
+									label: null,
+									app: stackTag,
+									stack: 'main',
+									network: 'sui:local',
+									runtimeStackRoot: join(root, `runtime-stack-${stackTag}`),
+									participants: [participant(['db'])],
+									runtime,
+									stopGraceSeconds: 1,
+								}),
+							).pipe(Effect.provide(NodeFileSystem.layer));
+							expect(Exit.isSuccess(exit)).toBe(true);
+							if (!Exit.isSuccess(exit)) return ['', ''] as const;
+							const captured = exit.value.containers[0]!;
+							return [captured.imageName, captured.snapshotTag] as const;
 						});
-						const stagingDir = join(root, stackTag);
-						mkdirSync(stagingDir, { recursive: true });
-						const exit = yield* Effect.exit(
-							runCapture({
-								stagingDir,
-								snapshotId: snapshotIdFromString(`snap-${stackTag}`),
-								label: null,
-								app: stackTag,
-								stack: 'main',
-								network: 'sui:local',
-								runtimeStackRoot: join(root, `runtime-stack-${stackTag}`),
-								participants: [participant(['db'])],
-								runtime,
-								stopGraceSeconds: 1,
-							}),
-						).pipe(Effect.provide(NodeFileSystem.layer));
-						expect(Exit.isSuccess(exit)).toBe(true);
-						if (!Exit.isSuccess(exit)) return ['', ''] as const;
-						const captured = exit.value.containers[0]!;
-						return [captured.imageName, captured.snapshotTag] as const;
-					});
 
-				const [imageA, tagA] = yield* captureStack('app-a-main', 'db-app-a');
-				const [imageB, tagB] = yield* captureStack('app-b-main', 'db-app-b');
+					const [imageA, tagA] = yield* captureStack('app-a-main', 'db-app-a');
+					const [imageB, tagB] = yield* captureStack('app-b-main', 'db-app-b');
 
-				// DISTINCT scoped build tags ⇒ restore promote never collapses.
-				expect(imageA).toBe('devstack-build:app-a-main-deadbeefcafe1234');
-				expect(imageB).toBe('devstack-build:app-b-main-deadbeefcafe1234');
-				expect(imageA).not.toBe(imageB);
-				// Snapshot temp tags derive from the (already app/stack-scoped)
-				// container name, so they are disjoint too.
-				expect(tagA).not.toBe(tagB);
-			}),
-		),
+					// DISTINCT scoped build tags ⇒ restore promote never collapses.
+					expect(imageA).toBe('devstack-build:app-a-main-deadbeefcafe1234');
+					expect(imageB).toBe('devstack-build:app-b-main-deadbeefcafe1234');
+					expect(imageA).not.toBe(imageB);
+					// Snapshot temp tags derive from the (already app/stack-scoped)
+					// container name, so they are disjoint too.
+					expect(tagA).not.toBe(tagB);
+				}),
+			),
 	);
 
 	it.effect('removes committed temp tags when a later commit fails before image save', () =>
@@ -717,7 +724,11 @@ describe('snapshot capture container images', () => {
 					removeImageCalls,
 					commitErrorFor: (handle) =>
 						handle.name === 'worker-container'
-							? { _tag: 'ContainerRuntimeError', reason: 'image-save-failed', detail: 'commit failed' }
+							? {
+									_tag: 'ContainerRuntimeError',
+									reason: 'image-save-failed',
+									detail: 'commit failed',
+								}
 							: undefined,
 				});
 
@@ -1019,7 +1030,7 @@ describe('resumeAfterCapture — retag + hard-rm + resume', () => {
 		}),
 	);
 
-	it.effect('second capture removes the first capture\'s orphaned layer', () =>
+	it.effect("second capture removes the first capture's orphaned layer", () =>
 		Effect.gen(function* () {
 			const removeImageCalls: ImageRef[] = [];
 			// `imageName` resolves to the OLD committed layer before the retag,
@@ -1029,8 +1040,7 @@ describe('resumeAfterCapture — retag + hard-rm + resume', () => {
 			const digests = ['sha256:old-layer', 'sha256:new-layer'];
 			const runtime: ContainerRuntime = {
 				...runtimeStub({ handlesByRole: {}, removeImageCalls }),
-				inspectImageDigest: (_ref) =>
-					Effect.sync(() => digests[inspectCursor++] ?? null),
+				inspectImageDigest: (_ref) => Effect.sync(() => digests[inspectCursor++] ?? null),
 				tagImage: () => Effect.void,
 				removeManagedContainers: () => Effect.succeed(1),
 			};
@@ -1097,8 +1107,7 @@ describe('resumeAfterCapture — retag + hard-rm + resume', () => {
 			const digests = ['sha256:old-layer', 'sha256:new-layer'];
 			const runtime: ContainerRuntime = {
 				...runtimeStub({ handlesByRole: {} }),
-				inspectImageDigest: (_ref) =>
-					Effect.sync(() => digests[inspectCursor++] ?? null),
+				inspectImageDigest: (_ref) => Effect.sync(() => digests[inspectCursor++] ?? null),
 				tagImage: () => Effect.void,
 				// The image GC removal fails — must be logged + swallowed, never
 				// surfaced as a capture failure.

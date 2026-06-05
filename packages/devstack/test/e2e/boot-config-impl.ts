@@ -402,8 +402,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		const postAcquireTasks = yield* PostAcquireTasksService;
 		const router = yield* RouterService;
 		const codegen = yield* CodegenOrchestratorService;
-		const traefikOps =
-			opts.useRealRouter === true ? yield* TraefikContainerOpsService : null;
+		const traefikOps = opts.useRealRouter === true ? yield* TraefikContainerOpsService : null;
 
 		const pluginContext = Context.empty().pipe(
 			Context.add(IdentityContext, identityCtx),

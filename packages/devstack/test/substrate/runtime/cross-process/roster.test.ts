@@ -11,10 +11,7 @@ import { join } from 'node:path';
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import {
-	claim,
-	release,
-} from '../../../../src/substrate/runtime/cross-process/roster.ts';
+import { claim, release } from '../../../../src/substrate/runtime/cross-process/roster.ts';
 import { processStartTime } from '../../../../src/substrate/runtime/cross-process/liveness.ts';
 import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
@@ -109,9 +106,7 @@ describe('roster.isOwnEntry — (pid, hostname, startTime) triple match', () => 
 					// roster on disk to introduce a peer with the same pid +
 					// hostname but a different startTime.
 					yield* claim(paths);
-					const initialRoster = JSON.parse(
-						readFileSync(paths.rosterFile, 'utf8'),
-					) as {
+					const initialRoster = JSON.parse(readFileSync(paths.rosterFile, 'utf8')) as {
 						readonly version: 1;
 						readonly holders: ReadonlyArray<{
 							readonly pid: number;

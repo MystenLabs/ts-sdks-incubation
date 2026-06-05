@@ -261,9 +261,7 @@ describe('sui indexer-db native configHash reset/restore @e2e', () => {
 			expect(boot4.failures, `boot 4: ${JSON.stringify(boot4.failures)}`).toHaveLength(0);
 			expect(chain4.length).toBeGreaterThan(0);
 			expect(chain4).not.toBe(chainKilled);
-			expect(sidecarId(), 'sidecar RECREATED (new container id) on regenesis').not.toBe(
-				idSettled,
-			);
+			expect(sidecarId(), 'sidecar RECREATED (new container id) on regenesis').not.toBe(idSettled);
 		} finally {
 			// Clean up every container/network/volume + the temp dirs.
 			dockerSpawnSync(['rm', '-f', VALIDATOR, SIDECAR], { timeout: 30_000 });

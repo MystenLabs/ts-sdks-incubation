@@ -48,59 +48,57 @@ const fakeDockerLayer = (bin: string): Layer.Layer<DockerHost | DockerSpawner> =
 	);
 
 describe('removeManagedContainers', () => {
-	it.effect(
-		'removes matching managed containers from label-filtered inventory',
-		() =>
-			Effect.gen(function* () {
-				const root = mkdtempSync(join(tmpdir(), 'docker-replace-managed-test-'));
-				try {
-					const bin = join(root, 'docker');
-					const log = join(root, 'docker.log');
-					const containerName = 'devstack-claimed-postgres';
-					const labels: ContainerLabelTuple = {
-						app: 'app',
-						stack: 'main',
-						plugin: 'postgres',
-						role: 'db',
-					};
-					const psLine = JSON.stringify({
-						ID: 'container-id',
-						Names: containerName,
-						Image: 'postgres:test',
-						Status: 'Up 1 second',
-						State: 'running',
-						Labels:
-							'devstack.managed=true,devstack.app=app,devstack.stack=main,devstack.plugin=postgres,devstack.role=db',
-					});
-					writeFileSync(
-						bin,
-						[
-							'#!/bin/sh',
-							`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
-							'if [ "$1" = "ps" ]; then',
-							`  printf '%s\\n' ${JSON.stringify(psLine)}`,
-							'  exit 0',
-							'fi',
-							'if [ "$1" = "rm" ]; then',
-							'  exit 0',
-							'fi',
-							'exit 1',
-							'',
-						].join('\n'),
-					);
-					chmodSync(bin, 0o755);
+	it.effect('removes matching managed containers from label-filtered inventory', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-replace-managed-test-'));
+			try {
+				const bin = join(root, 'docker');
+				const log = join(root, 'docker.log');
+				const containerName = 'devstack-claimed-postgres';
+				const labels: ContainerLabelTuple = {
+					app: 'app',
+					stack: 'main',
+					plugin: 'postgres',
+					role: 'db',
+				};
+				const psLine = JSON.stringify({
+					ID: 'container-id',
+					Names: containerName,
+					Image: 'postgres:test',
+					Status: 'Up 1 second',
+					State: 'running',
+					Labels:
+						'devstack.managed=true,devstack.app=app,devstack.stack=main,devstack.plugin=postgres,devstack.role=db',
+				});
+				writeFileSync(
+					bin,
+					[
+						'#!/bin/sh',
+						`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+						'if [ "$1" = "ps" ]; then',
+						`  printf '%s\\n' ${JSON.stringify(psLine)}`,
+						'  exit 0',
+						'fi',
+						'if [ "$1" = "rm" ]; then',
+						'  exit 0',
+						'fi',
+						'exit 1',
+						'',
+					].join('\n'),
+				);
+				chmodSync(bin, 0o755);
 
-					const removed = yield* removeManagedContainers(labels).pipe(
-						Effect.provide(fakeDockerLayer(bin)),
-					);
-					const lines = readFileSync(log, 'utf8').trim().split('\n');
+				const removed = yield* removeManagedContainers(labels).pipe(
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
 
-					expect(removed).toBe(1);
-					expect(lines).toContain(`rm -f ${containerName}`);
-				} finally {
-					rmSync(root, { recursive: true, force: true });
-				}
-			}),
+				expect(removed).toBe(1);
+				expect(lines).toContain(`rm -f ${containerName}`);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
 	);
 
 	it.effect(

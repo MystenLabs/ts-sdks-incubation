@@ -43,7 +43,11 @@ import {
 } from '../../../src/orchestrators/snapshot/index.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/index.ts';
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
-import { layerIdentity, layerRuntimeRoot, layerStackPaths } from '../../../src/substrate/runtime/paths.ts';
+import {
+	layerIdentity,
+	layerRuntimeRoot,
+	layerStackPaths,
+} from '../../../src/substrate/runtime/paths.ts';
 import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
@@ -96,9 +100,7 @@ describe('SnapshotOrchestrator.capture — label uniqueness branch (TDZ regressi
 				plantSnapshot(snapshotDir, duplicateLabel);
 
 				const orchestrator = yield* SnapshotOrchestratorService;
-				const exit = yield* orchestrator
-					.capture({ label: duplicateLabel })
-					.pipe(Effect.exit);
+				const exit = yield* orchestrator.capture({ label: duplicateLabel }).pipe(Effect.exit);
 
 				expect(Exit.isFailure(exit)).toBe(true);
 				const err = Exit.findErrorOption(exit);
@@ -119,9 +121,7 @@ describe('SnapshotOrchestrator.capture — label uniqueness branch (TDZ regressi
 				if (Exit.isFailure(exit)) {
 					const causeJson = JSON.stringify(exit.cause);
 					expect(causeJson).not.toContain('ReferenceError');
-					expect(causeJson).not.toContain(
-						'Cannot access',
-					); /* TDZ message fragment */
+					expect(causeJson).not.toContain('Cannot access'); /* TDZ message fragment */
 				}
 			}).pipe(
 				Effect.provide(

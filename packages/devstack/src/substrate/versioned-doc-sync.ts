@@ -64,11 +64,7 @@ export interface VersionedDocIoError<IoErr> {
  *  lock-ordering concerns at the read site — this is pure read-and-
  *  validate.
  */
-export const readVersionedDocumentSync = <
-	S extends Schema.Decoder<unknown>,
-	IoErr,
-	CorruptErr,
->(
+export const readVersionedDocumentSync = <S extends Schema.Decoder<unknown>, IoErr, CorruptErr>(
 	path: string,
 	schema: S,
 	errors: VersionedDocErrors<IoErr, CorruptErr>,

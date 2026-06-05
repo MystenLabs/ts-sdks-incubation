@@ -93,11 +93,7 @@ export const forkUnsupportedError = (surface: string, hint: string): ForkUnsuppo
 });
 
 /** Union of every error a Sui-plugin caller may encounter. */
-export type SuiError =
-	| SuiPluginError
-	| SuiCliError
-	| SuiConfigError
-	| ForkUnsupportedError;
+export type SuiError = SuiPluginError | SuiCliError | SuiConfigError | ForkUnsupportedError;
 
 /** The catchable error tags this plugin exposes. Pinned against the
  *  user-facing error catalog by the error-catalog-parity test. */

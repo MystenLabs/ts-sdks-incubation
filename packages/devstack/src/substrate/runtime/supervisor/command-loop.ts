@@ -330,7 +330,10 @@ export const handleCommand = (
  *  - every other fire-and-forget — run inline, swallowing failures (the
  *    handler already surfaced them on the event stream).
  */
-const dispatch = (deps: SupervisorState, next: QueuedCommand): Effect.Effect<void, never, Scope.Scope> => {
+const dispatch = (
+	deps: SupervisorState,
+	next: QueuedCommand,
+): Effect.Effect<void, never, Scope.Scope> => {
 	if (next.kind === 'submitted') {
 		return Effect.gen(function* () {
 			const exit = yield* Effect.exit(

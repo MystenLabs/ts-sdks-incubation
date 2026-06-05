@@ -13,10 +13,7 @@ import { DeepBookClient, type DeepBookCompatibleClient } from '@mysten/deepbook-
 import { Transaction } from '@mysten/sui/transactions';
 
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import {
-	type AccountFundingRequest,
-	type AccountFundingStrategy,
-} from '../account/index.ts';
+import { type AccountFundingRequest, type AccountFundingStrategy } from '../account/index.ts';
 import { formatExecutedFailure, signAndDispatch, type SuiSdkShim } from '../sui/index.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';

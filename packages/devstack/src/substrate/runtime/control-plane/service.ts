@@ -25,10 +25,7 @@
 import { Context, type Effect, type SubscriptionRef } from 'effect';
 import type { EngineCommand } from '../../events.ts';
 import type { SubscribableState } from '../../projection.ts';
-import type {
-	LogFilter,
-	LogRecord,
-} from '../observability/index.ts';
+import type { LogFilter, LogRecord } from '../observability/index.ts';
 
 // -----------------------------------------------------------------------------
 // Domain data shapes — app-agnostic projections of plugin-resolved values.
@@ -77,9 +74,13 @@ export interface ControlPlaneDomain {
 	readonly snapshots: Effect.Effect<ReadonlyArray<ControlPlaneSnapshotEntry>>;
 	/** Restore a snapshot by id. Mirrors the orchestrator surface so the
 	 *  dashboard gets a real result the void `publishCommand` can't carry. */
-	readonly restoreSnapshot: (id: string) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
+	readonly restoreSnapshot: (
+		id: string,
+	) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
 	/** Delete a snapshot by id. */
-	readonly deleteSnapshot: (id: string) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
+	readonly deleteSnapshot: (
+		id: string,
+	) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
 	/** ALL resolved plugin values, in graph order, handed out
 	 *  uninterpreted. The seam an in-process surface above the substrate
 	 *  (the dashboard plugin) uses to find + shape plugin-domain values

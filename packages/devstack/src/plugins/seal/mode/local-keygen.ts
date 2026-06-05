@@ -274,7 +274,10 @@ const validatePersistedKeyMaterialShape = (
 	material: PersistedLocalKeygenKeyMaterial,
 	name: string,
 ): Effect.Effect<void, SealError> => {
-	if (material.masterKey.length !== BLS_MASTER_KEY_HEX_LEN || !HEX_ONLY_RE.test(material.masterKey)) {
+	if (
+		material.masterKey.length !== BLS_MASTER_KEY_HEX_LEN ||
+		!HEX_ONLY_RE.test(material.masterKey)
+	) {
 		return Effect.fail(
 			sealError('config-render', {
 				name,

@@ -80,9 +80,7 @@ export interface DevWalletConfig {
  *  placeholder so the type plumbing works; at codegen time the
  *  substrate re-evaluates with the resolved values.
  */
-export const makeWalletCodegen = (
-	resolved: DevWalletConfig,
-): CodegenableDecl<'dapp-kit-config'> =>
+export const makeWalletCodegen = (resolved: DevWalletConfig): CodegenableDecl<'dapp-kit-config'> =>
 	defineSimpleConstExport({
 		emitterName: 'dapp-kit-config',
 		outputPath: 'dev-wallet.ts',

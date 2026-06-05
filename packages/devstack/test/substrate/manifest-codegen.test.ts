@@ -34,25 +34,27 @@ const IDENTITY = { app: 'demo', stack: 'main', chain: 'sui:local' } as const;
 const GENERATED_DIR = '/abs/x';
 
 describe('manifest codegen field', () => {
-	it.effect('round-trips codegen.generatedDir through write → read (decode/re-encode preserves it)', () =>
-		withTempRoot('devstack-manifest-codegen', (tmp) =>
-			Effect.gen(function* () {
-				const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
-				const envelope = yield* buildEnvelope({
-					identity: IDENTITY,
-					codegen: { generatedDir: GENERATED_DIR },
-				});
-				// buildEnvelope carries the field into the in-memory envelope.
-				expect(envelope.codegen).toEqual({ generatedDir: GENERATED_DIR });
+	it.effect(
+		'round-trips codegen.generatedDir through write → read (decode/re-encode preserves it)',
+		() =>
+			withTempRoot('devstack-manifest-codegen', (tmp) =>
+				Effect.gen(function* () {
+					const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
+					const envelope = yield* buildEnvelope({
+						identity: IDENTITY,
+						codegen: { generatedDir: GENERATED_DIR },
+					});
+					// buildEnvelope carries the field into the in-memory envelope.
+					expect(envelope.codegen).toEqual({ generatedDir: GENERATED_DIR });
 
-				yield* writeManifest(envelope, manifestPath);
-				// readManifest decodes through ManifestEnvelopeSchema — the
-				// optional `codegen` struct survives the decode round-trip.
-				const decoded = yield* readManifest(manifestPath);
-				expect(decoded.codegen).toEqual({ generatedDir: GENERATED_DIR });
-				expect(decoded.manifestVersion).toBe(CURRENT_MANIFEST_VERSION);
-			}).pipe(Effect.provide(NodeFileSystem.layer)),
-		),
+					yield* writeManifest(envelope, manifestPath);
+					// readManifest decodes through ManifestEnvelopeSchema — the
+					// optional `codegen` struct survives the decode round-trip.
+					const decoded = yield* readManifest(manifestPath);
+					expect(decoded.codegen).toEqual({ generatedDir: GENERATED_DIR });
+					expect(decoded.manifestVersion).toBe(CURRENT_MANIFEST_VERSION);
+				}).pipe(Effect.provide(NodeFileSystem.layer)),
+			),
 	);
 
 	it.effect('a manifest WITHOUT codegen still decodes (back-compat) and omits the key', () =>

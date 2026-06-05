@@ -645,8 +645,9 @@ describe('private-content boots end-to-end @e2e', () => {
 			walrusValue(warm.result).walrusPackageId,
 			'walrus package id must survive a warm restart',
 		).toBe(walrusValue(cold.result).walrusPackageId);
-		expect(walrusValue(warm.result).walPackageId, 'WAL package id must survive a warm restart').toBe(
-			walrusValue(cold.result).walPackageId,
-		);
+		expect(
+			walrusValue(warm.result).walPackageId,
+			'WAL package id must survive a warm restart',
+		).toBe(walrusValue(cold.result).walPackageId);
 	}, 600_000);
 });

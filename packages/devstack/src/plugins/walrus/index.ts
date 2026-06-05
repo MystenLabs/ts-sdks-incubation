@@ -501,11 +501,7 @@ export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/kn
 export type { WalrusStorageNode } from './storage-nodes.ts';
 export type { WalrusBindings, WalrusNodeBinding } from './codegen.ts';
 export type { WalrusError, WalrusPluginError, WalrusConfigError, WalrusPhase } from './errors.ts';
-export {
-	walCoinType,
-	walFaucetStrategyKey,
-	type WalFaucetStrategy,
-} from './faucet-strategy.ts';
+export { walCoinType, walFaucetStrategyKey, type WalFaucetStrategy } from './faucet-strategy.ts';
 export {
 	WALRUS_STATE_REGISTRY_KEY,
 	type WalrusStateEntry,

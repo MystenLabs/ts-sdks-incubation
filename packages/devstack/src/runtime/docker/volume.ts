@@ -9,11 +9,7 @@ import { Effect, Schema } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
-import {
-	type DockerRuntimeError,
-	ForeignDockerResource,
-	VolumeOperationFailed,
-} from './errors.ts';
+import { type DockerRuntimeError, ForeignDockerResource, VolumeOperationFailed } from './errors.ts';
 import { dockerInspectAndDecode } from './inspect-and-decode.ts';
 import {
 	expectedVolumeOwnershipLabels,

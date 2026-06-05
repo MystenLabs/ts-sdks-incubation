@@ -87,9 +87,10 @@ describe('runStackWithBoot boot-injection seam', () => {
 				beforeInitialAcquire: (h) =>
 					Effect.gen(function* () {
 						order.push('caller-before');
-						const dispatched = yield* h
-							.runCommand({ tag: 'stack.start' })
-							.pipe(Effect.timeoutOption('3 seconds'), Effect.catch(() => Effect.succeedNone));
+						const dispatched = yield* h.runCommand({ tag: 'stack.start' }).pipe(
+							Effect.timeoutOption('3 seconds'),
+							Effect.catch(() => Effect.succeedNone),
+						);
 						builtInDispatchReady = dispatched._tag === 'Some';
 					}),
 				withinScope: () =>
@@ -158,10 +159,8 @@ describe('runStackWithBoot boot-injection seam', () => {
 
 			// The CLI's exit-40 extractor pulls the live error back out of the
 			// BootError's cause — the contract S3 relies on.
-			const bootError =
-				error?._tag === 'Some' ? (error.value as BootError) : undefined;
-			const live =
-				bootError !== undefined ? findCliSupervisorLiveError(bootError.cause) : null;
+			const bootError = error?._tag === 'Some' ? (error.value as BootError) : undefined;
+			const live = bootError !== undefined ? findCliSupervisorLiveError(bootError.cause) : null;
 			expect(live).not.toBeNull();
 			expect(live?._tag).toBe('CliSupervisorLiveError');
 			expect(live?.app).toBe('run-stack-boot-bag-roster');

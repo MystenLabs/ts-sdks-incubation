@@ -371,10 +371,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				stack: spec.stack,
 				...(spec.subnet === undefined ? {} : { subnet: spec.subnet }),
 				...(spec.gateway === undefined ? {} : { gateway: spec.gateway }),
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const pullImageContractImpl = (ref: string): Effect.Effect<ImageRef, ContainerRuntimeError> =>
 			pullImageImpl(ref).pipe(
@@ -389,10 +386,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			Effect.gen(function* () {
 				const cycle = yield* Ref.get(cycleRef);
 				return yield* ensureContainer(spec, { cycle, perNameLock });
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const inspectByLabels = (
 			labels: ContainerLabelTuple,
@@ -432,10 +426,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 						),
 					{ concurrency: 'unbounded' },
 				);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const pauseAndCommitImpl = (
 			handle: ContainerHandle,
@@ -449,10 +440,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				const tag = snapshotTempTag(handle.name);
 				const digest = yield* commit(handle.name, tag);
 				return { digest, tag };
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const stopImpl = (
 			handle: ContainerHandle,
@@ -462,43 +450,28 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			return Effect.gen(function* () {
 				yield* assertContainerHandleOwned(handle);
 				yield* stopContainer(handle.name, seconds);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 		};
 
 		const removeManagedContainersImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedContainers(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			removeManagedContainers(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const removeManagedImagesImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedImages(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			removeManagedImages(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const removeManagedNetworksImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedNetworks(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			removeManagedNetworks(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const removeManagedVolumesImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedVolumes(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			removeManagedVolumes(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const execImpl = (
 			handle: ContainerHandle,
@@ -540,10 +513,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 		const loadImageContractImpl = (
 			tar: Stream.Stream<Uint8Array, unknown>,
 		): Effect.Effect<LoadedImageBundle, ContainerRuntimeError> =>
-			loadImageImpl(tar).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			loadImageImpl(tar).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const tagImageContractImpl = (
 			src: ImageRef,
@@ -551,18 +521,12 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			opts?: TagImageOptions,
 		): Effect.Effect<void, ContainerRuntimeError> => {
 			const resolved = src.tag ?? src.digest;
-			return tagImageImpl(resolved, newTag, opts).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			return tagImageImpl(resolved, newTag, opts).pipe(mapToContractError, Effect.provide(baseCtx));
 		};
 
 		const removeImageContractImpl = (ref: ImageRef): Effect.Effect<void, ContainerRuntimeError> => {
 			const resolved = ref.tag ?? ref.digest;
-			return removeImageImpl(resolved).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			return removeImageImpl(resolved).pipe(mapToContractError, Effect.provide(baseCtx));
 		};
 
 		// Reuse `image.ts::imageExists` — `docker image inspect --format
@@ -572,10 +536,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 		const inspectImageDigestContractImpl = (
 			ref: string,
 		): Effect.Effect<string | null, ContainerRuntimeError> =>
-			imageExists(ref).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-			);
+			imageExists(ref).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const runOneShotImpl = (
 			spec: OneShotSpec,

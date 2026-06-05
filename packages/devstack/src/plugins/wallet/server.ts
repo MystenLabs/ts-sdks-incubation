@@ -138,7 +138,7 @@ export const startHttpServer = (
 					phase: 'listen',
 					message:
 						`wallet HTTP server listen failed on ${config.bindAddress}:${config.port} — ` +
-						(formatUnknownError(cause)),
+						formatUnknownError(cause),
 					hint:
 						'check that the port broker did not hand out a busy port; ' +
 						'a sibling devstack on the same address would also explain this.',

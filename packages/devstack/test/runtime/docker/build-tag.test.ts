@@ -24,7 +24,11 @@ import { Effect, Layer, Ref } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
 import type { ContainerBuildContext } from '../../../src/contracts/container-runtime.ts';
-import { DockerSpawner, layerDockerHost, type DockerHost } from '../../../src/runtime/docker/client.ts';
+import {
+	DockerSpawner,
+	layerDockerHost,
+	type DockerHost,
+} from '../../../src/runtime/docker/client.ts';
 import { sanitizeTagSegment } from '../../../src/runtime/docker/labels.ts';
 import {
 	buildContentHash,
@@ -106,9 +110,7 @@ const dockerRuntimeLayer = (
 		),
 	);
 
-const baseCtx = (
-	overrides: Partial<ContainerBuildContext> = {},
-): ContainerBuildContext => ({
+const baseCtx = (overrides: Partial<ContainerBuildContext> = {}): ContainerBuildContext => ({
 	contextPath: '/tmp/shared-build-ctx',
 	dockerfile: 'Dockerfile',
 	platform: 'linux/amd64',

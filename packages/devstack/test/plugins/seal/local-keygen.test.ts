@@ -128,10 +128,7 @@ describe('seal local-keygen persistence', () => {
 				// `validatePersistedKeyMaterialShape`).
 				const masterHex = 'a'.repeat(64);
 				const publicHex = 'b'.repeat(192);
-				writeFileSync(
-					join(servicePath, MASTER_KEY_ENVFILE_BASENAME),
-					`MASTER_KEY=${masterHex}\n`,
-				);
+				writeFileSync(join(servicePath, MASTER_KEY_ENVFILE_BASENAME), `MASTER_KEY=${masterHex}\n`);
 				writeFileSync(
 					join(servicePath, 'local-keygen-state.v1.json'),
 					JSON.stringify({ version: 1, publicKey: publicHex }),

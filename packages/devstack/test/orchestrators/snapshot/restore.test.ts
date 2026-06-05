@@ -111,7 +111,9 @@ const tarWithSingleEntry = (entryPath: string): Buffer => {
  *  preflight. NOT valid enough for system `tar -x` (which DOES check the
  *  checksum) — extraction tests build a real archive via spawn('tar'). Each
  *  entry is either a zero-size path or `{ path, body }` for a regular file. */
-const tarWithEntries = (entries: ReadonlyArray<string | { path: string; body: string }>): Buffer => {
+const tarWithEntries = (
+	entries: ReadonlyArray<string | { path: string; body: string }>,
+): Buffer => {
 	const blocks: Buffer[] = [];
 	for (const entry of entries) {
 		const path = typeof entry === 'string' ? entry : entry.path;
@@ -776,59 +778,61 @@ describe('snapshot restore safety', () => {
 	// rather than let the next boot re-deploy that namespace with fresh ids and
 	// orphan its pre-snapshot objects. Checked against the SNAPSHOT, not the live
 	// stack — so a cross-machine restore onto an empty live cache is unaffected.
-	it.effect('refuses with cache-missing when the snapshot host-tree omits a recorded cache ns', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
-				// Metadata claims the snapshot captured `cache/<ns>`...
-				const meta = metadata({
-					containers: [capturedContainer()],
-					hostTreeIncluded: true,
-					subtrees: [
-						{
-							plugin: '__deploy-cache__',
-							relPath: `${CACHE_DIR_NAME}/${deployNs}`,
-							missingTolerance: 'fine',
-							secretMaterial: false,
-						},
-					],
-				});
-				const artifactDir = writeArtifact(join(root, 'runtime-stack'), meta);
-				writeImageBundle(artifactDir);
-				// ...but the host-tree tar carries an UNRELATED entry, not the cache.
-				writeFileSync(
-					join(artifactDir, SnapshotLayout.hostTreeTar),
-					tarWithEntries(['postgres/data/x']),
-				);
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
+	it.effect(
+		'refuses with cache-missing when the snapshot host-tree omits a recorded cache ns',
+		() =>
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+					const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+					// Metadata claims the snapshot captured `cache/<ns>`...
+					const meta = metadata({
+						containers: [capturedContainer()],
+						hostTreeIncluded: true,
+						subtrees: [
+							{
+								plugin: '__deploy-cache__',
+								relPath: `${CACHE_DIR_NAME}/${deployNs}`,
+								missingTolerance: 'fine',
+								secretMaterial: false,
+							},
+						],
+					});
+					const artifactDir = writeArtifact(join(root, 'runtime-stack'), meta);
+					writeImageBundle(artifactDir);
+					// ...but the host-tree tar carries an UNRELATED entry, not the cache.
+					writeFileSync(
+						join(artifactDir, SnapshotLayout.hostTreeTar),
+						tarWithEntries(['postgres/data/x']),
+					);
+					yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
-				const exit = yield* Effect.exit(
-					runRestore({
-						snapshotId: snapshotIdFromString(meta.id),
-						artifactDir,
-						runtimeStackRoot: join(root, 'runtime-stack'),
-						runtimeStagingPath: join(root, 'runtime-stack.staging'),
-						runtimeBackupPath: join(root, 'runtime-stack.bak'),
-						participants: restoreIdentityParticipants(),
-						runtime: runtimeStub(sweepCalls),
-						runtimeIdentity,
-					}),
-				).pipe(Effect.provide(NodeFileSystem.layer));
+					const exit = yield* Effect.exit(
+						runRestore({
+							snapshotId: snapshotIdFromString(meta.id),
+							artifactDir,
+							runtimeStackRoot: join(root, 'runtime-stack'),
+							runtimeStagingPath: join(root, 'runtime-stack.staging'),
+							runtimeBackupPath: join(root, 'runtime-stack.bak'),
+							participants: restoreIdentityParticipants(),
+							runtime: runtimeStub(sweepCalls),
+							runtimeIdentity,
+						}),
+					).pipe(Effect.provide(NodeFileSystem.layer));
 
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('cache-missing');
+					expect(Exit.isFailure(exit)).toBe(true);
+					const error = Exit.findErrorOption(exit);
+					expect(error._tag).toBe('Some');
+					if (error._tag === 'Some') {
+						expect(error.value).toBeInstanceOf(RestorePhaseError);
+						if (error.value._tag === 'SnapshotRestorePhaseError') {
+							expect(error.value.phase).toBe('cache-missing');
+						}
 					}
-				}
-				// Fail-closed BEFORE any mutation — no container sweep ran.
-				expect(sweepCalls).toEqual([]);
-			}),
-		),
+					// Fail-closed BEFORE any mutation — no container sweep ran.
+					expect(sweepCalls).toEqual([]);
+				}),
+			),
 	);
 
 	// The positive companion: when the snapshot's host-tree CARRIES every
@@ -1816,9 +1820,7 @@ describe('snapshot restore safety', () => {
 				const runtime = runtimeStub(sweepCalls, {
 					events,
 					removeImageCalls,
-					inspectDigestsFor: new Map([
-						[imageName, ['sha256:old-layer', 'sha256:new-layer']],
-					]),
+					inspectDigestsFor: new Map([[imageName, ['sha256:old-layer', 'sha256:new-layer']]]),
 				});
 
 				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
@@ -1870,9 +1872,7 @@ describe('snapshot restore safety', () => {
 				const runtime = runtimeStub(sweepCalls, {
 					events,
 					removeImageCalls,
-					inspectDigestsFor: new Map([
-						[imageName, ['sha256:same-layer', 'sha256:same-layer']],
-					]),
+					inspectDigestsFor: new Map([[imageName, ['sha256:same-layer', 'sha256:same-layer']]]),
 				});
 
 				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
@@ -1905,9 +1905,7 @@ describe('snapshot restore safety', () => {
 				const runtime = runtimeStub(sweepCalls, {
 					events,
 					removeImageCalls,
-					inspectDigestsFor: new Map([
-						[imageName, ['sha256:old-layer', 'sha256:new-layer']],
-					]),
+					inspectDigestsFor: new Map([[imageName, ['sha256:old-layer', 'sha256:new-layer']]]),
 					removeImageErrorFor: (ref) =>
 						ref.digest === 'sha256:old-layer' && ref.tag === undefined
 							? {
