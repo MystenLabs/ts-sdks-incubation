@@ -57,7 +57,7 @@ import {
 	tagImage as tagImageImpl,
 } from './image.ts';
 import { listContainers } from './inventory.ts';
-import { expectedImageOwnershipLabels } from './labels.ts';
+import { expectedImageOwnershipLabels, sanitizeTagSegment } from './labels.ts';
 import { ensureNetwork as ensureNetworkImpl } from './network.ts';
 import {
 	removeManagedContainers,
@@ -301,8 +301,38 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				// is honoured as the on-host tag; absent, we derive a tag
 				// from the content hash so two unrelated contexts cannot
 				// collide on the sanitized contextPath form.
+				//
+				// (app, stack) TAG SCOPING. The derived tag is scoped by the
+				// owner's `(app, stack)` — `devstack-build:<app>-<stack>-<hash16>`.
+				// The CACHE KEY below stays content-only (`{namespace, chain,
+				// contentHash}`), so two stacks with identical build context
+				// still SHARE the build (no redundant rebuild) — only the on-host
+				// TAG differs. This is load-bearing for snapshot/restore: each
+				// running container commits its writable layer onto its own
+				// `imageName` (this tag). Without scoping, two stacks whose build
+				// context is byte-identical share ONE tag, so capture/restore's
+				// per-container image-promote collapses their committed layers
+				// onto that single name (last-write-wins) — e.g. app A's sui
+				// indexer-db PGDATA gets aliased under app B's container and the
+				// db rejects auth ("FATAL: password authentication failed").
+				// Stays aligned with #23's sidecar-password fix
+				// (`deriveSidecarPassword(app, stack, role)`): both keyed on
+				// (app, stack). Label-free builds (no owner — e.g.
+				// `move-summary-runner`) stay UNSCOPED.
+				//
+				// MIGRATION: this changes the on-host tag namespace only (not the
+				// committed image digest, host-tree cache ids, or container
+				// image-match). Snapshots captured BEFORE this upgrade recorded an
+				// unscoped `imageName`; on restore the promote target won't match
+				// the now-scoped boot tag. The decision (owner) is DOCUMENT-only:
+				// re-capture old snapshots after upgrading. No compat shim.
 				const hash = buildContentHash(effectiveCtx);
-				const tag = expected?.tag ?? `devstack-build:${hash.slice(0, 16)}`;
+				const owner = effectiveCtx.owner;
+				const scope =
+					owner !== undefined
+						? `${sanitizeTagSegment(owner.app)}-${sanitizeTagSegment(owner.stack)}-`
+						: '';
+				const tag = expected?.tag ?? `devstack-build:${scope}${hash.slice(0, 16)}`;
 				// Owner identity flows through as `--label` flags on
 				// `docker build`, making the resulting image visible to
 				// label-driven prune. Labels are metadata, NOT part of

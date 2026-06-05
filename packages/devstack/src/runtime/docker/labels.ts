@@ -95,6 +95,23 @@ const normalizeComposeSegment = (value: string): string => {
 	return normalized.length > 0 ? normalized : 'unnamed';
 };
 
+/** Sanitize an `(app | stack)` identifier into a single Docker-tag-safe
+ *  segment. A Docker tag component is lowercase `[a-z0-9._-]` — this
+ *  lowercases, replaces every run of illegal characters with a single `-`,
+ *  and trims leading/trailing `-`/`.`/`_` separators so the result never
+ *  starts/ends with a separator (which Docker rejects as an invalid
+ *  reference) and two distinct ids cannot collapse to the empty string.
+ *  Used to scope the content-addressed build tag by `(app, stack)`. */
+export const sanitizeTagSegment = (value: string): string => {
+	const normalized = value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9._-]+/g, '-')
+		.replace(/-+/g, '-')
+		.replace(/^[-._]+|[-._]+$/g, '');
+	return normalized.length > 0 ? normalized : 'unnamed';
+};
+
 export const composeProjectId = (app: string, stack: string): string =>
 	`${normalizeComposeSegment(app)}-${normalizeComposeSegment(stack)}`;
 
