@@ -10,7 +10,7 @@ import {
 	readProjectionSnapshot,
 	projectionSnapshotPath,
 	writeProjectionSnapshot,
-} from '../../../../src/substrate/runtime/projection/index.ts';
+} from '../../../../src/substrate/runtime/projection/persisted.ts';
 
 const roots: Array<string> = [];
 

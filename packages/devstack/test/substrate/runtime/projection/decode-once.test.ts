@@ -19,10 +19,8 @@ import { Effect, Schema, SubscriptionRef } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import { pluginKey } from '../../../../src/substrate/brand.ts';
-import {
-	emptyProjection,
-	updateRef,
-} from '../../../../src/substrate/runtime/projection/index.ts';
+import { emptyProjection } from '../../../../src/substrate/runtime/projection/state-ref.ts';
+import { updateRef } from '../../../../src/substrate/runtime/projection/update.ts';
 import {
 	AccountProjectionSchema,
 	PackageProjectionSchema,

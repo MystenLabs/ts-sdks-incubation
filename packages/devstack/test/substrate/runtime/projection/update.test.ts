@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { endpointKey, pluginKey } from '../../../../src/substrate/brand.ts';
 import type { SubscribableState } from '../../../../src/substrate/projection.ts';
-import { applyEvent } from '../../../../src/substrate/runtime/projection/index.ts';
+import { applyEvent } from '../../../../src/substrate/runtime/projection/update.ts';
 
 const makeState = (): SubscribableState => ({
 	identity: { app: 'arena', stack: 'arena', network: 'sui:local' },

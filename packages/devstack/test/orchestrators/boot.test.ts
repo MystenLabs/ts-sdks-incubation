@@ -42,7 +42,8 @@ import type { Identity } from '../../src/substrate/identity.ts';
 import { supervise, type ContributionDispatchContext } from '../../src/substrate/runtime/index.ts';
 import type { StrategyRegistry } from '../../src/contracts/strategy-contributor.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
-import { makeProjectionRef, updateRef } from '../../src/substrate/runtime/projection/index.ts';
+import { makeProjectionRef } from '../../src/substrate/runtime/projection/state-ref.ts';
+import { updateRef } from '../../src/substrate/runtime/projection/update.ts';
 
 const bootReport: BootReport = {
 	decision: 'opt-out',

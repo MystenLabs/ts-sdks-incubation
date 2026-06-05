@@ -22,7 +22,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/cli/main.ts';
 import type { SubscribableState } from '../../src/substrate/projection.ts';
-import { writeProjectionSnapshot } from '../../src/substrate/runtime/projection/index.ts';
+import { writeProjectionSnapshot } from '../../src/substrate/runtime/projection/persisted.ts';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoots: Array<string> = [];

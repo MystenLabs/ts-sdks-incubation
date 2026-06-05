@@ -27,7 +27,7 @@ import { processStartTime } from '../../src/substrate/runtime/cross-process/live
 import {
 	readProjectionSnapshot,
 	writeProjectionSnapshot,
-} from '../../src/substrate/runtime/projection/index.ts';
+} from '../../src/substrate/runtime/projection/persisted.ts';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoots: Array<string> = [];

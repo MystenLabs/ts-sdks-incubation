@@ -51,7 +51,7 @@ Single-host only. Deleted: container-claim ledger (write-only dead; unwired cont
 **OWNER DECISIONS (2026-06-04):** persisted.ts → **FULL DELETE** (−180; offline status endpoints-only when down) · chain-* helpers → **KEEP** (skip S7) · manifest `services` → `Schema.optional` (default) · control-plane de-abstraction → backlog. **Net ≈ −530.**
 Sequenced steps (each independently green; supervisor core + contribution pipeline + restore path UNTOUCHED):
 - `[x]` S1 move lifecycle-fact → reducer (update.ts), keep named exports (**−10**, tsc 0 / 12 tests green)
-- `[ ]` S2 move projection compile guards → projection.ts; drop projection/index.ts barrel (−9)
+- `[x]` S2 move projection compile guards → projection.ts; drop projection/index.ts barrel (**−10**, tsc 0 / projection+name-blindness+no-orphan green)
 - `[ ]` S3 drop dead manifest `services`+`PluginManifestContribution`; `services`→Schema.optional (−70)
 - `[ ]` S4 ADD missing multimap sibling-scope drop-by-seq finalizer test (PREREQ for S5/S6)
 - `[ ]` S5 strangle single-mode LWW → coin/package as `Ref<Map>` (+40)
