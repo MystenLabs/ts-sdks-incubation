@@ -273,8 +273,8 @@ const buildLocalPlugin = <
 				// ChainProbe is looked up via the StrategyRegistry
 				// (Sui registered itself there at acquire). The
 				// PackageRegistry is a per-stack plugin-owned service
-				// (instantiated from the substrate's generic
-				// ScopedRefMap primitive — see `registry.ts`) — every
+				// (a self-contained last-write-wins map — see
+				// `registry.ts`) — every
 				// package plugin in the stack yields the SAME instance
 				// via `PackageRegistryService`, so cross-plugin lookups
 				// stay consistent and warm-restart verify can use the

@@ -54,7 +54,7 @@ Sequenced steps (each independently green; supervisor core + contribution pipeli
 - `[x]` S2 move projection compile guards → projection.ts; drop projection/index.ts barrel (**−10**, tsc 0 / projection+name-blindness+no-orphan green)
 - `[x]` S3 drop dead manifest `services`+`PluginManifestContribution`; `services`→Schema.optional (**−63**, no version bump; tsc 0 / manifest 15 + build-integrations 190 green). Backlog: rename `ManifestError.reason` 'duplicate-contribution'→'duplicate-endpoint'.
 - `[x]` S4 ADD missing multimap sibling-scope drop-by-seq finalizer test (PREREQ for S5/S6) — 3 tests via StrategyRegistry public surface (survives inline), green vs current; drop-by-seq + close-order-independence + uninterruptible-finalizer
-- `[ ]` S5 strangle single-mode LWW → coin/package as `Ref<Map>` (+40)
+- `[x]` S5 strangle single-mode LWW → coin/package as `Ref<Map>` (**−293**, not +40: deleting defineScopedRefMap exposed dead single-mode machinery — defineSingle/makeSingleSurface/makeScopedRegistryCore/winningEntry/projectEntries all dead; multimap backing SubscriptionRef→Ref, `.changes` verified dead; tsc 0 / coin+package 55 + scoped+strategy 15 green). NOTE for S6: scoped-registry/service.test.ts now holds makeScopedMultimap unit tests — relocate/retire when deleting the dir.
 - `[ ]` S6 inline multimap → strategy-registry; DELETE scoped-registry/ (−200)
 - `[-]` S7 SKIP (keep chain helpers per owner)
 - `[ ]` S8 FULL DELETE persisted.ts + relocate Account/Package schemas → update.ts; offline status from manifest (−180)

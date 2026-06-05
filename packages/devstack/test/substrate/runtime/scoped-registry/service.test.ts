@@ -1,244 +1,96 @@
-// Generic scoped Ref-Map registry primitive — tests.
+// Scoped seq-tagged multimap primitive — tests.
 //
-// Covers the contract the L0 substrate exposes: register / lookup
-// (strict + non-failing), typed missing-key error, snapshot
-// enumeration, scope-bound lifecycle (each scope materializes an
-// independent ref-map), multiple distinct registries coexisting
-// in the same scope, and the `changes` Stream.
+// Covers the one remaining export of the scoped-registry substrate
+// primitive: `makeScopedMultimap`. The StrategyRegistry is built on
+// it; the sibling-scope close-order guarantees are pinned end-to-end
+// in `strategy-registry/sibling-scope.test.ts`. These tests exercise
+// the primitive directly: seq stamping, per-key entry lists, the
+// drop-by-seq finalizer, and the snapshot/keys surface.
+//
+// (The former single-mode `defineScopedRefMap` cases moved to the
+// coin/package plugin registry suites when single mode was strangled
+// out of substrate.)
 
 import { describe, expect, it } from '@effect/vitest';
-import { Deferred, Effect, Fiber, Layer, Stream } from 'effect';
+import { Effect, Scope } from 'effect';
 
-import {
-	defineScopedRefMap,
-	setSingleEntry,
-	ScopedRefMapKeyMissingError,
-	type MultimapEntry,
-} from '../../../../src/substrate/runtime/scoped-registry/index.ts';
+import { makeScopedMultimap } from '../../../../src/substrate/runtime/scoped-registry/index.ts';
 
-// ---------------------------------------------------------------
-// Test-only branded key + value shapes — substrate sees only K, V.
-// ---------------------------------------------------------------
 type FooKey = string & { readonly _brand: 'FooKey' };
 const fooKey = (s: string): FooKey => s as FooKey;
 interface FooValue {
 	readonly tag: string;
-	readonly n: number;
 }
 
-type BarKey = string & { readonly _brand: 'BarKey' };
-const barKey = (s: string): BarKey => s as BarKey;
-interface BarValue {
-	readonly label: string;
-}
-
-describe('defineScopedRefMap', () => {
-	it.effect('set + get round-trips', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			yield* reg.set(fooKey('a'), { tag: 'apple', n: 1 });
-			yield* reg.set(fooKey('b'), { tag: 'banana', n: 2 });
-			const a = yield* reg.get(fooKey('a'));
-			const b = yield* reg.get(fooKey('b'));
-			expect(a).toEqual({ tag: 'apple', n: 1 });
-			expect(b).toEqual({ tag: 'banana', n: 2 });
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('set overwrites on duplicate key (last-write-wins)', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			yield* reg.set(fooKey('a'), { tag: 'first', n: 1 });
-			yield* reg.set(fooKey('a'), { tag: 'second', n: 2 });
-			const a = yield* reg.get(fooKey('a'));
-			expect(a).toEqual({ tag: 'second', n: 2 });
-			const all = yield* reg.entries();
-			expect(all).toHaveLength(1);
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('repeated set on the same key keeps LWW + insertion order across many writes', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			yield* reg.set(fooKey('x'), { tag: 'x', n: 0 });
-			yield* reg.set(fooKey('y'), { tag: 'y', n: 0 });
-			// Hammer the same key 50 times — the internal store must stay at one
-			// entry per key (setSingle filter-then-append), so the projection is
-			// unaffected and `x` re-sorts to the END (its seq advanced past `y`).
-			for (let i = 1; i <= 50; i++) {
-				yield* reg.set(fooKey('x'), { tag: 'x', n: i });
-			}
-			const all = yield* reg.entries();
-			expect(all).toEqual([
-				['y', { tag: 'y', n: 0 }],
-				['x', { tag: 'x', n: 50 }],
-			]);
-			expect(yield* reg.get(fooKey('x'))).toEqual({ tag: 'x', n: 50 });
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('get fails with ScopedRefMapKeyMissingError on absent key', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			const result = yield* reg.get(fooKey('absent')).pipe(Effect.flip);
-			expect(result).toBeInstanceOf(ScopedRefMapKeyMissingError);
-			expect(result._tag).toBe('ScopedRefMapKeyMissingError');
-			expect(result.registryName).toBe('Foo');
-			expect(result.key).toBe('absent');
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('find returns null on absent key (no error)', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			yield* reg.set(fooKey('here'), { tag: 'x', n: 0 });
-			const present = yield* reg.find(fooKey('here'));
-			const absent = yield* reg.find(fooKey('nope'));
-			expect(present).toEqual({ tag: 'x', n: 0 });
-			expect(absent).toBeNull();
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('has reports presence without an error projection', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			yield* reg.set(fooKey('a'), { tag: 'a', n: 0 });
-			const yes = yield* reg.has(fooKey('a'));
-			const no = yield* reg.has(fooKey('b'));
-			expect(yes).toBe(true);
-			expect(no).toBe(false);
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('entries returns all pairs in insertion order', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			yield* reg.set(fooKey('c'), { tag: 'c', n: 3 });
-			yield* reg.set(fooKey('a'), { tag: 'a', n: 1 });
-			yield* reg.set(fooKey('b'), { tag: 'b', n: 2 });
-			const all = yield* reg.entries();
-			expect(all.map(([k]) => k)).toEqual(['c', 'a', 'b']);
-			expect(all.map(([, v]) => v.n)).toEqual([3, 1, 2]);
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('entries on a fresh registry is empty', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			const all = yield* reg.entries();
-			expect(all).toEqual([]);
-		}).pipe(Effect.provide(Foo.layer));
-	});
-
-	it.effect('two distinct ref-maps in one scope do not interfere', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		const Bar = defineScopedRefMap<BarKey, BarValue>('Bar');
-		return Effect.gen(function* () {
-			const foo = yield* Foo.Service;
-			const bar = yield* Bar.Service;
-
-			yield* foo.set(fooKey('shared'), { tag: 'in-foo', n: 1 });
-			yield* bar.set(barKey('shared'), { label: 'in-bar' });
-
-			const fooHit = yield* foo.get(fooKey('shared'));
-			const barHit = yield* bar.get(barKey('shared'));
-			expect(fooHit).toEqual({ tag: 'in-foo', n: 1 });
-			expect(barHit).toEqual({ label: 'in-bar' });
-
-			// Bar has no key 'absent-in-foo' the way Foo has none either —
-			// the registries are completely independent.
-			const fooEntries = yield* foo.entries();
-			const barEntries = yield* bar.entries();
-			expect(fooEntries).toHaveLength(1);
-			expect(barEntries).toHaveLength(1);
-		}).pipe(Effect.provide(Layer.mergeAll(Foo.layer, Bar.layer)));
-	});
-
-	it.effect('scope-bound lifecycle — entries reset across independent scopes', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-
-		const runInFreshScope = (writeValue: FooValue) =>
+describe('makeScopedMultimap', () => {
+	it.effect('register stamps a fresh monotonic seq per call', () =>
+		Effect.scoped(
 			Effect.gen(function* () {
-				const reg = yield* Foo.Service;
-				yield* reg.set(fooKey('a'), writeValue);
-				return yield* reg.entries();
-			}).pipe(Effect.provide(Foo.layer));
+				const mm = yield* makeScopedMultimap<FooKey, FooValue>();
+				const s1 = yield* mm.register([{ key: fooKey('a'), value: { tag: 'a1' } }]);
+				const s2 = yield* mm.register([{ key: fooKey('a'), value: { tag: 'a2' } }]);
+				expect(s2).toBeGreaterThan(s1);
+			}),
+		),
+	);
 
-		return Effect.gen(function* () {
-			const first = yield* runInFreshScope({ tag: 'first', n: 1 });
-			const second = yield* runInFreshScope({ tag: 'second', n: 2 });
-			// Each scope got its own ref-map; the second saw an empty
-			// registry until it wrote its own value.
-			expect(first).toEqual([['a', { tag: 'first', n: 1 }]]);
-			expect(second).toEqual([['a', { tag: 'second', n: 2 }]]);
-		});
-	});
+	it.effect('entriesFor accumulates a per-key LIST in registration order', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const mm = yield* makeScopedMultimap<FooKey, FooValue>();
+				yield* mm.register([{ key: fooKey('a'), value: { tag: 'first' } }]);
+				yield* mm.register([{ key: fooKey('a'), value: { tag: 'second' } }]);
+				const entries = yield* mm.entriesFor(fooKey('a'));
+				expect(entries.map((e) => e.value.tag)).toEqual(['first', 'second']);
+				// Ascending seq — the registration order the finalizer drops on.
+				expect(entries[0]!.seq).toBeLessThan(entries[1]!.seq);
+			}),
+		),
+	);
 
-	it.effect('changes stream emits the current snapshot then per-update snapshots', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			const ready = yield* Deferred.make<void>();
+	it.effect('entriesFor is empty for an absent key', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const mm = yield* makeScopedMultimap<FooKey, FooValue>();
+				expect(yield* mm.entriesFor(fooKey('nope'))).toEqual([]);
+			}),
+		),
+	);
 
-			// Mirrors the documented SubscriptionRef.changes pattern:
-			// gate the publisher behind a Deferred that the subscriber
-			// fulfils on its first emission. Avoids a race where `set`
-			// runs before the PubSub subscriber registers.
-			const fiber = yield* reg.changes.pipe(
-				Stream.tap(() => Deferred.succeed(ready, void 0)),
-				Stream.take(3),
-				Stream.runCollect,
-				Effect.forkChild,
+	it.effect('snapshot + keys reflect every surviving entry', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const mm = yield* makeScopedMultimap<FooKey, FooValue>();
+				yield* mm.register([
+					{ key: fooKey('a'), value: { tag: 'a' } },
+					{ key: fooKey('b'), value: { tag: 'b' } },
+				]);
+				const snap = yield* mm.snapshot;
+				expect(new Set(snap.keys())).toEqual(new Set(['a', 'b']));
+				expect(new Set(yield* mm.keys)).toEqual(new Set(['a', 'b']));
+			}),
+		),
+	);
+
+	it.effect('a registration finalizer drops ONLY the entries it added on scope close', () =>
+		Effect.gen(function* () {
+			const mm = yield* makeScopedMultimap<FooKey, FooValue>();
+			// Outer registration survives the inner scope.
+			yield* mm.register([{ key: fooKey('a'), value: { tag: 'outer' } }]).pipe(
+				Effect.provideService(Scope.Scope, yield* Scope.make()),
 			);
-
-			yield* Deferred.await(ready);
-			yield* reg.set(fooKey('a'), { tag: 'a', n: 1 });
-			yield* reg.set(fooKey('b'), { tag: 'b', n: 2 });
-
-			const seen = yield* Fiber.join(fiber);
-			expect(seen).toHaveLength(3);
-			// First emission is the initial empty snapshot; subsequent
-			// emissions reflect each set.
-			expect(seen[0]).toEqual([]);
-			expect(seen[1]?.map(([k]) => k)).toEqual(['a']);
-			expect(seen[2]?.map(([k]) => k)).toEqual(['a', 'b']);
-		}).pipe(Effect.provide(Foo.layer));
-	});
-});
-
-// The pure store mutation behind single-mode `set`. White-box test of the
-// one-entry-per-key invariant: single mode has no per-set finalizer, so a plain
-// append would leak prior same-key entries for the layer scope (O(history)
-// lookups + memory). setSingleEntry must FILTER-then-append.
-describe('setSingleEntry', () => {
-	const fk = (s: string): FooKey => s as FooKey;
-
-	it('keeps exactly one entry per key across repeated sets (no history leak)', () => {
-		let state: ReadonlyMap<FooKey, ReadonlyArray<MultimapEntry<FooValue>>> = new Map();
-		for (let seq = 1; seq <= 100; seq++) {
-			state = setSingleEntry(state, fk('a'), { tag: 'a', n: seq }, seq);
-		}
-		const entries = state.get(fk('a'))!;
-		// Before the fix this array would have grown to 100 entries.
-		expect(entries).toHaveLength(1);
-		expect(entries[0]).toEqual({ value: { tag: 'a', n: 100 }, seq: 100 });
-	});
-
-	it('replaces only the target key, leaving siblings untouched', () => {
-		let state: ReadonlyMap<FooKey, ReadonlyArray<MultimapEntry<FooValue>>> = new Map();
-		state = setSingleEntry(state, fk('a'), { tag: 'a', n: 1 }, 1);
-		state = setSingleEntry(state, fk('b'), { tag: 'b', n: 1 }, 2);
-		state = setSingleEntry(state, fk('a'), { tag: 'a', n: 2 }, 3);
-		expect(state.get(fk('a'))).toEqual([{ value: { tag: 'a', n: 2 }, seq: 3 }]);
-		expect(state.get(fk('b'))).toEqual([{ value: { tag: 'b', n: 1 }, seq: 2 }]);
-		expect([...state.keys()]).toEqual(['a', 'b']);
-	});
+			// Inner scope registers a second entry under 'a', then closes —
+			// its finalizer must remove only the inner entry, leaving the
+			// outer one intact (close-order-independent drop-by-seq).
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					yield* mm.register([{ key: fooKey('a'), value: { tag: 'inner' } }]);
+					const during = yield* mm.entriesFor(fooKey('a'));
+					expect(during.map((e) => e.value.tag)).toEqual(['outer', 'inner']);
+				}),
+			);
+			const after = yield* mm.entriesFor(fooKey('a'));
+			expect(after.map((e) => e.value.tag)).toEqual(['outer']);
+		}).pipe(Effect.scoped),
+	);
 });
