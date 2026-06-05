@@ -71,12 +71,19 @@ export interface ContainerExec {
 
 const READY_PROBE_INTERVAL_MS = 500;
 
-/** Wait until `pg_isready -U <user> -d <db>` exits zero or the
- *  overall deadline elapses.
+/** Wait until the server accepts a REAL query or the overall deadline
+ *  elapses. Each attempt runs `pg_isready` THEN a `SELECT 1` against the
+ *  always-present `postgres` maintenance DB; readiness requires BOTH.
  *
- *  Distilled doc § "Postgres-specific concerns" — server-aware probe;
- *  TCP-listener readiness alone is insufficient (postgres opens the
- *  port before it accepts queries). */
+ *  Distilled doc § "Postgres-specific concerns" — server-aware probe; TCP-
+ *  listener readiness alone is insufficient (postgres opens the port
+ *  before it accepts queries). The `SELECT 1` step closes a further gap:
+ *  the official image bootstraps a TEMPORARY server for init, shuts it
+ *  down, then starts the real one — `pg_isready` (and the first real
+ *  query) can land in that restart window and see SQLSTATE 57P03
+ *  ("shutting down" / "starting up"). Proving a query here makes EVERY
+ *  downstream psql caller (chain-marker read, createdb) race-free without
+ *  per-caller retries. */
 export const awaitReady = (
 	exec: ContainerExec,
 	user: string,
@@ -95,9 +102,15 @@ export const awaitReady = (
 			probe: () =>
 				Effect.gen(function* () {
 					attempts += 1;
-					const result = yield* exec.run(['pg_isready', '-U', user, '-d', database]);
-					lastResult = result;
-					return exitCodeProbeResult(result);
+					const isReady = yield* exec.run(['pg_isready', '-U', user, '-d', database]);
+					lastResult = isReady;
+					if (isReady.exitCode !== 0) return exitCodeProbeResult(isReady);
+					// A real query against the maintenance DB — fails with 57P03
+					// while the init temp-server is restarting, so it gates out the
+					// connect-race window `pg_isready` alone would pass.
+					const query = yield* exec.run(['psql', '-U', user, '-d', 'postgres', '-tAc', 'SELECT 1']);
+					lastResult = query;
+					return exitCodeProbeResult(query);
 				}),
 		}).pipe(
 			Effect.mapError((cause) => {

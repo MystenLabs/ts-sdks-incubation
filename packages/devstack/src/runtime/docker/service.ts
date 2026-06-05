@@ -397,6 +397,13 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 													: 'exited') as ContainerHandle['status'],
 									ips: [],
 									...(facts?.ports !== undefined ? { ports: facts.ports } : {}),
+									// Surface the inspected exit code whenever Docker
+									// supplied a `State` (running / exited-0 → `0`; only an
+									// omitted-`State` inspect leaves `exitCode` null →
+									// `lastExitCode` absent) so callers can gate on a
+									// SIGKILL/OOM `137` crash-recreate — the signal sui's
+									// indexer-db sidecar resets on.
+									...(facts?.exitCode != null ? { lastExitCode: facts.exitCode } : {}),
 								}),
 							),
 						),
