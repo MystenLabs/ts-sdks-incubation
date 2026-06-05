@@ -44,8 +44,10 @@ export const Select = ({
 	</select>
 );
 
-export interface TextInputProps
-	extends Omit<InputHTMLAttributes<HTMLInputElement>, 'onChange' | 'value'> {
+export interface TextInputProps extends Omit<
+	InputHTMLAttributes<HTMLInputElement>,
+	'onChange' | 'value'
+> {
 	/** Current string value. */
 	readonly value: string;
 	/** Change handler receiving the new string value. */
@@ -68,8 +70,10 @@ export const TextInput = ({ value, onChange, mono, className = '', ...rest }: Te
 	/>
 );
 
-export interface NumberInputProps
-	extends Omit<InputHTMLAttributes<HTMLInputElement>, 'onChange' | 'value' | 'type'> {
+export interface NumberInputProps extends Omit<
+	InputHTMLAttributes<HTMLInputElement>,
+	'onChange' | 'value' | 'type'
+> {
 	/** Current numeric value. */
 	readonly value: number;
 	/** Change handler receiving the coerced numeric value. */

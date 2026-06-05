@@ -150,7 +150,12 @@ export type EngineCommand =
 	| { readonly tag: 'stack.restart' }
 	| { readonly tag: 'apply.requested'; readonly pluginKey?: PluginKey }
 	| { readonly tag: 'codegen.requested' }
-	| { readonly tag: 'snapshot.capture'; readonly snapshotId?: string; readonly name?: string }
+	| {
+			readonly tag: 'snapshot.capture';
+			readonly snapshotId?: string;
+			readonly name?: string;
+			readonly replaceExisting?: boolean;
+	  }
 	| { readonly tag: 'snapshot.restore'; readonly snapshotId: string }
 	| { readonly tag: 'snapshot.list' }
 	| { readonly tag: 'snapshot.delete'; readonly snapshotId: string }

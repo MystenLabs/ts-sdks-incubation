@@ -62,11 +62,7 @@ export const bootSuiService = (
 	opts: SuiOptions,
 	indexer: LocalIndexer | undefined,
 	prebuiltImage?: ImageRef,
-): Effect.Effect<
-	SuiBootResult,
-	SuiPluginError | SuiConfigError,
-	Scope.Scope
-> => {
+): Effect.Effect<SuiBootResult, SuiPluginError | SuiConfigError, Scope.Scope> => {
 	switch (opts.mode) {
 		case 'local':
 			return bootLocalMode(runtime, identity, portBroker, opts, indexer, prebuiltImage).pipe(

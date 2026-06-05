@@ -32,7 +32,6 @@ import type {
 	PortBindingReconciliation,
 	RecreatePolicy,
 } from '../../contracts/container-runtime.ts';
-import { recordRuntimeInvalidation } from '../../substrate/runtime/invalidation-tracker.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import {
 	ContainerCreateFailed,
@@ -748,11 +747,6 @@ const recreateAfterResumeFailure = (
 		}
 		yield* forceRemoveOwned(spec.name, id, spec.labels);
 		const created = yield* createWithCollisionRecovery(spec, deps);
-		yield* recordRuntimeInvalidation({
-			kind: 'container-created',
-			name: spec.name,
-			cause: 'resume-recreate',
-		});
 		return created;
 	});
 
@@ -1141,11 +1135,6 @@ const applyAction = (
 			case 'recreate': {
 				yield* forceRemoveOwned(spec.name, action.id, spec.labels);
 				const created = yield* createWithCollisionRecovery(spec, deps);
-				yield* recordRuntimeInvalidation({
-					kind: 'container-created',
-					name: spec.name,
-					cause: 'recreate',
-				});
 				return created;
 			}
 			case 'fresh': {

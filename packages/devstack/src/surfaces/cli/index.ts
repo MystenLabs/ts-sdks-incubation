@@ -180,6 +180,7 @@ interface ConfigFlags extends IdentityFlags {
 interface UpFlags extends ConfigFlags {
 	readonly renderer?: CliRendererMode;
 	readonly fromSnapshot?: string;
+	readonly snapshotCache?: string;
 	readonly snapshotStale?: SnapshotStalePolicy;
 }
 
@@ -326,6 +327,7 @@ const makeGlobalFlags = (
 		network,
 		renderer: flags.renderer,
 		fromSnapshot: flags.fromSnapshot,
+		snapshotCache: flags.snapshotCache,
 		snapshotStalePolicy: flags.snapshotStale,
 		dryRun: flags.dryRun === true,
 		confirm: {
@@ -477,6 +479,10 @@ const upCommand = buildCommand<UpFlags, [], DevstackCliContext>({
 				brief: 'Select the attached renderer',
 			},
 			fromSnapshot: stringFlag('Start by restoring a named snapshot before acquire', 'name-or-id'),
+			snapshotCache: stringFlag(
+				'Use a named snapshot as a startup cache and refresh it when stale',
+				'name',
+			),
 			snapshotStale: {
 				kind: 'parsed',
 				parse: snapshotStaleParser,

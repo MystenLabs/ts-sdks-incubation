@@ -30,25 +30,21 @@ const buildPassthroughOrWrap =
 		knownTags: ReadonlyArray<KnownE['_tag']>,
 		mkUnknown: (cause: unknown) => UnknownE,
 	) =>
-	<A, R, EIn = KnownE>(
-		self: Effect.Effect<A, EIn, R>,
-	): Effect.Effect<A, KnownE | UnknownE, R> => {
+	<A, R, EIn = KnownE>(self: Effect.Effect<A, EIn, R>): Effect.Effect<A, KnownE | UnknownE, R> => {
 		const known = new Set<string>(knownTags);
 		return self.pipe(
-			Effect.catch(
-				(err: unknown): Effect.Effect<never, KnownE | UnknownE> => {
-					if (
-						typeof err === 'object' &&
-						err !== null &&
-						'_tag' in err &&
-						typeof (err as { _tag: unknown })._tag === 'string' &&
-						known.has((err as { _tag: string })._tag)
-					) {
-						return Effect.fail(err as KnownE);
-					}
-					return Effect.fail(mkUnknown(err));
-				},
-			),
+			Effect.catch((err: unknown): Effect.Effect<never, KnownE | UnknownE> => {
+				if (
+					typeof err === 'object' &&
+					err !== null &&
+					'_tag' in err &&
+					typeof (err as { _tag: unknown })._tag === 'string' &&
+					known.has((err as { _tag: string })._tag)
+				) {
+					return Effect.fail(err as KnownE);
+				}
+				return Effect.fail(mkUnknown(err));
+			}),
 		);
 	};
 
@@ -73,9 +69,7 @@ export const passthroughOrWrap: {
 	<KnownE extends { readonly _tag: string }, UnknownE>(
 		knownTags: ReadonlyArray<KnownE['_tag']>,
 		mkUnknown: (cause: unknown) => UnknownE,
-	): <A, R, EIn = KnownE>(
-		self: Effect.Effect<A, EIn, R>,
-	) => Effect.Effect<A, KnownE | UnknownE, R>;
+	): <A, R, EIn = KnownE>(self: Effect.Effect<A, EIn, R>) => Effect.Effect<A, KnownE | UnknownE, R>;
 	for: <KnownE extends { readonly _tag: string }>() => <UnknownE>(
 		knownTags: ReadonlyArray<KnownE['_tag']>,
 		mkUnknown: (cause: unknown) => UnknownE,
@@ -85,9 +79,6 @@ export const passthroughOrWrap: {
 } = Object.assign(buildPassthroughOrWrap, {
 	for:
 		<KnownE extends { readonly _tag: string }>() =>
-		<UnknownE>(
-			knownTags: ReadonlyArray<KnownE['_tag']>,
-			mkUnknown: (cause: unknown) => UnknownE,
-		) =>
+		<UnknownE>(knownTags: ReadonlyArray<KnownE['_tag']>, mkUnknown: (cause: unknown) => UnknownE) =>
 			buildPassthroughOrWrap<KnownE, UnknownE>(knownTags, mkUnknown),
 });

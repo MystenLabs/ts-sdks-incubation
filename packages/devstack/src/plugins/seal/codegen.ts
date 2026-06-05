@@ -44,9 +44,7 @@ export interface SealBindings {
  *  seal instance folds into a single `generated/seal.ts` exporting
  *  `export const seal = { <name>: SealBindings, ... }`. Consumers read
  *  `seal.<name>`. `aggregateOnly` — no standalone per-instance file. */
-export const makeSealCodegenable = (
-	bindings: SealBindings,
-): CodegenableDecl<`seal/${string}`> =>
+export const makeSealCodegenable = (bindings: SealBindings): CodegenableDecl<`seal/${string}`> =>
 	defineSimpleConstExport({
 		emitterName: `seal/${bindings.name}` as `seal/${string}`,
 		outputPath: `seal/${bindings.name}.ts`,

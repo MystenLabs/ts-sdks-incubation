@@ -192,30 +192,26 @@ describe('makeSuiChainProbe', () => {
 				}),
 		);
 
-		it.effect(
-			'classifies bare "not found" in stack-trace prose as TRANSIENT (not terminal)',
-			() =>
-				// Regression: pre-fix matched bare `not found` anywhere in
-				// the message. Random library stack traces sometimes carry
-				// "Could not bind port ... not found" or similar; those
-				// must stay in the transient bucket so the substrate's
-				// lenient retry can re-probe.
-				Effect.gen(function* () {
-					const sdk = sdkWithCore({
-						getObject: async () => {
-							throw new Error(
-								'TypeError: Cannot read properties of undefined (reading "not found")',
-							);
-						},
-					});
-					const probe = makeSuiChainProbe(sdk, 'sui:localnet');
-					const exit = yield* probe
-						.get({ kind: 'object', objectId: '0xstacktrace' }, ProbeObjectShape, 'strict')
-						.pipe(Effect.exit);
-					const err = Exit.findErrorOption(exit);
-					expect(Option.isSome(err)).toBe(true);
-					if (Option.isSome(err)) expect(err.value.reason).toBe('transient');
-				}),
+		it.effect('classifies bare "not found" in stack-trace prose as TRANSIENT (not terminal)', () =>
+			// Regression: pre-fix matched bare `not found` anywhere in
+			// the message. Random library stack traces sometimes carry
+			// "Could not bind port ... not found" or similar; those
+			// must stay in the transient bucket so the substrate's
+			// lenient retry can re-probe.
+			Effect.gen(function* () {
+				const sdk = sdkWithCore({
+					getObject: async () => {
+						throw new Error('TypeError: Cannot read properties of undefined (reading "not found")');
+					},
+				});
+				const probe = makeSuiChainProbe(sdk, 'sui:localnet');
+				const exit = yield* probe
+					.get({ kind: 'object', objectId: '0xstacktrace' }, ProbeObjectShape, 'strict')
+					.pipe(Effect.exit);
+				const err = Exit.findErrorOption(exit);
+				expect(Option.isSome(err)).toBe(true);
+				if (Option.isSome(err)) expect(err.value.reason).toBe('transient');
+			}),
 		);
 
 		it.effect('classifies "transaction not found" as terminal', () =>

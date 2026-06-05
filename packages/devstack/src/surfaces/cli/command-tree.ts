@@ -70,6 +70,11 @@ const commands = [
 				description: 'Start by restoring a snapshot before the initial acquire.',
 			},
 			{
+				name: 'snapshot-cache',
+				value: 'name',
+				description: 'Use a named snapshot as a startup cache and refresh it when stale.',
+			},
+			{
 				name: 'snapshot-stale',
 				value: 'warn|block|clean-start',
 				description: 'Policy when --from-snapshot inputs differ from the current stack.',

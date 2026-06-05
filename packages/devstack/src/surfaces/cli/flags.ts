@@ -40,6 +40,7 @@ export interface GlobalFlags {
 	readonly network: string | undefined;
 	readonly renderer: CliRendererMode | undefined;
 	readonly fromSnapshot?: string;
+	readonly snapshotCache?: string;
 	readonly snapshotStalePolicy?: SnapshotStalePolicy;
 	readonly dryRun: boolean;
 	readonly confirm: ConfirmPolicy;

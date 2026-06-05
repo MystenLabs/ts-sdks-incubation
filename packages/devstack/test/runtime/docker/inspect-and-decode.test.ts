@@ -24,11 +24,9 @@ const Sample = Schema.Struct({
 });
 
 const ok = (stdout: string) => Effect.succeed({ exitCode: 0, stdout, stderr: '' });
-const fail = (stderr: string, exitCode = 1) =>
-	Effect.succeed({ exitCode, stdout: '', stderr });
+const fail = (stderr: string, exitCode = 1) => Effect.succeed({ exitCode, stdout: '', stderr });
 
-const isMissingNetwork = (stderr: string): boolean =>
-	/no such network/i.test(stderr);
+const isMissingNetwork = (stderr: string): boolean => /no such network/i.test(stderr);
 
 describe('dockerInspectAndDecode', () => {
 	it.effect('decodes a JSON-array element on exit 0', () =>
@@ -51,9 +49,7 @@ describe('dockerInspectAndDecode', () => {
 				resourceKind: 'network',
 				name: 'gone',
 				op: 'docker.network.inspect',
-				inspectCommand: fail(
-					'Error response from daemon: No such network: gone',
-				),
+				inspectCommand: fail('Error response from daemon: No such network: gone'),
 				schema: Sample,
 				isMissingStderr: isMissingNetwork,
 			});

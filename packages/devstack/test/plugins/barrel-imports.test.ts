@@ -37,8 +37,7 @@ const BARREL_TEST_TIMEOUT_MS = BARREL_LOAD_TIMEOUT_MS + 5_000;
 // is a directory containing an `index.ts` barrel.
 const PLUGINS = readdirSync(PLUGINS_ROOT, { withFileTypes: true })
 	.filter(
-		(entry) =>
-			entry.isDirectory() && existsSync(resolve(PLUGINS_ROOT, entry.name, 'index.ts')),
+		(entry) => entry.isDirectory() && existsSync(resolve(PLUGINS_ROOT, entry.name, 'index.ts')),
 	)
 	.map((entry) => entry.name);
 

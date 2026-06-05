@@ -179,9 +179,7 @@ export const readManifestSync = (manifestPath: string): ManifestEnvelope => {
 			// can `catchTag` the two failure modes independently.
 			throw new PlaywrightManifestDiscoveryError({
 				message:
-					cause.message !== ''
-						? cause.message
-						: `manifest at ${manifestPath} could not be read`,
+					cause.message !== '' ? cause.message : `manifest at ${manifestPath} could not be read`,
 				searchedPaths: cause.path !== undefined ? [cause.path] : [manifestPath],
 				recoveryHint:
 					`Confirm the file exists and is readable. Run \`devstack up\` to ` +

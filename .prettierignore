@@ -13,6 +13,7 @@ coverage/
 dist/
 out/
 generated/
+packages/devstack/dashboard-ui/
 playwright-report/
 CHANGELOG.md
 package.json

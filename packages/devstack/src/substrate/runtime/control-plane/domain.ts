@@ -101,9 +101,7 @@ const snapshotEntryFrom = (
 				? 'matching'
 				: 'stale';
 	const graphInputWarning =
-		snapshotGraphInputId === null ||
-		currentGraphInputId === null ||
-		graphInputStatus !== 'stale'
+		snapshotGraphInputId === null || currentGraphInputId === null || graphInputStatus !== 'stale'
 			? null
 			: graphInputMismatchDetail(snapshotGraphInputId, currentGraphInputId);
 	return {

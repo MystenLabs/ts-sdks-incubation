@@ -68,7 +68,11 @@ describe('cli envelope contract', () => {
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: false;
 				readonly command: string;
-				readonly error: { readonly exitCode: number; readonly code: string; readonly summary: string };
+				readonly error: {
+					readonly exitCode: number;
+					readonly code: string;
+					readonly summary: string;
+				};
 			};
 			expect(envelope.ok).toBe(false);
 			expect(envelope.command).toBe('(parse-argv)');
@@ -250,7 +254,9 @@ interface DispatchHarness {
 	readonly exitCode: () => number | null;
 }
 
-const makeFailingUpDeps = (error: CliError): {
+const makeFailingUpDeps = (
+	error: CliError,
+): {
 	deps: CliDeps;
 	harness: DispatchHarness;
 } => {

@@ -159,9 +159,7 @@ describe('acquireStackLock — unparseable body + mtime staleness', () => {
 				// reclaim within the staleness window.
 				writeFileSync(lockPath, '{partial-json', { flag: 'wx' });
 
-				const exit = yield* Effect.scoped(acquireStackLock(lockPath, 300)).pipe(
-					Effect.exit,
-				);
+				const exit = yield* Effect.scoped(acquireStackLock(lockPath, 300)).pipe(Effect.exit);
 				expect(exit._tag).toBe('Failure');
 				// The file is still on disk — we never reclaimed it.
 				expect(existsSync(lockPath)).toBe(true);

@@ -80,50 +80,52 @@ describe('package codegen emits the named form as binding default AND config.mvr
 		captured: {},
 	};
 
-	it.effect('mvrPlaceholder (→ binding default) === config.packages.<name>.mvr === @local/<slug>', () =>
-		Effect.gen(function* () {
-			const decl = makeLocalCodegenable(resolved, { excluded: false });
+	it.effect(
+		'mvrPlaceholder (→ binding default) === config.packages.<name>.mvr === @local/<slug>',
+		() =>
+			Effect.gen(function* () {
+				const decl = makeLocalCodegenable(resolved, { excluded: false });
 
-			// Drive the emit body with a recording ctx so we can read both
-			// the `packageBindings` (→ binding default via the bindings
-			// emitter's `package:` field) and the `__packageConfig`
-			// (→ `config.packages.<name>.mvr` via `projectPackageConfig`).
-			const exported: Record<string, unknown> = {};
-			const ctx = {
-				exportConst: (name: string, value: unknown) => {
-					exported[name] = value;
-				},
-				done: () => undefined,
-			};
-			yield* decl.emit(ctx as never);
+				// Drive the emit body with a recording ctx so we can read both
+				// the `packageBindings` (→ binding default via the bindings
+				// emitter's `package:` field) and the `__packageConfig`
+				// (→ `config.packages.<name>.mvr` via `projectPackageConfig`).
+				const exported: Record<string, unknown> = {};
+				const ctx = {
+					exportConst: (name: string, value: unknown) => {
+						exported[name] = value;
+					},
+					done: () => undefined,
+				};
+				yield* decl.emit(ctx as never);
 
-			const bindings = exported['packageBindings'] as { mvrPlaceholder: string };
-			const projected = decl.aggregate!.project(exported) as {
-				packages: Record<string, { mvr: string; byNetwork: Record<string, string> }>;
-				mvrOverrides: Record<string, string>;
-			};
+				const bindings = exported['packageBindings'] as { mvrPlaceholder: string };
+				const projected = decl.aggregate!.project(exported) as {
+					packages: Record<string, { mvr: string; byNetwork: Record<string, string> }>;
+					mvrOverrides: Record<string, string>;
+				};
 
-			const expected = '@local/connect-four';
-			// The binding default the bindings emitter writes is this
-			// `mvrPlaceholder` (threaded as `package:` into @mysten/codegen).
-			expect(bindings.mvrPlaceholder).toBe(expected);
-			// `config.packages.connect-four.mvr` MUST be the identical string.
-			expect(projected.packages['connect-four']!.mvr).toBe(expected);
-			expect(bindings.mvrPlaceholder).toBe(projected.packages['connect-four']!.mvr);
+				const expected = '@local/connect-four';
+				// The binding default the bindings emitter writes is this
+				// `mvrPlaceholder` (threaded as `package:` into @mysten/codegen).
+				expect(bindings.mvrPlaceholder).toBe(expected);
+				// `config.packages.connect-four.mvr` MUST be the identical string.
+				expect(projected.packages['connect-four']!.mvr).toBe(expected);
+				expect(bindings.mvrPlaceholder).toBe(projected.packages['connect-four']!.mvr);
 
-			// And it is a valid, resolvable named package.
-			expect(hasMvrName(expected)).toBe(true);
-			expect(isValidNamedPackage(expected)).toBe(true);
+				// And it is a valid, resolvable named package.
+				expect(hasMvrName(expected)).toBe(true);
+				expect(isValidNamedPackage(expected)).toBe(true);
 
-			// `config.mvrOverrides` contribution is the active-network
-			// (`local`) name→id entry — exactly what the old per-app
-			// `mvrOverrides()` helper computed for this package. Keyed by
-			// the package's `mvr` placeholder, valued by `byNetwork.local`.
-			expect(projected.mvrOverrides).toEqual({ '@local/connect-four': '0xpkg' });
-			expect(projected.mvrOverrides[expected]).toBe(
-				projected.packages['connect-four']!.byNetwork['local'],
-			);
-		}),
+				// `config.mvrOverrides` contribution is the active-network
+				// (`local`) name→id entry — exactly what the old per-app
+				// `mvrOverrides()` helper computed for this package. Keyed by
+				// the package's `mvr` placeholder, valued by `byNetwork.local`.
+				expect(projected.mvrOverrides).toEqual({ '@local/connect-four': '0xpkg' });
+				expect(projected.mvrOverrides[expected]).toBe(
+					projected.packages['connect-four']!.byNetwork['local'],
+				);
+			}),
 	);
 });
 
@@ -144,37 +146,35 @@ describe('stale bare-slug mvrPlaceholder is corrected to the named form at the e
 		captured: {},
 	};
 
-	it.effect(
-		'binding default === config.mvr === @local/vault despite stale bare placeholder',
-		() =>
-			Effect.gen(function* () {
-				const decl = makeLocalCodegenable(staleResolved, { excluded: false });
+	it.effect('binding default === config.mvr === @local/vault despite stale bare placeholder', () =>
+		Effect.gen(function* () {
+			const decl = makeLocalCodegenable(staleResolved, { excluded: false });
 
-				const exported: Record<string, unknown> = {};
-				const ctx = {
-					exportConst: (name: string, value: unknown) => {
-						exported[name] = value;
-					},
-					done: () => undefined,
-				};
-				yield* decl.emit(ctx as never);
+			const exported: Record<string, unknown> = {};
+			const ctx = {
+				exportConst: (name: string, value: unknown) => {
+					exported[name] = value;
+				},
+				done: () => undefined,
+			};
+			yield* decl.emit(ctx as never);
 
-				const bindings = exported['packageBindings'] as { mvrPlaceholder: string };
-				const projected = decl.aggregate!.project(exported) as {
-					packages: Record<string, { mvr: string }>;
-				};
+			const bindings = exported['packageBindings'] as { mvrPlaceholder: string };
+			const projected = decl.aggregate!.project(exported) as {
+				packages: Record<string, { mvr: string }>;
+			};
 
-				const expected = '@local/vault';
-				// Binding default (→ @mysten/codegen `package:`) is corrected.
-				expect(bindings.mvrPlaceholder).toBe(expected);
-				// `config.packages.vault.mvr` is the identical corrected string.
-				expect(projected.packages['vault']!.mvr).toBe(expected);
-				expect(bindings.mvrPlaceholder).toBe(projected.packages['vault']!.mvr);
+			const expected = '@local/vault';
+			// Binding default (→ @mysten/codegen `package:`) is corrected.
+			expect(bindings.mvrPlaceholder).toBe(expected);
+			// `config.packages.vault.mvr` is the identical corrected string.
+			expect(projected.packages['vault']!.mvr).toBe(expected);
+			expect(bindings.mvrPlaceholder).toBe(projected.packages['vault']!.mvr);
 
-				// And the corrected form is resolvable.
-				expect(hasMvrName(expected)).toBe(true);
-				expect(isValidNamedPackage(expected)).toBe(true);
-			}),
+			// And the corrected form is resolvable.
+			expect(hasMvrName(expected)).toBe(true);
+			expect(isValidNamedPackage(expected)).toBe(true);
+		}),
 	);
 
 	it('an already-named placeholder (e.g. a user override) is preserved verbatim', () => {

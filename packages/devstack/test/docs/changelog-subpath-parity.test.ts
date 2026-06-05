@@ -28,12 +28,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-const CHANGELOG_PATH = fileURLToPath(
-	new URL('../../CHANGELOG.md', import.meta.url),
-);
-const PACKAGE_JSON_PATH = fileURLToPath(
-	new URL('../../package.json', import.meta.url),
-);
+const CHANGELOG_PATH = fileURLToPath(new URL('../../CHANGELOG.md', import.meta.url));
+const PACKAGE_JSON_PATH = fileURLToPath(new URL('../../package.json', import.meta.url));
 
 interface PackageJson {
 	readonly exports: Record<string, unknown>;

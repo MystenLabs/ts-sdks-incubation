@@ -30,10 +30,7 @@ import {
 } from './errors.ts';
 import { isDaemonUnreachableStderr } from './wrap.ts';
 
-export interface DockerInspectAndDecodeOptions<
-	S extends Schema.Decoder<unknown>,
-	R,
-> {
+export interface DockerInspectAndDecodeOptions<S extends Schema.Decoder<unknown>, R> {
 	/** Resource kind, threaded into `DockerInspectFailed` /
 	 *  `DockerInspectDecodeFailed` error envelopes. */
 	readonly resourceKind: DockerResourceKind;
@@ -103,8 +100,7 @@ export const dockerInspectAndDecode = <S extends Schema.Decoder<unknown>, R>(
 		// inside the decode body (e.g. a reader helper bug) is wrapped
 		// in a fresh envelope rather than cast-lied as the wrong type.
 		const malformedDetail =
-			options.malformedDetail ??
-			`inspect returned malformed ${options.resourceKind} JSON`;
+			options.malformedDetail ?? `inspect returned malformed ${options.resourceKind} JSON`;
 		return yield* Effect.try({
 			try: (): S['Type'] =>
 				decodeJsonArrayElementSync(options.schema, res.stdout, {

@@ -15,10 +15,6 @@ import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner
 
 import { DockerHost, DockerSpawner, layerDockerHost } from '../../../src/runtime/docker/client.ts';
 import { build, pull } from '../../../src/runtime/docker/image.ts';
-import {
-	RuntimeInvalidationTrackerService,
-	layerRuntimeInvalidationTracker,
-} from '../../../src/substrate/runtime/invalidation-tracker.ts';
 
 const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
 	Layer.effect(
@@ -142,9 +138,9 @@ describe('build — image label stamping', () => {
 		}),
 	);
 
-	it.effect('records runtime invalidation when an image is pulled', () =>
+	it.effect('returns the inspected digest after pulling an image', () =>
 		Effect.gen(function* () {
-			const root = mkdtempSync(join(tmpdir(), 'docker-pull-invalidation-'));
+			const root = mkdtempSync(join(tmpdir(), 'docker-pull-digest-'));
 			try {
 				const bin = join(root, 'docker');
 				const log = join(root, 'docker.log');
@@ -154,20 +150,10 @@ describe('build — image label stamping', () => {
 					Effect.provide(fakeDockerLayer(bin)),
 				);
 				expect(digest).toBe('sha256:deadbeef');
-
-				const tracker = yield* RuntimeInvalidationTrackerService;
-				const reasons = yield* tracker.reasons;
-				expect(reasons).toEqual([
-					{
-						kind: 'docker-image-pulled',
-						ref: 'registry.example.com/devstack/image:latest',
-						digest: 'sha256:deadbeef',
-					},
-				]);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
-		}).pipe(Effect.provide(layerRuntimeInvalidationTracker)),
+		}),
 	);
 
 	it.effect('emits --label key=value flags before contextPath', () =>

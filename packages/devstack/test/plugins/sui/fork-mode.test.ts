@@ -246,7 +246,11 @@ describe('sui fork mode', () => {
 
 	it('disables the faucet when explicitly turned off', () => {
 		expect(
-			resolveForkWhale({ mode: 'fork', upstream: 'testnet', faucet: { enabled: false, whale: '0xabc' } }),
+			resolveForkWhale({
+				mode: 'fork',
+				upstream: 'testnet',
+				faucet: { enabled: false, whale: '0xabc' },
+			}),
 		).toBeNull();
 	});
 
@@ -272,12 +276,8 @@ describe('sui fork mode', () => {
 
 	it('keys a distinct fork data dir when the faucet whale changes', () => {
 		const base = { mode: 'fork', upstream: 'testnet', checkpoint: 1 } as const;
-		const withWhale = forkDataDirKey(
-			withForkFaucetSeed({ ...base, faucet: { whale: '0xabc' } }),
-		);
-		const withOther = forkDataDirKey(
-			withForkFaucetSeed({ ...base, faucet: { whale: '0xdef' } }),
-		);
+		const withWhale = forkDataDirKey(withForkFaucetSeed({ ...base, faucet: { whale: '0xabc' } }));
+		const withOther = forkDataDirKey(withForkFaucetSeed({ ...base, faucet: { whale: '0xdef' } }));
 		const without = forkDataDirKey(base);
 		expect(withWhale).not.toBe(without);
 		expect(withWhale).not.toBe(withOther);

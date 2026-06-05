@@ -3,9 +3,8 @@
 // This is the substrate-level desired-state identity primitive for a resolved
 // graph. Each node gets a deterministic input id from its declared static
 // inputs plus upstream node input ids; the graph gets an aggregate id from
-// node ids, graph shape, runtime-root-affecting options, and the devstack
-// version. Snapshot policy can compare these ids to warn or refuse restores;
-// warm restore uses the aggregate id for baseline validity.
+// node ids, graph shape, graph-relevant options, and the devstack version.
+// Snapshot policy can compare these ids to warn or refuse restores.
 
 import { createHash } from 'node:crypto';
 
@@ -80,7 +79,14 @@ const sortStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
 	[...values].sort((a, b) => a.localeCompare(b));
 
 export const graphRelevantOptions = (options: DevstackOptions): unknown => {
-	const { renderer: _renderer, extras: _extras, codegen: _codegen, ...rest } = options;
+	const {
+		renderer: _renderer,
+		extras: _extras,
+		codegen: _codegen,
+		stackName: _stackName,
+		stateDir: _stateDir,
+		...rest
+	} = options;
 	return rest;
 };
 

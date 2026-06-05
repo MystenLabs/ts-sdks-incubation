@@ -425,8 +425,8 @@ export const runStackWithBoot = (
 			//      command-pump fork + stop-bridge fork.
 			//   2. caller: `opts.boot?.beforeInitialAcquire(...)`.
 			// `superviseStackEffect` runs this whole composed effect BEFORE
-				// `runInitialAcquire`, so the caller hook (the CLI's recover/
-				// roster/IPC/TUI bundle) runs before first acquire too; and because
+			// `runInitialAcquire`, so the caller hook (the CLI's recover/
+			// roster/IPC/TUI bundle) runs before first acquire too; and because
 			// the built-in stop-bridge is armed first, a `stop()` raised during
 			// a caller hook always has a command bridge.
 			beforeInitialAcquire: (handle) =>
@@ -476,8 +476,8 @@ export const runStackWithBoot = (
 			// ORDER: BUILT-IN readiness-gate resolution first, THEN caller.
 			//   1. built-in: the status scan that resolves `bootDeferred`.
 			//   2. caller: `opts.boot?.withinScope(...)`.
-				// Resolving the gate first means a caller `withinScope` can never
-				// delay `handle.start`.
+			// Resolving the gate first means a caller `withinScope` can never
+			// delay `handle.start`.
 			withinScope: (handle) =>
 				// Resolve the boot gate from the SUPERVISOR-OWNED readiness
 				// signal. `superviseStackEffect` only calls `withinScope`

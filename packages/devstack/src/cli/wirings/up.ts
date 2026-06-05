@@ -12,7 +12,6 @@
 // renderer already emits in non-TTY mode. The sibling `apply` verb (no
 // TUI) uses `Logger.consolePretty()` because its consumer is CI.
 
-import { readFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 
 import { Cause, Effect, Exit, FileSystem, Queue, Scope, Stream } from 'effect';
@@ -70,6 +69,7 @@ import {
 } from './identity.ts';
 import { installCommandChannelBridge } from './up-ipc.ts';
 import { provideFileSystem } from './provide-file-system.ts';
+import { readDevstackVersion } from './read-devstack-version.ts';
 
 const rosterPathsFor = (stackRoot: string) => ({
 	stackLockFile: resolvePath(stackRoot, 'stack.lock'),
@@ -116,6 +116,7 @@ const makeSnapshotCommandHandler = (params: {
 									id: cmd.snapshotId,
 									...(cmd.name === undefined ? {} : { label: cmd.name }),
 									graphInput,
+									...(cmd.replaceExisting === true ? { replaceExistingLabel: true } : {}),
 								}),
 							),
 						),
@@ -226,6 +227,10 @@ export interface UpBootBundleInput {
 		readonly id: string;
 		readonly stalePolicy: 'warn' | 'block' | 'clean-start';
 	};
+	readonly snapshotCache?: {
+		readonly name: string;
+		readonly existingSnapshotId?: string;
+	};
 }
 
 export interface UpBootBundle {
@@ -234,6 +239,7 @@ export interface UpBootBundle {
 }
 
 type StartFromSnapshot = NonNullable<UpBootBundleInput['startFromSnapshot']>;
+type SnapshotCache = NonNullable<UpBootBundleInput['snapshotCache']>;
 
 /**
  * Build the CLI's boot concerns as a VALUE bundle the seam consumes — the
@@ -254,9 +260,12 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 		devstackVersion,
 		rendererMode,
 		startFromSnapshot,
+		snapshotCache,
 	} = input;
 
 	const computeGraphInput = computeSnapshotGraphInputFromStack({ stack, devstackVersion });
+	let refreshSnapshotCache =
+		snapshotCache !== undefined && snapshotCache.existingSnapshotId === undefined;
 
 	// The snapshot/wipe/prune `commandHandler` — a FACTORY the seam resolves
 	// against its LIVE substrate (the seam runs it before `startSupervisor`
@@ -296,9 +305,47 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 				// the sentinel — it failed `IdentityMissingLive` every boot.
 				yield* recoverInterruptedRestore({
 					liveRoot: stackPaths.stackRoot,
-					restoreSnapshot: (id) => snapshot.restore({ id }),
+					restoreSnapshot: (id) =>
+						computeGraphInput.pipe(
+							Effect.flatMap((currentGraphInput) =>
+								snapshot.restore({
+									id,
+									currentGraphInput,
+									graphInputMismatchPolicy: 'warn',
+								}),
+							),
+						),
 				});
-				if (startFromSnapshot !== undefined) {
+				if (snapshotCache !== undefined) {
+					if (snapshotCache.existingSnapshotId === undefined) {
+						yield* Effect.logWarning(
+							`snapshot cache ${snapshotCache.name} was not found; boot will refresh it`,
+						);
+					} else {
+						const graphInput = yield* computeGraphInput;
+						const catalog = yield* provideFileSystem(fs, snapshot.list);
+						const entry = catalog.find(
+							(snapshotEntry) => snapshotEntry.id === snapshotCache.existingSnapshotId,
+						);
+						const snapshotGraphInputId = entry?.metadata?.graphInput.graphInputId ?? null;
+						if (snapshotGraphInputId === graphInput.graphInputId) {
+							refreshSnapshotCache = false;
+							yield* provideFileSystem(
+								fs,
+								snapshot.restore({
+									id: snapshotCache.existingSnapshotId,
+									currentGraphInput: graphInput,
+									graphInputMismatchPolicy: 'block',
+								}),
+							);
+						} else {
+							refreshSnapshotCache = true;
+							yield* Effect.logWarning(
+								`snapshot cache ${snapshotCache.name} graph input is stale or unreadable; boot will refresh it`,
+							);
+						}
+					}
+				} else if (startFromSnapshot !== undefined) {
 					const graphInput = yield* computeGraphInput;
 					if (startFromSnapshot.stalePolicy === 'clean-start') {
 						const catalog = yield* provideFileSystem(fs, snapshot.list);
@@ -366,6 +413,15 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 					),
 				);
 			}),
+		withinScope: (h) =>
+			Effect.gen(function* () {
+				if (snapshotCache === undefined || !refreshSnapshotCache) return;
+				yield* h.supervisor.runCommand({
+					tag: 'snapshot.capture',
+					name: snapshotCache.name,
+					replaceExisting: true,
+				});
+			}),
 	};
 
 	return { commandHandler, boot };
@@ -389,11 +445,26 @@ export const runUpLive = (
 		readonly renderer: GlobalFlags['renderer'];
 		readonly stdoutIsTty: boolean;
 		readonly fromSnapshot?: string;
+		readonly snapshotCache?: string;
 		readonly snapshotStalePolicy?: GlobalFlags['snapshotStalePolicy'];
 	},
 ): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
+		if (options.fromSnapshot !== undefined && options.snapshotCache !== undefined) {
+			return yield* Effect.fail(
+				new CliUsageError({
+					message: '--snapshot-cache cannot be combined with --from-snapshot',
+				}),
+			);
+		}
+		if (options.snapshotCache !== undefined && options.snapshotStalePolicy !== undefined) {
+			return yield* Effect.fail(
+				new CliUsageError({
+					message: '--snapshot-stale is only valid with --from-snapshot',
+				}),
+			);
+		}
 		const loadExit = yield* Effect.exit(loader.load(configPath));
 		if (Exit.isFailure(loadExit)) {
 			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
@@ -418,26 +489,14 @@ export const runUpLive = (
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
 		const appRoot = dirname(loaded.resolvedConfigPath);
 
-		// devstack version — a graph input signal (an SDK upgrade must
-		// invalidate stale snapshots). Reuses the `surfaces/cli/index.ts`
-		// `readFileSync(new URL('../../../package.json'))` pattern, relative
-		// to THIS file. Defensive: a missing/garbled package.json degrades to
-		// a sentinel rather than wedging boot.
-		const devstackVersion = ((): string => {
-			try {
-				const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
-				const pkg = JSON.parse(raw) as { readonly version?: unknown };
-				return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
-			} catch {
-				return '0.0.0';
-			}
-		})();
+		const devstackVersion = readDevstackVersion();
 		const rendererMode = resolveUpRendererMode({
 			cliRenderer: options.renderer,
 			stackRenderer: stack.options.renderer,
 			stdoutIsTty: options.stdoutIsTty,
 		});
 		let startFromSnapshot: StartFromSnapshot | undefined;
+		let snapshotCache: SnapshotCache | undefined;
 		if (options.fromSnapshot !== undefined) {
 			const resolved = yield* makeSnapshotReader({ stackRoot: effectiveIdentity.stackRoot })
 				.resolve(options.fromSnapshot)
@@ -470,6 +529,37 @@ export const runUpLive = (
 					);
 			}
 		}
+		if (options.snapshotCache !== undefined) {
+			const resolved = yield* makeSnapshotReader({ stackRoot: effectiveIdentity.stackRoot })
+				.resolve(options.snapshotCache)
+				.pipe(
+					Effect.mapError(
+						(cause) =>
+							new CliInternalError({
+								message: 'snapshot lookup failed',
+								cause,
+							}),
+					),
+				);
+			switch (resolved.tag) {
+				case 'found':
+					snapshotCache = {
+						name: options.snapshotCache,
+						existingSnapshotId: resolved.entry.snapshotId,
+					};
+					break;
+				case 'not-found':
+					snapshotCache = { name: options.snapshotCache };
+					break;
+				case 'ambiguous':
+					return yield* Effect.fail(
+						new CliUsageError({
+							message: `snapshot reference is ambiguous: ${resolved.snapshotRef}`,
+							hint: `matches: ${resolved.matches.map((entry) => entry.snapshotId).join(', ')}`,
+						}),
+					);
+			}
+		}
 
 		// The CLI concerns (snapshot/wipe/prune `commandHandler` + the
 		// recover/roster/IPC/TUI boot hooks) as a value bundle — the
@@ -482,6 +572,7 @@ export const runUpLive = (
 			devstackVersion,
 			rendererMode,
 			...(startFromSnapshot === undefined ? {} : { startFromSnapshot }),
+			...(snapshotCache === undefined ? {} : { snapshotCache }),
 		});
 
 		// The ONE boot seam. `runStackWithBoot` owns the substrate Layer

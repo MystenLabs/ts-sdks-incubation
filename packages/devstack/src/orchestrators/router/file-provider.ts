@@ -619,4 +619,3 @@ const routeCollisionMessage = (collision: {
 		`and hostname '${collision.hostname}' for dispatch ids: ${ids}`
 	);
 };
-

@@ -129,10 +129,30 @@ describe('graph input identity', () => {
 		}),
 	);
 
-	it.effect('CHANGES when a runtime identity option changes', () =>
+	it.effect('is stable when raw stackName changes', () =>
 		Effect.gen(function* () {
 			const a = fakeStack([{ id: 'sui' }], { stackName: 'alpha' });
 			const b = fakeStack([{ id: 'sui' }], { stackName: 'beta' });
+			const fa = yield* graphInputIdFor({ stack: a });
+			const fb = yield* graphInputIdFor({ stack: b });
+			expect(fa).toBe(fb);
+		}),
+	);
+
+	it.effect('is stable when raw stateDir changes', () =>
+		Effect.gen(function* () {
+			const a = fakeStack([{ id: 'sui' }], { stateDir: '/tmp/a' });
+			const b = fakeStack([{ id: 'sui' }], { stateDir: '/tmp/b' });
+			const fa = yield* graphInputIdFor({ stack: a });
+			const fb = yield* graphInputIdFor({ stack: b });
+			expect(fa).toBe(fb);
+		}),
+	);
+
+	it.effect('CHANGES when network options change', () =>
+		Effect.gen(function* () {
+			const a = fakeStack([{ id: 'sui' }], { network: { chain: 'localnet' } });
+			const b = fakeStack([{ id: 'sui' }], { network: { chain: 'testnet' } });
 			const fa = yield* graphInputIdFor({ stack: a });
 			const fb = yield* graphInputIdFor({ stack: b });
 			expect(fa).not.toBe(fb);

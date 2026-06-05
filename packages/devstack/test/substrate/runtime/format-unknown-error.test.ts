@@ -30,9 +30,9 @@ describe('formatUnknownError', () => {
 	// objects, NOT Error instances — `String(obj)` yields `[object Object]`.
 	// We must prefer their `.message`.
 	it('prefers a tagged object .message over [object Object]', () => {
-		expect(formatUnknownError({ _tag: 'AccountSignError', message: 'no SUI gas coins for 0xabc' })).toBe(
-			'no SUI gas coins for 0xabc',
-		);
+		expect(
+			formatUnknownError({ _tag: 'AccountSignError', message: 'no SUI gas coins for 0xabc' }),
+		).toBe('no SUI gas coins for 0xabc');
 	});
 
 	it('chains a tagged object .cause into the message', () => {

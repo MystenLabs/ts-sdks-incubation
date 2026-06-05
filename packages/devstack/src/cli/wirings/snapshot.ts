@@ -6,7 +6,6 @@
 // `delete` are direct/offline only; they refuse to run when a
 // supervisor is live.
 
-import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { Effect, Exit, FileSystem, Logger } from 'effect';
@@ -38,20 +37,11 @@ import {
 } from './identity.ts';
 import { buildDirectSnapshotLayers, buildVerbLayers } from '../../orchestrators/layers.ts';
 import { provideFileSystem } from './provide-file-system.ts';
+import { readDevstackVersion } from './read-devstack-version.ts';
 
 const LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS = 60 * 60 * 1000;
 
 const mintCliSnapshotId = (): string => `snap-${Date.now()}-${mintRandomSuffix(8)}`;
-
-const readDevstackVersion = (): string => {
-	try {
-		const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
-		const pkg = JSON.parse(raw) as { readonly version?: unknown };
-		return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
-	} catch {
-		return '0.0.0';
-	}
-};
 
 /** Structured payload that the supervisor's command-channel bridge
  *  attaches to the ack/error reply for `snapshot.capture`. Mirrors the
@@ -168,11 +158,8 @@ export const runSnapshotRestoreDirect = (
 		// skips ONLY the cross-plugin contribution guard (the snapshot's own
 		// recorded identity has nothing live to disagree with). The runtime
 		// guard (app/stack/network) and the snapshot-side emptiness refusal
-		// still fire. This is the SAME path warm boot + interrupted-restore
-		// recovery take, so all three boot-time restores agree. (Previously
-		// this synthesized participants from `meta.identity` to make the
-		// contribution guard a tautology; that synthesis is now intrinsic to
-		// the empty-participants contract.)
+		// still fire. This is the same empty-participants startup restore
+		// contract interrupted-restore recovery uses.
 		yield* provideFileSystem(fs, snapshot.restore({ id: snapshotId }));
 	});
 	const restored = program.pipe(

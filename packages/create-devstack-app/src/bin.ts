@@ -47,9 +47,7 @@ function parsePluginList(value: string): Set<PluginId> {
 		const id = raw.trim();
 		if (id === '') continue;
 		if (!VALID_PLUGINS.has(id)) {
-			throw new Error(
-				`unknown plugin '${id}'. Valid: core, ${OPTIONAL_PLUGINS.join(', ')}.`,
-			);
+			throw new Error(`unknown plugin '${id}'. Valid: core, ${OPTIONAL_PLUGINS.join(', ')}.`);
 		}
 		selected.add(id as PluginId);
 	}

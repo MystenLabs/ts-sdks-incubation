@@ -204,6 +204,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 					renderer: flags.renderer,
 					stdoutIsTty: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
 					fromSnapshot: flags.fromSnapshot,
+					snapshotCache: flags.snapshotCache,
 					snapshotStalePolicy: flags.snapshotStalePolicy,
 				}),
 		},

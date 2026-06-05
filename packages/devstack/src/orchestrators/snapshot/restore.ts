@@ -148,7 +148,7 @@ export interface RestoreParticipant {
 	 *  side-state). Identity-guard runs FIRST and unilaterally; this
 	 *  is the plugin's extra hook. */
 	readonly preRestore?: Effect.Effect<void>;
-		/** Post-restore hook: re-validate caches or plugin side state. */
+	/** Post-restore hook: re-validate caches or plugin side state. */
 	readonly postRestore?: Effect.Effect<void>;
 }
 
@@ -845,9 +845,9 @@ export interface RestoreInputs {
 	readonly runtimeBackupPath: string;
 	/** Live-stack participants whose `liveIdentity` probes feed the
 	 *  cross-plugin CONTRIBUTION guard (`runIdentityGuard`). An EMPTY list
-		 *  means "no live stack to compare against" — startup restore,
-		 *  interrupted-restore recovery, the offline CLI verb, or the live
-		 *  supervisor's own first acquire. In that case the
+	 *  means "no live stack to compare against" — startup restore,
+	 *  interrupted-restore recovery, the offline CLI verb, or the live
+	 *  supervisor's own first acquire. In that case the
 	 *  contribution guard is satisfied tautologically (there is nothing live
 	 *  to disagree with the snapshot's recorded identity) and is SKIPPED;
 	 *  the snapshot-side emptiness refusal (`requireIdentity`) and the
@@ -964,15 +964,15 @@ export const runRestore = (
 			inputs.runtimeIdentity,
 		);
 		// The cross-plugin CONTRIBUTION guard is conditional on there being a
-			// LIVE stack to compare against. Startup/offline restore
-			// (interrupted-restore recovery, the offline CLI verb, or the live
-			// supervisor's own initial acquire) runs with `participants === []`:
-			// the supervisor has not yet registered any snapshot participant, so
-			// there is no live identity to contribute. Running `runIdentityGuard`
-			// against an empty live slice would ALWAYS fail `IdentityMissingLive`
-			// because the snapshot recorded keys that no live participant has
-			// contributed yet. With no live stack the comparison is vacuously
-			// satisfied, so skip it.
+		// LIVE stack to compare against. Startup/offline restore
+		// (interrupted-restore recovery, the offline CLI verb, or the live
+		// supervisor's own initial acquire) runs with `participants === []`:
+		// the supervisor has not yet registered any snapshot participant, so
+		// there is no live identity to contribute. Running `runIdentityGuard`
+		// against an empty live slice would ALWAYS fail `IdentityMissingLive`
+		// because the snapshot recorded keys that no live participant has
+		// contributed yet. With no live stack the comparison is vacuously
+		// satisfied, so skip it.
 		// The snapshot-side emptiness refusal still fires: a snapshot that
 		// recorded NO identity is untrusted regardless of a live stack.
 		if (inputs.participants.length === 0) {

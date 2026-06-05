@@ -59,16 +59,13 @@ describe('api/define-devstack-with', () => {
 
 	it('BuildCtx.network narrows by Mode — local-mode context carries the local NetworkConfig', () => {
 		let observedMode: string | null = null;
-		const stack = defineDevstackWith(
-			{ network: localNetwork, stackName: 'with-local' },
-			(ctx) => {
-				// Runtime confirmation of narrowing — the compile-time test
-				// fixture at `test/fixtures/typecheck/complex.ts` pins the
-				// type-level half (mode-incompatible factory access fails).
-				observedMode = ctx.network.mode;
-				return [leaf] as const;
-			},
-		);
+		const stack = defineDevstackWith({ network: localNetwork, stackName: 'with-local' }, (ctx) => {
+			// Runtime confirmation of narrowing — the compile-time test
+			// fixture at `test/fixtures/typecheck/complex.ts` pins the
+			// type-level half (mode-incompatible factory access fails).
+			observedMode = ctx.network.mode;
+			return [leaf] as const;
+		});
 		expect(observedMode).toBe('local');
 		expect(readStackEngine(stack).members).toHaveLength(1);
 	});
@@ -76,16 +73,13 @@ describe('api/define-devstack-with', () => {
 	it('BuildCtx.network narrows by Mode — fork-mode context carries the fork NetworkConfig', () => {
 		let observedMode: string | null = null;
 		let observedCheckpoint: string | undefined;
-		const stack = defineDevstackWith(
-			{ network: forkNetwork, stackName: 'with-fork' },
-			(ctx) => {
-				observedMode = ctx.network.mode;
-				if (ctx.network.mode === 'fork') {
-					observedCheckpoint = ctx.network.checkpoint;
-				}
-				return [leaf] as const;
-			},
-		);
+		const stack = defineDevstackWith({ network: forkNetwork, stackName: 'with-fork' }, (ctx) => {
+			observedMode = ctx.network.mode;
+			if (ctx.network.mode === 'fork') {
+				observedCheckpoint = ctx.network.checkpoint;
+			}
+			return [leaf] as const;
+		});
 		expect(observedMode).toBe('fork');
 		expect(observedCheckpoint).toBe('1');
 		expect(readStackEngine(stack).members).toHaveLength(1);
@@ -113,9 +107,7 @@ describe('api/define-devstack-with', () => {
 		});
 		const callbackEngine = readStackEngine(viaCallback);
 		const flatEngine = readStackEngine(viaFlat);
-		expect(callbackEngine.members.map((m) => m.id)).toEqual(
-			flatEngine.members.map((m) => m.id),
-		);
+		expect(callbackEngine.members.map((m) => m.id)).toEqual(flatEngine.members.map((m) => m.id));
 		expect(callbackEngine.options.stackName).toBe(flatEngine.options.stackName);
 	});
 

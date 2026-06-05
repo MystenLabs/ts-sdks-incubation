@@ -124,6 +124,7 @@ export interface SnapshotOrchestrator {
 		readonly id?: string;
 		readonly label?: string;
 		readonly graphInput: SnapshotGraphInputIdentity;
+		readonly replaceExistingLabel?: boolean;
 		readonly participants?: ReadonlyArray<SnapshotParticipant>;
 		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
@@ -344,6 +345,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 			id,
 			label,
 			graphInput,
+			replaceExistingLabel,
 			participants,
 			resume,
 		}) =>
@@ -378,7 +380,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				// contributions never re-register → empty `config.ts`). Scoping the
 				// lock to the publish and running `resumeAfterCapture` AFTER it
 				// releases lets the re-acquire claim containers normally.
-				const meta = yield* Effect.scoped(
+				const { meta, replacedSnapshotIds } = yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* acquireStackLock(paths.stackLockFile);
 						const fs = yield* FileSystem.FileSystem;
@@ -400,7 +402,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						// gen; no TDZ fires because `capture` is invoked only after
 						// the outer gen has resolved all `const` bindings.
 						const existing = yield* list;
-						if (existing.some((entry) => entry.metadata?.label === snapshotName)) {
+						const duplicateLabels = existing.filter(
+							(entry) => entry.metadata?.label === snapshotName,
+						);
+						if (duplicateLabels.length > 0 && replaceExistingLabel !== true) {
 							return yield* Effect.fail(
 								new SnapshotIdError({
 									operation: 'capture',
@@ -410,11 +415,14 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								}),
 							);
 						}
+						const replacedSnapshotIds = duplicateLabels
+							.map((entry) => entry.id)
+							.filter((entryId) => entryId !== snapshotId);
 
 						// Build + publish the artifact (gather → stop → commit +
 						// tar + meta), atomically via stage-and-swap so watchers /
 						// `list` never observe a half-written tree.
-						return yield* stageAndSwap({
+						const meta = yield* stageAndSwap({
 							targetPath: artifactDir,
 							stagingPath: stagingDir,
 							backupPath: backupDir,
@@ -431,6 +439,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								runtime,
 							}),
 						});
+						return { meta, replacedSnapshotIds };
 					}),
 				);
 				// Post-publish bounce tail — runs with `stack.lock` RELEASED (see
@@ -445,6 +454,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					stack: identity.stack,
 					...(resume === undefined ? {} : { resume }),
 				});
+				yield* Effect.forEach(replacedSnapshotIds, del, { discard: true });
 				return meta;
 			});
 
@@ -458,10 +468,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 			Effect.gen(function* () {
 				const snapshotId = yield* validateSnapshotId('restore', id);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
-					// The effective participant set is the live registered set (or an
-					// explicit override). During startup restore, interrupted-restore
-					// recovery, and offline CLI restore, no plugin has registered yet,
-					// so this is EMPTY. `runRestore` reads an empty
+				// The effective participant set is the live registered set (or an
+				// explicit override). During startup restore, interrupted-restore
+				// recovery, and offline CLI restore, no plugin has registered yet,
+				// so this is EMPTY. `runRestore` reads an empty
 				// participant set as "no live stack to compare against" and skips
 				// ONLY the cross-plugin contribution guard (the runtime app/stack/
 				// network guard + the snapshot-side emptiness refusal still fire).

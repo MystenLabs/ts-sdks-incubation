@@ -68,8 +68,7 @@ describe('README CLI verb list parity', () => {
 	it('every README verb is registered in command-tree.ts', () => {
 		const missing = [...readmeSet].filter(
 			(verb) =>
-				!registrySet.has(verb as (typeof VERBS)[number]) &&
-				!REGISTRY_OMITTED_VERBS.includes(verb),
+				!registrySet.has(verb as (typeof VERBS)[number]) && !REGISTRY_OMITTED_VERBS.includes(verb),
 		);
 		expect(missing, `README verbs not in VERBS registry: ${missing.join(', ')}`).toEqual([]);
 	});

@@ -54,9 +54,7 @@ export interface ResolvedDiscoveryEnv {
 	readonly stateDir: string;
 }
 
-const firstNonEmpty = (
-	...candidates: ReadonlyArray<string | undefined>
-): string | undefined => {
+const firstNonEmpty = (...candidates: ReadonlyArray<string | undefined>): string | undefined => {
 	for (const candidate of candidates) {
 		if (candidate !== undefined && candidate !== '') return candidate;
 	}

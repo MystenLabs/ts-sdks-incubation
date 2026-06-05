@@ -24,7 +24,7 @@
 // refactors `list` to an `Effect.fn` decorator that introduces a real
 // TDZ window), this test surfaces the breakage immediately.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -41,6 +41,8 @@ import {
 	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	layerSnapshotOrchestrator,
+	type SnapshotMetadata,
+	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/index.ts';
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
@@ -63,6 +65,17 @@ const graphInput = {
 	graphInputId: 'graph-fixture',
 	nodes: [],
 } as const;
+
+const captureParticipant: SnapshotParticipant = {
+	plugin: 'fixture/plugin',
+	decl: {
+		kind: 'snapshotable',
+		subtrees: [],
+		missingTolerance: 'fine',
+	},
+	captureIdentity: Effect.succeed({ fixture: 'identity' }),
+	captureContribution: Effect.succeed(undefined),
+};
 
 /** A container runtime whose `inspectByLabels` returns no containers —
  *  the `capture` flow never reaches the participants because we trip
@@ -137,6 +150,51 @@ describe('SnapshotOrchestrator.capture — label uniqueness branch (TDZ regressi
 					expect(causeJson).not.toContain('ReferenceError');
 					expect(causeJson).not.toContain('Cannot access'); /* TDZ message fragment */
 				}
+			}).pipe(
+				Effect.provide(
+					(() => {
+						const base = Layer.mergeAll(
+							NodeFileSystem.layer,
+							NodePath.layer,
+							layerRuntimeRoot(root),
+							layerIdentity(identity),
+							containerRuntimeLayer,
+						);
+						const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(base));
+						return layerSnapshotOrchestrator.pipe(Layer.provideMerge(withStackPaths));
+					})(),
+				),
+			),
+		),
+	);
+
+	it.effect('can replace an existing label after publishing the replacement snapshot', () =>
+		withTempRoot('snapshot-replace-label', (root) =>
+			Effect.gen(function* () {
+				const snapshotDir = join(root, 'stacks', String(identity.stack), 'snapshots');
+				const duplicateLabel = 'cache-baseline';
+				const replacementId = 'snap-replacement-fixture';
+				plantSnapshot(snapshotDir, duplicateLabel);
+
+				const orchestrator = yield* SnapshotOrchestratorService;
+				const meta = yield* orchestrator.capture({
+					id: replacementId,
+					label: duplicateLabel,
+					graphInput,
+					replaceExistingLabel: true,
+					participants: [captureParticipant],
+				});
+
+				expect(meta.id).toBe(replacementId);
+				expect(meta.label).toBe(duplicateLabel);
+				expect(existsSync(join(snapshotDir, 'snap-existing-fixture'))).toBe(false);
+				expect(existsSync(join(snapshotDir, replacementId))).toBe(true);
+
+				const replacementMeta = JSON.parse(
+					readFileSync(join(snapshotDir, replacementId, SnapshotLayout.metaFile), 'utf8'),
+				) as SnapshotMetadata;
+				expect(replacementMeta.label).toBe(duplicateLabel);
+				expect(replacementMeta.graphInput.graphInputId).toBe(graphInput.graphInputId);
 			}).pipe(
 				Effect.provide(
 					(() => {

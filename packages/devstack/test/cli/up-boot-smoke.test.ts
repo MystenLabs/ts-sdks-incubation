@@ -36,15 +36,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, FileSystem, SubscriptionRef } from 'effect';
+import { Deferred, Effect, Exit, FileSystem, SubscriptionRef } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 
 import { defineDevstack } from '../../src/api/define-devstack.ts';
 import { definePlugin } from '../../src/api/define-plugin.ts';
 import type { BootError } from '../../src/api/run-stack.ts';
-import { runStackWithBoot } from '../../src/api/run-stack-internal.ts';
+import { runStackWithBoot, type CommandHandlerFactory } from '../../src/api/run-stack-internal.ts';
 import { buildUpBootBundle } from '../../src/cli/wirings/up.ts';
 import { findCliSupervisorLiveError, identityValueFor } from '../../src/cli/wirings/identity.ts';
+import type { EngineCommand } from '../../src/substrate/events.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
 import { claim, release, type SupervisedStack } from '../../src/substrate/runtime/index.ts';
 import {
@@ -274,6 +275,59 @@ describe('cli/up boot smoke (Docker-free)', () => {
 			expect(projection.identity.app).toBe(APP);
 			expect(projection.identity.stack).toBe(STACK);
 			expect(projection.identity.network).toBe(NETWORK);
+		} finally {
+			await Effect.runPromise(handle.stop);
+			await Effect.runPromise(handle.awaitShutdown);
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it('submits a replacement snapshot capture after boot when snapshot cache is missing', async () => {
+		const runtimeRoot = makeRuntimeRoot();
+		const observedCommand = Effect.runSync(Deferred.make<EngineCommand>());
+		const leaf = definePlugin({
+			id: 'test/up-smoke-snapshot-cache-leaf',
+			role: 'service' as const,
+			section: 'service',
+			start: () => Effect.succeed({ ok: true } as const),
+		});
+		const stack = defineDevstack({ members: [leaf], stackName: STACK });
+
+		const fakeCommandHandler: CommandHandlerFactory = Effect.succeed((cmd) =>
+			Deferred.succeed(observedCommand, cmd).pipe(Effect.as([])),
+		);
+		const { boot } = buildUpBootBundle({
+			stack: inertStack,
+			identityValue,
+			runtimeRoot,
+			devstackVersion: '0.0.0-smoke',
+			rendererMode: 'plain',
+			snapshotCache: { name: 'dev-baseline' },
+		});
+		const handle = runStackWithBoot(stack, {
+			identity: { app: APP, stack: STACK, network: NETWORK },
+			runtimeRoot,
+			appRoot: runtimeRoot,
+			commandHandler: fakeCommandHandler,
+			boot,
+		});
+
+		try {
+			const exit = await Effect.runPromise(
+				Effect.exit(handle.start.pipe(Effect.timeout('10 seconds'))),
+			);
+			expect(Exit.isSuccess(exit)).toBe(true);
+			const command = await Effect.runPromise(
+				Deferred.await(observedCommand).pipe(Effect.timeoutOption('10 seconds')),
+			);
+			expect(command._tag).toBe('Some');
+			if (command._tag === 'Some') {
+				expect(command.value).toEqual({
+					tag: 'snapshot.capture',
+					name: 'dev-baseline',
+					replaceExisting: true,
+				});
+			}
 		} finally {
 			await Effect.runPromise(handle.stop);
 			await Effect.runPromise(handle.awaitShutdown);

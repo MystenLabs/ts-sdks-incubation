@@ -180,30 +180,30 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 	it('defaults to a container-reachable bind address for routed stacks', async () => {
 		const stateRoot = mkdtempSync(join(tmpdir(), 'devstack-wallet-bind-'));
 		try {
-		let allocation: { readonly preferred?: number; readonly probeHost?: string } | null = null;
-		const ctx: WalletAcquireContext = {
-			app: 'app',
-			stack: 'main',
-			chain: 'chain',
-			stateRoot,
-			allocatePort: (preferred, probeHost) => {
-				allocation = { preferred, probeHost };
-				return Effect.succeed(0);
-			},
-			resolveAccounts: () => Effect.succeed([fakeAccount]),
-			routerFrontedUrl: 'http://api.app.localhost:6173',
-			routedAppOrigin: null,
-		};
+			let allocation: { readonly preferred?: number; readonly probeHost?: string } | null = null;
+			const ctx: WalletAcquireContext = {
+				app: 'app',
+				stack: 'main',
+				chain: 'chain',
+				stateRoot,
+				allocatePort: (preferred, probeHost) => {
+					allocation = { preferred, probeHost };
+					return Effect.succeed(0);
+				},
+				resolveAccounts: () => Effect.succeed([fakeAccount]),
+				routerFrontedUrl: 'http://api.app.localhost:6173',
+				routedAppOrigin: null,
+			};
 
-		const value = await Effect.runPromise(
-			Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
-				Effect.provide(NodeFileSystem.layer),
-			),
-		);
+			const value = await Effect.runPromise(
+				Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				),
+			);
 
-		expect(allocation).toEqual({ preferred: undefined, probeHost: '0.0.0.0' });
-		expect(value.server.url).toBe('http://0.0.0.0:0');
-		expect(value.url).toBe('http://api.app.localhost:6173');
+			expect(allocation).toEqual({ preferred: undefined, probeHost: '0.0.0.0' });
+			expect(value.server.url).toBe('http://0.0.0.0:0');
+			expect(value.url).toBe('http://api.app.localhost:6173');
 		} finally {
 			rmSync(stateRoot, { recursive: true, force: true });
 		}
@@ -212,24 +212,24 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 	it('keeps direct fallback URLs loopback-readable when binding all interfaces', async () => {
 		const stateRoot = mkdtempSync(join(tmpdir(), 'devstack-wallet-direct-'));
 		try {
-		const ctx: WalletAcquireContext = {
-			app: 'app',
-			stack: 'main',
-			chain: 'chain',
-			stateRoot,
-			allocatePort: () => Effect.succeed(0),
-			resolveAccounts: () => Effect.succeed([fakeAccount]),
-			routerFrontedUrl: null,
-			routedAppOrigin: null,
-		};
+			const ctx: WalletAcquireContext = {
+				app: 'app',
+				stack: 'main',
+				chain: 'chain',
+				stateRoot,
+				allocatePort: () => Effect.succeed(0),
+				resolveAccounts: () => Effect.succeed([fakeAccount]),
+				routerFrontedUrl: null,
+				routedAppOrigin: null,
+			};
 
-		const value = await Effect.runPromise(
-			Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
-				Effect.provide(NodeFileSystem.layer),
-			),
-		);
+			const value = await Effect.runPromise(
+				Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				),
+			);
 
-		expect(value.url).toBe('http://127.0.0.1:0');
+			expect(value.url).toBe('http://127.0.0.1:0');
 		} finally {
 			rmSync(stateRoot, { recursive: true, force: true });
 		}

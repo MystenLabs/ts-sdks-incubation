@@ -58,6 +58,10 @@ const accepting: ReadonlyArray<{ readonly label: string; readonly value: EngineC
 		label: 'snapshot.capture with snapshotId + name',
 		value: { tag: 'snapshot.capture', snapshotId: 's1', name: 'baseline' },
 	},
+	{
+		label: 'snapshot.capture with replacement',
+		value: { tag: 'snapshot.capture', name: 'baseline', replaceExisting: true },
+	},
 ];
 
 // Each rejecting payload exercises a field-level guard: a required field
@@ -110,6 +114,10 @@ const rejecting: ReadonlyArray<{ readonly label: string; readonly value: unknown
 		value: { tag: 'snapshot.capture', snapshotId: 1 },
 	},
 	{ label: 'snapshot.capture numeric name', value: { tag: 'snapshot.capture', name: 5 } },
+	{
+		label: 'snapshot.capture string replaceExisting',
+		value: { tag: 'snapshot.capture', replaceExisting: 'true' },
+	},
 	// Structural rejections.
 	{ label: 'null', value: null },
 	{ label: 'undefined', value: undefined },

@@ -74,12 +74,7 @@ export {
 } from './TxEffectsView.tsx';
 export { Breadcrumbs, type BreadcrumbsProps, type BreadcrumbItem } from './Breadcrumbs.tsx';
 export { Tooltip, type TooltipProps } from './Tooltip.tsx';
-export {
-	Skeleton,
-	type SkeletonProps,
-	SkeletonRows,
-	type SkeletonRowsProps,
-} from './Skeleton.tsx';
+export { Skeleton, type SkeletonProps, SkeletonRows, type SkeletonRowsProps } from './Skeleton.tsx';
 export { Slider, type SliderProps } from './Slider.tsx';
 export { Switch, type SwitchProps } from './Switch.tsx';
 

@@ -26,6 +26,7 @@ import {
 } from '../../substrate/runtime/index.ts';
 import { superviseStackWithProductionBoot } from '../../orchestrators/boot.ts';
 import {
+	computeSnapshotGraphInputFromStack,
 	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
 } from '../../orchestrators/snapshot/index.ts';
@@ -43,6 +44,7 @@ import {
 	type ResolvedIdentity,
 } from './identity.ts';
 import { buildVerbLayers } from '../../orchestrators/layers.ts';
+import { readDevstackVersion } from './read-devstack-version.ts';
 
 const LIVE_APPLY_ACK_TIMEOUT_MILLIS = 10 * 60 * 1000;
 
@@ -135,6 +137,10 @@ export const runApplyLive = (
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
 			const stackPaths = yield* StackPathsService;
+			const computeGraphInput = computeSnapshotGraphInputFromStack({
+				stack,
+				devstackVersion: readDevstackVersion(),
+			});
 			// Mirror the up-path recovery: resume any restore interrupted by a
 			// hard kill between the atomic swap and the image-promotion handoff
 			// completing (the interrupted-restore sentinel rode the swap into the
@@ -143,7 +149,16 @@ export const runApplyLive = (
 			const snapshot = yield* SnapshotOrchestratorService;
 			yield* recoverInterruptedRestore({
 				liveRoot: stackPaths.stackRoot,
-				restoreSnapshot: (id) => snapshot.restore({ id }),
+				restoreSnapshot: (id) =>
+					computeGraphInput.pipe(
+						Effect.flatMap((currentGraphInput) =>
+							snapshot.restore({
+								id,
+								currentGraphInput,
+								graphInputMismatchPolicy: 'warn',
+							}),
+						),
+					),
 			});
 			// The contribution dispatcher + post-acquire hook + built-in
 			// plugin-context extension are assembled in ONE place

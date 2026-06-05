@@ -78,7 +78,6 @@ import {
 	PostAcquireTasksService,
 	layerPostAcquireTasks,
 } from '../../src/substrate/runtime/post-acquire-tasks.ts';
-import { layerRuntimeInvalidationTracker } from '../../src/substrate/runtime/invalidation-tracker.ts';
 import {
 	LeaseBrokerService,
 	layerLeaseBroker,
@@ -263,7 +262,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		layerDockerHostDefault,
 		layerDockerCycleInitial,
 		layerStrategyRegistry,
-		layerRuntimeInvalidationTracker,
 	);
 
 	const childProcessSpawnerWired = NodeChildProcessSpawner.layer.pipe(
@@ -517,7 +515,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				// `withinScope` consumers that rebuild their env (the matrix probes
 				// rebuild `makeEnv` post-capture) pick up the fresh, write-ready
 				// clients instead of the dead pre-bounce ones.
-				refreshResolvedValues = Effect.gen(function* () {
+				refreshResolvedValues = Effect.sync(() => {
 					for (const [key] of handle.graph.nodes) {
 						const fresh = readResolvedSync(handle.registry, key);
 						if (fresh !== undefined) readyValues.set(key as string, fresh);

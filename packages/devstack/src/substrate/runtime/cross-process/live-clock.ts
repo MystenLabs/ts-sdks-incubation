@@ -47,6 +47,5 @@ export const LIVE_CLOCK: Clock.Clock = {
  *  wrap user-supplied body effects — those should inherit the caller's
  *  clock so TestClock-driven tests can adjust virtual time inside
  *  critical sections. See `cross-process/stack-lock.ts` for the discipline. */
-export const underLiveClock = <A, E, R>(
-	effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R> => Effect.provideService(effect, Clock.Clock, LIVE_CLOCK);
+export const underLiveClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+	Effect.provideService(effect, Clock.Clock, LIVE_CLOCK);

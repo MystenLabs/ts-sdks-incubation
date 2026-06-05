@@ -437,39 +437,37 @@ describe('local package mode — intra-stack name-collision guard', () => {
 			}).pipe(Effect.provide(layerPackageRegistry)),
 	);
 
-	it.effect(
-		're-acquire from the SAME localPackage call (same name + sourcePath) is allowed',
-		() =>
-			// Warm-restart / re-acquire on the same scope must NOT trip
-			// the collision guard — the registry entry already names
-			// `inputs.sourcePath` and the second acquire is the same
-			// declaration, not a sibling.
-			Effect.gen(function* () {
-				const sourcePath = freshSourceDir();
-				const registry = yield* PackageRegistryService;
+	it.effect('re-acquire from the SAME localPackage call (same name + sourcePath) is allowed', () =>
+		// Warm-restart / re-acquire on the same scope must NOT trip
+		// the collision guard — the registry entry already names
+		// `inputs.sourcePath` and the second acquire is the same
+		// declaration, not a sibling.
+		Effect.gen(function* () {
+			const sourcePath = freshSourceDir();
+			const registry = yield* PackageRegistryService;
 
-				const firstResult = yield* Effect.scoped(
-					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
-						packageName: 'reentrant',
-						sourcePath,
-						chainId: 'sui:reentrant-test',
-						publisherAddress: '0xpublisheraddr',
-						executor: succeedingExecutor,
-					}),
-				);
-				expect(firstResult.resolved.sourcePath).toBe(sourcePath);
+			const firstResult = yield* Effect.scoped(
+				acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
+					packageName: 'reentrant',
+					sourcePath,
+					chainId: 'sui:reentrant-test',
+					publisherAddress: '0xpublisheraddr',
+					executor: succeedingExecutor,
+				}),
+			);
+			expect(firstResult.resolved.sourcePath).toBe(sourcePath);
 
-				// Same name + same sourcePath — should succeed.
-				const secondResult = yield* Effect.scoped(
-					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
-						packageName: 'reentrant',
-						sourcePath,
-						chainId: 'sui:reentrant-test',
-						publisherAddress: '0xpublisheraddr',
-						executor: succeedingExecutor,
-					}),
-				);
-				expect(secondResult.resolved.sourcePath).toBe(sourcePath);
-			}).pipe(Effect.provide(layerPackageRegistry)),
+			// Same name + same sourcePath — should succeed.
+			const secondResult = yield* Effect.scoped(
+				acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
+					packageName: 'reentrant',
+					sourcePath,
+					chainId: 'sui:reentrant-test',
+					publisherAddress: '0xpublisheraddr',
+					executor: succeedingExecutor,
+				}),
+			);
+			expect(secondResult.resolved.sourcePath).toBe(sourcePath);
+		}).pipe(Effect.provide(layerPackageRegistry)),
 	);
 });

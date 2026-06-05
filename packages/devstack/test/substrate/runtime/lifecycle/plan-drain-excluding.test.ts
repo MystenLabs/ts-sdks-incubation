@@ -33,9 +33,7 @@ const keepAliveSvc = (id: string) =>
 
 describe('resolveGraph keepAliveOnRestore', () => {
 	it('stamps the node flag from the plugin decl (default false)', async () => {
-		const graph = await Effect.runPromise(
-			resolveGraph([svc('alpha'), keepAliveSvc('beta')]),
-		);
+		const graph = await Effect.runPromise(resolveGraph([svc('alpha'), keepAliveSvc('beta')]));
 		const flagById = new Map(
 			[...graph.nodes.values()].map((n) => [n.member.id, n.keepAliveOnRestore]),
 		);

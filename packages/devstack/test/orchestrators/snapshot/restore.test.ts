@@ -394,12 +394,12 @@ describe('snapshot restore safety', () => {
 	// -------------------------------------------------------------------------
 	// Boot-time / offline restore — NO live participants.
 	//
-		// Startup restore, interrupted-restore recovery, and the offline CLI verb
-		// all run restore BEFORE the supervisor registers any snapshot participant,
-		// so `participants === []`. The contract: with no live stack the
-		// cross-plugin contribution guard is SKIPPED (vacuously satisfied), but
-		// the runtime guard (app/stack/network) and the snapshot-side emptiness
-		// refusal STILL fire.
+	// Startup restore, interrupted-restore recovery, and the offline CLI verb
+	// all run restore BEFORE the supervisor registers any snapshot participant,
+	// so `participants === []`. The contract: with no live stack the
+	// cross-plugin contribution guard is SKIPPED (vacuously satisfied), but
+	// the runtime guard (app/stack/network) and the snapshot-side emptiness
+	// refusal STILL fire.
 	// -------------------------------------------------------------------------
 
 	it.effect('boot-time restore (no live participants) clears the contribution guard', () =>

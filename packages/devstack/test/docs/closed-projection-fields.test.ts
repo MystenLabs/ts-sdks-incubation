@@ -25,15 +25,11 @@ const PROJECTION_SOURCE = fileURLToPath(
 	new URL('../../src/substrate/projection.ts', import.meta.url),
 );
 
-const ARCHITECTURE_DOC = fileURLToPath(
-	new URL('../../ARCHITECTURE.md', import.meta.url),
-);
+const ARCHITECTURE_DOC = fileURLToPath(new URL('../../ARCHITECTURE.md', import.meta.url));
 
 const parseTypeAliasUnion = (source: string, aliasName: string): Set<string> => {
 	// Match `type _ProjectionKeysClosed =\n\t| 'identity'\n\t| 'cycle'\n\t...;`
-	const aliasMatch = source.match(
-		new RegExp(`type\\s+${aliasName}\\s*=\\s*([^;]+);`, 's'),
-	);
+	const aliasMatch = source.match(new RegExp(`type\\s+${aliasName}\\s*=\\s*([^;]+);`, 's'));
 	if (!aliasMatch) {
 		throw new Error(
 			`Could not find type alias \`${aliasName}\` in ${PROJECTION_SOURCE}. ` +
@@ -55,19 +51,14 @@ const parseTypeAliasUnion = (source: string, aliasName: string): Set<string> => 
 	return new Set(fields.map((m) => m.slice(1, -1)));
 };
 
-const parseDocFieldList = (
-	docText: string,
-	heading: string,
-): Set<string> => {
+const parseDocFieldList = (docText: string, heading: string): Set<string> => {
 	// The architecture doc renders both closed lists as backtick-quoted
 	// brace-enclosed comma-separated identifier lists, e.g.
 	//   `{ identity, cycle, rows, ... }`
 	// We locate the first such list AFTER the heading line.
 	const headingIdx = docText.indexOf(heading);
 	if (headingIdx === -1) {
-		throw new Error(
-			`Could not locate heading "${heading}" in ${ARCHITECTURE_DOC}.`,
-		);
+		throw new Error(`Could not locate heading "${heading}" in ${ARCHITECTURE_DOC}.`);
 	}
 	const after = docText.slice(headingIdx);
 	// Match the first backtick-wrapped brace list.
@@ -139,9 +130,7 @@ describe('closed projection field parity (code <-> ARCHITECTURE.md)', () => {
 
 	it('RowSection union members match the ARCHITECTURE.md enumeration', () => {
 		// `RowSection = 'service' | 'package' | 'account' | 'action' | 'app' | 'other'`
-		const aliasMatch = sourceText.match(
-			/export\s+type\s+RowSection\s*=\s*([^;]+);/,
-		);
+		const aliasMatch = sourceText.match(/export\s+type\s+RowSection\s*=\s*([^;]+);/);
 		expect(
 			aliasMatch,
 			`Could not locate \`RowSection\` type alias in ${PROJECTION_SOURCE}.`,
@@ -152,9 +141,7 @@ describe('closed projection field parity (code <-> ARCHITECTURE.md)', () => {
 				`\`RowSection\` type alias matched but body was empty in ${PROJECTION_SOURCE}.`,
 			);
 		}
-		const codeMembers = new Set(
-			[...aliasBody.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? ''),
-		);
+		const codeMembers = new Set([...aliasBody.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? ''));
 
 		// Doc enumerates `RowSection` inline:
 		//   `'service' | 'package' | 'account' | 'action' | 'app' | 'other'`
@@ -164,9 +151,7 @@ describe('closed projection field parity (code <-> ARCHITECTURE.md)', () => {
 			`Could not locate "\`RowSection\` is" sentence in ${ARCHITECTURE_DOC}.`,
 		).not.toBe(-1);
 		const docTail = docText.slice(docIdx, docIdx + 400);
-		const docMembers = new Set(
-			[...docTail.matchAll(/'([a-z]+)'/g)].map((m) => m[1] ?? ''),
-		);
+		const docMembers = new Set([...docTail.matchAll(/'([a-z]+)'/g)].map((m) => m[1] ?? ''));
 
 		const missingInDoc = [...codeMembers].filter((m) => !docMembers.has(m)).sort();
 		const extraInDoc = [...docMembers].filter((m) => !codeMembers.has(m)).sort();

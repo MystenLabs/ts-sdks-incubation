@@ -42,7 +42,7 @@ export const SkeletonRows = ({ rows = 5, cols = 4 }: SkeletonRowsProps) => (
 				style={{ gap: 16, padding: '11px 13px', borderBottom: '1px solid var(--line-faint)' }}
 			>
 				{Array.from({ length: cols }).map((_, j) => (
-					<Skeleton key={j} w={j === 0 ? 150 : `${40 + (((i + j) % 3) * 18)}px`} />
+					<Skeleton key={j} w={j === 0 ? 150 : `${40 + ((i + j) % 3) * 18}px`} />
 				))}
 			</div>
 		))}

@@ -131,4 +131,10 @@ describe('cli command-scoped flags', () => {
 		expect(h.upRuns[0]!.fromSnapshot).toBe('baseline');
 		expect(h.upRuns[0]!.snapshotStalePolicy).toBe('clean-start');
 	});
+
+	it('parses up snapshot cache flag', async () => {
+		const h = await run(['up', '--snapshot-cache', 'dev-baseline']);
+		expect(h.exitCode()).toBe(0);
+		expect(h.upRuns[0]!.snapshotCache).toBe('dev-baseline');
+	});
 });

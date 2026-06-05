@@ -45,6 +45,9 @@ const app = hostService({
 	ready: { kind: 'http' },
 	after: [openLobby, devWallet] as const,
 });
-const stack: Stack = defineDevstack({ members: [localnet, app, dashboard()], stackName: 'connect-four' });
+const stack: Stack = defineDevstack({
+	members: [localnet, app, dashboard()],
+	stackName: 'connect-four',
+});
 
 export default stack;

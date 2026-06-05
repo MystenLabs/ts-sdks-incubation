@@ -309,8 +309,7 @@ interface CompiledFilter {
 const compileFilter = (filter: LogFilter | undefined, defaultLimit: number): CompiledFilter => {
 	const search = filter?.search?.trim().toLowerCase();
 	return {
-		serviceSet:
-			filter?.services && filter.services.length > 0 ? new Set(filter.services) : null,
+		serviceSet: filter?.services && filter.services.length > 0 ? new Set(filter.services) : null,
 		levelSet: filter?.levels && filter.levels.length > 0 ? new Set(filter.levels) : null,
 		search: search !== undefined && search.length > 0 ? search : null,
 		since: filter?.sinceMillis,

@@ -19,9 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-const STYLE_GUIDE_PATH = fileURLToPath(
-	new URL('../../STYLE_GUIDE.md', import.meta.url),
-);
+const STYLE_GUIDE_PATH = fileURLToPath(new URL('../../STYLE_GUIDE.md', import.meta.url));
 
 const cookbookEntryRegex = (n: number): RegExp =>
 	// Matches lines like:

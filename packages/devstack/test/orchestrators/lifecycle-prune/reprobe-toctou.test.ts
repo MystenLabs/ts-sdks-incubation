@@ -40,14 +40,7 @@
 // pre-fix code and PASS on current code.
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import {
-	chmodSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname as nodeHostname } from 'node:os';
 import { delimiter, join } from 'node:path';
 
@@ -253,9 +246,7 @@ describe('runLifecyclePrune liveness re-probe (TOCTOU close)', () => {
 				dryRun: false,
 			};
 
-			const summary = await Effect.runPromise(
-				runLifecyclePrune({ runtimeRoot: root }, selection),
-			);
+			const summary = await Effect.runPromise(runLifecyclePrune({ runtimeRoot: root }, selection));
 
 			// The group reached the removal loop (inventory classified it
 			// dead) but the re-probe found it live and skipped it.
