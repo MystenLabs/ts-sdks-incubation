@@ -12,4 +12,3 @@ export * from './ready-gate.ts';
 export * from './watch-attribution.ts';
 export * from './selective-restart.ts';
 export * from './signals.ts';
-export * from './lifecycle-fact.ts';

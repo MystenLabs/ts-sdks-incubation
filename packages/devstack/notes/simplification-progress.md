@@ -45,8 +45,21 @@ Boot-time restores ran before participant registration → identity guard always
 Single-host only. Deleted: container-claim ledger (write-only dead; unwired container.ts writers, teardown still via stopWithGrace), makeReaper indirection (kept LivenessProbeScope), foreign-host liveness branches (roster + fork-orch) + dead `trustForeignHosts` field, dead SHARED_NETWORK_NAME constant, NFS comment de-scoping.
 **Honest scope correction:** audit estimated ~1–1.4k but most of "cross-process" is genuinely SAME-HOST load-bearing → KEPT atomic-write (crash-atomicity on local FS, not NFS-only), reclaim-stale-file (O_EXCL TOCTOU), command-channel handoff, adoptExistingNetwork (parallel-stack race), port-reservation file, roster holder ARRAY (claim-race). Real droppable was the ledger + foreign branches, not a blanket cross-process gut.
 
-## Step 3 — substrate state-model collapse (the main event)  `[ ]`
-Collapse 8 systems → one state model. Keep supervisor core + contribution pipeline verbatim; keep control-plane (dashboard). Merge the 4 projection read-models; inline strategy-registry + lifecycle-facts; simplify scoped-registry single-mode LWW → plain `SubscriptionRef<Map>` (keep the multimap). e2e suite as safety net. (~1.5–4k LOC + large conceptual win)
+## Step 3 — substrate state-model collapse (the main event)  `[~] IN PROGRESS`
+**Full plan: `notes/step3-substrate-collapse-plan.md`** (18-agent design + adversarial stress-test). KEY REFRAME: there is already ONE runtime state model (the projection `SubscriptionRef`); the other "systems" are different kinds of thing (supervisor live runtime = keep verbatim; manifest = out-of-process on-disk handoff, can't be a ref; registries = scope-local capability plumbing). So Step 3 = strip machinery around the one model + delete the one redundant persistence twin — NOT a 5-into-1 merge.
+**Two audit claims CORRECTED:** (1) `projection.v4.json` is NOT load-bearing for decryption — sole reader is offline `status`; id-stability is CacheService + preRestore. (2) manifest `extras` is a LIVE user feature, not dead.
+**OWNER DECISIONS (2026-06-04):** persisted.ts → **FULL DELETE** (−180; offline status endpoints-only when down) · chain-* helpers → **KEEP** (skip S7) · manifest `services` → `Schema.optional` (default) · control-plane de-abstraction → backlog. **Net ≈ −530.**
+Sequenced steps (each independently green; supervisor core + contribution pipeline + restore path UNTOUCHED):
+- `[x]` S1 move lifecycle-fact → reducer (update.ts), keep named exports (**−10**, tsc 0 / 12 tests green)
+- `[ ]` S2 move projection compile guards → projection.ts; drop projection/index.ts barrel (−9)
+- `[ ]` S3 drop dead manifest `services`+`PluginManifestContribution`; `services`→Schema.optional (−70)
+- `[ ]` S4 ADD missing multimap sibling-scope drop-by-seq finalizer test (PREREQ for S5/S6)
+- `[ ]` S5 strangle single-mode LWW → coin/package as `Ref<Map>` (+40)
+- `[ ]` S6 inline multimap → strategy-registry; DELETE scoped-registry/ (−200)
+- `[-]` S7 SKIP (keep chain helpers per owner)
+- `[ ]` S8 FULL DELETE persisted.ts + relocate Account/Package schemas → update.ts; offline status from manifest (−180)
+- `[ ]` S9 full sweep + e2e (private-content-boot + snapshot-restore-matrix + dedicated `rm projection.v4.json` decrypt gate) + minimality check
+**Guards:** do NOT inline operational-endpoints (name-blindness `faucet` leak into acquire-node); S4 test is a hard prereq before the registry collapse.
 
 ## Step 4 — runStack-as-seam  `[ ]`
 - `[ ]` Invert so CLI/TUI consume `runStack`'s RunHandle (one boot path); dedupe the Deferred/fork machinery.

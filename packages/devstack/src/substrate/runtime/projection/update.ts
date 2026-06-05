@@ -23,7 +23,7 @@ import { Effect, Schema, SubscriptionRef } from 'effect';
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import { eventAtOrNull } from '../../event-time.ts';
-import type { LifecycleStatus } from '../../lifecycle.ts';
+import type { LifecycleFact, LifecycleStatus } from '../../lifecycle.ts';
 import type {
 	AccountProjection,
 	BuildEntry,
@@ -33,7 +33,6 @@ import type {
 	StructuredError,
 	SubscribableState,
 } from '../../projection.ts';
-import { applyLifecycleFact, factFromEvent } from '../lifecycle/lifecycle-fact.ts';
 import { LogAttr } from '../observability/log-attrs.ts';
 import { AccountProjectionSchema, PackageProjectionSchema } from './persisted.ts';
 
@@ -57,6 +56,67 @@ const MAX_ROW_LOG_LINES = 100;
 type DecodeResult<T> =
 	| { readonly ok: true; readonly value: T }
 	| { readonly ok: false; readonly cause: unknown };
+
+// -----------------------------------------------------------------------------
+// LifecycleFact bridge
+// -----------------------------------------------------------------------------
+//
+// `substrate/lifecycle.ts` declares `LifecycleFact` — the merge-not-
+// replace per-plugin lifecycle slice the projection consumes. The
+// reducer routes lifecycle-shaped events through this typed bridge
+// instead of writing each status / phase / restart field
+// independently. The reducer for non-lifecycle events is unchanged.
+
+/** Per-plugin fact delta. Each field is optional — only the fields the
+ *  source event carries are populated. `applyLifecycleFact` merges a
+ *  delta into the existing `Row`. */
+export interface LifecycleFactDelta {
+	readonly status?: LifecycleStatus;
+	readonly phase?: LifecycleFact['phase'];
+	readonly selectiveRestartHighlight?: boolean;
+}
+
+/** Project a lifecycle-shaped `EngineEvent` into a per-plugin delta.
+ *  Returns `null` for events that don't carry lifecycle information so
+ *  the reducer can short-circuit. The substrate stays event-name-blind
+ *  by routing through this single mapping table. */
+export const factFromEvent = (
+	event: EngineEvent,
+): { readonly pluginKey: PluginKey; readonly delta: LifecycleFactDelta } | null => {
+	switch (event.tag) {
+		case 'lifecycle.statusChanged':
+			return {
+				pluginKey: event.pluginKey,
+				delta: { status: event.to },
+			};
+		case 'lifecycle.phaseSet':
+			return {
+				pluginKey: event.pluginKey,
+				delta: { phase: event.phase },
+			};
+		default:
+			// `restart.requested` ALSO updates cycle.phase + clears
+			// other rows' highlights — that's a multi-row reducer
+			// concern the projection handles directly. We deliberately
+			// keep the bridge scoped to the closed `LifecycleFact`
+			// shape (status / phase / selectiveRestartHighlight) so
+			// callers can derive per-plugin facts without rebuilding
+			// the cycle phase too.
+			return null;
+	}
+};
+
+/** Apply a fact delta to a row. Pure. Fields not in the delta are
+ *  preserved verbatim — the merge-not-replace shape `LifecycleFact`
+ *  promises. */
+export const applyLifecycleFact = (row: Row, delta: LifecycleFactDelta): Row => ({
+	...row,
+	...(delta.status !== undefined ? { status: delta.status } : {}),
+	...(delta.phase !== undefined ? { phase: delta.phase } : {}),
+	...(delta.selectiveRestartHighlight !== undefined
+		? { selectiveRestartHighlight: delta.selectiveRestartHighlight }
+		: {}),
+});
 
 // -----------------------------------------------------------------------------
 // Pure reducer

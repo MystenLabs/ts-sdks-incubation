@@ -12,11 +12,11 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { applyEvent } from '../../../../src/substrate/runtime/projection/index.ts';
 import {
+	applyEvent,
 	applyLifecycleFact,
 	factFromEvent,
-} from '../../../../src/substrate/runtime/lifecycle/lifecycle-fact.ts';
+} from '../../../../src/substrate/runtime/projection/update.ts';
 import { pluginKey } from '../../../../src/substrate/brand.ts';
 import type { Row, SubscribableState } from '../../../../src/substrate/projection.ts';
 
