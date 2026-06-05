@@ -8,17 +8,15 @@
 
 import { dirname } from 'node:path';
 
-import { Effect, Exit, FileSystem, Logger, SubscriptionRef } from 'effect';
+import { Effect, Exit, FileSystem, Logger } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
-import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import {
 	commandChannelPaths,
 	makeCommandChannelPublisher,
 	makeProjectionRef,
 	type SupervisedStack,
-	writeProjectionSnapshot,
 } from '../../substrate/runtime/index.ts';
 import {
 	buildProductionContributionDispatcher,
@@ -290,8 +288,6 @@ export const runSnapshotCaptureDirectLoaded = (
 				return yield* Effect.die('snapshot capture completed without metadata');
 			}
 			const meta = capturedMeta.current;
-			const stackPaths = yield* StackPathsService;
-			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 			return { snapshotId: meta.id, name: meta.label ?? meta.id };
 		});
 

@@ -492,7 +492,7 @@ const applyCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
 
 const statusCommand = buildCommand<IdentityFlags, [], DevstackCliContext>({
 	parameters: { flags: identityFlagParams },
-	docs: { brief: 'Show the persisted stack projection' },
+	docs: { brief: 'Show the current stack projection (offline: from the manifest)' },
 	func: function (flags) {
 		return runWithFlags(this, 'status', flags, [], (global) =>
 			runStatus(this.deps.status, { flags: global, io: this.io }),

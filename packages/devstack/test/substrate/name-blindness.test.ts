@@ -112,12 +112,6 @@ const ALLOWED_FILES: ReadonlyArray<{
 		reason: 'Projection field set names account/package plugin-domain shapes by design.',
 	},
 	{
-		// Projection persistence inherits plugin-named field shapes from
-		// `projection.ts`.
-		path: 'src/substrate/runtime/projection/persisted.ts',
-		reason: 'Projection persistence inherits account/package shapes from projection.ts.',
-	},
-	{
 		// Projection update reducer dispatches on the kind→decoder
 		// registry; `account` and `package` are the two registered kinds
 		// today.

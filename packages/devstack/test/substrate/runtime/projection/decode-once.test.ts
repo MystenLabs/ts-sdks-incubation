@@ -20,11 +20,11 @@ import { describe, expect, it } from 'vitest';
 
 import { pluginKey } from '../../../../src/substrate/brand.ts';
 import { emptyProjection } from '../../../../src/substrate/runtime/projection/state-ref.ts';
-import { updateRef } from '../../../../src/substrate/runtime/projection/update.ts';
 import {
 	AccountProjectionSchema,
 	PackageProjectionSchema,
-} from '../../../../src/substrate/runtime/projection/persisted.ts';
+	updateRef,
+} from '../../../../src/substrate/runtime/projection/update.ts';
 
 const countingProxy = <T extends object>(target: T): { proxy: T; getCount: () => number } => {
 	let count = 0;

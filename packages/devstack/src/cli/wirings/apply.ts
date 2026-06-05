@@ -14,7 +14,7 @@
 
 import { dirname, resolve as resolvePath } from 'node:path';
 
-import { Cause, Effect, Exit, Logger, SubscriptionRef } from 'effect';
+import { Cause, Effect, Exit, Logger } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -23,7 +23,6 @@ import {
 	makeCommandChannelPublisher,
 	makeProjectionRef,
 	type SupervisedStack,
-	writeProjectionSnapshot,
 } from '../../substrate/runtime/index.ts';
 import {
 	buildProductionContributionDispatcher,
@@ -167,7 +166,6 @@ export const runApplyLive = (
 					extendContext: extendBuiltInPluginContext,
 				},
 			).pipe(Effect.provide(layerBuiltInPluginRuntime));
-			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
 
 		return yield* program.pipe(

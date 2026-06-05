@@ -82,7 +82,7 @@ const commands = [
 	},
 	{
 		name: 'status',
-		summary: 'Show the persisted stack projection.',
+		summary: 'Show the current stack projection (offline: from the manifest).',
 		usage: 'devstack status [options]',
 		lifecycle: 'offline',
 		sideEffects: 'read',

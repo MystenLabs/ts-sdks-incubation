@@ -19,13 +19,16 @@
 //      the verb-scoped wiring function.
 
 import { realpathSync } from 'node:fs';
-import { dirname, resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Effect } from 'effect';
 
-import { readProjectionSnapshot } from '../substrate/runtime/index.ts';
+import { endpointKey, pluginKey } from '../substrate/brand.ts';
+import { emptyProjection } from '../substrate/runtime/projection/state-ref.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
+import { readStackContext } from '../build-integrations/runtime/read-stack-context.ts';
+import type { StackContext } from '../build-integrations/runtime/stack-context.ts';
 import { dispatch, type CliDeps, CliUsageError } from '../surfaces/cli/index.ts';
 import { emitFailure, nodeProcessIO } from '../surfaces/cli/output.ts';
 import { ENV_VARS } from '../surfaces/cli/flags.ts';
@@ -140,9 +143,57 @@ const resolveIdentity = (params: {
 // Verb deps composition
 // -----------------------------------------------------------------------------
 
+/**
+ * Degraded offline-status projection — built from the on-disk manifest,
+ * NOT from a persisted projection twin (the projection snapshot file no
+ * longer exists). When the stack is DOWN, the manifest is the only
+ * durable record of the boot; `status` surfaces identity + endpoints
+ * from it and leaves the live-only slices (`rows` / `accounts` /
+ * `packages` / `errors`) empty. A freshly-booted stack also has empty
+ * `rows`, so the status renderer already tolerates this shape.
+ *
+ * Pure projector — exported for the focused unit test. Starts from
+ * `emptyProjection()` (the closed-vocabulary baseline) and fills only
+ * the two manifest-backed slices, so no display vocabulary can leak in.
+ * The manifest identity tuple is `{ app, stack, chain }`; the
+ * projection's identity is `{ app, stack, network }`, so `chain` maps
+ * onto `network`. Endpoints get re-branded (`endpointKey` / `pluginKey`)
+ * to the projection's branded shape; `registeredAt` is unknown offline,
+ * so it defaults to `0`.
+ */
+export const degradedStatusFromContext = (ctx: StackContext): SubscribableState => ({
+	...emptyProjection(),
+	identity: {
+		app: ctx.identity.app,
+		stack: ctx.identity.stack,
+		network: ctx.identity.chain,
+	},
+	endpoints: ctx.endpoints.all().map((endpoint) => ({
+		endpointKey: endpointKey(endpoint.endpointKey),
+		pluginKey: pluginKey(endpoint.pluginKey),
+		name: endpoint.name,
+		url: endpoint.url,
+		displayUrl: endpoint.displayUrl,
+		wireProtocol: endpoint.wireProtocol,
+		registeredAt: 0,
+	})),
+});
+
 const projectionStatusReader = (identity: ResolvedIdentity): StatusReader => ({
 	readState: () =>
-		Effect.sync(() => readProjectionSnapshot(identity.stackRoot) as SubscribableState | null),
+		Effect.sync(() => {
+			// Offline read: project the on-disk manifest for THIS stack root.
+			// A missing / malformed manifest (no `up` yet, or a hand-edit)
+			// is a tolerated "no state present" — `readStackContext` throws
+			// in that case, so swallow the throw and report `null` (the
+			// status command's contract for an absent stack).
+			try {
+				const ctx = readStackContext({ manifestPath: join(identity.stackRoot, 'manifest.json') });
+				return degradedStatusFromContext(ctx);
+			} catch {
+				return null;
+			}
+		}),
 });
 
 const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {

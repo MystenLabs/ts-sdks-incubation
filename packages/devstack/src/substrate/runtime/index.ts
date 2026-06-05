@@ -20,16 +20,11 @@
 // with sui-execute and host-tree-tar transitives.
 
 // ---------------------------------------------------------------------
-// Projection — `makeProjectionRef`, persistence helpers.
-// Consumers: CLI wirings (apply, snapshot, up, main), boot-config-impl,
+// Projection — `makeProjectionRef`.
+// Consumers: CLI wirings (apply, snapshot, up), boot-config-impl,
 // api/run-stack (sync variant only).
 // ---------------------------------------------------------------------
 export { makeProjectionRef, makeProjectionRefSync } from './projection/state-ref.ts';
-export {
-	persistProjectionChanges,
-	readProjectionSnapshot,
-	writeProjectionSnapshot,
-} from './projection/persisted.ts';
 
 // ---------------------------------------------------------------------
 // Cross-process command channel — publisher / subscriber + path helpers.

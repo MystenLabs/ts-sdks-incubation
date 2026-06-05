@@ -7,22 +7,20 @@
 // `runCli` resolves the runtime root before dispatching a verb, reading
 // `config.options.stateDir` best-effort from the discovered
 // `devstack.config.ts`. We observe the chosen runtime root indirectly via
-// `status`, which reads its projection from `<runtimeRoot>/stacks/<stack>`:
-// a projection written at the EXPECTED resolved location surfaces as
-// `present: true`. The `--config` flag is not a `status` option, so the
-// config is discovered by walking up from the working directory (the same
-// path `configStateDirBestEffort` uses).
+// `status`, which (offline) projects the on-disk manifest at
+// `<runtimeRoot>/stacks/<stack>/manifest.json`: a manifest written at the
+// EXPECTED resolved location surfaces as `present: true`. The `--config`
+// flag is not a `status` option, so the config is discovered by walking up
+// from the working directory (the same path `configStateDirBestEffort`
+// uses).
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Effect } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/cli/main.ts';
-import type { SubscribableState } from '../../src/substrate/projection.ts';
-import { writeProjectionSnapshot } from '../../src/substrate/runtime/projection/persisted.ts';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoots: Array<string> = [];
@@ -32,22 +30,6 @@ const makeTempRoot = (prefix: string): string => {
 	tempRoots.push(root);
 	return root;
 };
-
-const makeProjectionState = (params: {
-	readonly app: string;
-	readonly stack: string;
-	readonly network: string;
-}): SubscribableState => ({
-	identity: params,
-	cycle: { id: 1, startedAt: 123, phase: 'running' },
-	rows: [],
-	endpoints: [],
-	accounts: [],
-	packages: [],
-	errors: [],
-	lastEvent: { seq: 1, at: 124 },
-	stackBuild: [],
-});
 
 /** Writes a `devstack.config.ts` exporting an empty stack with the given
  *  `stateDir` option. Empty members keep the config evaluation cheap and
@@ -122,12 +104,22 @@ const runStatusFromCwd = async (
 	}
 };
 
-const seedProjection = async (runtimeRoot: string): Promise<void> => {
-	await Effect.runPromise(
-		writeProjectionSnapshot(
-			join(runtimeRoot, 'stacks', 'main'),
-			makeProjectionState({ app: 'precedence-app', stack: 'main', network: 'sui:local' }),
-		),
+/** Writes a minimal on-disk manifest at `<runtimeRoot>/stacks/main/manifest.json`
+ *  — the durable record the offline `status` projects when the stack is
+ *  down. Its mere presence at the EXPECTED resolved location is what makes
+ *  `status` report `present: true`, so it pins the resolved runtime root. */
+const seedManifest = (runtimeRoot: string): void => {
+	const stackRoot = join(runtimeRoot, 'stacks', 'main');
+	mkdirSync(stackRoot, { recursive: true });
+	writeFileSync(
+		join(stackRoot, 'manifest.json'),
+		JSON.stringify({
+			identity: { app: 'precedence-app', stack: 'main', chain: 'sui:local' },
+			manifestVersion: 1,
+			endpoints: {},
+			extras: {},
+		}),
+		'utf8',
 	);
 };
 
@@ -142,7 +134,7 @@ describe('cli state-dir precedence ladder', () => {
 		const appRoot = makeTempRoot('statedir-config-only-app');
 		const configStateDir = makeTempRoot('statedir-config-only-state');
 		writeConfigWithStateDir(appRoot, configStateDir);
-		await seedProjection(configStateDir);
+		seedManifest(configStateDir);
 
 		const result = await runStatusFromCwd(appRoot, []);
 		expect(result.stderr).toBe('');
@@ -155,9 +147,9 @@ describe('cli state-dir precedence ladder', () => {
 		const configStateDir = makeTempRoot('statedir-flag-wins-config-state');
 		const flagStateDir = makeTempRoot('statedir-flag-wins-flag-state');
 		writeConfigWithStateDir(appRoot, configStateDir);
-		// Projection lives ONLY under the flag dir — `present: true` proves
+		// Manifest lives ONLY under the flag dir — `present: true` proves
 		// the flag won over the config's stateDir.
-		await seedProjection(flagStateDir);
+		seedManifest(flagStateDir);
 
 		const result = await runStatusFromCwd(appRoot, ['--state-dir', flagStateDir]);
 		expect(result.stderr).toBe('');
@@ -170,9 +162,9 @@ describe('cli state-dir precedence ladder', () => {
 		const configStateDir = makeTempRoot('statedir-config-beats-env-config-state');
 		const envStateDir = makeTempRoot('statedir-config-beats-env-env-state');
 		writeConfigWithStateDir(appRoot, configStateDir);
-		// Projection lives ONLY under the config dir — `present: true` proves
+		// Manifest lives ONLY under the config dir — `present: true` proves
 		// the config value won over the env var.
-		await seedProjection(configStateDir);
+		seedManifest(configStateDir);
 
 		const result = await runStatusFromCwd(appRoot, [], { DEVSTACK_STATE_DIR: envStateDir });
 		expect(result.stderr).toBe('');
@@ -187,7 +179,7 @@ describe('cli state-dir precedence ladder', () => {
 		// `<cwd>/.devstack`.
 		const cwdDefault = join(appRoot, '.devstack');
 		mkdirSync(cwdDefault, { recursive: true });
-		await seedProjection(cwdDefault);
+		seedManifest(cwdDefault);
 
 		const result = await runStatusFromCwd(appRoot, []);
 		expect(result.stderr).toBe('');

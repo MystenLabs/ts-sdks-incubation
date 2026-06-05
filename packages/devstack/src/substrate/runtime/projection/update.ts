@@ -34,7 +34,72 @@ import type {
 	SubscribableState,
 } from '../../projection.ts';
 import { LogAttr } from '../observability/log-attrs.ts';
-import { AccountProjectionSchema, PackageProjectionSchema } from './persisted.ts';
+
+// -----------------------------------------------------------------------------
+// Per-kind `projection.updated` payload schemas
+// -----------------------------------------------------------------------------
+//
+// The reducer is the projection orchestrator and owns the per-`kind`
+// structural decode of `projection.updated` payloads (STYLE_GUIDE §20:
+// a misbehaving plugin emitting a malformed payload must NOT crash the
+// reducer or the surrounding projection stream — the decode acts as a
+// structural guard so a bad slice is dropped, not applied). These two
+// schemas mirror `AccountProjection` / `PackageProjection` in
+// `substrate/projection.ts`; the runtime brand on `key`
+// (`account/${string}` / `package/${string}`) is TS-only and Schema
+// can't express it, so callers forward the original `event.payload`
+// after a successful decode rather than the decoded (brand-stripped)
+// copy.
+//
+// The plain-renderer reads the raw event stream (not the reduced
+// state) and re-runs the same decode for the same payloads; it imports
+// these schemas from here, the single canonical definition.
+
+/** Structural schema for a `projection.updated[account]` payload. */
+export const AccountProjectionSchema = Schema.Struct({
+	key: Schema.String,
+	rowKey: Schema.NullOr(Schema.String),
+	name: Schema.String,
+	address: Schema.NullOr(Schema.String),
+	scheme: Schema.NullOr(Schema.Literals(['ed25519', 'secp256k1', 'secp256r1'])),
+	source: Schema.NullOr(Schema.Literals(['real', 'impersonate'])),
+	funding: Schema.Struct({
+		status: Schema.Literals(['pending', 'funded', 'skipped', 'failed', 'unknown']),
+		balanceMist: Schema.NullOr(Schema.String),
+		requestedMist: Schema.NullOr(Schema.String),
+		entries: Schema.optional(
+			Schema.Array(
+				Schema.Struct({
+					coin: Schema.String,
+					fullCoinType: Schema.String,
+					amount: Schema.String,
+					// Mirrors `AccountProjection.funding.entries[].status` in
+					// `substrate/projection.ts`. `'already-satisfied'` is
+					// the pre-existing-balance short-circuit emitted by the
+					// account funding pass — semantically a success, kept
+					// distinct from `'funded'` so renderers can surface the
+					// cached-vs-fresh distinction.
+					status: Schema.Literals(['funded', 'already-satisfied', 'skipped']),
+				}),
+			),
+		),
+	}),
+	walletVisible: Schema.Boolean,
+	updatedAt: Schema.Number,
+});
+
+/** Structural schema for a `projection.updated[package]` payload. */
+export const PackageProjectionSchema = Schema.Struct({
+	key: Schema.String,
+	rowKey: Schema.NullOr(Schema.String),
+	name: Schema.String,
+	kind: Schema.Literals(['local', 'known']),
+	packageId: Schema.String,
+	upgradeCapId: Schema.NullOr(Schema.String),
+	mvrPlaceholder: Schema.String,
+	sourcePath: Schema.NullOr(Schema.String),
+	updatedAt: Schema.Number,
+});
 
 // -----------------------------------------------------------------------------
 // Capacity policy

@@ -26,7 +26,6 @@ import {
 	heartbeatFiber,
 	makeCommandChannelSubscriber,
 	makeProjectionRef,
-	persistProjectionChanges,
 	release,
 	type SupervisedStack,
 	type SupervisorCommandHandler,
@@ -634,9 +633,6 @@ export const runUpLive = (
 										}),
 									),
 								),
-							);
-							yield* Effect.forkScoped(
-								persistProjectionChanges(stackPaths.stackRoot, handle.state),
 							);
 							yield* Effect.forkScoped(
 								Stream.fromQueue(handle.events).pipe(
