@@ -49,6 +49,7 @@ import { suiResource, SuiLogAttr } from '../sui/index.ts';
 import { makeAccountCodegen } from './codegen.ts';
 import { accountAcquireError, type AccountAcquireError } from './errors.ts';
 import {
+	DEFAULT_EPHEMERAL_FUND_MIST,
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
 	type AccountFundingEntry,
@@ -195,6 +196,62 @@ const fundingAmountToBigInt = (
 const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
 	coin.symbol ?? coin.fullCoinType.split('::').at(-1) ?? coin.fullCoinType;
 
+const warmAmount = (amount: number | bigint): string => amount.toString();
+
+const warmFundingProviderIds = (
+	provider: CrossCuttingFundingProvider | undefined,
+): ReadonlyArray<string> =>
+	fundingProviders(provider)
+		.map((ref) => ref.id)
+		.sort((a, b) => a.localeCompare(b));
+
+const warmFundingInputFor = (entry: AccountFundingEntry): unknown => {
+	if (entry.coin === 'sui') {
+		return { coin: 'sui', amountMist: warmAmount(entry.amount) };
+	}
+	const via = warmFundingProviderIds(entry.via);
+	return {
+		coin: entry.coin.id,
+		amountMist: entry.amount.toString(),
+		...(via.length === 0 ? {} : { via }),
+	};
+};
+
+const accountWarmFundingInputs = (
+	opts: ResolvedAccountOptions,
+	fundingEntries: AccountFunding,
+): ReadonlyArray<unknown> => {
+	const explicit = fundingEntries.map(warmFundingInputFor);
+	if (opts.kind === 'ephemeral' && opts.funding === undefined) {
+		return [{ coin: 'sui', amountMist: DEFAULT_EPHEMERAL_FUND_MIST.toString() }, ...explicit];
+	}
+	return explicit;
+};
+
+const accountWarmVariantInput = (opts: ResolvedAccountOptions): unknown => {
+	switch (opts.kind) {
+		case 'ephemeral':
+			return { kind: 'ephemeral' };
+		case 'impersonate':
+			return { kind: 'impersonate', address: opts.address };
+		case 'signer':
+			return {
+				kind: 'signer',
+				address: opts.addressOverride ?? opts.signer.toSuiAddress(),
+			};
+	}
+};
+
+const accountWarmInputs = (
+	opts: ResolvedAccountOptions,
+	fundingEntries: AccountFunding,
+): unknown => ({
+	plugin: 'account',
+	name: opts.name,
+	variant: accountWarmVariantInput(opts),
+	funding: accountWarmFundingInputs(opts, fundingEntries),
+});
+
 // ---------------------------------------------------------------------------
 // Capability emission — dynamic (POST-acquire). Receives the resolved
 // `AccountValue` + the identity so snapshot + codegen + registry + projection
@@ -248,6 +305,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// `done`.
 		role: 'task',
 		section: 'account',
+		warmInputs: accountWarmInputs(opts2, fundingEntryList),
 		// `deps` auto-infers from the resolved `dependsOn`; `ctx` arrives
 		// via the `PluginContext` service.
 		start: (deps) =>

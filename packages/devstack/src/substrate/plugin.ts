@@ -151,6 +151,11 @@ interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	 *  plugins set it. Full restart (`stack.restart` / CLI) drains
 	 *  everything regardless. */
 	readonly keepAliveOnRestore?: true;
+	/** Stable JSON-ish document folded into the warm-baseline graph key.
+	 *  Plugins that perform desired-state side effects not visible to
+	 *  lower-level cache/image/container invalidators use this to declare
+	 *  the static config that makes a restored baseline valid. */
+	readonly warmInputs?: unknown;
 }
 
 export type PluginSpec<
@@ -178,6 +183,7 @@ export interface Plugin<
 	readonly section: RowSection;
 	readonly endpointSection?: RowSection;
 	readonly keepAliveOnRestore?: true;
+	readonly warmInputs?: unknown;
 }
 
 export type AnyPlugin = Plugin<
@@ -320,6 +326,7 @@ export function definePlugin(
 		...(spec.keepAliveOnRestore === undefined
 			? {}
 			: { keepAliveOnRestore: spec.keepAliveOnRestore }),
+		...(spec.warmInputs === undefined ? {} : { warmInputs: spec.warmInputs }),
 	} as AnyPlugin;
 }
 

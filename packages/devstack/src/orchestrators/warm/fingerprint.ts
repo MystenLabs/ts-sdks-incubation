@@ -11,7 +11,9 @@
 //
 // Warm restore can therefore start from the old baseline, let the existing
 // invalidators reconcile the live graph, and recapture only if one of those
-// lower-level decisions actually produced or recreated state.
+// lower-level decisions actually produced or recreated state. Direct desired-
+// state side effects that bypass those invalidators are declared explicitly
+// through each plugin's `warmInputs` document.
 
 import { createHash } from 'node:crypto';
 
@@ -28,7 +30,7 @@ export const WARM_BASELINE_SNAPSHOT_ID = 'warm-baseline';
 /** Fingerprint document version. Bump when the canonical document's
  *  shape changes in a way that should invalidate every existing
  *  baseline (a v-bump alone shifts the hash). */
-const WARM_FINGERPRINT_VERSION = 2 as const;
+const WARM_FINGERPRINT_VERSION = 3 as const;
 
 /** Tagged failure for graph-key computation. */
 export class WarmFingerprintError extends Schema.TaggedErrorClass<WarmFingerprintError>()(
@@ -121,6 +123,7 @@ export const computeWarmFingerprint = (args: {
 								cascade: node.member.watch.cascade ?? true,
 							},
 						}),
+				...(node.member.warmInputs === undefined ? {} : { warmInputs: node.member.warmInputs }),
 			}))
 			.sort((a, b) => a.key.localeCompare(b.key));
 

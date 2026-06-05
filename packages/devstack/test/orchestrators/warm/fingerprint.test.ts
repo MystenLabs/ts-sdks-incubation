@@ -25,6 +25,7 @@ interface FakeMemberSpec {
 	readonly watch?: ReadonlyArray<string>;
 	readonly watchCascade?: boolean;
 	readonly keepAliveOnRestore?: boolean;
+	readonly warmInputs?: unknown;
 }
 
 const fakeMember = (spec: FakeMemberSpec): AnyPlugin =>
@@ -44,6 +45,7 @@ const fakeMember = (spec: FakeMemberSpec): AnyPlugin =>
 					},
 				}),
 		keepAliveOnRestore: spec.keepAliveOnRestore === true,
+		...(spec.warmInputs === undefined ? {} : { warmInputs: spec.warmInputs }),
 	}) as unknown as AnyPlugin;
 
 const fakeStack = (
@@ -191,6 +193,32 @@ describe('warm fingerprint', () => {
 			]);
 			const b = fakeStack([
 				{ id: 'pkg', pluginKey: 'pkg', watch: ['contracts'], watchCascade: false },
+			]);
+			const fa = yield* fingerprint({ stack: a });
+			const fb = yield* fingerprint({ stack: b });
+			expect(fa).not.toBe(fb);
+		}),
+	);
+
+	it.effect('CHANGES when plugin-declared warm inputs change', () =>
+		Effect.gen(function* () {
+			const a = fakeStack([
+				{
+					id: 'account/alice',
+					pluginKey: 'account/alice',
+					role: 'task',
+					section: 'account',
+					warmInputs: { funding: [{ coin: 'sui', amountMist: '10000000000' }] },
+				},
+			]);
+			const b = fakeStack([
+				{
+					id: 'account/alice',
+					pluginKey: 'account/alice',
+					role: 'task',
+					section: 'account',
+					warmInputs: { funding: [{ coin: 'sui', amountMist: '1000000000' }] },
+				},
 			]);
 			const fa = yield* fingerprint({ stack: a });
 			const fb = yield* fingerprint({ stack: b });
