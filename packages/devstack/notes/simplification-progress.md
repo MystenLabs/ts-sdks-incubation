@@ -10,7 +10,16 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deferred/blocked
 - `9f9610e7` — SpanAttr→LogAttr rename (now annotateLogs keys) (~0)
 - `f341319d` — FormatterRegistry + dead errorContributions plumbing deleted (**−503**) — STEP 1 COMPLETE
 - `360cc2be` — Step 2: cross-host/NFS drop (container-claim ledger, makeReaper, foreign-host branches, dead shared-network constant) (**−848**)
-- **Session total ~−5,300 src LOC + ~9.6k off the npm tarball.** (Parallel sui/postgres workstream has since moved to its own branch.)
+- `07d76f41` — Step 3 plan doc (18-agent design + adversarial stress-test) — notes/step3-substrate-collapse-plan.md
+- `8f073471` — S3.1 lifecycle-fact → projection reducer (**−10**)
+- `85548041` — S3.2 drop runtime projection barrel + hoist compile guards (**−10**)
+- `f9ba45a8` — S3.3 remove dead manifest services/contribution channel (**−63**)
+- `0b364686` — S3.4 multimap sibling-scope drop-by-seq guard test (+test, prereq)
+- `346e1c22` — S3.5 strangle single-mode LWW → coin/package; dead single-mode machinery deleted (**−293**)
+- `5b3ff47b` — S3.6 inline multimap → strategy-registry; delete scoped-registry/ (**−30**)
+- `6a3e4994` — S3.8 full-delete persisted.ts (projection.v4.json); offline status from manifest (**−220**)
+- **STEP 3 COMPLETE: ≈ −626 src LOC** (vs −530 est; S5 over-delivered). tsc 0 + 1851 units green; e2e blocked by a PRE-EXISTING sui-image-build infra failure (proven identical on pre-Step-3 `5c597fc4`).
+- **Session total ≈ −5,900 src LOC + ~9.6k off the npm tarball.** (Parallel sui/postgres workstream moved to its own branch.)
 
 ## ⚠️ Coordination (active as of 2026-06-04)
 - The parallel postgres/sui workstream COMMITS TO THIS SAME BRANCH (`e1c960f9` landed between cleanup commits) → **verify `git status` is pure-mine before every `git add -A`.**
@@ -58,7 +67,8 @@ Sequenced steps (each independently green; supervisor core + contribution pipeli
 - `[x]` S6 inline multimap → strategy-registry; DELETE scoped-registry/ (**−30** net; structural win = one fewer substrate module; S5 already took the big −293. Coverage relocated to strategy-registry/multimap-core.test.ts; sibling-scope guard byte-unchanged. tsc 0 / strategy 15 + account 41 + name-blindness 3 green)
 - `[-]` S7 SKIP (keep chain helpers per owner)
 - `[x]` S8 FULL DELETE persisted.ts + relocate Account/Package schemas → update.ts; offline status from manifest (**−220**, indep-verified tsc 0 / 8 files 47 tests green). Caught 2 missed consumers (plain-renderer.ts + decode-once.test.ts also imported the schemas); 3 writers were in cli/wirings/ not orchestrators; offline `status` now via `degradedStatusFromContext(ctx)` (identity+endpoints from manifest, empty rows). CacheService/preRestore/restore/identity-guard UNTOUCHED (verified). Docs cli.mdx help-text updated (docs-drift parity).
-- `[ ]` S9 full sweep + e2e (private-content-boot + snapshot-restore-matrix + dedicated `rm projection.v4.json` decrypt gate) + minimality check
+- `[x]` S9 full sweep + minimality — **tsc 0; full unit suite 264 files / 1851 pass / 1 skip / 0 fail** (incl. persist-id-parity + supervisor/snapshot-restore + orchestrators/snapshot/restore unit tests + sui local-image build-args + name-blindness + no-orphan-exports). Minimality: zero dangling imports to any deleted module; barrel clean. The `rm projection.v4.json` decrypt gate is MOOT (nothing writes/reads it anymore).
+  - **e2e BLOCKED by a PRE-EXISTING infra failure (NOT Step 3):** `private-content-boot` + `snapshot-restore-matrix` fail at the sui Docker image build — `FROM ${SUI_TOOLS_IMAGE}` resolves empty → `sui#0` never ready → `[{key:'sui#0'},…(10)] !== []`. **PROVEN pre-existing:** reproduced the identical failure on the pre-Step-3 commit `5c597fc4`. Step 3 never touched the sui-image/docker-build path (empty diff vs `5c597fc4`); base image `mysten/sui-tools:eced…-arm64` IS present locally; the build-arg is constructed correctly (unit test green) yet empty at actual build time. Owned by the sui-tools migration (`adaf37e1`) workstream. id-stability for Step 3 is instead proven by: restore/CacheService/preRestore/identity-guard UNTOUCHED (verified) + the restore/id-parity UNIT tests green.
 **Guards:** do NOT inline operational-endpoints (name-blindness `faucet` leak into acquire-node); S4 test is a hard prereq before the registry collapse.
 
 ## Step 4 — runStack-as-seam  `[ ]`
