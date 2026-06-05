@@ -53,7 +53,7 @@ Sequenced steps (each independently green; supervisor core + contribution pipeli
 - `[x]` S1 move lifecycle-fact → reducer (update.ts), keep named exports (**−10**, tsc 0 / 12 tests green)
 - `[x]` S2 move projection compile guards → projection.ts; drop projection/index.ts barrel (**−10**, tsc 0 / projection+name-blindness+no-orphan green)
 - `[x]` S3 drop dead manifest `services`+`PluginManifestContribution`; `services`→Schema.optional (**−63**, no version bump; tsc 0 / manifest 15 + build-integrations 190 green). Backlog: rename `ManifestError.reason` 'duplicate-contribution'→'duplicate-endpoint'.
-- `[ ]` S4 ADD missing multimap sibling-scope drop-by-seq finalizer test (PREREQ for S5/S6)
+- `[x]` S4 ADD missing multimap sibling-scope drop-by-seq finalizer test (PREREQ for S5/S6) — 3 tests via StrategyRegistry public surface (survives inline), green vs current; drop-by-seq + close-order-independence + uninterruptible-finalizer
 - `[ ]` S5 strangle single-mode LWW → coin/package as `Ref<Map>` (+40)
 - `[ ]` S6 inline multimap → strategy-registry; DELETE scoped-registry/ (−200)
 - `[-]` S7 SKIP (keep chain helpers per owner)
