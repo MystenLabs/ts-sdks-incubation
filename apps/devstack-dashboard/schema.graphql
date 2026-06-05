@@ -355,8 +355,6 @@ type Query {
   sealInfo: [SealInfo!]!
   services(after: String, before: String, first: Int, last: Int): QueryServicesConnection!
   snapshots: [SnapshotEntry!]!
-  spanServices: [String!]!
-  spans(filter: SpanFilter): [SpanRecord!]!
   state: StackState!
 }
 
@@ -453,29 +451,6 @@ type SnapshotEntry {
   participants: [String!]!
   stack: String
   subtreeCount: Int!
-}
-
-input SpanFilter {
-  limit: Int
-  search: String
-  services: [String!]
-  sinceMillis: Float
-  statuses: [String!]
-}
-
-"""
-One completed span (queryable Console "Traces" tab). Recorded by the supervisor's recording Tracer.
-"""
-type SpanRecord {
-  attributesJson: String!
-  durationMillis: Float!
-  name: String!
-  parentId: String
-  service: String
-  spanId: String!
-  startMillis: Float!
-  status: String!
-  traceId: String!
 }
 
 """A structured error reported by a plugin or the engine."""
