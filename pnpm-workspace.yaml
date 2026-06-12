@@ -7,6 +7,14 @@ minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
   - '@mysten/*'
   - '@mysten-incubation/*'
+# GHSA-gv7w-rqvm-qjhr: esbuild <0.28.1 Deno-loader binary-integrity advisory.
+# Not reachable here (esbuild runs under Node via fumadocs-mdx/vite), and the
+# full fix is double-blocked: fumadocs-mdx pins esbuild ^0.27.2, and 0.28.1
+# (published 2026-06-11) is younger than the 2-day age gate above. Revisit
+# after 2026-06-14 / when fumadocs-mdx allows >=0.28.1, then drop this entry.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-gv7w-rqvm-qjhr
 packages:
   - 'packages/**'
   - 'apps/**'
