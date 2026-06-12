@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+*.log
+
+# Local environment
+.env
+.env.local
+.env.*.local
+*.local
+
+# Devstack runtime and generated app bindings
+.devstack/
+src/generated/
+
+# Move build artifacts
+move/**/build/
+move/**/package_summaries/
+*.mv
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

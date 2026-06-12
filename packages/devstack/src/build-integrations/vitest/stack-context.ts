@@ -50,8 +50,10 @@ export interface StackContext {
 export interface LoadStackContextOptions {
 	/** Starting directory for the walk-up. Defaults to `process.cwd()`. */
 	readonly cwd?: string;
-	/** Stack name override. Defaults to `process.env.DEVSTACK_STACK`
-	 *  with a final fallback to `'main'`. */
+	/** Stack name override. Defaults to `process.env.DEVSTACK_STACK`,
+	 *  then the nearest package.json `name` above `cwd` (matching the
+	 *  CLI's `resolveStackName` inference), with a final fallback to
+	 *  `'main'`. */
 	readonly stack?: string;
 	/** Runtime root override. Defaults
 	 *  to `process.env.DEVSTACK_RUNTIME_ROOT` /
@@ -111,9 +113,13 @@ export const loadStackContext = (opts: LoadStackContextOptions = {}): StackConte
 	// `runtimeRoot` is the vitest-flavored name for the shared resolver's
 	// `stateDir` rung; the ladder (option > DEVSTACK_RUNTIME_ROOT >
 	// DEVSTACK_STATE_DIR > '.devstack') lives in `resolveDiscoveryEnv`.
+	// The stack rung threads the loader's walk-up start so a bare app's
+	// package-name-derived stack (the CLI's inference) is found without
+	// DEVSTACK_STACK being set.
 	const { stack, stateDir: runtimeRoot } = resolveDiscoveryEnv(env, {
 		...(opts.stack !== undefined ? { stack: opts.stack } : {}),
 		...(opts.runtimeRoot !== undefined ? { stateDir: opts.runtimeRoot } : {}),
+		cwd: opts.cwd ?? process.cwd(),
 	});
 
 	try {

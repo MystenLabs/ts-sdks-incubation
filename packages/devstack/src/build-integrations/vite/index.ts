@@ -13,9 +13,11 @@
 // `orchestrators/codegen/output-location.ts` +
 // `orchestrators/boot.ts`). Resolution:
 //   1. `options.generatedDir` — explicit escape hatch, used verbatim.
-//   2. `resolveDiscoveryEnv(process.env)` → `{ stack, stateDir }`
-//      (single source of truth; honors `DEVSTACK_STACK` +
-//      `DEVSTACK_RUNTIME_ROOT`/`DEVSTACK_STATE_DIR`), then
+//   2. `resolveDiscoveryEnv(process.env, { cwd: root })` → `{ stack,
+//      stateDir }` (single source of truth; honors `DEVSTACK_STACK` +
+//      `DEVSTACK_RUNTIME_ROOT`/`DEVSTACK_STATE_DIR`, then infers the
+//      stack from the nearest package.json `name` — the CLI's
+//      `resolveStackName` rung — before falling back to `main`), then
 //      `discoverManifestPath(...)` locates `<stateDir>/stacks/<stack>/manifest.json`,
 //      and we read its `codegen.generatedDir`.
 //   3. Cold-start fallback — no manifest / no field yet → `<root>/src/generated`.
@@ -148,7 +150,7 @@ const readGeneratedDirFromManifest = (
 	cwd: string,
 ): string | null => {
 	try {
-		const { stack, stateDir } = resolveDiscoveryEnv(env);
+		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
 		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
 		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
 		const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -173,7 +175,7 @@ const readExtrasDirFromManifest = (
 	cwd: string,
 ): string | null => {
 	try {
-		const { stack, stateDir } = resolveDiscoveryEnv(env);
+		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
 		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
 		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
 		const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -211,7 +213,7 @@ const fallbackExtrasDir = (
 ): string => {
 	let stack = 'default';
 	try {
-		stack = resolveDiscoveryEnv(env).stack;
+		stack = resolveDiscoveryEnv(env, { cwd: root }).stack;
 	} catch {
 		// keep the `default` fallback.
 	}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# Devstack runtime state and generated bindings — recreated by `devstack up` / `apply`.
+.devstack/
+src/generated/
+
+# Move build artifacts.
+move/**/build/
+move/**/package_summaries/

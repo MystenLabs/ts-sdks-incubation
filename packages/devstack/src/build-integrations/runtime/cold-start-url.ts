@@ -18,8 +18,14 @@
 //   - `<app>` is the un-scoped app name (from cwd's `package.json` or
 //     an explicit override).
 //   - `<stack-prefix>` comes from an explicit stack, `DEVSTACK_STACK`,
-//     or the `main` default. Package metadata is not a stack selector
-//     for build integrations; it only supplies the app name.
+//     or the `main` default. Unlike manifest discovery
+//     (`resolveDiscoveryEnv`'s package-name rung), the cold-start path
+//     does NOT infer a stack from package metadata — here it supplies
+//     only the app name. Inferring it here too would double the package
+//     name into every minted hostname
+//     (`<service>.<pkg>.<pkg>.localhost`); pinned by the cold-start
+//     tests, revisit deliberately if convergence for inferred stacks is
+//     ever needed pre-manifest.
 //   - `<stack-prefix>` is empty for the `main` stack and `.<stack>`
 //     otherwise. Matches the router's hostname-minting rule so
 //     conventional and post-manifest URLs converge.

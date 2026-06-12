@@ -146,6 +146,25 @@ describe('loadStackContext', () => {
 		expect(loadStackContext(baseOpts({ stack: 'test' }))?.identity.stack).toBe('test');
 	});
 
+	it('infers the stack from the nearest package.json name when no stack option or env is set', () => {
+		// Mirrors the CLI's `resolveStackName`: `devstack up` in a bare app
+		// (no stackName, no DEVSTACK_STACK) names the stack after the
+		// package, so the loader must find that manifest the same way.
+		writeFileSync(join(tmp.root, 'package.json'), JSON.stringify({ name: '@scope/smoke-app' }));
+		tmp.writeManifest('main', minimalManifest({ stack: 'main' })); // decoy at the old default
+		tmp.writeManifest('smoke-app', minimalManifest({ stack: 'smoke-app' }));
+		const ctx = loadStackContext(baseOpts());
+		expect(ctx?.identity.stack).toBe('smoke-app');
+	});
+
+	it('DEVSTACK_STACK env wins over package-name stack inference', () => {
+		writeFileSync(join(tmp.root, 'package.json'), JSON.stringify({ name: '@scope/smoke-app' }));
+		tmp.writeManifest('smoke-app', minimalManifest({ stack: 'smoke-app' })); // decoy
+		tmp.writeManifest('from-env', minimalManifest({ stack: 'from-env' }));
+		const ctx = loadStackContext(baseOpts({ env: { DEVSTACK_STACK: 'from-env' } }));
+		expect(ctx?.identity.stack).toBe('from-env');
+	});
+
 	it('DEVSTACK_MANIFEST_PATH env override wins over walk-up', () => {
 		const overridePath = tmp.writeManifest('explicit', minimalManifest({ stack: 'explicit' }));
 		// stack arg says 'test' but env override points at 'explicit'.

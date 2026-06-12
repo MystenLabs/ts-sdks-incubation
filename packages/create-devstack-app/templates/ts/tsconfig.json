@@ -1,0 +1,12 @@
+{
+	"extends": "@mysten-incubation/tsconfig/strict.json",
+	"compilerOptions": {
+		"lib": ["ES2022"],
+		"types": ["node"],
+		"noEmit": true,
+		// Codegen emits `.ts` import extensions so Node 24's native
+		// type-stripping, vitest, and `tsc` all resolve one source of truth.
+		"allowImportingTsExtensions": true
+	},
+	"include": ["src/**/*", "devstack.config.ts", "vitest.config.ts"]
+}

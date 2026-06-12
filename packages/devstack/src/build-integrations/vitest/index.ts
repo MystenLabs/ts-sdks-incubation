@@ -44,6 +44,7 @@ export {
 	resolveVitestEnv,
 	VITEST_ENV_VARS,
 	type ResolvedVitestEnv,
+	type ResolveVitestEnvOptions,
 	type VitestEnvVarName,
 } from './env.ts';
 

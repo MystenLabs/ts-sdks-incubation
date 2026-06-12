@@ -1,13 +1,12 @@
 import { defineConfig } from 'vitest/config';
 
-// Unit tests for the scaffolder (fence stripper, plugin manifest, gitignore
-// guard). The bundled `template/` directory is a SNAPSHOT of a full app — its
-// `e2e/*.spec.ts` are Playwright specs that import `@playwright/test` and must
-// never be collected by this package's vitest run. Scope `include` to `test/`
-// and explicitly exclude `template/`.
+// Unit tests for the scaffolder (config renderer, scaffold engine, skip-set
+// guards). The bundled `templates/` are complete authored apps — they carry
+// their own vitest configs/tests that must never be collected by this
+// package's run. Scope `include` to `test/` and exclude the templates.
 export default defineConfig({
 	test: {
 		include: ['test/**/*.test.ts'],
-		exclude: ['**/node_modules/**', '**/dist/**', 'template/**'],
+		exclude: ['**/node_modules/**', '**/dist/**', 'template/**', 'templates/**'],
 	},
 });

@@ -110,7 +110,9 @@ export interface TestSetupOptions extends LoadStackContextOptions {
  *  setup-file. */
 export const runDevstackBeforeAll = (options: TestSetupOptions = {}): void => {
 	const env = options.env ?? (process.env as Readonly<Record<string, string | undefined>>);
-	const resolved = resolveVitestEnv(env);
+	// Thread the loader's walk-up start so the advisory below names the
+	// stack `loadStackContext` will actually read (package-name rung).
+	const resolved = resolveVitestEnv(env, { cwd: options.cwd ?? process.cwd() });
 
 	if (!options.silent && !resolved.stackWasExplicit) {
 		const write =

@@ -1,0 +1,29 @@
+{
+	"name": "ts-template",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "devstack up",
+		"apply": "devstack apply",
+		"typecheck": "devstack apply && tsc --noEmit",
+		"test": "vitest run",
+		"clean": "rm -rf dist .turbo node_modules/.tmp"
+	},
+	"dependencies": {
+		"@mysten-incubation/devstack": "^0.1.1",
+		"@mysten/seal": "^1.1.1",
+		"@mysten/sui": "^2.17.0",
+		"@mysten/walrus": "^1.1.7",
+		"@mysten/walrus-wasm": "^0.2.0"
+	},
+	"devDependencies": {
+		"@mysten-incubation/tsconfig": "^0.0.1",
+		"@types/node": "^24.12.2",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.6"
+	},
+	"engines": {
+		"node": ">=24"
+	}
+}

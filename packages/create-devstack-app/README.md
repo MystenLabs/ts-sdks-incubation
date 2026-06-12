@@ -1,6 +1,6 @@
 # @mysten-incubation/create-devstack-app
 
-Scaffold a new devstack-backed Sui app from the canonical template.
+Scaffold a new devstack-backed Sui app.
 
 The published package is `@mysten-incubation/create-devstack-app`; package managers resolve the
 create alias below to this package.
@@ -13,14 +13,19 @@ pnpm dev
 
 The scaffolder:
 
-1. Prompts for which optional plugins to include (walrus, seal, deepbook), then copies the canonical
-   [`template/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/create-devstack-app/template)
-   directory into `<cwd>/<name>/` and **composes** it down to the plugins you selected (see "Plugin
-   composition" below).
-2. Substitutes the app name into `package.json`, `devstack.config.ts`, and `playwright.config.ts`,
-   and injects resolved SDK versions.
-3. Runs `pnpm install`.
-4. Runs `git init` + an initial commit.
+1. Prompts for an app name, what you are building (**Web dapp** or **TypeScript only**), and which
+   optional services to include (walrus, seal — default: none).
+2. Copies the matching template —
+   [`templates/app/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/create-devstack-app/templates/app)
+   or
+   [`templates/ts/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/create-devstack-app/templates/ts)
+   — **verbatim** into `<cwd>/<name>/`.
+3. Renders `devstack.config.ts` from the service selection: the Sui localnet is always present, and
+   each selected service is one factory line (`walrus()`, `seal()`).
+4. Sets the app name in `package.json`, prunes the dependencies of unselected services, and injects
+   resolved SDK versions. No other file is touched.
+5. Runs `pnpm install` and `git init` + an initial commit, performs a non-fatal Docker preflight,
+   and prints next steps.
 
 ## Options
 
@@ -29,6 +34,13 @@ pnpm create @mysten-incubation/devstack-app@latest <name> [options]
 
   <name>              App name. Lowercase, dash-separated, starts with a letter.
 
+  --template <t>      Skip the "What are you building?" prompt: `app` (Web dapp)
+                      or `ts` (TypeScript only).
+  --services <list>   Comma-separated services to include: walrus,seal.
+  --all               Include every optional service.
+  --minimal           Include no optional services.
+  --yes               Non-interactive; defaults apply for anything not flagged
+                      (Web dapp, no services).
   --target-dir <dir>  Where to create the app directory. Default: cwd.
   --no-install        Skip pnpm install.
   --no-git            Skip git init + initial commit.
@@ -36,51 +48,65 @@ pnpm create @mysten-incubation/devstack-app@latest <name> [options]
 
 ## What you get
 
-A self-contained app with a `counter` Move package, a panel-based UI (a core counter panel plus a
-panel for each optional plugin you selected — walrus, seal, deepbook), unit tests, and a Playwright
-e2e spec. Same `pnpm dev` / `pnpm test` / `pnpm test:e2e` / `pnpm build` scripts as the in-tree
-examples.
+Both templates are small, complete apps — a `counter` Move package plus a vitest spec that runs
+against the booted stack. The `app` template adds the browser half: vite, dapp-kit, the dev wallet,
+and a single screen wired to the counter package.
 
-For the full file tree and per-file walkthrough see the
-[template's README](https://github.com/MystenLabs/ts-sdks-incubation/blob/main/packages/create-devstack-app/template/README.md).
+```
+my-app/
+  devstack.config.ts   # rendered from your service selection; the rest is verbatim template
+  move/counter/        # one Move package, published on boot
+  src/                 # app template: one screen on vite + dapp-kit + dev wallet
+  package.json         # name + service deps + SDK versions set at scaffold time
+  ...                  # tsconfig, vite config (app), vitest spec
+```
 
-## Plugin composition
+Scripts:
 
-The authored `template/` is a **superset** that includes every optional plugin and typechecks as-is
-(the default scaffold is "all plugins"). Selection is **composition, not text-stripping** — there
-are no comment fences and no line parser. Each optional plugin is self-contained:
+- `pnpm dev` — `devstack up` (boots the stack; the app template serves the UI as a stack member).
+- `pnpm apply` — `devstack apply` (one-shot reconcile: CI, or before typechecking).
+- `pnpm typecheck` — `devstack apply && tsc -b --noEmit`.
+- `pnpm test` — `vitest run` (the spec talks to the booted stack).
+- `pnpm build` — app template only.
 
-- a panel in `template/src/panels/<Panel>.tsx` (+ its `src/lib/<plugin>.ts`),
-- a stack-wiring module in `template/src/devstack/<plugin>.ts` exporting a `PluginModule` whose
-  `setup()` returns its contribution (extra account funding, dev-wallet accounts, `after:` deps),
-- an optional Move package and e2e spec,
-- its npm deps in `template/package.json`.
+There are no `DEVSTACK_APP=` tokens and no `stackName` in the generated files: the devstack CLI
+infers the app from the `package.json` name, and the stack defaults to `main`.
 
-Two generated barrels tie it together: `template/src/app-panels.ts` lists the panels and
-`template/src/devstack/plugins.ts` lists the wiring modules. Core `devstack.config.ts` and `App.tsx`
-import those barrels and never reference a specific plugin.
+Looking for a richer end-to-end demo? Those live in
+[`examples/token-studio`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/token-studio),
+not in the scaffold.
 
-At scaffold time, [`src/compose.ts`](./src/compose.ts) for the selected subset:
+## Design principles
 
-1. deletes each unselected plugin's owned files/dirs,
-2. **regenerates** the two barrels from the selected plugins only (plain whole-file writes — no
-   splicing of authored source), and
-3. deletes each unselected plugin's deps from `package.json`.
+- **Every generated file survives into a real app.** No demo gallery to delete on day two.
+- **Services are config lines, not file sets.** Selecting walrus/seal adds one factory line each to
+  `devstack.config.ts` (plus their npm deps). It never adds or removes source files. (DeepBook is
+  not offered — devstack no longer synthesizes a local DeepBook, so it can't be a one-liner; the
+  generated README points to `examples/deepbook-trader` instead.)
+- **One rendered file.** `devstack.config.ts` is the only file generated from the selection;
+  everything else is copied verbatim from the template.
+- **One `package.json` mutation.** App name, pruning unselected-service deps, and injecting resolved
+  SDK versions — nothing else.
 
-Every subset is clean by construction: a barrel only ever imports modules that still exist, and no
-authored file references a removed plugin. A defensive guard re-asserts "no dangling references"
-after composing.
+## Template maintenance
 
-### Adding a new plugin
+`templates/app/` and `templates/ts/` are authored as real, runnable apps and copied verbatim at
+scaffold time — keep them working as apps. Their `package.json` files are excluded from the pnpm
+workspace (see the root `pnpm-workspace.yaml`) so they do not register as workspace projects.
 
-1. Add `template/src/panels/<Panel>.tsx` and `template/src/lib/<plugin>.ts`.
-2. Add `template/src/devstack/<plugin>.ts` exporting a `PluginModule` (`{ id, setup(ctx) }`)
-   returning its `PluginContribution`.
-3. Add the plugin's deps to `template/package.json`, and (optionally) a Move package and an
-   `e2e/<plugin>.spec.ts`.
-4. Register it in the two authored barrels (`template/src/app-panels.ts`,
-   `template/src/devstack/plugins.ts`) so the default scaffold includes it.
-5. Add one entry to `PLUGIN_MANIFEST` in [`src/plugin-manifest.ts`](./src/plugin-manifest.ts) (panel
-   symbol, wiring symbol, owned files/dirs, deps).
+Adding a service:
 
-No changes to `compose.ts` are needed — it is data-driven by the manifest.
+1. Add one entry to [`src/services.ts`](./src/services.ts) (its config factory line and the deps it
+   owns).
+2. Add its deps to both template `package.json`s.
+3. Add a snippet for it to this README.
+
+## Testing
+
+- Render tests snapshot `devstack.config.ts` for every template × service combination.
+- Scaffold tests generate into a temp dir and assert the produced file set and `package.json`
+  mutations.
+- CI (`.github/workflows/create-devstack-app.yml`) scaffolds real apps from the built package,
+  installs freshly packed workspace tarballs into them, and runs each app's `pnpm typecheck`. A boot
+  smoke in `.github/workflows/devstack-e2e.yml` brings a scaffolded app up with `devstack up` and
+  runs its vitest spec against the live stack.

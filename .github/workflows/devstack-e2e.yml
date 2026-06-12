@@ -22,6 +22,10 @@ name: Devstack E2E
 #             snapshot catalog through the CLI, resolves the `baseline`
 #             label to its canonical snapshot directory id, and verifies
 #             restored runtime files/images.
+#
+# A scaffold boot smoke additionally generates an app with the built
+# create-devstack-app, installs packed workspace tarballs into it, boots
+# it with `devstack up`, and runs its vitest spec against the live stack.
 
 on:
   pull_request:
@@ -44,6 +48,7 @@ jobs:
     outputs:
       seed: ${{ steps.filter.outputs.seed }}
       docker: ${{ steps.filter.outputs.docker }}
+      scaffold: ${{ steps.filter.outputs.scaffold }}
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
@@ -62,6 +67,7 @@ jobs:
             {
               echo "seed=true"
               echo "docker=true"
+              echo "scaffold=true"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -100,8 +106,20 @@ jobs:
             esac
           }
 
+          matches_scaffold() {
+            case "$1" in
+              .github/workflows/devstack-e2e.yml|.github/scripts/override-workspace-tarballs.mjs|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|turbo.json|packages/tsconfig/*|packages/devstack/package.json|packages/devstack/tsdown.config.ts|packages/devstack/src/*|packages/devstack/images/*|packages/devstack/scripts/*|packages/dev-wallet/*|packages/create-devstack-app/*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
           seed=false
           docker=false
+          scaffold=false
           while IFS= read -r file; do
             if matches_seed "$file"; then
               seed=true
@@ -109,11 +127,15 @@ jobs:
             if matches_docker "$file"; then
               docker=true
             fi
+            if matches_scaffold "$file"; then
+              scaffold=true
+            fi
           done < /tmp/devstack-e2e-files
 
           {
             echo "seed=$seed"
             echo "docker=$docker"
+            echo "scaffold=$scaffold"
           } >> "$GITHUB_OUTPUT"
 
   seed:
@@ -420,3 +442,130 @@ jobs:
           for c in $(docker ps -a --format '{{.Names}}'); do
             docker logs "$c" > "/tmp/docker-logs/${c}.log" 2>&1 || true
           done
+
+  # Scaffold boot smoke. Generates an app with the built
+  # create-devstack-app (app template, no optional services), installs
+  # packed workspace tarballs into it (same mechanism as the devstack
+  # `smoke:pack-consumer` script, via
+  # .github/scripts/override-workspace-tarballs.mjs), boots it with the
+  # long-lived `devstack up`, and runs the app's vitest spec against the
+  # live stack — the half the scaffold typecheck workflow
+  # (create-devstack-app.yml) intentionally skips.
+  scaffold-boot:
+    name: Scaffold boot smoke
+    needs: changes
+    if: needs.changes.outputs.scaffold == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build scaffolder and runtime packages
+        run: pnpm turbo build --filter @mysten-incubation/create-devstack-app --filter @mysten-incubation/devstack --filter @mysten-incubation/dev-wallet
+
+      - name: Pack workspace tarballs
+        run: |
+          mkdir -p "$RUNNER_TEMP/tarballs"
+          for pkg in devstack dev-wallet tsconfig; do
+            (cd "packages/$pkg" && pnpm pack --pack-destination "$RUNNER_TEMP/tarballs")
+          done
+
+      - name: Scaffold app
+        # Direct-node invocation of the built bin: see the seed job's
+        # apply step for the bin-symlink rationale. `--target-dir`
+        # outside the checkout so the repo's pnpm-workspace.yaml cannot
+        # capture the app; `--no-install` because the install happens
+        # after the tarball overrides land.
+        run: |
+          bin="$(node -e 'const { bin } = require("./packages/create-devstack-app/package.json"); console.log(typeof bin === "string" ? bin : Object.values(bin)[0]);')"
+          mkdir -p "$RUNNER_TEMP/scaffold"
+          node "packages/create-devstack-app/$bin" smoke-boot \
+            --template app --minimal \
+            --yes --no-install --no-git --target-dir "$RUNNER_TEMP/scaffold"
+
+      - name: Install packed workspace tarballs
+        run: |
+          node .github/scripts/override-workspace-tarballs.mjs \
+            "$RUNNER_TEMP/scaffold/smoke-boot" "$RUNNER_TEMP/tarballs"
+          cd "$RUNNER_TEMP/scaffold/smoke-boot"
+          pnpm install
+
+      - name: Boot stack (devstack up)
+        working-directory: ${{ runner.temp }}/scaffold/smoke-boot
+        timeout-minutes: 20
+        # `up` is the attached long-lived supervisor, so background it
+        # (the tarball install created a real `node_modules/.bin/devstack`,
+        # unlike the in-repo examples) and treat the stack manifest write
+        # as boot-complete — the same durable record the seed job's
+        # one-shot `apply` exits on. `--renderer plain` keeps
+        # line-oriented logs on the non-TTY runner.
+        run: |
+          nohup ./node_modules/.bin/devstack up --renderer plain > up.log 2>&1 &
+          echo $! > up.pid
+          for _ in $(seq 1 200); do
+            if [ -f .devstack/stacks/main/manifest.json ]; then
+              exit 0
+            fi
+            if ! kill -0 "$(cat up.pid)" 2>/dev/null; then
+              echo '::error::devstack up exited before the stack became ready'
+              tail -n 200 up.log
+              exit 1
+            fi
+            sleep 5
+          done
+          echo '::error::timed out waiting for .devstack/stacks/main/manifest.json'
+          tail -n 200 up.log
+          exit 1
+
+      - name: Assert generated bindings exist
+        working-directory: ${{ runner.temp }}/scaffold/smoke-boot
+        run: |
+          test -d src/generated
+          test -n "$(ls -A src/generated)"
+          find src/generated -type f | head -50
+
+      - name: Run app tests against the live stack
+        working-directory: ${{ runner.temp }}/scaffold/smoke-boot
+        timeout-minutes: 10
+        run: pnpm test
+
+      - name: Tear down (SIGINT supervisor, then wipe)
+        working-directory: ${{ runner.temp }}/scaffold/smoke-boot
+        # SIGINT is the supervisor's graceful-shutdown path (there is no
+        # `devstack down`); `wipe --yes` then destroys the stack state
+        # through the production CLI verb.
+        run: |
+          kill -INT "$(cat up.pid)" 2>/dev/null || true
+          for _ in $(seq 1 60); do
+            kill -0 "$(cat up.pid)" 2>/dev/null || break
+            sleep 2
+          done
+          if kill -0 "$(cat up.pid)" 2>/dev/null; then
+            echo '::error::supervisor did not exit after SIGINT'
+            tail -n 200 up.log
+            exit 1
+          fi
+          ./node_modules/.bin/devstack wipe --yes
+
+      - name: Upload scaffold state on failure
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: devstack-scaffold-boot-failure
+          path: |
+            ${{ runner.temp }}/scaffold/smoke-boot/up.log
+            ${{ runner.temp }}/scaffold/smoke-boot/.devstack/
+            ${{ runner.temp }}/scaffold/smoke-boot/src/generated/
+            ${{ runner.temp }}/scaffold/smoke-boot/package.json
+            ${{ runner.temp }}/scaffold/smoke-boot/devstack.config.ts
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true

@@ -3,13 +3,16 @@ import { dirname, resolve } from 'node:path';
 
 import { Effect } from 'effect';
 
-import { DEFAULT_DISCOVERY_STACK } from '../build-integrations/runtime/resolve-discovery-env.ts';
-
-/** Canonical default stack name (`'main'`). Single source of truth lives
- *  in the discovery ladder's `DEFAULT_DISCOVERY_STACK`; re-exported here
- *  (and from the vitest env module) so all entry points agree on one
- *  literal. */
-export const DEFAULT_STACK_NAME = DEFAULT_DISCOVERY_STACK;
+/** Canonical default stack name (`'main'`). The literal's single source
+ *  of truth lives HERE: the discovery ladder
+ *  (`build-integrations/runtime/resolve-discovery-env.ts`) imports
+ *  `inferPackageNameFromCwd` from this module for its package-name
+ *  rung, so this module must not import the ladder's consts back — a
+ *  two-way top-level-const read would TDZ-crash under one import
+ *  order. The ladder re-exports this value as `DEFAULT_DISCOVERY_STACK`
+ *  (and the vitest env module as its own `DEFAULT_STACK_NAME`) so all
+ *  entry points still agree on one literal. */
+export const DEFAULT_STACK_NAME = 'main';
 
 export interface StackNameResolutionOptions {
 	readonly explicit?: string;

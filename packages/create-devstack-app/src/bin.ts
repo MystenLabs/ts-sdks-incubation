@@ -3,87 +3,101 @@
 // pnpm/npm look up `@mysten-incubation/create-devstack-app` and run this
 // bin with `<name>` as the first positional argument.
 //
-// `bin.ts` owns the CLI shell (flag parsing + routing). Interactive prompts
-// lazy-load the Ink picker, matching devstack prune's non-interactive fast path.
+// `bin.ts` owns the CLI shell: flag parsing, @clack/prompts for whatever the
+// flags didn't answer, then one `scaffold(...)` call and the next steps.
 
-import { scaffold } from './index.js';
-import { OPTIONAL_PLUGINS, type PluginId } from './plugin-manifest.js';
+import {
+	cancel,
+	intro,
+	isCancel,
+	log,
+	multiselect,
+	note,
+	outro,
+	select,
+	text,
+} from '@clack/prompts';
+import pc from 'picocolors';
 
-const USAGE = `Usage: pnpm create @mysten-incubation/devstack-app <name> [options]
+import { TEMPLATE_IDS, type TemplateId } from './render-config.js';
+import { NAME_RE, scaffold } from './scaffold.js';
+import { parseServiceList, SERVICE_IDS, SERVICES, type ServiceId } from './services.js';
+
+const USAGE = `Usage: pnpm create @mysten-incubation/devstack-app [name] [options]
 
 Arguments:
-  <name>              App name. Lowercase, dash-separated, starts with a letter.
+  [name]              App name. Lowercase, dash-separated, starts with a letter.
+                      Prompted for when omitted.
 
 Options:
+  --template <id>     Template: app (React dapp) or ts (TypeScript only). Default: app.
+  --services <list>   Comma-separated services to include (walrus,seal).
+                      The sui localnet is always included. Skips the service prompt.
+  --all               Include every service.
+  --minimal           No optional services (sui localnet only).
+  --yes               Non-interactive: accept defaults (app template, no services).
   --target-dir <dir>  Where to create the app directory. Default: current working directory.
-  --plugins <list>    Comma-separated plugins to include (core,walrus,seal,deepbook).
-                      'core' is always included. Skips the interactive picker.
-  --all               Include every plugin (default in non-interactive mode).
-  --minimal           Core only (no walrus/seal/deepbook).
-  --yes               Non-interactive: accept defaults (all plugins).
   --no-install        Skip pnpm install.
   --no-git            Skip git init + initial commit.
   -h, --help          Show this help.
 `;
 
-/** Human-readable labels for the interactive plugin picker. */
-const PLUGIN_LABELS: Record<PluginId, { label: string; hint: string }> = {
-	core: { label: 'core', hint: 'on-chain counter' },
-	walrus: { label: 'walrus', hint: 'upload & read a blob' },
-	seal: { label: 'seal', hint: 'encrypt & decrypt a secret' },
-	deepbook: { label: 'deepbook', hint: 'view a pool & place an order' },
-};
+const TEMPLATE_OPTIONS: Array<{ value: TemplateId; label: string }> = [
+	{ value: 'app', label: 'Web dapp — React + dapp-kit + dev wallet (recommended)' },
+	{ value: 'ts', label: 'TypeScript only — scripts and tests against the stack, no frontend' },
+];
 
-const VALID_PLUGINS = new Set<string>(['core', ...OPTIONAL_PLUGINS]);
+const SERVICES_PROMPT =
+	'Local services? (sui localnet always included — each adds one line to devstack.config.ts)';
 
-/** Parse a `--plugins core,seal` value into a Set (always incl. `core`). */
-function parsePluginList(value: string): Set<PluginId> {
-	const selected = new Set<PluginId>(['core']);
-	for (const raw of value.split(',')) {
-		const id = raw.trim();
-		if (id === '') continue;
-		if (!VALID_PLUGINS.has(id)) {
-			throw new Error(`unknown plugin '${id}'. Valid: core, ${OPTIONAL_PLUGINS.join(', ')}.`);
-		}
-		selected.add(id as PluginId);
+function usageError(message: string): number {
+	process.stderr.write(`${message}\n`);
+	return 2;
+}
+
+/** Unwrap a clack prompt result, exiting 130 on cancel (ctrl-c). */
+function unwrap<T>(value: T | symbol): T {
+	if (isCancel(value)) {
+		cancel('Cancelled.');
+		process.exit(130);
 	}
-	return selected;
+	return value as T;
 }
 
 async function main(): Promise<number> {
 	const argv = process.argv.slice(2);
-	if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+	if (argv.includes('--help') || argv.includes('-h')) {
 		process.stdout.write(USAGE);
-		return argv.length === 0 ? 1 : 0;
+		return 0;
 	}
 
 	let name: string | undefined;
 	let targetDir: string | undefined;
-	let skipInstall = false;
-	let skipGit = false;
-	let pluginsFlag: string | undefined;
+	let templateFlag: string | undefined;
+	let servicesFlag: string | undefined;
 	let all = false;
 	let minimal = false;
 	let yes = false;
+	let skipInstall = false;
+	let skipGit = false;
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
-		if (arg === '--target-dir') {
+		if (arg === undefined) continue;
+		const valueOf = (flag: string): string | undefined => {
+			if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
 			i += 1;
-			targetDir = argv[i];
-			if (targetDir === undefined) {
-				process.stderr.write('--target-dir requires a value\n');
-				return 2;
-			}
-		} else if (arg === '--plugins') {
-			i += 1;
-			pluginsFlag = argv[i];
-			if (pluginsFlag === undefined) {
-				process.stderr.write('--plugins requires a value\n');
-				return 2;
-			}
-		} else if (arg !== undefined && arg.startsWith('--plugins=')) {
-			pluginsFlag = arg.slice('--plugins='.length);
+			return argv[i];
+		};
+		if (arg === '--target-dir' || arg.startsWith('--target-dir=')) {
+			targetDir = valueOf('--target-dir');
+			if (targetDir === undefined) return usageError('--target-dir requires a value');
+		} else if (arg === '--template' || arg.startsWith('--template=')) {
+			templateFlag = valueOf('--template');
+			if (templateFlag === undefined) return usageError('--template requires a value');
+		} else if (arg === '--services' || arg.startsWith('--services=')) {
+			servicesFlag = valueOf('--services');
+			if (servicesFlag === undefined) return usageError('--services requires a value');
 		} else if (arg === '--all') {
 			all = true;
 		} else if (arg === '--minimal') {
@@ -94,67 +108,130 @@ async function main(): Promise<number> {
 			skipInstall = true;
 		} else if (arg === '--no-git') {
 			skipGit = true;
-		} else if (arg !== undefined && arg.startsWith('--')) {
-			process.stderr.write(`unknown option: ${arg}\n`);
-			return 2;
-		} else if (arg !== undefined) {
-			if (name !== undefined) {
-				process.stderr.write(`unexpected positional argument: ${arg}\n`);
-				return 2;
-			}
+		} else if (arg.startsWith('--')) {
+			return usageError(`unknown option: ${arg}`);
+		} else if (name !== undefined) {
+			return usageError(`unexpected positional argument: ${arg}`);
+		} else {
 			name = arg;
 		}
 	}
 
-	if (name === undefined) {
-		process.stderr.write('app name is required\n');
-		process.stdout.write(USAGE);
-		return 2;
+	if ([servicesFlag !== undefined, all, minimal].filter(Boolean).length > 1) {
+		return usageError('--services, --all and --minimal are mutually exclusive');
+	}
+	const validTemplates = TEMPLATE_IDS as ReadonlyArray<string>;
+	if (templateFlag !== undefined && !validTemplates.includes(templateFlag)) {
+		return usageError(`unknown template '${templateFlag}'. Valid: ${TEMPLATE_IDS.join(', ')}.`);
+	}
+	if (name !== undefined && !NAME_RE.test(name)) {
+		return usageError(
+			`invalid app name '${name}'. Must match ${NAME_RE.source} (lowercase, dash-separated, starts with a letter).`,
+		);
 	}
 
-	if (minimal && all) {
-		process.stderr.write('--minimal and --all are mutually exclusive\n');
-		return 2;
-	}
-
-	// Resolve the plugin set. Precedence: explicit --plugins > --minimal >
-	// --all > interactive (TTY, no flag) > default-all (non-TTY / --yes).
-	let plugins: Set<PluginId>;
-	if (pluginsFlag !== undefined) {
+	let services: ReadonlyArray<ServiceId> | undefined;
+	if (servicesFlag !== undefined) {
 		try {
-			plugins = parsePluginList(pluginsFlag);
+			services = parseServiceList(servicesFlag);
 		} catch (e) {
-			process.stderr.write(`${(e as Error).message}\n`);
-			return 2;
+			return usageError((e as Error).message);
 		}
 	} else if (minimal) {
-		plugins = new Set<PluginId>(['core']);
-	} else if (all || yes || !process.stdin.isTTY) {
-		plugins = new Set<PluginId>(['core', ...OPTIONAL_PLUGINS]);
-	} else {
-		const { promptPlugins } = await import('./plugin-picker.js');
-		const picked = await promptPlugins(
-			(['core', ...OPTIONAL_PLUGINS] as const).map((id) => ({
-				id,
-				label: PLUGIN_LABELS[id].label,
-				hint: PLUGIN_LABELS[id].hint,
-				locked: id === 'core',
-			})),
-		);
-		if (picked === undefined) {
-			process.stderr.write('Cancelled.\n');
-			return 1;
-		}
-		plugins = picked;
+		services = [];
+	} else if (all) {
+		services = SERVICE_IDS;
 	}
 
+	const interactive = process.stdin.isTTY === true && !yes;
+	if (!interactive && name === undefined) {
+		if (argv.length === 0) {
+			process.stdout.write(USAGE);
+			return 1;
+		}
+		return usageError('app name is required');
+	}
+
+	intro(pc.inverse(' create-devstack-app '));
+
+	if (name === undefined) {
+		name = unwrap(
+			await text({
+				message: 'App name?',
+				placeholder: 'my-app',
+				validate: (value) =>
+					NAME_RE.test(value ?? '')
+						? undefined
+						: 'lowercase, dash-separated, starts with a letter (e.g. my-app)',
+			}),
+		);
+	}
+
+	let template: TemplateId;
+	if (templateFlag !== undefined) {
+		template = templateFlag as TemplateId;
+	} else if (!interactive) {
+		template = 'app';
+	} else {
+		template = unwrap(
+			await select<TemplateId>({
+				message: 'What are you building?',
+				options: TEMPLATE_OPTIONS,
+			}),
+		);
+	}
+
+	if (services === undefined) {
+		if (!interactive) {
+			services = [];
+		} else {
+			services = unwrap(
+				await multiselect<ServiceId>({
+					message: SERVICES_PROMPT,
+					options: SERVICE_IDS.map((id) => ({
+						value: id,
+						label: SERVICES[id].label,
+						hint: SERVICES[id].hint,
+					})),
+					required: false,
+				}),
+			);
+		}
+	}
+
+	let result;
 	try {
-		await scaffold({ name, targetDir, skipInstall, skipGit, plugins: [...plugins] });
-		return 0;
+		result = await scaffold({
+			name,
+			targetDir,
+			template,
+			services,
+			skipInstall,
+			skipGit,
+			log: (m) => log.step(m),
+		});
 	} catch (e) {
-		process.stderr.write(`${(e as Error).message}\n`);
+		log.error((e as Error).message);
 		return 1;
 	}
+
+	const devExplainer =
+		template === 'app'
+			? 'boots localnet + services, publishes move/counter, generates src/generated/, starts vite'
+			: 'boots localnet + services, publishes move/counter, generates src/generated/, prints the dashboard URL';
+	const steps = [
+		`cd ${name}`,
+		...(result.installed ? [] : ['pnpm install']),
+		`pnpm dev  ${pc.dim(`# ${devExplainer}`)}`,
+		'',
+		pc.dim('First boot pulls docker images — give it a few minutes.'),
+		...(result.dockerOk
+			? []
+			: [pc.yellow(`Docker doesn't appear to be running — start Docker Desktop before pnpm dev.`)]),
+	];
+	note(steps.join('\n'), 'Next steps');
+	outro(`${name} is ready at ${result.appDir}`);
+	return 0;
 }
 
 main().then((code) => {

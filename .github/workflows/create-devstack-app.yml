@@ -1,0 +1,163 @@
+name: create-devstack-app
+
+# Scaffolder verification: runs the BUILT scaffolder to generate real
+# apps, installs freshly packed workspace tarballs into them (the same
+# packed-tarball mechanism as the devstack `smoke:pack-consumer`
+# script, shared via .github/scripts/override-workspace-tarballs.mjs),
+# and runs each generated app's `pnpm typecheck`.
+#
+# `pnpm typecheck` in a scaffolded app is `devstack apply && tsc -b
+# --noEmit`: `apply` boots the stack's containers (Sui localnet always;
+# walrus/seal for the --all leg), so this job needs Docker —
+# present on hosted ubuntu runners.
+#
+# `pnpm test` is intentionally NOT run here: the generated vitest spec
+# requires a live stack. That coverage is the scaffold boot smoke in
+# devstack-e2e.yml. The scaffolder's own unit tests (render snapshots,
+# tmp-dir scaffolds) run in the Turborepo CI test leg.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect scaffolder changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      scaffold: ${{ steps.filter.outputs.scaffold }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        name: Classify changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Main pushes keep full coverage; PRs run the docker-backed
+          # scaffold legs only when the scaffolder or the packages it
+          # installs changed. Mirrors devstack-e2e.yml's filter.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "scaffold=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$base"
+          fi
+          if ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+            pull_ref="refs/remotes/pull/${{ github.event.pull_request.number }}/head"
+            git fetch --no-tags origin "pull/${{ github.event.pull_request.number }}/head:${pull_ref}"
+            head="$pull_ref"
+          fi
+
+          scaffold=false
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/create-devstack-app.yml|.github/scripts/override-workspace-tarballs.mjs|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|turbo.json|packages/tsconfig/*|packages/devstack/package.json|packages/devstack/tsdown.config.ts|packages/devstack/src/*|packages/devstack/images/*|packages/devstack/scripts/*|packages/dev-wallet/*|packages/create-devstack-app/*)
+                scaffold=true
+                ;;
+            esac
+          done < <(git diff --name-only "$base" "$head")
+
+          echo "scaffold=$scaffold" >> "$GITHUB_OUTPUT"
+
+  scaffold:
+    name: Scaffold + typecheck · ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.scaffold == 'true'
+    runs-on: ubuntu-latest
+    # Seed-style 30-minute budget plus headroom for the scaffolded app's
+    # own registry install before `devstack apply` boots the stack.
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: app-minimal
+            template: app
+            services: '--minimal'
+          - name: app-all
+            template: app
+            services: '--all'
+          - name: ts-minimal
+            template: ts
+            services: '--minimal'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build scaffolder and runtime packages
+        run: pnpm turbo build --filter @mysten-incubation/create-devstack-app --filter @mysten-incubation/devstack --filter @mysten-incubation/dev-wallet
+
+      - name: Pack workspace tarballs
+        # `pnpm pack` resolves workspace:/catalog: specifiers to concrete
+        # versions — the same mechanism `smoke:pack-consumer` relies on.
+        # tsconfig ships plain JSON files and needs no build.
+        run: |
+          mkdir -p "$RUNNER_TEMP/tarballs"
+          for pkg in devstack dev-wallet tsconfig; do
+            (cd "packages/$pkg" && pnpm pack --pack-destination "$RUNNER_TEMP/tarballs")
+          done
+
+      - name: Scaffold app
+        # Invoke the built bin directly via node (resolved from the
+        # package manifest) — pnpm skips bin-symlink creation when the
+        # target is built after `pnpm install`; see devstack-e2e.yml.
+        # `--no-install` because the install happens after the tarball
+        # overrides land; `--target-dir` outside the checkout so the
+        # repo's pnpm-workspace.yaml cannot capture the app.
+        run: |
+          bin="$(node -e 'const { bin } = require("./packages/create-devstack-app/package.json"); console.log(typeof bin === "string" ? bin : Object.values(bin)[0]);')"
+          mkdir -p "$RUNNER_TEMP/scaffold"
+          node "packages/create-devstack-app/$bin" smoke-${{ matrix.name }} \
+            --template ${{ matrix.template }} ${{ matrix.services }} \
+            --yes --no-install --no-git --target-dir "$RUNNER_TEMP/scaffold"
+
+      - name: Install packed workspace tarballs
+        run: |
+          node .github/scripts/override-workspace-tarballs.mjs \
+            "$RUNNER_TEMP/scaffold/smoke-${{ matrix.name }}" "$RUNNER_TEMP/tarballs"
+          cd "$RUNNER_TEMP/scaffold/smoke-${{ matrix.name }}"
+          pnpm install
+
+      - name: Typecheck scaffolded app (devstack apply + tsc)
+        working-directory: ${{ runner.temp }}/scaffold/smoke-${{ matrix.name }}
+        timeout-minutes: 25
+        run: pnpm typecheck
+
+      - name: Upload scaffolded app state on failure
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: create-devstack-app-${{ matrix.name }}-failure
+          path: |
+            ${{ runner.temp }}/scaffold/smoke-${{ matrix.name }}/.devstack/
+            ${{ runner.temp }}/scaffold/smoke-${{ matrix.name }}/src/generated/
+            ${{ runner.temp }}/scaffold/smoke-${{ matrix.name }}/package.json
+            ${{ runner.temp }}/scaffold/smoke-${{ matrix.name }}/devstack.config.ts
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
