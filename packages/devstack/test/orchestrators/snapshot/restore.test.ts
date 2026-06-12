@@ -264,7 +264,7 @@ const runRestoreExit = (
 				participants,
 				runtime,
 				runtimeIdentity: identity,
-				...(graphInputCheck ?? {}),
+				...graphInputCheck,
 			}),
 		);
 	});

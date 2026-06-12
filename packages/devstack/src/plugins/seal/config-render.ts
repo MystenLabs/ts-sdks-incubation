@@ -60,7 +60,7 @@ const DEFAULT_TS_SDK_REQUIREMENT = '>=0.4.5';
  *  alphanumerics, `:/_.-`, and `0x` — so the conservative whitelist is
  *  safe. The `ts_sdk_version_requirement` allows the SemVer comparator
  *  characters as well. */
-const YAML_INTERP_FIELD_RE = /^[0-9a-zA-Z:/_.\-]+$/;
+const YAML_INTERP_FIELD_RE = /^[0-9a-zA-Z:/_.-]+$/;
 const YAML_INTERP_SEMVER_RE = /^[0-9a-zA-Z:/_.\-<>=^~* |!]+$/;
 
 const assertYamlSafe = (field: string, value: string, pattern: RegExp): string => {

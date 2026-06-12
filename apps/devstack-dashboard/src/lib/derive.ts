@@ -221,8 +221,7 @@ export const rowForPlugin = (rows: ReadonlyArray<Row>, pluginKey: string): Row |
 	const exact = rows.find((r) => r.key === prefix);
 	if (exact) return exact;
 	return (
-		rows.find((r) => r.key.startsWith(prefix) && /^[:.#\-]/.test(r.key.slice(prefix.length))) ??
-		null
+		rows.find((r) => r.key.startsWith(prefix) && /^[:.#-]/.test(r.key.slice(prefix.length))) ?? null
 	);
 };
 

@@ -145,7 +145,7 @@ export const withForkFaucetSeed = (opts: SuiForkOptions): SuiForkOptions => {
 	return {
 		...opts,
 		seed: {
-			...(opts.seed ?? {}),
+			...opts.seed,
 			addresses: [...(opts.seed?.addresses ?? []), resolved.whale],
 		},
 	};

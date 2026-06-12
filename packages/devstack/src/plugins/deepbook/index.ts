@@ -849,7 +849,7 @@ const resolveDefaultMode = <
 		// Local DeepBook: default to local mode on localnet. The caller must
 		// supply explicit `{ publisher, package, pools }`; `resolveLocalOptions`
 		// fails fast otherwise (no auto-synthesis).
-		return { mode: 'local', ...(opts ?? {}) } as DeepbookOptions<Publisher, Pyth>;
+		return { mode: 'local', ...opts } as DeepbookOptions<Publisher, Pyth>;
 	}
 	// Non-local default: refuse — known mode requires explicit
 	// packageId/registryId. The user passes them via

@@ -346,15 +346,16 @@ const runEmitCycleInner = (
 		// standalone decls AND synthesized aggregates — across BOTH trees.
 		// Aggregate-only decls do not write a standalone file, so they are
 		// excluded from the standalone-path set here.
-		const parentModeFor = yield* buildParentModeResolver(paths, [
-			...fileEmitters
+		const parentModeFor = yield* buildParentModeResolver(
+			paths,
+			fileEmitters
 				.filter((d) => d.aggregateOnly !== true)
 				.map((d) => ({
 					outputPath: d.outputPath,
 					location: declLocation(d),
 					sensitive: d.sensitive === true,
 				})),
-		]);
+		);
 		for (const decl of sortedDecls) {
 			const emission = yield* runEmitter(decl);
 			const exported = emission.exports;
