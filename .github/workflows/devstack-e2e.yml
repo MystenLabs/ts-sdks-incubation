@@ -503,15 +503,18 @@ jobs:
         timeout-minutes: 20
         # `up` is the attached long-lived supervisor, so background it
         # (the tarball install created a real `node_modules/.bin/devstack`,
-        # unlike the in-repo examples) and treat the stack manifest write
-        # as boot-complete — the same durable record the seed job's
-        # one-shot `apply` exits on. `--renderer plain` keeps
-        # line-oriented logs on the non-TTY runner.
+        # unlike the in-repo examples) and treat the `codegen.emitted` log
+        # line as boot-complete: it lands after the manifest flush and
+        # guarantees src/generated/ is fresh for the assert + `pnpm test`
+        # steps. Deliberately name-blind — the stack is named after the
+        # app via package.json inference (stacks/smoke-boot/, not
+        # stacks/main/). `--renderer plain` keeps line-oriented logs on
+        # the non-TTY runner.
         run: |
           nohup ./node_modules/.bin/devstack up --renderer plain > up.log 2>&1 &
           echo $! > up.pid
           for _ in $(seq 1 200); do
-            if [ -f .devstack/stacks/main/manifest.json ]; then
+            if grep -q 'codegen.emitted' up.log 2>/dev/null; then
               exit 0
             fi
             if ! kill -0 "$(cat up.pid)" 2>/dev/null; then
@@ -521,7 +524,7 @@ jobs:
             fi
             sleep 5
           done
-          echo '::error::timed out waiting for .devstack/stacks/main/manifest.json'
+          echo '::error::timed out waiting for codegen.emitted in up.log'
           tail -n 200 up.log
           exit 1
 
@@ -560,9 +563,11 @@ jobs:
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
         with:
           name: devstack-scaffold-boot-failure
+          # NOT the whole .devstack/ tree: the package cache keys contain
+          # `::`, which upload-artifact rejects (NTFS-invalid characters).
           path: |
             ${{ runner.temp }}/scaffold/smoke-boot/up.log
-            ${{ runner.temp }}/scaffold/smoke-boot/.devstack/
+            ${{ runner.temp }}/scaffold/smoke-boot/.devstack/stacks/*/manifest.json
             ${{ runner.temp }}/scaffold/smoke-boot/src/generated/
             ${{ runner.temp }}/scaffold/smoke-boot/package.json
             ${{ runner.temp }}/scaffold/smoke-boot/devstack.config.ts
