@@ -318,6 +318,14 @@ export interface ProductionCodegenOptions {
 	 *  recorded in the manifest as `codegen.extrasDir` for the
 	 *  `@devstack-dev` Vite alias. */
 	readonly extrasDir?: string;
+	/** Forwarded verbatim to `@mysten/codegen`'s
+	 *  `generateFromPackageSummary` via `layerMystenMoveCodegen` — see
+	 *  `DevstackOptions['codegen']` for the full contract. Default `false`
+	 *  (`@mysten/codegen`'s own default): phantom-only structs render as
+	 *  consts with the phantom placeholder baked into `.name`; `true`
+	 *  renders them as factories whose required type arguments compose a
+	 *  fully-qualified type tag. */
+	readonly includePhantomTypeParameters?: boolean;
 }
 
 /**
@@ -341,7 +349,11 @@ export const resolveProductionCodegenOptions = (input: {
 	readonly effectiveStack: string;
 	readonly primaryStack: string | undefined;
 	readonly codegen?:
-		| { readonly outputDir?: string; readonly stackSubdir?: string | null }
+		| {
+				readonly outputDir?: string;
+				readonly stackSubdir?: string | null;
+				readonly includePhantomTypeParameters?: boolean;
+		  }
 		| undefined;
 }): ProductionCodegenOptions => {
 	const resolved = resolveCodegenOutput({
@@ -356,6 +368,11 @@ export const resolveProductionCodegenOptions = (input: {
 		outputDir: resolved.outputDir,
 		stackSubdir: resolved.stackSubdir,
 		extrasDir: resolved.extrasDir,
+		// Pass-through verbatim — no resolution step; "unset" stays unset so
+		// `@mysten/codegen`'s own default (false) applies at the call site.
+		...(input.codegen?.includePhantomTypeParameters === undefined
+			? {}
+			: { includePhantomTypeParameters: input.codegen.includePhantomTypeParameters }),
 	};
 };
 
@@ -464,7 +481,9 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 			),
 		),
 		layerSuiMoveSummaryRunnerDocker,
-		layerMystenMoveCodegen,
+		layerMystenMoveCodegen({
+			includePhantomTypeParameters: router.codegen?.includePhantomTypeParameters,
+		}),
 	);
 };
 

@@ -15,6 +15,7 @@ import {
 	layerManifestEndpointRegistry,
 	ManifestEndpointRegistryService,
 	productionRouterProfile,
+	resolveProductionCodegenOptions,
 } from '../../src/orchestrators/boot.ts';
 import {
 	RouterService,
@@ -565,4 +566,32 @@ describe('buildProductionContributionDispatcher', () => {
 				}
 			}),
 	);
+});
+
+describe('resolveProductionCodegenOptions', () => {
+	it('passes includePhantomTypeParameters through verbatim', () => {
+		const resolved = resolveProductionCodegenOptions({
+			appRoot: '/app',
+			effectiveStack: 'main',
+			primaryStack: 'main',
+			codegen: { includePhantomTypeParameters: true },
+		});
+		expect(resolved.includePhantomTypeParameters).toBe(true);
+		// The flag rides along without disturbing the output-dir resolution.
+		expect(resolved.outputDir).toBe(join('/app', 'src', 'generated'));
+	});
+
+	it('leaves includePhantomTypeParameters unset when the config omits it', () => {
+		const resolved = resolveProductionCodegenOptions({
+			appRoot: '/app',
+			effectiveStack: 'main',
+			primaryStack: 'main',
+		});
+		// Unset stays unset — `@mysten/codegen`'s own default (false)
+		// applies at the generateFromPackageSummary call site, so default
+		// behavior is unchanged.
+		expect('includePhantomTypeParameters' in resolved).toBe(false);
+		expect(resolved.outputDir).toBe(join('/app', 'src', 'generated'));
+		expect(resolved.stackSubdir).toBeNull();
+	});
 });
