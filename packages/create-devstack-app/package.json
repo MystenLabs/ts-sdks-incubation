@@ -43,7 +43,7 @@
 		"prepublishOnly": "pnpm run build"
 	},
 	"dependencies": {
-		"@clack/prompts": "^0.11.0",
+		"@clack/prompts": "^1.5.1",
 		"picocolors": "^1.1.1"
 	},
 	"devDependencies": {
@@ -51,9 +51,9 @@
 		"@mysten-incubation/devstack": "workspace:^",
 		"@mysten-incubation/tsconfig": "workspace:^",
 		"@types/node": "catalog:",
-		"tsdown": "^0.21.10",
+		"tsdown": "^0.22.2",
 		"typescript": "catalog:",
-		"vitest": "^4.1.6"
+		"vitest": "catalog:"
 	},
 	"engines": {
 		"node": ">=24.0.0"

@@ -7,6 +7,7 @@
 // page carries no dev wallet and standard wallets register themselves.
 
 import { createDAppKit } from '@mysten/dapp-kit-react';
+import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
@@ -38,6 +39,14 @@ export const dAppKit = createDAppKit({
 		});
 	},
 });
+
+// Register this dApp Kit instance with the devstack test bridge so the
+// Playwright `connectAs` helper can drive a real connection during e2e.
+// DEV-only: a production build strips this branch and never injects the dev
+// wallet, so the app ships with no test surface.
+if (import.meta.env.DEV) {
+	registerDAppKitForTesting(dAppKit);
+}
 
 declare module '@mysten/dapp-kit-react' {
 	interface Register {

@@ -9,29 +9,21 @@
 // shared `mountAndRegisterDevWallet` core helper, which constructs the
 // `DevWallet`, registers it via wallet-standard (so dApp Kit auto-discovers
 // it), and mounts the floating wallet UI. The ONLY logic that lives here is
-// the devstack-integration glue: the adapter-from-config, the localStorage
-// auto-connect seed, and the `globalThis.__devstackDAppKit__.selectAccount(name)`
-// slot the Playwright `connectAs` helper drives.
+// the devstack-integration glue: the adapter-from-config and the routed-RPC
+// network map.
 //
-// Account selection rides the wallet-standard protocol — see
-// `DevWallet.setSelectedAccount`. The slot resolves a friendly account
-// NAME (`alice`) to its address via the generated `accounts` map, then
-// makes it dApp Kit's ACTIVE account by briefly narrowing the wallet's
-// exposed accounts to it (so dApp Kit's `change`-handler reconciliation
-// switches to it) and then WIDENING back to the full set (so the dApp
-// keeps seeing all accounts — alice / bob / carol — while the requested
-// one stays active). No reference to the app's dApp Kit instance is
-// needed. See `selectAccount` below for the two-phase detail.
+// The wallet does NOT pre-connect or seed dApp Kit storage: a fresh page
+// loads disconnected, dApp Kit's own `autoConnect` only re-connects a genuine
+// prior session, and the Playwright `connectAs` helper performs an explicit
+// connection through dApp Kit's public API. That test bridge is registered
+// app-side via `@mysten-incubation/devstack/dapp-kit`'s
+// `registerDAppKitForTesting(dAppKit)` (DEV-only) — it needs the app's dApp
+// Kit instance, which the wallet has no reference to.
 
 import type { AutoApprovePolicy, DevWallet } from '../wallet/dev-wallet.js';
 import { mountAndRegisterDevWallet } from '../wallet/mount-and-register.js';
 import { DevstackSignerAdapter } from '../adapters/devstack-adapter.js';
 import { WebCryptoSignerAdapter } from '../adapters/webcrypto-adapter.js';
-
-/** dApp Kit's default localStorage key for its "selected wallet + address"
- *  (mirrored from `@mysten/dapp-kit-core`'s `DEFAULT_STORAGE_KEY` — kept as
- *  a literal to avoid a dependency on dapp-kit from dev-wallet). */
-const DAPP_KIT_STORAGE_KEY = 'mysten-dapp-kit:selected-wallet-and-address';
 
 /** Shape of a single entry in the generated `accounts` map
  *  (`generated-extras/accounts.ts`). Only `address` is consumed here. */
@@ -123,137 +115,6 @@ async function registerDevstackDevWalletImpl(
 	config: RegisterDevstackDevWalletConfig,
 ): Promise<RegisterDevstackDevWalletResult> {
 	const { mountUI = true, autoApprove = false } = config;
-	const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-	// Resolve friendly name → address up-front (sync — no I/O) so the
-	// `connectAs` slot can be wired BEFORE the async adapter init below.
-	const addressByName: Record<string, string> = {};
-	for (const [name, info] of Object.entries(config.accounts)) {
-		addressByName[name] = info.address;
-	}
-
-	// The slot (`__devstackDAppKit__.selectAccount`) and the
-	// `__DEV_WALLET_INJECTED__` marker are published SYNCHRONOUSLY, before we
-	// await adapter init / wallet registration. The app's dev-only
-	// "Open as …" buttons (and the Playwright `connectAs` helper) can fire
-	// the instant the page renders — earlier than the wallet finishes coming
-	// up. Wiring the slot eagerly (with `selectAccount` awaiting an internal
-	// `ready` deferred) means such an early call WAITS for the wallet instead
-	// of hitting an `undefined` slot and silently no-op-ing (which left the
-	// app's first signing call with "No wallet is connected.").
-	let resolveReady!: (handles: {
-		wallet: DevWallet;
-		seedConnection: (address: string) => void;
-	}) => void;
-	const ready = new Promise<{ wallet: DevWallet; seedConnection: (address: string) => void }>(
-		(resolve) => {
-			resolveReady = resolve;
-		},
-	);
-
-	const selectAccount = async (accountName: string): Promise<void> => {
-		const address = addressByName[accountName];
-		if (address === undefined) {
-			throw new Error(
-				`Unknown devstack account "${accountName}". Available: ${
-					Object.keys(addressByName).join(', ') || '(none)'
-				}`,
-			);
-		}
-		// Wait for the wallet to finish coming up (adapter init + register)
-		// before driving selection — see the eager-slot rationale above.
-		const { wallet, seedConnection } = await ready;
-		// Make `address` dApp Kit's ACTIVE account WITHOUT permanently hiding
-		// the wallet's other accounts (the dApp lists all of them — alice /
-		// bob / carol). We exploit dApp Kit's `change`-handler reconciliation
-		// (`manageWalletConnection` → `resolveWalletAccount`): when the
-		// currently-connected account is no longer in `wallet.accounts`, dApp
-		// Kit falls back to `wallet.accounts[0]`; when it IS present, dApp Kit
-		// keeps it.
-		//
-		// So we drive selection in two phases, with NO reference to the app's
-		// dApp Kit instance (selection rides wallet-standard):
-		//
-		//   1. NARROW to `[address]` + emit `change`. Whatever was active is
-		//      now gone, so dApp Kit resolves to `accounts[0]` — which is the
-		//      requested account (the only exposed one). Active = requested.
-		//   2. WIDEN back to ALL accounts + emit `change`. The active account
-		//      (requested) is still present, so dApp Kit's resolver matches it
-		//      (`uiWalletAccountsAreSame`, address + same wallet) and KEEPS it.
-		//      Exposed = all; active = requested.
-		//
-		// Race: dApp Kit's storage-driven auto-connect runs async on mount, so a
-		// `connectAs(...)` immediately after page load can fire before it
-		// settles. The OLD code re-emitted the narrow on a fixed ~3s cadence and
-		// then UNCONDITIONALLY widened — on a slow cold start where dApp Kit's
-		// auto-connect reconciles AFTER that window, the widen landed before
-		// reconciliation pinned the requested account, leaving the wrong active
-		// account.
-		//
-		// FIX: gate the WIDEN on an OBSERVED post-connect signal instead of a
-		// fixed timer. The wallet fires `onDAppConnected` the moment a dApp
-		// invokes `standard:connect` (dApp Kit's silent auto-connect reconcile
-		// goes through this when it actually (re)connects). We seed storage to
-		// the requested account, narrow, and keep re-emitting the narrow until we
-		// OBSERVE the dApp connect — only THEN do we widen, so the requested
-		// account is provably active at widen time. A bounded fallback timeout
-		// covers the already-authorized path where dApp Kit reconciles from its
-		// in-memory `existingAccount` without re-invoking `standard:connect`
-		// (there the active account is already the seeded/requested one and
-		// stable, so widening on the fallback is safe).
-		seedConnection(address);
-
-		// Arm the connect observer BEFORE narrowing so we can't miss an edge that
-		// fires synchronously in response to our `change` emission.
-		let connectObserved = false;
-		let onConnect: (() => void) | undefined;
-		const connected = new Promise<'connect'>((resolve) => {
-			onConnect = () => {
-				connectObserved = true;
-				resolve('connect');
-			};
-		});
-		const unsubscribe = wallet.onDAppConnected(onConnect!);
-
-		try {
-			wallet.setSelectedAccount(address);
-			// Bounded fallback: cap total narrow-hold at ~3s (within the e2e's 30s
-			// action timeout). We re-emit the narrow every 150ms so any dApp Kit
-			// auto-connect that lands mid-cadence reconciles to the requested
-			// account; the loop exits early the instant a connect is observed.
-			const MAX_ITERS = 20;
-			const STEP_MS = 150;
-			for (let i = 0; i < MAX_ITERS && !connectObserved; i++) {
-				const raced = await Promise.race([sleep(STEP_MS).then(() => 'tick' as const), connected]);
-				if (raced === 'connect') break;
-				// Re-emit the narrow so a still-settling auto-connect re-resolves
-				// to the requested account (idempotent).
-				wallet.setSelectedAccount(address);
-			}
-		} finally {
-			unsubscribe();
-		}
-		// WIDEN: the requested account is now active — either because we observed
-		// the dApp connect (connect-driven) or because the bounded fallback
-		// elapsed with the requested account already stable. Restoring the full
-		// exposed set keeps it active (dApp Kit's resolver matches it by address;
-		// see phase 2 above) while the dApp sees alice / bob / carol again.
-		wallet.setSelectedAccount(null);
-	};
-
-	// Publish the slot SYNCHRONOUSLY, exposing the `connectAs` entry point
-	// (`selectAccount`) that the Playwright helper drives. App UIs that
-	// render a labelled account picker read the connected wallet's account
-	// list straight from dApp Kit (`useCurrentWallet().accounts`, each
-	// account's `label` = the devstack account name) — the slot no longer
-	// re-publishes that directory.
-	(
-		globalThis as {
-			__devstackDAppKit__?: {
-				selectAccount?: typeof selectAccount;
-			};
-		}
-	).__devstackDAppKit__ = { selectAccount };
 	globalThis.__DEV_WALLET_INJECTED__ = true;
 
 	const adapter = new DevstackSignerAdapter({
@@ -291,35 +152,16 @@ async function registerDevstackDevWalletImpl(
 		adapters: [adapter, new WebCryptoSignerAdapter()],
 		name: config.name ?? 'Devstack',
 		autoApprove,
+		// Auto-approve `standard:connect` whenever signing is auto-approved — both
+		// are the headless-e2e signal (`DEVSTACK_AUTO_APPROVE`). The test bridge's
+		// explicit `connectWallet(...)` invokes the wallet's connect; without this
+		// it would queue a pending request and block on UI approval that never
+		// comes. In normal dev (no auto-approve) a human approves the connect.
+		autoConnect: Boolean(autoApprove),
 		networks,
 		activeNetwork,
 		mountUI,
 	});
-
-	// Pre-seed dApp Kit's "selected wallet + address" storage so its
-	// storage-driven auto-connect (`autoConnect: true`) connects to the dev
-	// wallet on page load WITHOUT a manual "Connect Wallet" click — a fresh
-	// page has no prior authorization otherwise. dApp Kit keys the wallet by
-	// `wallet.id ?? wallet.name`; DevWallet has no `id`, so it's the name.
-	// Value format mirrors dApp Kit's `saveAccountToStorage`:
-	// `${walletId.replace(':','_')}:${address}:${intents}`.
-	const walletId = (wallet.name ?? 'Devstack').replace(/:/g, '_');
-	const seedConnection = (address: string): void => {
-		if (typeof localStorage === 'undefined') return;
-		try {
-			localStorage.setItem(DAPP_KIT_STORAGE_KEY, `${walletId}:${address}:`);
-		} catch {
-			// localStorage unavailable (private mode / SSR) — selectAccount
-			// still narrows + emits change; only first-load auto-connect is lost.
-		}
-	};
-
-	const firstAddress = Object.values(addressByName)[0];
-	if (firstAddress !== undefined) seedConnection(firstAddress);
-
-	// Unblock any `selectAccount` calls that arrived before the wallet was
-	// ready (see the eager-slot wiring near the top of this function).
-	resolveReady({ wallet, seedConnection });
 
 	const result: RegisterDevstackDevWalletResult = {
 		wallet,

@@ -596,6 +596,8 @@ export class DevWalletSigning extends LitElement {
 				return `${arg.bytes.slice(0, 16)}${arg.bytes.length > 16 ? '...' : ''}`;
 			case 'Object':
 				return formatAddress(arg.object.objectId);
+			case 'Withdrawal':
+				return `Withdraw ${arg.amount} ${getCoinSymbol(arg.coinType)} from ${arg.withdrawFrom}`;
 			case 'Unknown':
 				return 'unknown';
 		}
