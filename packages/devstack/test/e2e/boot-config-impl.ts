@@ -240,7 +240,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	const identity: Identity = {
 		app: appName(opts.appName),
 		stack: stackName(opts.stackName),
-		chain: opts.chainId ?? 'sui:local',
+		network: opts.chainId ?? 'localnet',
 	};
 
 	// One fresh tmpdir per call by default. Tests can pass a root to

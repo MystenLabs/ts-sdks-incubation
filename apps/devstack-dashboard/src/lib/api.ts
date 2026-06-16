@@ -621,7 +621,7 @@ const DeepbookInfoDoc = graphql(`
 		deepbookInfo {
 			pluginKey
 			name
-			chain
+			network
 			mode
 			packageId
 			registryId

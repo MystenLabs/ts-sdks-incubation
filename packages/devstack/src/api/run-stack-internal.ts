@@ -180,10 +180,11 @@ const resolveIdentity = (
 		cwd,
 	});
 	// Parse + validate up-front so a malformed value fails here rather
-	// than downstream when a plugin probes the chain id. We keep the
-	// raw input string (`'sui:local'`, `'sui:testnet'`, …) for the
-	// chain-id brand so existing on-disk cache namespaces and plugin
-	// equality checks (`chain === 'sui:testnet'`) remain stable.
+	// than downstream when a plugin probes the network. The identity's
+	// network is the canonical name (`localnet`, `testnet`, …) — never the
+	// `sui:`-prefixed wallet-standard form, which devstack does not use
+	// internally — so plugin checks and on-disk cache namespaces key on one
+	// stable name regardless of how it was spelled on the CLI.
 	const resolved = resolveNetworkSync({
 		explicit: opts?.network,
 		env: process.env.DEVSTACK_NETWORK,
@@ -192,7 +193,7 @@ const resolveIdentity = (
 	return {
 		app: appName(app),
 		stack: stackName(stackNameStr),
-		chain: resolved.raw,
+		network: resolved.parsed.name,
 	};
 };
 

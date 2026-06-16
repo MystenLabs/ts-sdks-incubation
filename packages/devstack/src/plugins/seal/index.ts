@@ -217,7 +217,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				const stackPaths = yield* StackPathsService;
 				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
-				const probe = yield* chainProbeFor<SealObjectProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SealObjectProbeKey>(sui.chainId);
 
 				// Resolve the seal service dir from the per-stack paths
 				// bundle. The dir must exist before the key-server's
@@ -282,7 +282,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 					sdk: sui.sdk,
 					...(sui.buildImage !== null ? { buildImage: sui.buildImage } : {}),
 					chainProbe: probe,
-					chain: sui.chain,
+					chainId: sui.chainId,
 					servicePath,
 					containerName: `devstack-${identity.app}-${identity.stack}-seal-${resolved.name}-key-server`,
 					labels: {

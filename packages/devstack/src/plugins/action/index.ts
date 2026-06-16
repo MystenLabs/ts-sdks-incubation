@@ -178,7 +178,7 @@ export const action = <const Name extends string, const DependsOn extends Action
 				// Substrate-context primitives. artifact publisher + strategy registry
 				// are both provided by the supervisor's pluginContext.
 				const publisher = yield* CacheService;
-				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chainId);
 
 				// Compose the user's body Effect, closing over the
 				// action helper context. Resolved upstream values are
@@ -208,7 +208,7 @@ export const action = <const Name extends string, const DependsOn extends Action
 				) as ResolvedActionDependencies<DependsOn>;
 				const acquireInputs: ActionAcquireInputs = {
 					actionName: name,
-					chainId: sui.chain,
+					chainId: sui.chainId,
 					staticDiscriminator: {
 						actionName: name,
 						dependencyResourceIds,

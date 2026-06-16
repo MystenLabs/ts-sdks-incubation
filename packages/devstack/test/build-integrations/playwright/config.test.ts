@@ -96,7 +96,7 @@ describe('playwright config helpers', () => {
 			writeFileSync(
 				join(stateDir, 'manifest.json'),
 				JSON.stringify({
-					identity: { app: 'sample-app', stack: 'main', chain: 'localnet' },
+					identity: { app: 'sample-app', stack: 'main', network: 'localnet' },
 					manifestVersion: CURRENT_MANIFEST_VERSION,
 					services: {},
 					endpoints: {

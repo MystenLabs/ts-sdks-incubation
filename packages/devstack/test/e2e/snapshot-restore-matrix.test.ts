@@ -168,7 +168,7 @@ describe('snapshot/restore matrix — real services @e2e', () => {
 			runtimeRoot,
 			app: ident,
 			stack: ident,
-			network: 'sui:local',
+			network: 'localnet',
 			snapshotId: 'codegen-checkpoint',
 		});
 

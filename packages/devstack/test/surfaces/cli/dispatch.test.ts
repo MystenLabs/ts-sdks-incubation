@@ -303,7 +303,7 @@ const makeSnapshotCatalog = () => {
 				createdAt: 1_700_000_000_000,
 				app: 'app',
 				stack: 'main',
-				network: 'sui:local',
+				network: 'localnet',
 				graphInput: {
 					version: SNAPSHOT_GRAPH_INPUT_VERSION,
 					graphInputId: 'graph-fixture',
@@ -670,7 +670,7 @@ describe('dispatch', () => {
 					createdAt: 1_700_000_001_000,
 					app: 'app',
 					stack: 'main',
-					network: 'sui:local',
+					network: 'localnet',
 					graphInput: {
 						version: SNAPSHOT_GRAPH_INPUT_VERSION,
 						graphInputId: 'graph-fixture',

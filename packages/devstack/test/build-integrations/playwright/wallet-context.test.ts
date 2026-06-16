@@ -50,7 +50,7 @@ const writeWalletManifest = (walletUrl: string): string => {
 
 const manifestJson = (walletUrl: string, stack: string): string =>
 	JSON.stringify({
-		identity: { app: 'sample-app', stack, chain: 'localnet' },
+		identity: { app: 'sample-app', stack, network: 'localnet' },
 		manifestVersion: CURRENT_MANIFEST_VERSION,
 		services: {},
 		endpoints: {

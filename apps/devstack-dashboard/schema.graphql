@@ -82,13 +82,13 @@ A DeepBook deployment: registry/admin/pool ids + market-maker state.
 """
 type DeepbookInfo {
 	adminCapId: String
-	chain: String!
 	deepTreasuryId: String
 	indexerUrl: String
 	marketMakerRunning: Boolean!
 	mode: DeepbookMode!
 	name: String!
 	narrowingFault: String
+	network: String!
 	packageId: String!
 	pluginKey: String!
 	pools: [DeepbookPool!]!

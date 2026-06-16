@@ -87,7 +87,7 @@ describe('sui makeSnapshotable — identity guard', () => {
 			const record = Effect.runSync(decl.preRestore!);
 			expect(record.kind).toBe('sui-chain');
 			expect(record.mode).toBe(mode);
-			expect(record.chain).toBe('sui:localnet');
+			expect(record.chainId).toBe('sui:localnet');
 		}
 	});
 });

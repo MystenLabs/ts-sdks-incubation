@@ -70,10 +70,10 @@ const makeFundDomain = (args: {
 
 const SUI_TYPE = '0x2::sui::SUI';
 const WAL_TYPE = '0xwal::wal::WAL';
-const suiNode = (chain: string): ControlPlaneResolvedValue => ({
+const suiNode = (chainId: string): ControlPlaneResolvedValue => ({
 	pluginKey: 'sui',
 	id: 'sui',
-	value: { mode: 'local', chain },
+	value: { mode: 'local', chainId },
 });
 const accountNode = (name: string, address: string): ControlPlaneResolvedValue => ({
 	pluginKey: `account:${name}`,
@@ -182,7 +182,7 @@ describe('dashboard narrowing fail-loud (E2)', () => {
 				id: 'deepbook/demo',
 				value: {
 					mode: 'broken',
-					chain: 'sui:localnet',
+					network: 'localnet',
 					packageId: '0xpkg',
 					registryId: '0xreg',
 					pools: [],
@@ -248,7 +248,7 @@ describe('dashboard narrowing fail-loud (E2)', () => {
 				id: 'deepbook/demo',
 				value: {
 					mode: 'known',
-					chain: 'sui:localnet',
+					network: 'localnet',
 					packageId: '0xpkg',
 					registryId: '0xreg',
 					pools: [],

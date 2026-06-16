@@ -105,7 +105,7 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 			mode: 'known',
 			packageId: '0xpkg',
 			registryId: '0xreg',
-			chain: 'sui:testnet',
+			network: 'testnet',
 			name: 'live',
 		});
 		const stack = defineDevstack({ members: [suiPlugin, dex], stackName: 'deepbook-known-smoke' });

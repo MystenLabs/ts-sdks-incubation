@@ -70,7 +70,7 @@ export interface SuiLocalRpcOptions extends SuiCommonOptions {
 	readonly graphqlUrl?: string;
 	/** Optional chain id pin for caller-owned endpoints. Omit to
 	 *  probe the RPC endpoint. */
-	readonly chain?: string;
+	readonly chainId?: string;
 }
 
 /** Live testnet / mainnet / custom-RPC mode. */
@@ -84,7 +84,7 @@ export interface SuiLiveOptions extends SuiCommonOptions {
 	readonly graphqlUrl?: string;
 	/** Optional chain id pin for custom/caller-owned live endpoints.
 	 *  Omit to probe the RPC endpoint. */
-	readonly chain?: string;
+	readonly chainId?: string;
 }
 
 /** Fork-mode faucet config. Funds test accounts by impersonating a

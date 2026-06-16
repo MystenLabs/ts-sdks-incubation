@@ -50,7 +50,7 @@ const TEMP_PREFIX = 'snapshot-restore-test';
 const runtimeIdentity: SnapshotRuntimeIdentity = {
 	app: 'restore-app',
 	stack: 'main',
-	network: 'sui:local',
+	network: 'sui:localnet',
 };
 
 const RESTORE_TEST_IDENTITY = { chain: runtimeIdentity.network } as const;

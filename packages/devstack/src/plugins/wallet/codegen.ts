@@ -47,14 +47,16 @@ import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
  *    - `protocolPaths` : path constants the adapter reads. Mirrored
  *                        here so the adapter doesn't depend on a
  *                        separate import.
- *    - `chain`         : Sui chain id the wallet's accounts are
- *                        scoped to. Surfaced so dapp-kit can pin its
- *                        active chain.
+ *    - `network`       : the network name the wallet's accounts are
+ *                        scoped to (e.g. `localnet`). The dev wallet
+ *                        derives the wallet-standard chain (`sui:<network>`)
+ *                        from it at the wallet-standard boundary; devstack
+ *                        itself never carries the `sui:`-prefixed form.
  */
 export interface DevWalletConfig {
 	readonly walletUrl: string;
 	readonly pairUrl: string;
-	readonly chain: string;
+	readonly network: string;
 	readonly protocolPaths: {
 		readonly health: string;
 		readonly accounts: string;

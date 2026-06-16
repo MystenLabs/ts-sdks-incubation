@@ -263,7 +263,7 @@ export const bootLocalMode = (
 
 		// ----- 4. Resolve chain id ------------------------------------------
 		yield* setCurrentPluginPhase('fetching Sui chain id');
-		const chain = yield* sharedFetchChainId(sdkClient);
+		const chainId = yield* sharedFetchChainId(sdkClient);
 
 		// ----- 5. waitForTransactionsReady (memoised) -----------------------
 		yield* setCurrentPluginPhase('preparing Sui funds-ready gate');
@@ -277,7 +277,7 @@ export const bootLocalMode = (
 		// build-context hash work and risking digest drift.
 		const { client } = yield* assembleSuiClient({
 			sdkClient,
-			chain,
+			chainId,
 			rpcUrl,
 			faucetUrl,
 			fundingFaucetUrl: directFaucetUrl,
@@ -292,7 +292,7 @@ export const bootLocalMode = (
 		});
 		const resolved = makeResolvedNetwork({
 			mode: 'local',
-			chain,
+			chainId,
 			rpc: rpcUrl,
 			faucet: faucetUrl,
 			...(graphqlUrl !== undefined ? { graphql: graphqlUrl } : {}),

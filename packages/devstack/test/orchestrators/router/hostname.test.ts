@@ -30,7 +30,7 @@ import {
 const identity = (stack: string): Identity => ({
 	app: appName('my-app'),
 	stack: stackName(stack),
-	chain: 'sui:localnet',
+	network: 'localnet',
 });
 
 describe('routerHostname', () => {

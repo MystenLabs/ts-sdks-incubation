@@ -22,7 +22,7 @@ import {
 describe('contracts/chain-probe — structural pins', () => {
 	it('`chainProbeCapabilityKey(chain)` mints `chain-probe:<chain>`', () => {
 		expect(chainProbeCapabilityKey('sui:testnet')).toBe('chain-probe:sui:testnet');
-		expect(chainProbeCapabilityKey('sui:local')).toBe('chain-probe:sui:local');
+		expect(chainProbeCapabilityKey('sui:localnet')).toBe('chain-probe:sui:localnet');
 	});
 
 	it('`ChainProbeMode` is the closed `"lenient" | "strict"` union', () => {
@@ -40,7 +40,7 @@ describe('contracts/chain-probe — structural pins', () => {
 		const err: ChainProbeError = {
 			_tag: 'ChainProbeError',
 			reason: 'not-found',
-			chain: 'sui:testnet',
+			chainId: 'sui:testnet',
 			detail: 'missing object',
 		};
 		const tag: 'ChainProbeError' = err._tag;
@@ -51,7 +51,7 @@ describe('contracts/chain-probe — structural pins', () => {
 			_tag: 'ChainProbeError',
 			// @ts-expect-error -- `'rate-limited'` is not in the reason union.
 			reason: 'rate-limited',
-			chain: 'sui:testnet',
+			chainId: 'sui:testnet',
 			detail: '',
 		};
 		void _bad;

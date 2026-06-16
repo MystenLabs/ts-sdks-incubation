@@ -86,9 +86,9 @@ const OFFLINE_RESTORE_SUI_SNAPSHOT_IDENTITY = JSON.stringify({
 
 /** Writes a minimal on-disk manifest at `<stackRoot>/manifest.json` — the
  *  durable record the offline `status` projects when the stack is down.
- *  The manifest identity tuple is `{ app, stack, chain }`; the degraded
- *  status maps `chain` → the projection's `network`. Endpoints are seeded
- *  so the status output can assert the endpoint slice survives offline. */
+ *  The manifest identity tuple is `{ app, stack, network }`; the degraded
+ *  status carries `network` onto the projection's `network`. Endpoints are
+ *  seeded so the status output can assert the endpoint slice survives offline. */
 const seedManifest = (
 	stackRoot: string,
 	params: {
@@ -114,7 +114,7 @@ const seedManifest = (
 	writeFileSync(
 		join(stackRoot, 'manifest.json'),
 		JSON.stringify({
-			identity: { app: params.app, stack: params.stack, chain: params.network },
+			identity: { app: params.app, stack: params.stack, network: params.network },
 			manifestVersion: 1,
 			endpoints: params.endpoints ?? {},
 			extras: {},
@@ -136,7 +136,7 @@ const writeSnapshotMetadata = (stackRoot: string, snapshotId: string): void => {
 				createdAt: 1_700_000_000_000,
 				app: 'labeled-app',
 				stack: 'alpha',
-				network: 'sui:local',
+				network: 'localnet',
 				graphInput: {
 					version: SNAPSHOT_GRAPH_INPUT_VERSION,
 					graphInputId: 'graph-fixture',
@@ -179,7 +179,7 @@ const writeRestorableSnapshotArtifact = async (
 				createdAt: 1_700_000_000_000,
 				app: 'labeled-app',
 				stack: 'alpha',
-				network: 'sui:local',
+				network: 'localnet',
 				graphInput: {
 					version: SNAPSHOT_GRAPH_INPUT_VERSION,
 					graphInputId: 'graph-fixture',
@@ -448,7 +448,7 @@ describe('cli/main', () => {
 			seedManifest(stackRoot, {
 				app: 'local-app',
 				stack: 'main',
-				network: 'sui:local',
+				network: 'localnet',
 				endpoints: {
 					'rpc#0:rpc': {
 						name: 'rpc',
@@ -482,7 +482,7 @@ describe('cli/main', () => {
 			expect(envelope.data.identity).toEqual({
 				app: 'local-app',
 				stack: 'main',
-				network: 'sui:local',
+				network: 'localnet',
 			});
 			expect(envelope.data.rowCount).toBe(0);
 			expect(envelope.data.accountCount).toBe(0);
@@ -786,7 +786,7 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 			expect(process.exitCode).toBe(0);
 			// `apply` flushes the manifest during its one-shot boot. The
 			// degraded status builder projects that manifest's identity
-			// (mapping `chain` → `network`).
+			// (carrying `network` onto `network`).
 			const ctx = readStackContext({
 				manifestPath: join(stateRoot, 'stacks', 'main', 'manifest.json'),
 			});
@@ -825,7 +825,7 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 			seedManifest(stackRoot, {
 				app: 'labeled-app',
 				stack: 'alpha',
-				network: 'sui:local',
+				network: 'localnet',
 			});
 
 			await runCli([
@@ -849,7 +849,7 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 			expect(envelope.data.identity).toEqual({
 				app: 'labeled-app',
 				stack: 'alpha',
-				network: 'sui:local',
+				network: 'localnet',
 			});
 		} finally {
 			process.exitCode = previousExitCode;

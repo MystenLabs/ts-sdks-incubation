@@ -79,7 +79,7 @@ const projectionDispatcher: ContributionDispatcher = {
 const identity: Identity = {
 	app: appName('supervisor-test-app'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 interface Captured {

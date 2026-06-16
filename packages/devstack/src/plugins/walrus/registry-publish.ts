@@ -49,7 +49,7 @@ export interface WalrusKnownStateEntry {
 	readonly name: 'walrusKnownDeployment';
 	readonly systemObjectId: string;
 	readonly stakingObjectId: string;
-	readonly chain: string;
+	readonly network: string;
 }
 
 export type WalrusStateEntry = WalrusLocalStateEntry | WalrusKnownStateEntry;

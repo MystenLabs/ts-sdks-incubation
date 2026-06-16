@@ -48,7 +48,7 @@ export interface AggregateContribution {
 	 *  `'accounts.ts'`, `'coins.ts'`, `'config.ts'`). The plugin
 	 *  chooses; the orchestrator treats it as opaque. Distinct decls
 	 *  that target the same `bucket` deep-merge into one aggregate
-	 *  file (so e.g. sui's `networks.local` and every package's
+	 *  file (so e.g. sui's `networks.localnet` and every package's
 	 *  `packages.<name>` coexist in one `config.ts`). */
 	readonly bucket: string;
 	/** Project this decl's `exported` map into the value to merge

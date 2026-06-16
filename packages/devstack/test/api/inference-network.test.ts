@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
+	chainIdForNetwork,
 	DevstackNetworkParseError,
+	networkNameFromChain,
 	parseDevstackNetwork,
 	resolveStackName,
 	resolveStateDir,
@@ -34,9 +36,11 @@ describe('api inference/network', () => {
 			}),
 		));
 
-	it('normalizes known DEVSTACK_NETWORK aliases and rejects unknown values with a typed error', () => {
+	it('parses canonical network names only — empty defaults to localnet; aliases are rejected', () => {
 		expect(parseDevstackNetwork(undefined)).toEqual({ mode: 'local', name: 'localnet' });
-		expect(parseDevstackNetwork('sui:testnet')).toEqual({
+		expect(parseDevstackNetwork('')).toEqual({ mode: 'local', name: 'localnet' });
+		expect(parseDevstackNetwork('localnet')).toEqual({ mode: 'local', name: 'localnet' });
+		expect(parseDevstackNetwork('testnet')).toEqual({
 			mode: 'live',
 			name: 'testnet',
 			network: 'testnet',
@@ -46,20 +50,36 @@ describe('api inference/network', () => {
 			name: 'mainnet-fork',
 			upstream: 'mainnet',
 		});
-		expect(parseDevstackNetwork('sui:testnet-fork', '--network')).toEqual({
+		expect(parseDevstackNetwork('testnet-fork', '--network')).toEqual({
 			mode: 'fork',
 			name: 'testnet-fork',
 			upstream: 'testnet',
 		});
 
-		expect(() => parseDevstackNetwork('bogus')).toThrow(DevstackNetworkParseError);
+		// There is no alias table: the `local` shorthand and every `sui:`-prefixed
+		// chain-id form are NOT valid network input — only canonical names are.
+		for (const rejected of ['local', 'sui:local', 'sui:localnet', 'sui:testnet', 'bogus']) {
+			expect(() => parseDevstackNetwork(rejected)).toThrow(DevstackNetworkParseError);
+		}
 		try {
-			parseDevstackNetwork('bogus', 'DEVSTACK_NETWORK');
+			parseDevstackNetwork('sui:local', 'DEVSTACK_NETWORK');
 			expect.fail('should have thrown');
 		} catch (err) {
 			expect(err).toBeInstanceOf(DevstackNetworkParseError);
 			expect((err as DevstackNetworkParseError)._tag).toBe('DevstackNetworkParseError');
-			expect((err as DevstackNetworkParseError).value).toBe('bogus');
+			expect((err as DevstackNetworkParseError).value).toBe('sui:local');
+		}
+	});
+
+	it('maps network ⇄ chain id by `sui:` prefix only (no lookup table)', () => {
+		expect(chainIdForNetwork('localnet')).toBe('sui:localnet');
+		expect(chainIdForNetwork('testnet')).toBe('sui:testnet');
+		expect(chainIdForNetwork('testnet-fork')).toBe('sui:testnet-fork');
+		expect(networkNameFromChain('sui:localnet')).toBe('localnet');
+		expect(networkNameFromChain('sui:testnet-fork')).toBe('testnet-fork');
+		// Round-trips for every canonical name.
+		for (const name of ['localnet', 'testnet', 'mainnet', 'devnet', 'testnet-fork'] as const) {
+			expect(networkNameFromChain(chainIdForNetwork(name))).toBe(name);
 		}
 	});
 

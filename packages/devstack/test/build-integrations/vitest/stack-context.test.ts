@@ -31,7 +31,7 @@ const minimalManifest = (overrides: Partial<{ stack: string }> = {}) => ({
 	identity: {
 		app: 'demo-app',
 		stack: overrides.stack ?? 'test',
-		chain: 'devnet-local',
+		network: 'devnet-local',
 	},
 	manifestVersion: 1,
 	services: {},

@@ -6,7 +6,7 @@
 // test pins that projection:
 //
 //   - identity + endpoints are populated from the manifest (the manifest's
-//     `chain` maps onto the projection's `network`);
+//     `network` carries onto the projection's `network`);
 //   - the live-only slices (rows / accounts / packages / errors) are EMPTY
 //     (a down stack has no live rows — the same shape a freshly-booted
 //     stack starts from, which the status renderer already tolerates);
@@ -31,7 +31,7 @@ const seedManifest = (): string => {
 	writeFileSync(
 		join(root, 'manifest.json'),
 		JSON.stringify({
-			identity: { app: 'arena', stack: 'main', chain: 'sui:local' },
+			identity: { app: 'arena', stack: 'main', network: 'localnet' },
 			manifestVersion: 1,
 			endpoints: {
 				'rpc#0:rpc': {
@@ -69,8 +69,8 @@ describe('degradedStatusFromContext', () => {
 		const ctx = readStackContext({ manifestPath: seedManifest() });
 		const state = degradedStatusFromContext(ctx);
 
-		// Identity — `chain` projects onto `network`.
-		expect(state.identity).toEqual({ app: 'arena', stack: 'main', network: 'sui:local' });
+		// Identity — `network` carries onto the projection's `network`.
+		expect(state.identity).toEqual({ app: 'arena', stack: 'main', network: 'localnet' });
 
 		// Endpoints — re-branded, `registeredAt` unknown offline → 0. The
 		// registry sorts by name (`rpc` < `wallet-app`).
@@ -141,7 +141,7 @@ describe('degradedStatusFromContext', () => {
 		writeFileSync(
 			join(root, 'manifest.json'),
 			JSON.stringify({
-				identity: { app: 'arena', stack: 'main', chain: 'localnet' },
+				identity: { app: 'arena', stack: 'main', network: 'localnet' },
 				manifestVersion: 1,
 				endpoints: {},
 				extras: {},

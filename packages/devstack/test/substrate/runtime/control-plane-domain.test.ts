@@ -37,7 +37,7 @@ describe('control-plane snapshot domain', () => {
 							createdAt: 1,
 							app: 'app',
 							stack: 'main',
-							network: 'sui:local',
+							network: 'sui:localnet',
 							graphInput: {
 								version: SNAPSHOT_GRAPH_INPUT_VERSION,
 								graphInputId: 'old-graph',

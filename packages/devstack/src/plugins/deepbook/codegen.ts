@@ -18,7 +18,7 @@ export interface DeepbookPoolBinding {
 
 export interface DeepbookBindings {
 	readonly name: string;
-	readonly chain: string;
+	readonly network: string;
 	readonly packageId: string;
 	readonly registryId: string;
 	readonly adminCapId: string | null;

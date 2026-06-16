@@ -102,7 +102,7 @@ describe('snapshot container image roundtrip', () => {
 			const identity = {
 				app: appName(app),
 				stack: stackName(stack),
-				chain: 'sui:local',
+				network: 'localnet',
 			};
 			const spec = {
 				name: containerName,
@@ -153,7 +153,7 @@ describe('snapshot container image roundtrip', () => {
 							label: null,
 							app,
 							stack,
-							network: 'sui:local',
+							network: 'localnet',
 							graphInput,
 							runtimeStackRoot: paths.stackRoot,
 							participants: [participant],
@@ -191,7 +191,7 @@ describe('snapshot container image roundtrip', () => {
 							runtimeBackupPath: `${paths.stackRoot}.restore-backup`,
 							participants: [restoreParticipant],
 							runtime,
-							runtimeIdentity: { app, stack, network: 'sui:local' },
+							runtimeIdentity: { app, stack, network: 'localnet' },
 						});
 						expect(restored.id).toBe(captured.id);
 						expect(snapshotTempTagsFor(containerName)).toEqual([]);

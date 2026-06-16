@@ -48,7 +48,10 @@ export interface WalrusKnownDeploymentOptions {
 /** Resolved known-deployment boot artifacts. */
 export interface KnownDeploymentBootResult {
 	readonly mode: 'known';
-	readonly chain: string;
+	/** The known network's name (`testnet`/`mainnet`/`devnet`) — its stable
+	 *  identity. A known remote deployment has no per-boot genesis digest, so
+	 *  the network name IS its `chainId` for codegen/snapshot keying. */
+	readonly network: string;
 	readonly systemObjectId: string;
 	readonly stakingPoolId: string;
 	readonly exchangeIds: ReadonlyArray<string>;
@@ -69,7 +72,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 	Record<
 		WalrusKnownNetwork,
 		{
-			readonly chain: string;
+			readonly network: string;
 			readonly systemObjectId?: string;
 			readonly stakingPoolId?: string;
 			readonly exchangeIds?: ReadonlyArray<string>;
@@ -80,7 +83,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 	>
 > = {
 	testnet: {
-		chain: 'sui:testnet',
+		network: 'testnet',
 		// Real ids must be supplied via the explicit options form
 		// (`walrusFor(testnet).known({ systemObjectId, stakingPoolId, ... })`).
 		// The known-deployment lookup table only canonicalises the URLs;
@@ -94,7 +97,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 		proxyUrl: 'https://aggregator.walrus-testnet.walrus.space',
 	},
 	mainnet: {
-		chain: 'sui:mainnet',
+		network: 'mainnet',
 		systemObjectId: undefined,
 		stakingPoolId: undefined,
 		exchangeIds: [],
@@ -103,7 +106,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 		proxyUrl: 'https://aggregator.walrus.space',
 	},
 	devnet: {
-		chain: 'sui:devnet',
+		network: 'devnet',
 	},
 };
 
@@ -158,7 +161,7 @@ export const resolveKnownDeploymentOptions = (
 	// values for the URLs they did provide.
 	return {
 		mode: 'known' as const,
-		chain: reg?.chain ?? 'sui:custom',
+		network: reg?.network ?? 'custom',
 		systemObjectId,
 		stakingPoolId,
 		exchangeIds: opts.exchangeIds ?? reg?.exchangeIds ?? [],

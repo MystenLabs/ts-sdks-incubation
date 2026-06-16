@@ -47,13 +47,13 @@ import type { Identity } from '../../src/substrate/identity.ts';
 // the HEX on-chain id a real plugin reads off `sui.chain`. They DIFFER
 // on purpose — the parity assertion below proves persist keys on the
 // hex spec.chain, never the raw identity.chain.
-const RAW_IDENTITY_CHAIN = 'sui:local';
+const RAW_IDENTITY_CHAIN = 'localnet';
 const HEX_SPEC_CHAIN = '35834a8a';
 
 const identity: Identity = {
 	app: appName('persist-parity-app'),
 	stack: stackName('persist-parity-stack'),
-	chain: RAW_IDENTITY_CHAIN,
+	network: RAW_IDENTITY_CHAIN,
 };
 
 interface CachedArtifact {

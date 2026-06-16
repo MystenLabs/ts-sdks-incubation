@@ -27,7 +27,7 @@ import { VitestManifestNotFoundError } from '../../../src/build-integrations/vit
 import { withTempRootSync } from '../../helpers/with-temp-root.ts';
 
 const minimalManifest = () => ({
-	identity: { app: 'demo', stack: 'test', chain: 'devnet-local' },
+	identity: { app: 'demo', stack: 'test', network: 'devnet-local' },
 	manifestVersion: 1,
 	services: {},
 	endpoints: {},
@@ -137,7 +137,7 @@ describe('runDevstackBeforeAll', () => {
 			writeFileSync(
 				join(dir, 'manifest.json'),
 				JSON.stringify({
-					identity: { app: 'smoke-app', stack: 'smoke-app', chain: 'devnet-local' },
+					identity: { app: 'smoke-app', stack: 'smoke-app', network: 'devnet-local' },
 					manifestVersion: 1,
 					services: {},
 					endpoints: {},

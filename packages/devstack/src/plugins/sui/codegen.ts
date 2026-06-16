@@ -3,23 +3,26 @@
 // Architecture §6: plugins emit typed `CodegenableDecl`s; the
 // codegen orchestrator stages files into the user's source tree
 // WITHOUT naming the plugin. Sui's contribution is the active
-// network: the active key (`network: "local"`) plus the
-// `networks.local` entry (chain, mode, rpc, faucet, graphql,
+// network: the active key (`network: "localnet"`) plus the
+// `networks.localnet` entry (chainId, mode, rpc, faucet, graphql,
 // forkUpstream).
 //
 // The sui contribution is `aggregateOnly` — it projects directly into
-// the combined `generated/config.ts` (`config.network` + `config.networks.local`)
+// the combined `generated/config.ts` (`config.network` + `config.networks.localnet`)
 // and emits NO standalone `sui/network.ts` (nothing imports a
 // per-decl sui file anymore; consumers read `config.networks[config.network]`).
 
 import { Effect } from 'effect';
 
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 
 /** The typed shape one `networks.<key>` entry in `config.ts` exports. */
 export interface SuiNetworkConfigEntry {
-	readonly chain: string;
+	/** Genesis-digest chain identifier of the running node (not the network
+	 *  name, which is the `networks.<key>` key itself). */
+	readonly chainId: string;
 	readonly mode: 'local' | 'local-rpc' | 'live' | 'fork';
 	readonly rpc: string;
 	readonly faucet: string | null;
@@ -29,8 +32,8 @@ export interface SuiNetworkConfigEntry {
 }
 
 /** Aggregate projection: fold the resolved sui network into the
- *  combined `config.ts` aggregate as `network: "local"` plus
- *  `networks.local: {chain,mode,rpc,faucet,graphql,forkUpstream}`. The
+ *  combined `config.ts` aggregate as `network: "localnet"` plus
+ *  `networks.localnet: {chainId,mode,rpc,faucet,graphql,forkUpstream}`. The
  *  orchestrator stays plugin-name-blind and deep-merges this with each
  *  package's `packages.<name>` / `objects.<name>` contribution. */
 const projectSuiConfig = (
@@ -39,8 +42,8 @@ const projectSuiConfig = (
 	const entry = exported['__suiNetworkEntry'];
 	if (typeof entry !== 'object' || entry === null) return null;
 	return {
-		network: 'local',
-		networks: { local: entry },
+		network: LOCAL_NETWORK_NAME,
+		networks: { [LOCAL_NETWORK_NAME]: entry },
 	};
 };
 
@@ -49,7 +52,7 @@ const projectSuiConfig = (
  *  cycles). */
 export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl<'sui-network'> => {
 	const entry: SuiNetworkConfigEntry = {
-		chain: resolved.chain,
+		chainId: resolved.chainId,
 		mode: resolved.mode,
 		rpc: resolved.rpc,
 		faucet: resolved.faucet ?? null,

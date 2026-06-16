@@ -39,7 +39,7 @@ const makeCtx = (
 ): WalletAcquireContext => ({
 	app: 'app',
 	stack: 'main',
-	chain: 'chain',
+	network: 'localnet',
 	stateRoot,
 	allocatePort: () => Effect.succeed(0),
 	resolveAccounts: () => Effect.succeed(accounts),

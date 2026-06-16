@@ -95,7 +95,7 @@ describe('codegen.runEmitCycle — cycle-level stage-and-swap', () => {
 					successfulDecl({
 						emitterName: 'sui-network',
 						outputPath: 'sui/network.ts',
-						exports: { suiNetwork: { chain: 'sui:local', rpcUrl: 'http://baseline' } },
+						exports: { suiNetwork: { chain: 'sui:localnet', rpcUrl: 'http://baseline' } },
 					}),
 				],
 			});
@@ -120,7 +120,7 @@ describe('codegen.runEmitCycle — cycle-level stage-and-swap', () => {
 							emitterName: 'sui-network',
 							outputPath: 'sui/network.ts',
 							exports: {
-								suiNetwork: { chain: 'sui:local', rpcUrl: 'http://OVERWRITE-ATTEMPT' },
+								suiNetwork: { chain: 'sui:localnet', rpcUrl: 'http://OVERWRITE-ATTEMPT' },
 							},
 						}),
 						failingDecl({
@@ -167,7 +167,7 @@ describe('codegen.runEmitCycle — cycle-level stage-and-swap', () => {
 					successfulDecl({
 						emitterName: 'sui-network',
 						outputPath: 'sui/network.ts',
-						exports: { suiNetwork: { chain: 'sui:local', rpcUrl: 'http://x' } },
+						exports: { suiNetwork: { chain: 'sui:localnet', rpcUrl: 'http://x' } },
 					}),
 				],
 			});
@@ -237,7 +237,7 @@ describe('codegen.runEmitCycle — cycle-level stage-and-swap', () => {
 					successfulDecl({
 						emitterName: 'sui-network',
 						outputPath: 'sui/network.ts',
-						exports: { suiNetwork: { chain: 'sui:local', rpcUrl: 'http://fresh' } },
+						exports: { suiNetwork: { chain: 'sui:localnet', rpcUrl: 'http://fresh' } },
 					}),
 				],
 			});

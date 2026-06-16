@@ -4,7 +4,7 @@
 import type { AppName, StackName } from './brand.ts';
 
 /** Closed identity tuple. Architecture § Stack data model. The substrate
- *  is name-blind: it knows nothing about chains or network modes. */
+ *  is name-blind: it knows nothing about networks or modes. */
 export interface Identity {
 	readonly app: AppName;
 	readonly stack: StackName;
@@ -13,7 +13,7 @@ export interface Identity {
 	 *  correlation/display label (supervisor labels, span attributes,
 	 *  snapshot provenance meta). The substrate NEVER parses it or branches
 	 *  on its value; it carries no network/mode semantics here. Callers
-	 *  (CLI / `runStack`) happen to set it to a resolved chain string, but
+	 *  (CLI / `runStack`) happen to set it to a resolved network name, but
 	 *  that is a producer concern, not a substrate primitive. */
-	readonly chain: string;
+	readonly network: string;
 }

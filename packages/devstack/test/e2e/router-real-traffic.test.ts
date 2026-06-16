@@ -226,7 +226,7 @@ describe('router real Docker traffic', () => {
 		const identity = {
 			app: appName(`router-e2e-${process.pid}`),
 			stack: stackName('main'),
-			chain: 'sui:local',
+			network: 'localnet',
 		};
 		const route: RoutableDecl = {
 			kind: 'routable',

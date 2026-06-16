@@ -111,7 +111,11 @@ const VIRTUAL_DEV_WALLET_SCRIPT_SRC = `/@id/__x00__${VIRTUAL_DEV_WALLET_ID}`;
 export interface DevstackVitePlugin {
 	readonly name: string;
 	readonly config: (config: ViteUserConfigLike) => {
-		readonly resolve: { readonly alias: Record<string, string> };
+		readonly resolve: {
+			readonly alias: Record<string, string>;
+			readonly dedupe?: readonly string[];
+		};
+		readonly optimizeDeps?: { readonly include: readonly string[] };
 	};
 	/** Capture the resolved command so injection is DEV-only. */
 	readonly configResolved: (config: ViteUserConfigLike) => void;
@@ -240,6 +244,36 @@ const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): 
 	return raw === '1' || raw?.toLowerCase() === 'true';
 };
 
+/** Lit packages deduped to a single instance. The injected dev-wallet UI and
+ *  the app's dapp-kit UI are both Lit-based; if Vite loads two Lit copies they
+ *  register custom elements in separate realms, and the second realm's element
+ *  classes are unknown to the global `customElements` registry — so re-rendering
+ *  the dev-wallet UI (e.g. on disconnect/reconnect) throws `Illegal constructor`
+ *  and leaves the app in an unusable connection state. */
+const LIT_DEDUPE = ['lit', 'lit-html', 'lit-element', '@lit/reactive-element'] as const;
+
+/** The dev-wallet entry points the injected virtual module imports. They are
+ *  reached only through the `<script>` this plugin adds in `transformIndexHtml`,
+ *  so Vite's initial dep scan never sees them and re-optimizes mid-session the
+ *  first time the page loads them — and that late, separate optimize pass pulls
+ *  a SECOND Lit instance (see {@link LIT_DEDUPE}). Pre-bundling them up front via
+ *  `optimizeDeps.include` keeps the whole dev-wallet UI graph in the initial pass,
+ *  sharing one Lit. */
+const DEV_WALLET_OPTIMIZE_ENTRIES = [
+	'@mysten-incubation/dev-wallet/inject',
+	'@mysten-incubation/dev-wallet/adapters',
+] as const;
+
+/** True when `@mysten-incubation/dev-wallet` is installed at the app root —
+ *  i.e. the app actually depends on the dev wallet (the `app` template does;
+ *  the headless `ts` template does not). Checked by package presence rather
+ *  than `require.resolve('.../inject')`, whose `exports` entry declares only an
+ *  `import` condition (the CJS resolver throws `ERR_PACKAGE_PATH_NOT_EXPORTED`).
+ *  Best-effort: if it's absent we never hand Vite an `optimizeDeps.include` it
+ *  can't resolve (which would fail the dep scan). */
+const devWalletInstalled = (root: string): boolean =>
+	existsSync(resolve(root, 'node_modules', '@mysten-incubation', 'dev-wallet', 'package.json'));
+
 export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): DevstackVitePlugin => {
 	const alias = options.alias ?? DEFAULT_GENERATED_ALIAS;
 	const devExtrasAlias = options.devExtrasAlias ?? DEFAULT_DEV_EXTRAS_ALIAS;
@@ -270,17 +304,24 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// `@devstack-dev` mirrors `@generated` exactly.
 			const extrasDir = resolveExtrasDir(options, root, env);
 			resolvedExtrasDir = extrasDir;
-			// Return a partial config; Vite merges `resolve.alias` into the
-			// existing alias map. A bare-prefix alias (no trailing `/`)
-			// matches both `@generated` and `@generated/foo.js` under Vite's
-			// default string-alias resolution.
+			// Return a partial config; Vite deep-merges it. A bare-prefix alias
+			// (no trailing `/`) matches both `@generated` and `@generated/foo.js`
+			// under Vite's default string-alias resolution. `resolve.dedupe` pins
+			// a single Lit copy, and — when this app carries the dev wallet — we
+			// pre-bundle the injected dev-wallet entries so Vite never re-optimizes
+			// them mid-session into a second Lit realm (see the constants above).
+			const includeDevWallet = injectDevWallet && devWalletInstalled(root);
 			return {
 				resolve: {
 					alias: {
 						[alias]: generatedDir,
 						[devExtrasAlias]: extrasDir,
 					},
+					dedupe: [...LIT_DEDUPE],
 				},
+				...(includeDevWallet
+					? { optimizeDeps: { include: [...DEV_WALLET_OPTIMIZE_ENTRIES] } }
+					: {}),
 			};
 		},
 
@@ -325,7 +366,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 				`  token: parseDevstackToken(devWallet.pairUrl),`,
 				`  accounts,`,
 				`  rpcUrl: __devstackConfig.networks[__devstackConfig.network].rpc,`,
-				`  chain: devWallet.chain,`,
+				`  network: devWallet.network,`,
 				`  autoApprove: ${autoApprove ? 'true' : 'false'},`,
 				`  mountUI: true,`,
 				`}).catch((err) => console.error('[devstack] dev-wallet injection failed:', err));`,

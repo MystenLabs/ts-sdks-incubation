@@ -29,7 +29,7 @@ import type { EndpointRegistry } from './endpoint-registry.ts';
 export interface StackIdentity {
 	readonly app: string;
 	readonly stack: string;
-	readonly chain: string;
+	readonly network: string;
 }
 
 /** Flat endpoint entry exposed to consumers. Mirrors the substrate's

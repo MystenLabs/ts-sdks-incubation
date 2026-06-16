@@ -32,7 +32,7 @@ const objectProbe = (object: { readonly objectId: string; readonly type: string 
 					(cause): ChainProbeError => ({
 						_tag: 'ChainProbeError',
 						reason: 'decode-failed',
-						chain: 'sui:localnet',
+						chainId: 'sui:localnet',
 						detail: String(cause),
 					}),
 				),

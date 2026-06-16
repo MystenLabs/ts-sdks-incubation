@@ -30,7 +30,7 @@ describe('manifest-path parity across build integrations', () => {
 			// Plant a stack-scoped manifest at the path the supervisor
 			// actually writes (cwd-walkup, `.devstack/stacks/<stack>/`).
 			const supervisorPath = writeManifest(root, 'main', {
-				identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
+				identity: { app: 'demo', stack: 'main', network: 'localnet' },
 				manifestVersion: CONSUMER_MANIFEST_VERSION,
 				services: {},
 				endpoints: {},

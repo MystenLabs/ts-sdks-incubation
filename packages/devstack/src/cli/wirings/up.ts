@@ -585,7 +585,7 @@ export const runUpLive = (
 			identity: {
 				app: String(identityValue.app),
 				stack: String(identityValue.stack),
-				network: String(identityValue.chain),
+				network: String(identityValue.network),
 			},
 			appRoot,
 			runtimeRoot: effectiveIdentity.runtimeRoot,

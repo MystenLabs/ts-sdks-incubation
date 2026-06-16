@@ -70,7 +70,7 @@ const writeStackManifest = (
 	writeFileSync(
 		path,
 		JSON.stringify({
-			identity: { app: 'demo', stack, chain: 'sui:local' },
+			identity: { app: 'demo', stack, network: 'localnet' },
 			manifestVersion: 1,
 			services: {},
 			endpoints: {},
@@ -195,7 +195,7 @@ describe('devstackVitePlugin', () => {
 			writeFileSync(
 				join(dir, 'manifest.json'),
 				JSON.stringify({
-					identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
+					identity: { app: 'demo', stack: 'main', network: 'localnet' },
 					manifestVersion: 1,
 					services: {},
 					endpoints: {},

@@ -40,7 +40,7 @@ const dockerOk = (): boolean =>
 	dockerSpawnSync(['info', '--format', '{{.ServerVersion}}'], { timeout: 5_000 }).status === 0;
 
 const suiChainOf = (ctx: BootScopeContext): string =>
-	(findSui(ctx) as { readonly chain: string }).chain;
+	(findSui(ctx) as { readonly chainId: string }).chainId;
 
 const findSui = (ctx: BootScopeContext): unknown => {
 	for (const [key, value] of ctx.resolvedValues) {

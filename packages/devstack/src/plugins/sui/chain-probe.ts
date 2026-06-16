@@ -115,7 +115,7 @@ export interface SuiSdkShim {
  *  chain id. The result implements the contract's `ChainProbe<Key>`
  *  shape; the Sui plugin emits this via a StrategyContributorDecl
  *  keyed by `chain-probe:<chainId>`. */
-export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<SuiProbeKey> => ({
+export const makeSuiChainProbe = (sdk: SuiSdkShim, chainId: string): ChainProbe<SuiProbeKey> => ({
 	get: <Shape>(
 		key: SuiProbeKey,
 		schema: ChainProbeSchema<Shape>,
@@ -130,7 +130,7 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 				catch: (cause): ChainProbeError => ({
 					_tag: 'ChainProbeError',
 					reason: isNotFound(cause) ? 'not-found' : 'transient',
-					chain,
+					chainId,
 					detail: formatUnknownError(cause),
 				}),
 			}).pipe(
@@ -151,11 +151,11 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 			// is structured (NOT silent undefined) — this is the
 			// load-bearing learning from deepbook.
 			const decoded = yield* decodeUnknown(schema, payload, {
-				source: `chain probe ${chain}`,
+				source: `chain probe ${chainId}`,
 				mkError: (issue): ChainProbeError => ({
 					_tag: 'ChainProbeError',
 					reason: 'decode-failed',
-					chain,
+					chainId,
 					detail: formatUnknownError(issue.cause ?? issue),
 				}),
 			});

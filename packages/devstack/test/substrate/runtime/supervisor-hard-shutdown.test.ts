@@ -31,7 +31,7 @@ import { definePlugin } from '../../../src/substrate/plugin.ts';
 const identity: Identity = {
 	app: appName('hard-shutdown-test-app'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 describe('supervisor hard-shutdown teardown (Bug #13)', () => {

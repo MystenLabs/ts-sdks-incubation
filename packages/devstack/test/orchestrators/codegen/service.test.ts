@@ -309,7 +309,7 @@ describe('codegen.runEmitCycle', () => {
 					fakeDecl({
 						emitterName: 'sui-network',
 						outputPath: 'sui/network.ts',
-						exports: { suiNetwork: { chain: 'sui:local', rpcUrl: 'http://x' } },
+						exports: { suiNetwork: { chain: 'sui:localnet', rpcUrl: 'http://x' } },
 						aggregate: {
 							bucket: 'services.ts',
 							project: (e) => {
@@ -418,12 +418,12 @@ describe('codegen.runEmitCycle', () => {
 										const n = e['__suiNetworkEntry'] as {
 											readonly rpc: string;
 										};
-										return { network: 'local', networks: { local: n } };
+										return { network: 'localnet', networks: { localnet: n } };
 									},
 								},
 								exports: {
 									__suiNetworkEntry: {
-										chain: 'sui:local',
+										chain: 'sui:localnet',
 										mode: 'local',
 										rpc: 'http://127.0.0.1:9000',
 										faucet: 'http://127.0.0.1:9123',
@@ -445,7 +445,7 @@ describe('codegen.runEmitCycle', () => {
 											readonly mvrPlaceholder: string;
 										};
 										return {
-											packages: { [b.name]: { ...b, byNetwork: { local: '0x1' } } },
+											packages: { [b.name]: { ...b, byNetwork: { localnet: '0x1' } } },
 											// Mirror the real `projectPackageConfig`: each package
 											// folds its active-network id into the shared
 											// `mvrOverrides` map keyed by its `mvr` placeholder.
@@ -482,12 +482,12 @@ describe('codegen.runEmitCycle', () => {
 								readonly config: {
 									readonly network: string;
 									readonly networks: {
-										readonly local: { readonly rpc: string };
+										readonly localnet: { readonly rpc: string };
 									};
 									readonly packages: {
 										readonly mock_usdc: {
 											readonly packageId: string;
-											readonly byNetwork: { readonly local: string };
+											readonly byNetwork: { readonly localnet: string };
 										};
 									};
 									readonly mvrOverrides: Readonly<Record<string, string>>;
@@ -508,12 +508,12 @@ describe('codegen.runEmitCycle', () => {
 								readonly accounts: { readonly alice: { readonly address: string } };
 							}>,
 					);
-					// sui's `networks.local` and the package's `packages.*`
+					// sui's `networks.localnet` and the package's `packages.*`
 					// coexist in ONE config.ts (deep-merge, not last-write-wins).
-					expect(configModule.config.network).toBe('local');
-					expect(configModule.config.networks.local.rpc).toBe('http://127.0.0.1:9000');
+					expect(configModule.config.network).toBe('localnet');
+					expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
 					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
-					expect(configModule.config.packages.mock_usdc.byNetwork.local).toBe('0x1');
+					expect(configModule.config.packages.mock_usdc.byNetwork.localnet).toBe('0x1');
 					// Top-level `mvrOverrides` is the active-network name→id map
 					// (what the old per-app `mvrOverrides()` helper computed):
 					// keyed by the package's `mvr` placeholder, valued by
@@ -521,7 +521,7 @@ describe('codegen.runEmitCycle', () => {
 					// dapp-kit's `mvr.overrides.packages`.
 					expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
 					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
-						configModule.config.packages.mock_usdc.byNetwork.local,
+						configModule.config.packages.mock_usdc.byNetwork.localnet,
 					);
 					expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
 					expect(accountsModule.accounts.alice.address).toBe('0xabc');

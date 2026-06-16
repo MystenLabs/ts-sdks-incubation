@@ -26,6 +26,7 @@
 import type { AutoApprovePolicy, DevWallet } from '../wallet/dev-wallet.js';
 import { mountAndRegisterDevWallet } from '../wallet/mount-and-register.js';
 import { DevstackSignerAdapter } from '../adapters/devstack-adapter.js';
+import { WebCryptoSignerAdapter } from '../adapters/webcrypto-adapter.js';
 
 /** dApp Kit's default localStorage key for its "selected wallet + address"
  *  (mirrored from `@mysten/dapp-kit-core`'s `DEFAULT_STORAGE_KEY` — kept as
@@ -52,10 +53,10 @@ export interface RegisterDevstackDevWalletConfig {
 	 *  is CORS-blocked from the routed page origin. When omitted the wallet
 	 *  falls back to localnet defaults (only correct for non-routed setups). */
 	readonly rpcUrl?: string;
-	/** Chain id the wallet's network maps to (e.g. `'sui:local'` from
-	 *  `devWallet.chain`). The network name is derived from it
-	 *  (`sui:local` → `local`); defaults to `localnet`. */
-	readonly chain?: string;
+	/** Network name the wallet's accounts are scoped to (e.g. `'localnet'`
+	 *  from `devWallet.network`). The wallet advertises the wallet-standard
+	 *  chain `sui:<network>` derived from it; defaults to `localnet`. */
+	readonly network?: string;
 	/** Auto-approve all signing requests (headless e2e). Defaults to false. */
 	readonly autoApprove?: AutoApprovePolicy;
 	/** Mount the floating wallet drawer UI. Defaults to true. */
@@ -265,32 +266,33 @@ async function registerDevstackDevWalletImpl(
 	// its OWN client — adapter signing is HTTP (server-side keys), but
 	// execution goes through the wallet's network client. That client MUST
 	// hit the same routed RPC the app's dApp Kit uses (a raw 127.0.0.1 RPC
-	// is CORS-blocked from the routed page origin). dApp Kit forwards a
-	// `sui:<appNetwork>` chain whose network name we can't know generically,
-	// so we point EVERY standard Sui network (plus the chain-derived name)
-	// at the one routed RPC — whatever chain arrives resolves to it. (The
-	// old per-app initializer delegated to dApp Kit's `getClient`.)
+	// is CORS-blocked from the routed page origin).
+	//
+	// Expose a SINGLE network — the active stack's — so the wallet's network
+	// switcher shows one entry that matches dApp Kit, not a list of unused
+	// devnet/testnet/mainnet. `mountAndRegisterDevWallet` advertises the
+	// wallet-standard chain `sui:<network>` derived from this key, matching the
+	// `sui:<network>` dApp Kit forwards for signing — the `sui:` prefix lives
+	// only here, at the wallet-standard boundary.
 	const rpcUrl = config.rpcUrl ?? 'http://127.0.0.1:9000';
-	const chainNetwork = config.chain?.split(':')[1];
-	const networks: Record<string, string> = {
-		devnet: rpcUrl,
-		testnet: rpcUrl,
-		localnet: rpcUrl,
-		mainnet: rpcUrl,
-	};
-	if (chainNetwork !== undefined) networks[chainNetwork] = rpcUrl;
+	const activeNetwork = config.network ?? 'localnet';
+	const networks: Record<string, string> = { [activeNetwork]: rpcUrl };
 
 	// Delegate the construct → init-adapter → mount-UI → register → dispose
-	// sequence to the shared dev-wallet core helper; the ONLY devstack-specific
-	// inputs are the HTTP signer adapter built above and the routed-RPC network
-	// map. (The DevstackSignerAdapter brings its own server-resolved accounts,
-	// so `createInitialAccount` stays off — we never fabricate a throwaway key.)
+	// sequence to the shared dev-wallet core helper. Two adapters: the
+	// `DevstackSignerAdapter` brings the stack's server-resolved accounts
+	// (alice/bob/carol — headless HTTP signing), and a `WebCryptoSignerAdapter`
+	// lets the user create their OWN accounts in the wallet UI, persisted in
+	// IndexedDB across reloads (non-extractable WebCrypto keys, NOT in-memory).
+	// `createInitialAccount` stays off — the devstack adapter already supplies
+	// accounts, so we never fabricate a throwaway key; the WebCrypto adapter
+	// starts empty until the user adds one.
 	const { wallet, dispose: disposeWallet } = await mountAndRegisterDevWallet({
-		adapters: [adapter],
+		adapters: [adapter, new WebCryptoSignerAdapter()],
 		name: config.name ?? 'Devstack',
 		autoApprove,
 		networks,
-		activeNetwork: chainNetwork ?? 'localnet',
+		activeNetwork,
 		mountUI,
 	});
 

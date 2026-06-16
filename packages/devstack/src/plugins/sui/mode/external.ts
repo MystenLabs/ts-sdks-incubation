@@ -89,8 +89,8 @@ export const bootLocalRpcMode = (
 		});
 
 		// ----- 2. Resolve chain id -------------------------------------------
-		const chain =
-			opts.chain ??
+		const chainId =
+			opts.chainId ??
 			(yield* fetchChainId(sdkClient, {
 				timeout: opts.readyTimeout ?? DEFAULT_EXTERNAL_CHAIN_ID_TIMEOUT,
 			}));
@@ -106,7 +106,7 @@ export const bootLocalRpcMode = (
 		// ----- 4. Assemble + return ------------------------------------------
 		const { client } = yield* assembleSuiClient({
 			sdkClient,
-			chain,
+			chainId,
 			rpcUrl: opts.rpcUrl,
 			...(opts.faucetUrl !== undefined ? { faucetUrl: opts.faucetUrl } : {}),
 			...(opts.graphqlUrl !== undefined ? { graphqlUrl: opts.graphqlUrl } : {}),
@@ -114,7 +114,7 @@ export const bootLocalRpcMode = (
 		});
 		const resolved = makeResolvedNetwork({
 			mode: 'local-rpc',
-			chain,
+			chainId,
 			rpc: opts.rpcUrl,
 			source: 'config',
 			...(opts.faucetUrl !== undefined ? { faucet: opts.faucetUrl } : {}),

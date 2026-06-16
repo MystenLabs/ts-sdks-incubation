@@ -122,8 +122,8 @@ const resolveFundingFaucetStrategy = (
 			faucetUrl: client.fundingFaucetUrl,
 			serialization: {
 				broker,
-				key: `sui-faucet:${client.chain}`,
-				owner: `sui-faucet:${client.chain}`,
+				key: `sui-faucet:${client.chainId}`,
+				owner: `sui-faucet:${client.chainId}`,
 			},
 		}),
 	);
@@ -153,8 +153,8 @@ const resolveForkFaucetStrategy = (
 			perRequestCapMist: resolved.perRequestCapMist,
 			serialization: {
 				broker,
-				key: `sui-fork-faucet:${client.chain}`,
-				owner: `sui-fork-faucet:${client.chain}`,
+				key: `sui-fork-faucet:${client.chainId}`,
+				owner: `sui-fork-faucet:${client.chainId}`,
 			},
 		});
 		return yield* selectSufficientForkCoin(
@@ -371,19 +371,20 @@ const bootAndEmit = (
 		} satisfies SuiResolvedRuntime;
 		// Emit the resolved contributions inline, top-to-bottom: the
 		// decls stamp REAL chain ids / rpc URLs / container names
+		// (the genesis-digest chain id, not the network name).
 		// (`value` is the just-resolved runtime; `identity` from
 		// `IdentityContext`, NOT re-fetched). The shared
 		// `emitContributions` routes each by `kind`. Faucet (conditional
 		// on a resolved strategy) and routables (mode-dependent) are the
 		// only optional members; order is load-bearing.
-		const realChain = value.chain;
+		const realChainId = value.chainId;
 		const faucetContribution: ReadonlyArray<StrategyContributorDecl> =
 			value.fundingFaucetStrategy === null
 				? []
 				: [
 						{
 							kind: 'strategy-contributor',
-							capabilityKey: faucetCapabilityKey(realChain),
+							capabilityKey: faucetCapabilityKey(realChainId),
 							strategy: value.fundingFaucetStrategy,
 							autoMounted: true,
 						} satisfies StrategyContributorDecl<
@@ -409,10 +410,10 @@ const bootAndEmit = (
 			// `hasIndexer` (local only) folds the sui-owned indexer-db
 			// sidecar into the captured containers; `indexer !== undefined`
 			// is the same gate `bootAndEmit`'s caller resolved GraphQL on.
-			makeSnapshotable(opts.mode, identity.app, identity.stack, realChain, indexer !== undefined),
+			makeSnapshotable(opts.mode, identity.app, identity.stack, realChainId, indexer !== undefined),
 			makeCodegenable({
 				mode: opts.mode,
-				chain: realChain,
+				chainId: realChainId,
 				rpc: value.rpcUrl,
 				source: 'default',
 				...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
@@ -420,7 +421,7 @@ const bootAndEmit = (
 			}),
 			{
 				kind: 'strategy-contributor',
-				capabilityKey: chainProbeCapabilityKey(realChain),
+				capabilityKey: chainProbeCapabilityKey(realChainId),
 				strategy: value.chainProbe,
 				autoMounted: true,
 			} satisfies StrategyContributorDecl<`chain-probe:${string}`, ChainProbe<SuiProbeKey>>,
@@ -493,7 +494,7 @@ export const sui = <const O extends SuiOptions = { mode: 'local' }>(
 /** Mode-narrowed factory namespace.
  *
  *  Usage:
- *      const network = { mode: 'local', chain: 'sui:localnet' } as const;
+ *      const network = { mode: 'local' } as const;
  *      suiFor(network).local({...})    // OK
  *      suiFor(network).fork({...})     // type error: 'fork' not in 'local' branch
  *

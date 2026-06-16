@@ -101,7 +101,7 @@ const tcpRoutable: RoutableDecl = {
 const identity: Identity = {
 	app: appName('router-runtime-composition'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 const routablePlugin = definePlugin({

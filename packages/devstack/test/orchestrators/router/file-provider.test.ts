@@ -31,7 +31,7 @@ import { appName, stackName } from '../../../src/substrate/brand.ts';
 const identity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: 'sui:localnet',
+	network: 'localnet',
 };
 
 const stubUpstreams: UpstreamResolver = {

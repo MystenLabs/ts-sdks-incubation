@@ -36,7 +36,7 @@ export interface WalrusNodeBinding {
 /** The typed shape the emitted file exports. */
 export interface WalrusBindings {
 	readonly mode: 'local' | 'known';
-	readonly chain: string;
+	readonly network: string;
 	readonly walrusPackageId: string | null;
 	readonly walPackageId: string | null;
 	readonly walCoinType: string | null;
@@ -67,7 +67,7 @@ export interface WalrusBindings {
  *  and the post-acquire factory restamps with resolved fields). */
 export interface MakeCodegenableInputs {
 	readonly mode: 'local' | 'known';
-	readonly chain: string;
+	readonly network: string;
 	readonly walrusPackageId: string | null;
 	readonly walPackageId: string | null;
 	readonly walCoinType: string | null;
@@ -93,7 +93,7 @@ export const makeCodegenable = (
 		Effect.sync(() => {
 			const bindings: WalrusBindings = {
 				mode: inputs.mode,
-				chain: inputs.chain,
+				network: inputs.network,
 				walrusPackageId: inputs.walrusPackageId,
 				walPackageId: inputs.walPackageId,
 				walCoinType: inputs.walCoinType,

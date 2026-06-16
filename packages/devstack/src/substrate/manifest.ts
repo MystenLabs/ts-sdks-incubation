@@ -68,7 +68,7 @@ export interface ManifestEnvelope {
 	readonly identity: {
 		readonly app: string;
 		readonly stack: string;
-		readonly chain: string;
+		readonly network: string;
 	};
 	readonly manifestVersion: number;
 	/** Optional per-plugin service slot. The read-side build-integration API
@@ -153,7 +153,7 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	identity: Schema.Struct({
 		app: Schema.String,
 		stack: Schema.String,
-		chain: Schema.String,
+		network: Schema.String,
 	}),
 	manifestVersion: Schema.Number,
 	// Optional service map for read-side integrations.

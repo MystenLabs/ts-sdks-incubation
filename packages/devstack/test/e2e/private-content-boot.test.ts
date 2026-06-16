@@ -535,10 +535,10 @@ const walletValue = (result: BootResult): WalletValue => {
 };
 
 const chainIdValue = (result: BootResult): string => {
-	const sui = result.resolvedValues.get('sui#0') as { readonly chain?: unknown } | undefined;
+	const sui = result.resolvedValues.get('sui#0') as { readonly chainId?: unknown } | undefined;
 	expect(sui, 'sui resolved value should be present').toBeDefined();
-	expect(sui!.chain, 'sui resolved value should carry a chain id').toEqual(expect.any(String));
-	return sui!.chain as string;
+	expect(sui!.chainId, 'sui resolved value should carry a chain id').toEqual(expect.any(String));
+	return sui!.chainId as string;
 };
 
 interface PackageBootValue {

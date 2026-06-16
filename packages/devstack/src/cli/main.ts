@@ -119,13 +119,13 @@ const resolveIdentity = (params: {
 	// Centralized explicit > env > default ladder. Throws
 	// `DevstackNetworkParseError` on a malformed value so the CLI fails
 	// fast with a structured error instead of a downstream cryptic
-	// chain-probe failure. The raw input is preserved (not the
-	// canonical name) so chain-keyed cache namespaces stay stable.
+	// network-probe failure. The identity's network is the canonical name
+	// (`localnet`, `testnet`, …), independent of how it was spelled.
 	const network = resolveNetworkSync({
 		explicit: params.network,
 		env: process.env.DEVSTACK_NETWORK,
 		explicitSource: '--network',
-	}).raw;
+	}).parsed.name;
 	const stackRoot = resolvePath(stacksRoot, stack);
 	return {
 		app,
@@ -166,7 +166,7 @@ export const degradedStatusFromContext = (ctx: StackContext): SubscribableState 
 	identity: {
 		app: ctx.identity.app,
 		stack: ctx.identity.stack,
-		network: ctx.identity.chain,
+		network: ctx.identity.network,
 	},
 	endpoints: ctx.endpoints.all().map((endpoint) => ({
 		endpointKey: endpointKey(endpoint.endpointKey),

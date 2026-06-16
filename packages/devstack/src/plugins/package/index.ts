@@ -159,7 +159,7 @@ export interface LocalPackageOptions<
 	readonly capture?: Capture;
 	/** Per-network declared package ids (+ optional object ids) for
 	 *  prod-targeting. Pure literals, no resolution: codegen merges the
-	 *  resolved-local id into `config.packages.<name>.byNetwork.local`
+	 *  resolved-local id into `config.packages.<name>.byNetwork.localnet`
 	 *  and these literals into `byNetwork.testnet` / `byNetwork.mainnet`.
 	 *  A consumer flips `config.network` (env) to select active ids. */
 	readonly networks?: PackageNetworks;
@@ -304,7 +304,7 @@ const buildLocalPlugin = <
 				// stay consistent and warm-restart verify can use the
 				// previous packageId as a hint.
 				const publisher = yield* CacheService;
-				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chainId);
 				const registry = yield* PackageRegistryService;
 				// The per-stack CoinRegistry — same instance every plugin in
 				// the stack yields via `CoinRegistryService` (the boot wiring
@@ -338,7 +338,7 @@ const buildLocalPlugin = <
 					mode: 'local',
 					packageName: name,
 					sourcePath: opts.sourcePath,
-					chainId: sui.chain,
+					chainId: sui.chainId,
 					publisherAddress: publisherAccount.address,
 					mvrOverride: opts.mvrPlaceholder,
 					...(capture !== undefined ? { capture } : {}),
@@ -395,7 +395,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
 				const publisher = yield* CacheService;
-				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chainId);
 				const registry = yield* PackageRegistryService;
 				const mode = {
 					mode: 'known',

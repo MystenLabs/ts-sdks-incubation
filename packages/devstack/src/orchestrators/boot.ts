@@ -737,7 +737,7 @@ export const buildProductionPostAcquireHook = (
 					identity: {
 						app: ctx.identity.app,
 						stack: ctx.identity.stack,
-						chain: ctx.identity.chain,
+						network: ctx.identity.network,
 					},
 					endpoints,
 					extras,

@@ -61,7 +61,7 @@ const hostTreePlugin = definePlugin({
 					kind: 'snapshot-host-tree' as const,
 					app: identity.app,
 					stack: identity.stack,
-					network: identity.chain,
+					network: identity.network,
 				}),
 			});
 			return { dir, file };
@@ -175,7 +175,7 @@ describe('snapshot orchestrator wiring in runBoot', () => {
 		if (!Exit.isSuccess(captureExit)) return;
 		expect(captureExit.value.app).toBe('snapshot-host-tree-e2e');
 		expect(captureExit.value.stack).toBe('main');
-		expect(captureExit.value.network).toBe('sui:local');
+		expect(captureExit.value.network).toBe('localnet');
 		expect(captureExit.value.hostTreeIncluded).toBe(true);
 		expect(captureExit.value.subtrees).toEqual([
 			{

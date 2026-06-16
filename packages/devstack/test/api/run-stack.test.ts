@@ -443,7 +443,7 @@ describe('api/run-stack', () => {
 			expect(ctx.identity).toEqual({
 				app: 'preview-install',
 				stack: 'main',
-				chain: 'localnet',
+				network: 'localnet',
 			});
 		} finally {
 			await Effect.runPromise(handle.stop);

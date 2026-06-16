@@ -51,7 +51,7 @@ const failingProbe = (reason: ChainProbeError['reason']): ChainProbe<SuiProbeKey
 		Effect.fail({
 			_tag: 'ChainProbeError',
 			reason,
-			chain: 'sui:localnet',
+			chainId: 'sui:localnet',
 			detail: `stub ${reason}`,
 		}),
 });

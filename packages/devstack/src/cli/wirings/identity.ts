@@ -58,7 +58,7 @@ export const identityValueFor = (
 ): Identity => ({
 	app: appName(identity.app),
 	stack: stackName(effectiveStackName(identity, stack)),
-	chain: identity.network,
+	network: identity.network,
 });
 
 /** When a verb loads a config whose `stackName` may differ from the

@@ -697,7 +697,7 @@ interface AggregateFile {
  * Recursively merge `source` into `target`. Distinct buckets are
  * shallow records keyed by name, but a single bucket (e.g. `config.ts`)
  * accumulates contributions from MANY plugins into nested sub-records
- * (`networks.local` from sui, `packages.<name>` / `objects.<name>`
+ * (`networks.localnet` from sui, `packages.<name>` / `objects.<name>`
  * from each package). A shallow `Object.assign` would have the last
  * package's `{packages:{...}}` clobber the prior ones. Deep-merge so
  * sibling keys at every level coexist.

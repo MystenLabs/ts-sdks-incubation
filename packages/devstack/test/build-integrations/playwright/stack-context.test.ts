@@ -31,7 +31,7 @@ import {
 import { CURRENT_MANIFEST_VERSION } from '../../../src/substrate/runtime/manifest/manifest.ts';
 
 const sampleEnvelope = (overrides?: { endpoints?: Record<string, unknown> }) => ({
-	identity: { app: 'sample-app', stack: 'main', chain: 'localnet' },
+	identity: { app: 'sample-app', stack: 'main', network: 'localnet' },
 	manifestVersion: CURRENT_MANIFEST_VERSION,
 	services: {},
 	endpoints: overrides?.endpoints ?? {

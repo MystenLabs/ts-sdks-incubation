@@ -80,7 +80,7 @@ const participant = (
 		managedContainers: roles.map(labelForRole),
 		missingTolerance: 'fine',
 	},
-	captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+	captureIdentity: Effect.succeed({ chain: 'sui:localnet' }),
 	captureContribution: Effect.succeed({ ok: true }),
 });
 
@@ -163,7 +163,7 @@ const runCaptureExit = (
 			label: labelValue,
 			app: 'capture-app',
 			stack: 'main',
-			network: 'sui:local',
+			network: 'sui:localnet',
 			graphInput,
 			runtimeStackRoot: join(root, 'runtime-stack'),
 			participants,
@@ -678,7 +678,7 @@ describe('snapshot capture container images', () => {
 									label: null,
 									app: stackTag,
 									stack: 'main',
-									network: 'sui:local',
+									network: 'sui:localnet',
 									graphInput,
 									runtimeStackRoot: join(root, `runtime-stack-${stackTag}`),
 									participants: [participant(['db'])],
@@ -942,12 +942,12 @@ describe('resumeAfterCapture — retag + hard-rm + resume', () => {
 		createdAt: 0,
 		app: 'capture-app',
 		stack: 'main',
-		network: 'sui:local',
+		network: 'sui:localnet',
 		graphInput,
 		hostTreeIncluded: false,
 		subtrees: [],
 		containers,
-		identity: { chain: 'sui:local' },
+		identity: { chain: 'sui:localnet' },
 		participants: ['sui#0'],
 	});
 
@@ -1173,7 +1173,7 @@ describe('snapshot capture — identity contribution conflict', () => {
 				const a: SnapshotParticipant = {
 					...participant([]),
 					plugin: 'sui#0',
-					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureIdentity: Effect.succeed({ chain: 'sui:localnet' }),
 				};
 				const b: SnapshotParticipant = {
 					...participant([]),
@@ -1206,12 +1206,12 @@ describe('snapshot capture — identity contribution conflict', () => {
 				const a: SnapshotParticipant = {
 					...participant([]),
 					plugin: 'sui#0',
-					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureIdentity: Effect.succeed({ chain: 'sui:localnet' }),
 				};
 				const b: SnapshotParticipant = {
 					...participant([]),
 					plugin: 'walrus#0',
-					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureIdentity: Effect.succeed({ chain: 'sui:localnet' }),
 				};
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -1221,7 +1221,7 @@ describe('snapshot capture — identity contribution conflict', () => {
 
 				expect(Exit.isSuccess(exit)).toBe(true);
 				if (!Exit.isSuccess(exit)) return;
-				expect(exit.value.identity).toEqual({ chain: 'sui:local' });
+				expect(exit.value.identity).toEqual({ chain: 'sui:localnet' });
 			}),
 		),
 	);

@@ -14,7 +14,7 @@ import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 const fakeWalrusResolved: WalrusResolved = {
 	mode: 'local',
-	chain: 'sui:localnet',
+	network: 'localnet',
 	walrusPackageId: '0xwalrus',
 	walPackageId: '0xfeed',
 	packageConfig: {

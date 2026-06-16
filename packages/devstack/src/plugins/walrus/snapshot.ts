@@ -14,7 +14,7 @@
 //   - Known-deployment: no containers, no subtrees. The shape still
 //     exists so the identity guard fires on restore.
 //
-// Identity guard: contributes the deploy mode + chainId + (when
+// Identity guard: contributes the deploy mode + network + (when
 // local) the `name` discriminator to the pre-restore identity
 // record. A snapshot taken in local mode restored under known
 // mode (or vice versa) refuses BEFORE any destructive mutation.
@@ -42,7 +42,7 @@ export const makeSnapshotable = (
 	app: string,
 	stack: string,
 	walrusName: string,
-	chain: string,
+	network: string,
 	nodeCount = 1,
 ): SnapshotableDecl => {
 	const labels = (role: string): ContainerLabelTuple => ({
@@ -76,7 +76,7 @@ export const makeSnapshotable = (
 					mode: 'local' as const,
 					name: walrusName,
 					nodeCount,
-					chain,
+					network,
 				}),
 				postRestore: Effect.void,
 				// Storage-node keystores are secret material; the
@@ -92,7 +92,7 @@ export const makeSnapshotable = (
 				preRestore: Effect.succeed({
 					kind: 'walrus' as const,
 					mode: 'known' as const,
-					chain,
+					network,
 				}),
 			};
 		}

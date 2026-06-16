@@ -57,7 +57,7 @@ import { withTempRoot } from '../../helpers/with-temp-root.ts';
 const identity: Identity = {
 	app: appName('snapshot-tdz-test'),
 	stack: stackName('main'),
-	chain: 'sui:local',
+	network: 'localnet',
 };
 
 const graphInput = {
@@ -101,7 +101,7 @@ const plantSnapshot = (snapshotDir: string, label: string): void => {
 		createdAt: Date.now(),
 		app: String(identity.app),
 		stack: String(identity.stack),
-		network: String(identity.chain),
+		network: String(identity.network),
 		graphInput: {
 			version: SNAPSHOT_GRAPH_INPUT_VERSION,
 			graphInputId: 'graph-fixture',
@@ -110,7 +110,7 @@ const plantSnapshot = (snapshotDir: string, label: string): void => {
 		hostTreeIncluded: false,
 		subtrees: [],
 		containers: [],
-		identity: { chain: String(identity.chain) },
+		identity: { network: String(identity.network) },
 		participants: [],
 	};
 	writeFileSync(join(dir, SnapshotLayout.metaFile), JSON.stringify(meta));

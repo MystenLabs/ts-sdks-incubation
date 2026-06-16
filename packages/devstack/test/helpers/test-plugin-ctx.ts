@@ -25,6 +25,8 @@ import type { SnapshotableDecl } from '../../src/contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../src/contracts/strategy-contributor.ts';
 import type { PluginCtx } from '../../src/substrate/plugin-ctx.ts';
 import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
+import type { Identity } from '../../src/substrate/identity.ts';
+import { IdentityContext } from '../../src/substrate/runtime/paths.ts';
 
 /** The decls captured per buffered verb (+ `provides`), each in call
  *  order. Mirrors the supervisor's replay-buffer ordering. */
@@ -74,7 +76,12 @@ export interface TestPluginCtxHarness {
  * );
  * ```
  */
-export const makeTestPluginCtx = (): TestPluginCtxHarness => {
+export const makeTestPluginCtx = (
+	/** When set, `provide` also supplies `IdentityContext` — for plugins that
+	 *  read `identity.network` (deepbook, walrus, …). Omit for plugins that
+	 *  provide their own identity downstream (e.g. host-service). */
+	opts?: { readonly identity?: Identity },
+): TestPluginCtxHarness => {
 	const captured: CapturedDecls = {
 		codegen: [],
 		endpoint: [],
@@ -103,8 +110,14 @@ export const makeTestPluginCtx = (): TestPluginCtxHarness => {
 
 	const provide = <A, E, R>(
 		effect: Effect.Effect<A, E, R>,
-	): Effect.Effect<A, E, Exclude<R, PluginContext>> =>
-		Effect.provideService(effect, PluginContext, ctx);
+	): Effect.Effect<A, E, Exclude<R, PluginContext>> => {
+		const withPlugin = Effect.provideService(effect, PluginContext, ctx);
+		return (
+			opts?.identity
+				? Effect.provideService(withPlugin, IdentityContext, opts.identity)
+				: withPlugin
+		) as Effect.Effect<A, E, Exclude<R, PluginContext>>;
+	};
 
 	return { ctx, provide, captured };
 };

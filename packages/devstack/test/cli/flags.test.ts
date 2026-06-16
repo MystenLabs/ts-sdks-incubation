@@ -95,8 +95,8 @@ const run = async (
 };
 
 describe('cli command-scoped flags', () => {
-	it('normalizes valid network flags through the Stricli dispatcher', async () => {
-		const h = await run(['up', '--network', 'sui:testnet']);
+	it('accepts canonical network flags through the Stricli dispatcher', async () => {
+		const h = await run(['up', '--network', 'testnet']);
 		expect(h.exitCode()).toBe(0);
 		expect(h.upRuns[0]!.network).toBe('testnet');
 	});

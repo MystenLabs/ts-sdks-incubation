@@ -157,7 +157,7 @@ const Shell = () => {
 	const navSections = useMemo(() => buildNav(projection?.rows ?? []), [projection?.rows]);
 
 	// Resolved stack mode (fork / local / live). The projection's
-	// `identity.network` is the node's network family ("sui:local" — a fork runs
+	// `identity.network` is the node's network family ("sui:localnet" — a fork runs
 	// a LOCAL node loaded with forked upstream state), so it does NOT distinguish
 	// fork from a plain local stack. The control plane exposes the real mode
 	// separately; surface it so the header/footer read "fork" instead of "local".

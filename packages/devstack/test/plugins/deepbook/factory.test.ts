@@ -19,6 +19,9 @@ import * as publicRoot from '../../../src/index.ts';
 import { isPlugin } from '../../../src/substrate/plugin.ts';
 import type { CodegenEmitContext, CodegenEmitDone } from '../../../src/contracts/codegenable.ts';
 import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
+import type { Identity } from '../../../src/substrate/identity.ts';
+
+const TEST_IDENTITY = { app: 'deepbook-test', stack: 'main', network: 'localnet' } as Identity;
 
 const TESTNET_PYTH = {
 	packageId: null,
@@ -121,7 +124,7 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			packageId: '0xpkg',
 			registryId: '0xreg',
-			chain: 'sui:testnet',
+			network: 'testnet',
 		});
 		expect(member.role).toBe('task');
 		expect(member.id).toMatch(/^deepbook\//);
@@ -145,9 +148,9 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { provide } = makeTestPluginCtx();
+		const { provide } = makeTestPluginCtx({ identity: TEST_IDENTITY });
 		const resolved = Effect.runSync(
-			provide(member.start([{ chain: 'sui:local' } as never])) as Effect.Effect<
+			provide(member.start([{ chainId: 'sui:localnet' } as never])) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
@@ -156,7 +159,7 @@ describe('deepbook(opts) — primary factory', () => {
 
 		expect(resolved).toMatchObject({
 			mode: 'known',
-			chain: 'sui:testnet',
+			network: 'testnet',
 			packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
 			registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
 			adminCapId: null,
@@ -169,9 +172,9 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { provide, captured } = makeTestPluginCtx();
+		const { provide, captured } = makeTestPluginCtx({ identity: TEST_IDENTITY });
 		Effect.runSync(
-			provide(member.start([{ chain: 'sui:local' } as never])) as Effect.Effect<
+			provide(member.start([{ chainId: 'sui:localnet' } as never])) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
@@ -221,10 +224,10 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { provide, captured } = makeTestPluginCtx();
+		const { provide, captured } = makeTestPluginCtx({ identity: TEST_IDENTITY });
 		Effect.runSync(
 			provide(
-				member.start([{ chain: 'sui:testnet', sdk: { client: {} } } as never]),
+				member.start([{ chainId: 'sui:testnet', sdk: { client: {} } } as never]),
 			) as Effect.Effect<DeepbookResolved, unknown, never>,
 		);
 		const strategy = captured.provides.find(
@@ -244,7 +247,7 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			packageId: '0xpkg',
 			registryId: '0xreg',
-			chain: 'sui:testnet',
+			network: 'testnet',
 			name: 'arena',
 		});
 		expect(member.id).toBe('deepbook/arena');
@@ -253,7 +256,7 @@ describe('deepbook(opts) — primary factory', () => {
 
 describe('deepbookFor(network) — mode-narrowed namespace', () => {
 	it('exposes `.local`, `.override`, and `.known` on a local network', () => {
-		const network = { mode: 'local' as const, chain: 'sui:localnet' };
+		const network = { mode: 'local' as const, chainId: 'sui:localnet' };
 		const factories = deepbookFor(network);
 		expect(typeof factories.local).toBe('function');
 		expect(typeof factories.override).toBe('function');
@@ -261,7 +264,7 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 	});
 
 	it('exposes `.known` only on a live network', () => {
-		const network = { mode: 'live' as const, chain: 'sui:testnet' };
+		const network = { mode: 'live' as const, chainId: 'sui:testnet' };
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
 		expect((factories as { local?: unknown }).local).toBeUndefined();
@@ -271,7 +274,7 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 	it('exposes `.known` only on a fork network', () => {
 		const network = {
 			mode: 'fork' as const,
-			chain: 'sui:mainnet-fork',
+			chainId: 'sui:mainnet-fork',
 			upstream: 'mainnet' as const,
 		};
 		const factories = deepbookFor(network);

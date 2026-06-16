@@ -265,7 +265,7 @@ const isCreatedObjectChange = (raw: unknown): raw is CreatedObjectChange => {
  *  we project it directly to `MintResult`. */
 export const performMint = (
 	publisher: ArtifactPublisher,
-	chain: string,
+	chainId: string,
 	signer: MintSigner,
 	sdk: MintSdkShim,
 	inputs: MintInputs,
@@ -283,7 +283,7 @@ export const performMint = (
 			typeof MintedCoinVerifyShape.Type
 		>(publisher, {
 			namespace: 'coin-mint',
-			chain,
+			chain: chainId,
 			contentHash: cacheHash,
 			// Verify probe runs on cache hit. The artifact publisher threads the
 			// cached payload through to its internal probe — our

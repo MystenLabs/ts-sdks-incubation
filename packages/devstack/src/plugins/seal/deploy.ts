@@ -80,7 +80,7 @@ export type SealPackageVerified = Schema.Schema.Type<typeof SealPackageVerifySha
 
 export interface SealPublishInputs {
 	readonly name: string;
-	readonly chain: string;
+	readonly chainId: string;
 	readonly movePackagePath: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
@@ -230,7 +230,7 @@ export const publishSealPackage = (
 			SealPackageVerified
 		>({
 			namespace: SEAL_PACKAGE_NAMESPACE,
-			chain: inputs.chain,
+			chain: inputs.chainId,
 			contentHash: inputsHash,
 			verify: (cached) =>
 				verifyObjectLenient(inputs.chainProbe, cached.packageId, SealPackageVerifyShape),
@@ -268,7 +268,7 @@ export interface RegisterKeyServerTransactionInputs {
 
 export interface RegisterKeyServerInputs extends RegisterKeyServerTransactionInputs {
 	readonly name: string;
-	readonly chain: string;
+	readonly chainId: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
 	readonly chainProbe: ChainProbe<SealObjectProbeKey>;
@@ -420,7 +420,7 @@ export const registerKeyServer = (
 			SealKeyServerVerified
 		>({
 			namespace: SEAL_KEY_SERVER_NAMESPACE,
-			chain: inputs.chain,
+			chain: inputs.chainId,
 			contentHash: inputsHash,
 			verify: (cached) =>
 				verifyObjectLenient(inputs.chainProbe, cached.objectId, SealKeyServerVerifyShape),

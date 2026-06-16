@@ -459,7 +459,7 @@ describe('acquireHostService', () => {
 					Effect.provideService(IdentityContext, {
 						app: appName('host-service-test'),
 						stack: stackName('host-service-test'),
-						chain: 'localnet',
+						network: 'localnet',
 					}),
 					Effect.provideService(RuntimeRoot, { root: '/tmp/host-service-test-root' }),
 				) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;

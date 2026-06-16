@@ -146,8 +146,8 @@ export const bootLiveMode = (
 		});
 
 		// ----- 3. Resolve chain id -------------------------------------------
-		const chain =
-			opts.chain ??
+		const chainId =
+			opts.chainId ??
 			(yield* fetchChainId(sdkClient, {
 				timeout: opts.readyTimeout ?? DEFAULT_LIVE_CHAIN_ID_TIMEOUT,
 			}));
@@ -164,7 +164,7 @@ export const bootLiveMode = (
 		// ----- 5. Assemble + return ------------------------------------------
 		const { client } = yield* assembleSuiClient({
 			sdkClient,
-			chain,
+			chainId,
 			rpcUrl: endpoints.rpcUrl,
 			...(endpoints.faucetUrl !== undefined ? { faucetUrl: endpoints.faucetUrl } : {}),
 			...(endpoints.graphqlUrl !== undefined ? { graphqlUrl: endpoints.graphqlUrl } : {}),
@@ -172,7 +172,7 @@ export const bootLiveMode = (
 		});
 		const resolved = makeResolvedNetwork({
 			mode: 'live',
-			chain,
+			chainId,
 			rpc: endpoints.rpcUrl,
 			// `source: 'default'` when we pulled from LIVE_DEFAULTS;
 			// `'config'` when the caller passed an override. The

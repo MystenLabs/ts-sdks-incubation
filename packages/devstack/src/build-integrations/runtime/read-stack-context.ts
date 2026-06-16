@@ -141,7 +141,7 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
 		identity: {
 			app: envelope.identity.app,
 			stack: envelope.identity.stack,
-			chain: envelope.identity.chain,
+			network: envelope.identity.network,
 		},
 		manifestPath,
 		manifestVersion: envelope.manifestVersion,

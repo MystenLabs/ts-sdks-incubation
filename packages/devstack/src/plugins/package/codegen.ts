@@ -26,6 +26,7 @@
 
 import { Effect } from 'effect';
 
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import { mvrNamedFormFrom, mvrSlugify } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
@@ -96,9 +97,9 @@ interface PackageProjectionInput {
 /** Aggregate projection: fold this package into the combined
  *  `config.ts` aggregate under `packages.<name>` (with `byNetwork`
  *  + `objects`), the top-level `objects.<name>` mirror, and a top-level
- *  `mvrOverrides` entry (`{ [mvr]: byNetwork.local }`) for the active
+ *  `mvrOverrides` entry (`{ [mvr]: byNetwork.localnet }`) for the active
  *  network. The orchestrator stays name-blind and deep-merges this with
- *  sui's `networks.local` and every other package's slice — so the
+ *  sui's `networks.localnet` and every other package's slice — so the
  *  accumulated `config.mvrOverrides` is the full active-network
  *  name→id map an app feeds straight into dapp-kit's
  *  `mvr.overrides.packages` (no per-app helper). */
@@ -109,9 +110,9 @@ const projectPackageConfig = (
 	if (typeof projection !== 'object' || projection === null) return null;
 	const input = projection as PackageProjectionInput;
 
-	// `byNetwork.local` = the resolved local id; declared `networks`
+	// `byNetwork.localnet` = the resolved local id; declared `networks`
 	// literals fill the other networks (testnet/mainnet).
-	const byNetwork: Record<string, string> = { local: input.packageId };
+	const byNetwork: Record<string, string> = { [LOCAL_NETWORK_NAME]: input.packageId };
 	for (const [net, entry] of Object.entries(input.networks ?? {})) {
 		byNetwork[net] = entry.packageId;
 	}
@@ -129,8 +130,8 @@ const projectPackageConfig = (
 	};
 
 	// Active-network MVR override entry — `{ [mvr]: byNetwork[activeNetwork] }`.
-	// The codegen-emitted active network is always `local` (the sui plugin
-	// projects `network: "local"`), so `byNetwork.local` IS the active id.
+	// The codegen-emitted active network is always `localnet` (the sui plugin
+	// projects `network: "localnet"`), so `byNetwork.localnet` IS the active id.
 	// Each package contributes one entry; the orchestrator's deep-merge
 	// accumulates every package's entry into a single top-level
 	// `config.mvrOverrides` map. Falsy ids are filtered (a package with no
@@ -138,7 +139,7 @@ const projectPackageConfig = (
 	// per-app `mvrOverrides()` helper computed, so apps can consume
 	// `config.mvrOverrides` directly. Name-blind: keyed by the package's
 	// own `mvr` placeholder, never a hardcoded plugin name.
-	const activeId = byNetwork.local;
+	const activeId = byNetwork[LOCAL_NETWORK_NAME];
 	const mvrOverrides = activeId ? { [input.mvrPlaceholder]: activeId } : undefined;
 
 	return {

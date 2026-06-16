@@ -232,11 +232,11 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
  *  `fork: null` discriminator is invariant for non-fork modes; the
  *  fork builder constructs its own client with the admin surface.
  *
- *  `chain` is a plain string value — every consumer downstream reads
+ *  `chainId` is a plain string value — every consumer downstream reads
  *  it directly and capability-key constructors (`chainProbe…`,
  *  `faucet…`) key on the string.
  *
- *  Returns an `Effect` on the `SuiConfigError` channel: the empty-chain
+ *  Returns an `Effect` on the `SuiConfigError` channel: the empty-chainId
  *  guard must surface as a typed, `catchTag`-able failure. Calling it
  *  un-yielded as a sync function (as it once was) turned a thrown
  *  `SuiConfigError` into a DEFECT inside the mode-boot `Effect.gen`
@@ -244,7 +244,7 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
  *  fix already applied to `auto-tick.ts`; STYLE_GUIDE §2). */
 export const assembleSuiClient = (parts: {
 	readonly sdkClient: SuiGrpcClient;
-	readonly chain: string;
+	readonly chainId: string;
 	readonly rpcUrl: string;
 	readonly faucetUrl?: string;
 	readonly fundingFaucetUrl?: string;
@@ -270,20 +270,20 @@ export const assembleSuiClient = (parts: {
 		// Defense-in-depth — `fetchChainId` should never resolve to an
 		// empty string (RPC rejects that earlier), but a branded empty
 		// string would silently fold into every downstream cache key. A
-		// caller-pinned `chain: ''` (e.g. `.live.custom({ chain: '' })`)
+		// caller-pinned `chainId: ''` (e.g. `.live.custom({ chainId: '' })`)
 		// reaches here, so fail on the typed channel rather than throw.
-		if (typeof parts.chain !== 'string' || parts.chain.length === 0) {
+		if (typeof parts.chainId !== 'string' || parts.chainId.length === 0) {
 			return yield* Effect.fail(
 				suiConfigError({
-					field: 'chain',
+					field: 'chainId',
 					message: 'sui.assembleSuiClient: chain id must be a non-empty string',
 					hint: 'check fetchChainId / network resolver returned a real chain id',
 				}),
 			);
 		}
-		const chain = parts.chain;
+		const chainId = parts.chainId;
 		const sdkShim = makeSdkShim(parts.sdkClient);
-		const chainProbe = makeSuiChainProbe(sdkShim, chain);
+		const chainProbe = makeSuiChainProbe(sdkShim, chainId);
 		const client: SuiClient = {
 			sdk: sdkShim,
 			rpcUrl: parts.rpcUrl,
@@ -296,7 +296,7 @@ export const assembleSuiClient = (parts: {
 				graphqlUrl:
 					parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
 			},
-			chain,
+			chainId,
 			waitForTransactionsReady: parts.waitForTransactionsReady,
 			chainProbe,
 			fork: null,
@@ -307,11 +307,11 @@ export const assembleSuiClient = (parts: {
 
 /** Shape the resolved network record the boot builders all hand
  *  back. The substrate-network mapping is uniform per mode. The raw
- *  chain string flows through verbatim — consumers downstream (codegen,
+ *  chainId string flows through verbatim — consumers downstream (codegen,
  *  capabilities, walrus/seal deps) read it as a plain string value. */
 export const makeResolvedNetwork = (parts: {
 	readonly mode: ResolvedSuiNetwork['mode'];
-	readonly chain: string;
+	readonly chainId: string;
 	readonly rpc: string;
 	readonly faucet?: string;
 	readonly graphql?: string;
@@ -320,7 +320,7 @@ export const makeResolvedNetwork = (parts: {
 	readonly forkUpstream?: ResolvedSuiNetwork['forkUpstream'];
 }): ResolvedSuiNetwork => ({
 	mode: parts.mode,
-	chain: parts.chain,
+	chainId: parts.chainId,
 	rpc: parts.rpc,
 	source: parts.source,
 	...(parts.faucet !== undefined ? { faucet: parts.faucet } : {}),

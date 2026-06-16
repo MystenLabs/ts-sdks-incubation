@@ -289,7 +289,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 				const value = yield* acquireCoin(form, {
 					registry,
 					sdk: projectCoinSdk(sui),
-					chain: sui.chain,
+					chainId: sui.chainId,
 					publisher: artifactPublisher,
 				});
 				// Emit the resolved coin's contributions inline. `value` is the
@@ -337,7 +337,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 				const value = yield* acquireCoin(form, {
 					registry,
 					sdk: projectCoinSdk(sui),
-					chain: sui.chain,
+					chainId: sui.chainId,
 					publisher,
 				});
 				// Emit inline. `value` is the resolved `CoinValue`; `id` is the
@@ -372,7 +372,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 				const value = yield* acquireCoin(form, {
 					registry,
 					sdk: projectCoinSdk(sui),
-					chain: sui.chain,
+					chainId: sui.chainId,
 					publisher,
 				});
 				// Emit inline. `value` is the resolved `CoinValue`; `symbol` is

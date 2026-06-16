@@ -9,7 +9,7 @@
 // file composes the spec:
 //
 //   - namespace      = `action`
-//   - chain          = Sui dependency's resolved `chain`
+//   - chainId         = Sui dependency's resolved `chainId`
 //   - contentHash    = hash of (actionName, upstreamResourceIds[], dynamic
 //                      discriminator if any)
 //   - verify         = `chainProbe.get({kind:'transaction', digest},

@@ -308,10 +308,10 @@ export const validateAccountName = (name: string): Effect.Effect<void, AccountAc
 /** Sui mode + sdk shim — the slice of the resolved `SuiClient` the
  *  account service actually consumes. Kept narrow so the variants +
  *  funding helpers stay typed at the resolved-fields level (mode,
- *  chain, sdk) rather than at the wide `SuiClient` shape. */
+ *  chainId, sdk) rather than at the wide `SuiClient` shape. */
 export interface AccountSuiShim {
 	readonly mode: 'local' | 'local-rpc' | 'live' | 'fork';
-	readonly chain: string;
+	readonly chainId: string;
 	/** SDK shim — exposes `executeTransaction` + `waitForTransaction`
 	 *  for the signAndExecute pipeline. */
 	readonly sdk: SuiSdkShim;
@@ -837,7 +837,7 @@ export const acquireAccount = (
 				address: resolved.address,
 				amountMist: defaultFunding.amount,
 				suiMode: ctx.sui.mode,
-				chainId: ctx.sui.chain,
+				chainId: ctx.sui.chainId,
 				emitAutoPromotionEvent: ctx.emitAutoPromotionEvent,
 				broker,
 				balanceReader,
@@ -888,7 +888,7 @@ export const acquireAccount = (
 				variant: opts.kind,
 				account: value,
 				funding: projected,
-				chainId: ctx.sui.chain,
+				chainId: ctx.sui.chainId,
 				broker,
 				balanceReader,
 			});

@@ -29,7 +29,7 @@ import {
 } from '../../src/substrate/runtime/manifest/index.ts';
 import { withTempRoot } from '../helpers/with-temp-root.ts';
 
-const IDENTITY = { app: 'demo', stack: 'main', chain: 'sui:local' } as const;
+const IDENTITY = { app: 'demo', stack: 'main', network: 'localnet' } as const;
 const GENERATED_DIR = '/abs/x';
 
 describe('manifest codegen field', () => {
