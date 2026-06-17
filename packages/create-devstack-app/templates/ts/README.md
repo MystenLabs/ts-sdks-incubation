@@ -15,23 +15,22 @@ pnpm test:e2e  # full-stack tests (src/**/*.e2e.test.ts) — boots a throwaway `
                # stack, runs them against it, then tears it down
 ```
 
-`pnpm test:e2e` is self-contained: it does **not** need `pnpm dev` running, and because it
-boots a separate `test` stack — with its own per-stack ids file and runtime state — it runs in
-parallel with `pnpm dev` without contending. The committed `src/generated` tree is shared and
-stack-invariant, so neither stack rewrites it. To run the e2e suite against an already-running
-stack instead of booting a fresh one, set `DEVSTACK_TEST_REUSE=1` (and point `DEVSTACK_STACK` at
-that stack).
+`pnpm test:e2e` is self-contained: it does **not** need `pnpm dev` running, and because it boots a
+separate `test` stack — with its own per-stack ids file and runtime state — it runs in parallel with
+`pnpm dev` without contending. The committed `src/generated` tree is shared and stack-invariant, so
+neither stack rewrites it. To run the e2e suite against an already-running stack instead of booting
+a fresh one, set `DEVSTACK_TEST_REUSE=1` (and point `DEVSTACK_STACK` at that stack).
 
 Prefer a one-shot boot without the watch loop? `pnpm apply` (re-emits the live ids file + dev
-extras; it does not rewrite the committed `src/generated`). To regenerate the committed tree after
-a Move source change, run `devstack codegen`. Day-2: `devstack status` (what's running +
-endpoints), `devstack doctor` (diagnose), `devstack wipe` (reset state).
+extras; it does not rewrite the committed `src/generated`). To regenerate the committed tree after a
+Move source change, run `devstack codegen`. Day-2: `devstack status` (what's running + endpoints),
+`devstack doctor` (diagnose), `devstack wipe` (reset state).
 
 ## Standalone scripts
 
 Node 24 runs TypeScript natively — paste this into `src/main.ts` and run
-`node src/main.ts <counterId>` (see `src/counter.e2e.test.ts` for the full create → increment →
-read flow, including faucet funding):
+`node src/main.ts <counterId>` (see `src/counter.e2e.test.ts` for the full create → increment → read
+flow, including faucet funding):
 
 ```ts
 import { SuiGrpcClient } from '@mysten/sui/grpc';
@@ -56,8 +55,10 @@ Add a member to `devstack.config.ts`, list it in the stack, and install its SDK:
   `{ coin: walCoin(storage), amount: 500_000_000n }` · `pnpm add @mysten/walrus @mysten/walrus-wasm`
 - Seal — `seal({ mode: 'local-keygen', signer: alice })` · `pnpm add @mysten/seal` (a real app
   publishes its own Move package with a `seal_approve` policy)
-- DeepBook — not a one-liner: vendor the DeepBook + Pyth Move packages and configure pools
-  explicitly; start from `examples/deepbook-trader` in the devstack repo.
+- DeepBook — scaffold with `--services deepbook`: devstack publishes the DeepBook Move package from
+  upstream git and synthesizes a default DEEP/SUI pool. Add `--services pyth` (implies deepbook) for
+  local mock-Pyth feeds on that pool. For the hand-configured multi-pool + multi-feed setup, start
+  from `examples/deepbook-trader` in the devstack repo.
 
 ## More
 

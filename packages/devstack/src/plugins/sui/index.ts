@@ -381,16 +381,21 @@ const bootAndEmit = (
 		const realChainId = value.chainId;
 		// Per-network faucet gate (per-network options: ON for every network
 		// EXCEPT live `mainnet`, where the funding faucet must NEVER run).
-		// `identity.network` is the resolved network name; the override
-		// RECORD (`networkOptions`) is an orchestrator-level concern that the
-		// name-blind substrate does not forward into plugins, so the gate here
-		// honours the POLICY DEFAULT — which is exactly the load-bearing
-		// mainnet hard-clamp. A resolved strategy on `mainnet` (none of the
-		// live modes build one today, but a future faucet-bearing mainnet
-		// config could) is suppressed so the strategy registry never exposes
-		// `faucet:request:<mainnet-chain-id>`; account funding then surfaces
-		// the actionable "no faucet strategy" error rather than silently
-		// faucet-funding against a production network.
+		// `identity.network` is the resolved network name. The gate honours
+		// ONLY the POLICY DEFAULT, NOT any author per-network override: the
+		// override RECORD (`networkOptions`) is an orchestrator-level concern
+		// that the name-blind substrate does not forward into plugins, and
+		// this plugin only receives `IdentityContext`. So a per-network
+		// `{ <network>: { faucet: false } }` override is deliberately NOT
+		// applied here (unlike `devWallet`/`autoApproveSigning`, which the
+		// orchestrator resolves against the forwarded `networkOptions`); see
+		// `orchestrators/network-options.ts`. The policy default already
+		// carries the load-bearing mainnet hard-clamp, so a resolved strategy
+		// on `mainnet` (none of the live modes build one today, but a future
+		// faucet-bearing mainnet config could) is suppressed and the strategy
+		// registry never exposes `faucet:request:<mainnet-chain-id>`; account
+		// funding then surfaces the actionable "no faucet strategy" error
+		// rather than silently faucet-funding against a production network.
 		const faucetEnabled = resolveNetworkOptions(identity.network).faucet;
 		const faucetContribution: ReadonlyArray<StrategyContributorDecl> =
 			!faucetEnabled || value.fundingFaucetStrategy === null

@@ -32,10 +32,7 @@ import {
 	CodegenOrchestratorService,
 	type CodegenOrchestrator,
 } from '../../src/orchestrators/codegen/service.ts';
-import type {
-	PluginRegistry,
-	ResolvedGraph,
-} from '../../src/substrate/runtime/lifecycle/index.ts';
+import type { PluginRegistry, ResolvedGraph } from '../../src/substrate/runtime/lifecycle/index.ts';
 import type { SupervisorPostAcquireContext } from '../../src/substrate/runtime/supervisor/index.ts';
 import { layerCodegenPaths, layerCodegenRoot } from '../../src/orchestrators/codegen/paths.ts';
 import {
@@ -584,10 +581,13 @@ describe('resolveProductionCodegenOptions', () => {
 			codegen: { includePhantomTypeParameters: true },
 		});
 		expect(resolved.includePhantomTypeParameters).toBe(true);
-		// The flag rides along without disturbing the output-dir resolution.
-		// EVERY live run emits under `.devstack` now (the committed
-		// `src/generated` tree is owned by the stack-free `codegen` verb).
-		expect(resolved.outputDir).toBe(join('/app', '.devstack', 'stacks', 'main', 'generated'));
+		// The flag rides along without disturbing the extras-dir resolution.
+		// Boot writes only the per-stack `generated-extras` dev tree (the
+		// committed `src/generated` tree is owned by the stack-free `codegen`
+		// verb), so the production options carry only `extrasDir`.
+		expect(resolved.extrasDir).toBe(
+			join('/app', '.devstack', 'stacks', 'main', 'generated-extras'),
+		);
 	});
 
 	it('leaves includePhantomTypeParameters unset when the config omits it', () => {
@@ -599,8 +599,9 @@ describe('resolveProductionCodegenOptions', () => {
 		// applies at the generateFromPackageSummary call site, so default
 		// behavior is unchanged.
 		expect('includePhantomTypeParameters' in resolved).toBe(false);
-		expect(resolved.outputDir).toBe(join('/app', '.devstack', 'stacks', 'main', 'generated'));
-		expect(resolved.stackSubdir).toBeNull();
+		expect(resolved.extrasDir).toBe(
+			join('/app', '.devstack', 'stacks', 'main', 'generated-extras'),
+		);
 	});
 });
 
@@ -718,15 +719,17 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 		}),
 	);
 
-	it.effect('mainnet (devWallet OFF by default) → emitExtras NOT called, files exclude extras', () =>
-		Effect.gen(function* () {
-			const { emitExtrasCalls, files } = yield* runHook('mainnet', undefined);
-			expect(emitExtrasCalls).toBe(0);
-			expect(files).not.toContain(EXTRAS_FILE);
-			expect(files).not.toContain(EXTRAS_CHMOD);
-			// Only the always-emitted id-config file remains.
-			expect(files).toHaveLength(1);
-		}),
+	it.effect(
+		'mainnet (devWallet OFF by default) → emitExtras NOT called, files exclude extras',
+		() =>
+			Effect.gen(function* () {
+				const { emitExtrasCalls, files } = yield* runHook('mainnet', undefined);
+				expect(emitExtrasCalls).toBe(0);
+				expect(files).not.toContain(EXTRAS_FILE);
+				expect(files).not.toContain(EXTRAS_CHMOD);
+				// Only the always-emitted id-config file remains.
+				expect(files).toHaveLength(1);
+			}),
 	);
 
 	it.effect('localnet with devWallet:false override → emitExtras NOT called', () =>

@@ -44,7 +44,11 @@ import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.t
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { suiResource } from '../sui/index.ts';
 import type { AccountValue } from '../account/index.ts';
-import { builtin as builtinCoin, fromPackage as coinFromPackage, type CoinValue } from '../coin/index.ts';
+import {
+	builtin as builtinCoin,
+	fromPackage as coinFromPackage,
+	type CoinValue,
+} from '../coin/index.ts';
 import type { LocalPackageResolved } from '../package/index.ts';
 
 import { deepbookPluginKey } from './plugin-key.ts';
@@ -167,10 +171,10 @@ export interface DeepbookLocalOptions<
 	/** Optional capture key for a DEEP treasury object used by SDK bindings. */
 	readonly deepTreasuryIdKey?: string;
 	/** Pools to create after the DeepBook package publishes. OPTIONAL: when
-	 *  omitted, a single seeded `DEEP/SUI` pool is synthesized (the DEEP coin
-	 *  comes from `package`, SUI is built-in — no extra package needed), so a
-	 *  minimal `deepbook({ mode:'local', publisher, package })` boots a usable
-	 *  DeX. Pass `[]` explicitly for a known-empty deployment, or your own
+	 *  omitted, a single unseeded (empty-book) `DEEP/SUI` pool is synthesized
+	 *  (the DEEP coin comes from `package`, SUI is built-in — no extra package
+	 *  needed), so a minimal `deepbook({ mode:'local', publisher, package })`
+	 *  boots a usable DeX. Pass `[]` explicitly for a known-empty deployment, or your own
 	 *  pools for full control. */
 	readonly pools?: Pools;
 }
@@ -518,9 +522,7 @@ type ResolvedLocalOptions = DeepbookLocalOptions<
  *  `deepTreasuryIdKey`) and works for a bare `deepbook({ publisher, package })`.
  *  The pool is created with an empty book; pass explicit `pools` with a `seed`
  *  (see `examples/deepbook-trader`) for pre-populated liquidity. */
-const defaultLocalPools = (
-	pkg: DeepbookPackageMember,
-): ReadonlyArray<DeepbookPoolSpec> => [
+const defaultLocalPools = (pkg: DeepbookPackageMember): ReadonlyArray<DeepbookPoolSpec> => [
 	{
 		name: 'DEEP_SUI',
 		base: { key: 'DEEP', coin: coinFromPackage(pkg, 'DEEP') },
@@ -536,8 +538,8 @@ const defaultLocalPools = (
 /** Fail-fast guard for local mode: `publisher` and `package` are REQUIRED — a
  *  publish tx needs a signer and the DeepBook Move package must be published
  *  (capturing `registry::Registry` + `registry::DeepbookAdminCap`). `pools` is
- *  OPTIONAL: omit it for a default seeded `DEEP/SUI` pool (a minimal usable
- *  DeX), pass `[]` for a pool-less deployment, or declare your own. `pyth`
+ *  OPTIONAL: omit it for a default unseeded (empty-book) `DEEP/SUI` pool (a
+ *  minimal usable DeX), pass `[]` for a pool-less deployment, or declare your own. `pyth`
  *  stays optional (omit for a feed-less DeX). Missing a required field raises a
  *  tagged `DeepbookConfigError` naming what to pass. */
 const resolveLocalOptions = (
@@ -561,10 +563,10 @@ const resolveLocalOptions = (
 			missing[0] as string,
 			`deepbook({mode:'local', name:'${name}'}) requires explicit ${missing.join(', ')}.`,
 			`Publish the DeepBook Move package and pass at least { publisher, package } ` +
-				`(see examples/deepbook-trader). Pools default to a seeded DEEP/SUI pool.`,
+				`(see examples/deepbook-trader). Pools default to an unseeded (empty-book) DEEP/SUI pool.`,
 		);
 	}
-	// Default to a single seeded DEEP/SUI pool when none are declared.
+	// Default to a single unseeded (empty-book) DEEP/SUI pool when none are declared.
 	const pools = opts.pools ?? defaultLocalPools(opts.package);
 	return { ...opts, pools } as ResolvedLocalOptions;
 };
@@ -1027,12 +1029,12 @@ export function deepbookCore<
 /** Mode-narrowed factory namespace.
  *
  *  Usage:
- *      const local = { mode: 'local', chain: 'sui:localnet' } as const;
+ *      const local = { mode: 'local', network: 'localnet' } as const;
  *      deepbookFor(local).local({publisher, package, pools})    // OK
  *      deepbookFor(local).override({packageId, registryId, adminCapId}) // OK
  *      deepbookFor(local).known({...})                          // OK
  *
- *      const fork = { mode: 'fork', chain: 'sui:mainnet-fork', upstream: 'mainnet' } as const;
+ *      const fork = { mode: 'fork', network: 'mainnet-fork', upstream: 'mainnet' } as const;
  *      deepbookFor(fork).local({...})                       // COMPILE ERROR
  *      deepbookFor(fork).override({...})                    // COMPILE ERROR
  *

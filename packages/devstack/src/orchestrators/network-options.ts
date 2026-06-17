@@ -8,19 +8,21 @@
  * Per-network dev-convenience toggles. All optional — an unset field
  * defers to the default policy (on for every network EXCEPT live
  * `mainnet`). A CONSISTENT mechanism: declare these once per network in
- * the config instead of scattering one-off flags. All three fields are
- * enforced:
+ * the config instead of scattering one-off flags.
  *
- *   - `devWallet` gates the dev-wallet `generated-extras` flush at boot
- *     (`orchestrators/boot.ts`), which the Vite plugin injects.
- *   - `faucet` gates the funding-faucet strategy contribution in the sui
- *     plugin (`plugins/sui/index.ts`) — a non-faucet network never
- *     registers `faucet:request:<chainId>`, so on `mainnet` the faucet
- *     never runs.
- *   - `autoApproveSigning` gates the dev-wallet auto-approve policy the
- *     Vite plugin emits into the injected dev-wallet
- *     (`build-integrations/vite/index.ts`) — on `mainnet` signing is
- *     never silently auto-approved.
+ *   - `devWallet` — per-network override is FORWARDED. Gates the
+ *     dev-wallet `generated-extras` flush at boot (`orchestrators/boot.ts`,
+ *     which resolves these options against the substrate-forwarded
+ *     `networkOptions` record), which the Vite plugin injects.
+ *   - `autoApproveSigning` — per-network override is FORWARDED. Gates the
+ *     dev-wallet auto-approve policy the Vite plugin emits into the
+ *     injected dev-wallet (`build-integrations/vite/index.ts`) — on
+ *     `mainnet` signing is never silently auto-approved.
+ *   - `faucet` — per-network override is NOT forwarded to the sui plugin
+ *     (see the field doc below). The plugin honours only the policy
+ *     default, which already carries the load-bearing `mainnet`
+ *     hard-clamp, so a non-faucet `mainnet` never registers
+ *     `faucet:request:<chainId>`.
  */
 export interface NetworkScopedOptions {
 	/** ENFORCED. Mount the test-only dev wallet and flush its
@@ -28,14 +30,19 @@ export interface NetworkScopedOptions {
 	 *  the Vite plugin's `@devstack-dev` injection has files to load. Off →
 	 *  no flush, and the Vite `load` hook gracefully no-ops. */
 	readonly devWallet?: boolean;
-	/** ENFORCED. Register this network's funding-faucet strategy
-	 *  (`faucet:request:<chainId>`) in the sui plugin so account funding can
-	 *  dispatch through it. Off → the strategy is suppressed and account
-	 *  funding surfaces the actionable "no faucet strategy" error instead of
-	 *  faucet-funding. Hard-clamped off on live `mainnet`. The sui mode still
+	/** Funding-faucet strategy gate (`faucet:request:<chainId>`) in the sui
+	 *  plugin. The plugin follows the POLICY DEFAULT only — on for every
+	 *  non-`mainnet` network, hard-clamped off on live `mainnet` (so a
+	 *  non-faucet network never registers the strategy and account funding
+	 *  surfaces the actionable "no faucet strategy" error instead of
+	 *  faucet-funding). A per-network `faucet` OVERRIDE here is NOT currently
+	 *  forwarded to the plugin (unlike `devWallet` / `autoApproveSigning`,
+	 *  which boot resolves against the substrate-forwarded `networkOptions`):
+	 *  the name-blind substrate does not thread `networkOptions` into plugins,
+	 *  and the sui plugin only receives `IdentityContext`. The sui mode still
 	 *  decides HOW a faucet is provisioned (local container / fork whale /
-	 *  live endpoint); this flag decides WHETHER the resolved strategy is
-	 *  exposed at all. */
+	 *  live endpoint); the policy default decides WHETHER the resolved
+	 *  strategy is exposed. */
 	readonly faucet?: boolean;
 	/** ENFORCED. Default the injected dev-wallet's auto-approve policy for
 	 *  this network (`build-integrations/vite/index.ts`). On → dev-wallet

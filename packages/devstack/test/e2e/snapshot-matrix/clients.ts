@@ -86,9 +86,28 @@ interface DeepbookResolvedLite {
 	readonly registryId: string;
 }
 /** Present only when the stack is built with deepbook. The probe that reads
- *  it is only in the probe list for deepbook-enabled runs. */
-export const deepbookOf = (ctx: BootScopeContext): DeepbookResolvedLite =>
-	findResolved(ctx, /^deepbook[:/]/) as DeepbookResolvedLite;
+ *  it is only in the probe list for deepbook-enabled runs.
+ *
+ *  Fails LOUDLY (mirroring {@link suiClientOf}) when the deepbook value is
+ *  absent: deepbook is a `task`-role plugin, so a failed publish is TOLERATED
+ *  by the boot (`acquire-node.ts` marks it failed + reports the error, but does
+ *  not abort) — it just never lands in `resolvedValues`. Without this guard the
+ *  probe NPE's with an opaque `Cannot read properties of undefined (reading
+ *  'packageId')`; this names the real cause and dumps the resolved keys so the
+ *  absence is unambiguous. Re-run with the boot logger enabled (drop the
+ *  `Logger.layer([])` in `boot-config-impl.ts`) to surface the publish cause. */
+export const deepbookOf = (ctx: BootScopeContext): DeepbookResolvedLite => {
+	const deepbook = findResolved(ctx, /^deepbook[:/]/) as DeepbookResolvedLite | undefined;
+	if (deepbook === undefined) {
+		const keys = [...ctx.resolvedValues.keys()].join(', ');
+		throw new Error(
+			`deepbookOf: no resolved deepbook value — its task plugin failed to publish ` +
+				`(the boot tolerates task failures, so deepbook is absent rather than fatal). ` +
+				`Boot resolved: [${keys}]`,
+		);
+	}
+	return deepbook;
+};
 
 /** The `SuiGrpcClient` (ClientWithCoreApi) the harness built — reuse it for
  *  reads, `tx.build`, and as the WalrusClient/SealClient backing client. */

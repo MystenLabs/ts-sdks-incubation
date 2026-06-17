@@ -31,7 +31,7 @@ import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcess
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 
-import type { CodegenIdResolver, CodegenableDecl } from '../../contracts/codegenable.ts';
+import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { AnyPlugin } from '../../substrate/plugin.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 import { layerMystenMoveCodegen } from '../../orchestrators/codegen/bindings.ts';
@@ -40,12 +40,8 @@ import {
 	layerSuiMoveSummaryRunnerHost,
 } from '../../plugins/sui/move-summary-runner.ts';
 import { buildSubstrateLayers } from '../../orchestrators/boot.ts';
-import {
-	layerCodegenPaths,
-	layerCodegenRoot,
-} from '../../orchestrators/codegen/paths.ts';
+import { layerCodegenPaths, layerCodegenRoot } from '../../orchestrators/codegen/paths.ts';
 import { runEmitCycle } from '../../orchestrators/codegen/service.ts';
-import { isUnresolvedId, UNRESOLVED_ID } from '../../orchestrators/codegen/id-config.ts';
 import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
@@ -55,32 +51,16 @@ import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeConfigLoader } from './config-loader.ts';
 import { identityValueFor, type ResolvedIdentity } from './identity.ts';
 
-/** Build the id-resolver the plugin `staticCodegen` hooks read. A KNOWN
- *  package carries a declared per-network literal in config — honor it;
- *  otherwise the all-zero sentinel (resolved at app build time through
- *  `__DEVSTACK_IDS__`). The committed stub never embeds a real LOCAL id. */
-const makeIdResolver = (): CodegenIdResolver => ({
-	packageId: ({ networks }) => {
-		if (networks !== undefined) {
-			for (const entry of Object.values(networks)) {
-				if (!isUnresolvedId(entry.packageId)) return entry.packageId;
-			}
-		}
-		return UNRESOLVED_ID;
-	},
-});
-
 /** Walk the stack members, calling each plugin spec's `staticCodegen`
  *  hook (skipping plugins that lack one) to derive the committed-tree
- *  contributions from config alone. */
-const deriveContributions = (
-	members: ReadonlyArray<AnyPlugin>,
-	resolver: CodegenIdResolver,
-): ReadonlyArray<CodegenableDecl> => {
+ *  contributions from config alone. KNOWN package ids come from the
+ *  declared `networks` literals; LOCAL ids stay the all-zero sentinel
+ *  (resolved at app build/dev time through `__DEVSTACK_IDS__`). */
+const deriveContributions = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<CodegenableDecl> => {
 	const decls: Array<CodegenableDecl> = [];
 	for (const member of members) {
 		if (member.staticCodegen === undefined) continue;
-		decls.push(...member.staticCodegen(resolver));
+		decls.push(...member.staticCodegen());
 	}
 	return decls;
 };
@@ -155,7 +135,9 @@ const buildCodegenLayer = (appRoot: string, runner: CodegenRunner, identity: Res
 					// substrate layer stack provides it (along with the rest of L0).
 					// No stack containers are created — only one-shot `sui move
 					// summary` runs against the pinned CLI image.
-					Layer.provideMerge(buildSubstrateLayers(identityValueFor(identity), identity.runtimeRoot)),
+					Layer.provideMerge(
+						buildSubstrateLayers(identityValueFor(identity), identity.runtimeRoot),
+					),
 				)
 			: layerSuiMoveSummaryRunnerHost.pipe(Layer.provideMerge(NodeChildProcessSpawner.layer));
 	return Layer.mergeAll(codegenPaths, moveRunner, layerMystenMoveCodegen()).pipe(
@@ -182,8 +164,7 @@ export const runCodegen = (
 		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 		const appRoot = dirname(loaded.resolvedConfigPath);
 
-		const resolver = makeIdResolver();
-		const contributions = deriveContributions(stack.members, resolver);
+		const contributions = deriveContributions(stack.members);
 		const runner = selectCodegenRunner();
 
 		const exit = yield* Effect.exit(

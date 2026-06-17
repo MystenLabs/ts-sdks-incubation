@@ -169,6 +169,7 @@ const wipeStack = (stack: string, runtimeRoot: string, cwd: string): Promise<voi
 			env: { ...process.env, DEVSTACK_STACK: stack, DEVSTACK_RUNTIME_ROOT: runtimeRoot },
 			stdio: 'ignore',
 		});
+		child.unref();
 		const done = (): void => resolve();
 		child.on('error', done);
 		child.on('exit', done);

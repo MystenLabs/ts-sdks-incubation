@@ -138,8 +138,10 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		expect(thrown).not.toBeNull();
 		expect(typeof thrown).toBe('object');
 		expect((thrown as { _tag?: string })._tag).toBe('DeepbookConfigError');
-		// `publisher` is the first missing field; the message enumerates all three.
+		// `publisher` is the first missing field; the message enumerates the
+		// missing REQUIRED fields (`pools` is optional — it defaults to an
+		// unseeded (empty-book) DEEP/SUI pool).
 		expect((thrown as { field?: string }).field).toBe('publisher');
-		expect((thrown as { message?: string }).message).toContain('publisher, package, pools');
+		expect((thrown as { message?: string }).message).toContain('publisher, package');
 	});
 });

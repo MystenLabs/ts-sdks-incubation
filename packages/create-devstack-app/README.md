@@ -14,14 +14,15 @@ pnpm dev
 The scaffolder:
 
 1. Prompts for an app name, what you are building (**Web dapp** or **TypeScript only**), and which
-   optional services to include (walrus, seal — default: none).
+   optional services to include (walrus, seal, deepbook, pyth — default: none).
 2. Copies the matching template —
    [`templates/app/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/create-devstack-app/templates/app)
    or
    [`templates/ts/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/create-devstack-app/templates/ts)
    — **verbatim** into `<cwd>/<name>/`.
 3. Renders `devstack.config.ts` from the service selection: the Sui localnet is always present, and
-   each selected service is one factory line (`walrus()`, `seal()`).
+   each selected service adds its config (`walrus()`/`seal()` are one factory line each; `deepbook`,
+   optionally with `pyth`, adds a small self-contained block — see Design principles below).
 4. Sets the app name in `package.json`, prunes the dependencies of unselected services, and injects
    resolved SDK versions. No other file is touched.
 5. Runs `pnpm install` and `git init` + an initial commit, performs a non-fatal Docker preflight,
@@ -36,8 +37,9 @@ pnpm create @mysten-incubation/devstack-app@latest <name> [options]
 
   --template <t>      Skip the "What are you building?" prompt: `app` (Web dapp)
                       or `ts` (TypeScript only).
-  --services <list>   Comma-separated services to include: walrus,seal.
-  --all               Include every optional service.
+  --services <list>   Comma-separated services to include: walrus,seal,deepbook,pyth
+                      (pyth implies deepbook).
+  --all               Include every optional service (walrus, seal, deepbook, pyth).
   --minimal           Include no optional services.
   --yes               Non-interactive; defaults apply for anything not flagged
                       (Web dapp, no services).
@@ -64,13 +66,14 @@ my-app/
 Scripts:
 
 - `pnpm dev` — `devstack up` (boots the stack; the app template serves the UI as a stack member).
-- `pnpm apply` — `devstack apply` (one-shot reconcile: CI, or before typechecking).
-- `pnpm typecheck` — `devstack apply && tsc -b --noEmit`.
-- `pnpm test` — `vitest run` (the spec talks to the booted stack).
-- `pnpm build` — app template only.
+- `pnpm apply` — `devstack apply` (one-shot reconcile: CI, or to re-emit live ids without serving).
+- `pnpm typecheck` — `tsc -b --noEmit` (app) / `tsc --noEmit` (ts); deliberately stack-free, boots
+  nothing.
+- `pnpm test` — `vitest run` (unit specs; `pnpm test:e2e` boots a throwaway `test` stack).
+- `pnpm build` — app template only (`tsc -b && vite build`); stack-free, no Docker.
 
-There are no `DEVSTACK_APP=` tokens and no `stackName` in the generated files: the devstack CLI
-infers the app from the `package.json` name, and the stack defaults to `main`.
+There are no `DEVSTACK_APP=` tokens in the generated files: the devstack CLI infers the app from the
+`package.json` name. The generated `devstack.config.ts` sets `stackName: 'dev'` explicitly.
 
 Looking for a richer end-to-end demo? Those live in
 [`examples/token-studio`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/token-studio),
@@ -84,7 +87,8 @@ not in the scaffold.
   its Move package from the upstream repo (`localPackage({ git })` — no vendored tree) and omits the
   pool list, so `deepbook(...)` synthesizes a default DEEP/SUI pool. Selecting **pyth** adds local
   price feeds for that pool (a git-sourced mock-Pyth package + DEEP/SUI feeds) and implies deepbook.
-  No service ever adds or removes source files. See [`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader)
+  No service ever adds or removes source files. See
+  [`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader)
   for the full multi-pool + multi-feed setup.
 - **One rendered file.** `devstack.config.ts` is the only file generated from the selection;
   everything else is copied verbatim from the template.

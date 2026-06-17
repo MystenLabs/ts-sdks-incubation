@@ -31,12 +31,17 @@ const DETH_PRICE_FEED_ID = pythPriceFeedId(
 	'd1e2f3a40516273849a5b6c7d8e9f00112233445566778899aabbccddeeff000',
 );
 // DeepBook's Move packages are pulled straight from their upstream repos —
-// no vendored tree to maintain. The clone is cached host-side per (url, rev);
-// `main` tracks upstream (matching DeepBook's own `Move.toml`, which resolves
-// its `token` dep at `rev = "main"`). Pin these to a tag/SHA for a frozen demo.
+// no vendored tree to maintain. The clone is cached host-side per (url, rev).
+// Each rev is pinned to a concrete SHA (the commit each repo's `main` currently
+// points at) so the generated bindings stay reproducible and CI doesn't flake on
+// an upstream move. To bump: `git ls-remote <repo> refs/heads/main` and paste the
+// resulting SHA below (then re-run `devstack codegen` to refresh bindings).
 const DEEPBOOKV3_REPO = 'https://github.com/MystenLabs/deepbookv3.git';
 const SANDBOX_REPO = 'https://github.com/MystenLabs/deepbook-sandbox.git';
-const UPSTREAM_REV = 'main';
+// Pinned to MystenLabs/deepbookv3@main as of 2026-06-17.
+const DEEPBOOKV3_REV = '5411ef3aa93f7722409b2a85047baa3d4d830c07';
+// Pinned to MystenLabs/deepbook-sandbox@main as of 2026-06-17.
+const SANDBOX_REV = 'e62fa7df04b444a2ad72362802fd2ad3e8e61408';
 
 const DEEP_SUI_POOL = {
 	name: 'DEEP_SUI',
@@ -109,7 +114,7 @@ const pythPublisher = account('pythPublisher', {
 });
 const suiCoin = coin.builtin('sui');
 const usdcPackage = localPackage('dusdc', {
-	git: { url: DEEPBOOKV3_REPO, subdir: 'packages/dusdc', rev: UPSTREAM_REV },
+	git: { url: DEEPBOOKV3_REPO, subdir: 'packages/dusdc', rev: DEEPBOOKV3_REV },
 	publisher: usdcPublisher,
 });
 const usdc = coin.fromPackage(usdcPackage, 'DUSDC');
@@ -130,7 +135,7 @@ const trader = account('trader', {
 	],
 });
 const deepbookPackage = localPackage('deepbook', {
-	git: { url: DEEPBOOKV3_REPO, subdir: 'packages/deepbook', rev: UPSTREAM_REV },
+	git: { url: DEEPBOOKV3_REPO, subdir: 'packages/deepbook', rev: DEEPBOOKV3_REV },
 	publisher,
 	capture: {
 		registryId: '::registry::Registry',
@@ -139,7 +144,7 @@ const deepbookPackage = localPackage('deepbook', {
 	},
 });
 const pythPackage = localPackage('pyth', {
-	git: { url: SANDBOX_REPO, subdir: 'sandbox/packages/pyth', rev: UPSTREAM_REV },
+	git: { url: SANDBOX_REPO, subdir: 'sandbox/packages/pyth', rev: SANDBOX_REV },
 	publisher: pythPublisher,
 });
 const deep = coin.fromPackage(deepbookPackage, 'DEEP');

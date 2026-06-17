@@ -12,7 +12,7 @@ pnpm test   # unit test — asserts the stack config composes; boots nothing
 ```
 
 There's no `pnpm test:e2e`: this example ships no app/UI to drive in a browser.
-For a browser e2e example, see `connect-four`, `token-studio`, or `private-content`.
+For a browser e2e example, see `connect-four`, `deepbook-trader`, `private-content`, or `token-studio`.
 
 ## Deploy to a real network
 

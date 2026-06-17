@@ -79,6 +79,7 @@ import {
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
+import { UNRESOLVED_ID } from './id-config.ts';
 import type { IdConfig, IdConfigNetwork, IdConfigPackage, IdConfigValues } from './id-config.ts';
 import { CodegenPathsService, type CodegenPaths } from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
@@ -802,7 +803,12 @@ const deepMerge = (
 		if (isPlainObject(existing) && isPlainObject(value)) {
 			deepMerge(existing, value);
 		} else {
-			target[key] = value;
+			// `value` may be a decl-owned cached projection object (or array).
+			// Storing it by reference would let a sibling decl that later
+			// recurses into the same nested key mutate this decl's cache in
+			// place, leaking state across emit cycles. Deep-clone any plain
+			// object / array so the shared bucket never aliases decl state.
+			target[key] = isPlainObject(value) || Array.isArray(value) ? structuredClone(value) : value;
 		}
 	}
 };
@@ -974,8 +980,11 @@ const idConfigFromBucket = (
 	for (const [name, raw] of Object.entries(asRecord(bucket['packages']))) {
 		const entry = asRecord(raw);
 		// The active-network id is `packageId` (convenience field the package
-		// projection sets = `byNetwork[activeNetwork]`).
-		const id = asString(entry['packageId']) ?? '';
+		// projection sets = `byNetwork[activeNetwork]`). An empty/missing
+		// packageId maps to the UNRESOLVED_ID sentinel — an empty string would
+		// slip past `isUnresolvedId` and ship as a real, resolved id.
+		const rawId = asString(entry['packageId']);
+		const id = rawId === undefined || rawId === '' ? UNRESOLVED_ID : rawId;
 		const objectsRaw = asRecord(entry['objects']);
 		const objects: Record<string, string> = {};
 		for (const [k, v] of Object.entries(objectsRaw)) {

@@ -314,18 +314,15 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
 
 export interface ProductionCodegenOptions {
 	readonly appRoot?: string;
-	readonly outputDir?: string;
-	/** Per-stack subdirectory under `outputDir`. Always `null` for live
-	 *  runs — the per-stack `.devstack/stacks/<stack>` layout already
-	 *  isolates each stack, and there is no public override (the
-	 *  `resolveCodegenOutput` explicit branch is internal/test-only). Kept
-	 *  on the contract because `CodegenRoot` still consumes it (and the
-	 *  snapshot-direct path passes `null`). */
-	readonly stackSubdir?: string | null;
 	/** Resolved absolute path to the dev-only + secret `generated-extras`
 	 *  tree for this stack, threaded into `CodegenRoot.extrasDir` and
 	 *  recorded in the manifest as `codegen.extrasDir` for the
-	 *  `@devstack-dev` Vite alias. */
+	 *  `@devstack-dev` Vite alias. This is the ONLY tree boot's codegen
+	 *  writes (`emitExtras`); boot never emits the committed `src/generated`
+	 *  tree, so it pins no live `outputDir` — the `CodegenRoot.outputDir`
+	 *  the production path carries is an unwritten default. The committed
+	 *  tree is owned solely by the stack-free `codegen` verb (wired
+	 *  separately, where it resolves its own output path). */
 	readonly extrasDir?: string;
 	/** Forwarded verbatim to `@mysten/codegen`'s
 	 *  `generateFromPackageSummary` via `layerMystenMoveCodegen` — see
@@ -364,21 +361,19 @@ export const resolveProductionCodegenOptions = (input: {
 		  }
 		| undefined;
 }): ProductionCodegenOptions => {
-	// Every live run resolves to `<appRoot>/.devstack/stacks/<stack>/...`
-	// (the default rule). The app can no longer pin a live `outputDir` /
-	// `stackSubdir` — nothing is ever emitted into the live `generated`
-	// tree at boot (boot writes only the per-stack `generated-extras`
-	// overlay + `devstack-ids.json`), so the override exposed only an
-	// unwritten directory. The committed `src/generated` tree is owned
-	// solely by the stack-free `codegen` verb (wired separately).
+	// Every live run resolves its dev tree to
+	// `<appRoot>/.devstack/stacks/<stack>/generated-extras` (the default
+	// rule). Nothing is ever emitted into the live `generated` tree at boot
+	// (boot writes only the per-stack `generated-extras` overlay +
+	// `devstack-ids.json`), so there is no live `outputDir` to resolve — the
+	// committed `src/generated` tree is owned solely by the stack-free
+	// `codegen` verb (wired separately).
 	const resolved = resolveCodegenOutput({
 		appRoot: input.appRoot,
 		effectiveStack: input.effectiveStack,
 	});
 	return {
 		appRoot: input.appRoot,
-		outputDir: resolved.outputDir,
-		stackSubdir: resolved.stackSubdir,
 		extrasDir: resolved.extrasDir,
 		// Pass-through verbatim — no resolution step; "unset" stays unset so
 		// `@mysten/codegen`'s own default (false) applies at the call site.
@@ -440,16 +435,13 @@ export const productionRouterProfile = (options: DefaultRouterProfileOptions = {
 	makeDefaultRouterProfile(options);
 
 /** `outputDir` for the `CodegenRoot` of a `layerProductionOrchestrators`
- *  composition. LIVE runs (`run-stack`, the verb wirings) always pass a
- *  resolved absolute value from `resolveProductionCodegenOptions`; the
- *  `?? 'src/generated'` default only feeds the cold-start / no-config
- *  `buildDirectSnapshotLayers` path (snapshot restore/delete/wipe), which
- *  never runs a codegen emit cycle — the value just needs to wire a valid,
- *  non-crashing `CodegenRoot`. */
-const productionCodegenOutputDir = (appRoot: string, outputDir: string | undefined): string => {
-	const target = outputDir ?? 'src/generated';
-	return isAbsolute(target) ? target : resolve(appRoot, target);
-};
+ *  composition. The production codegen path NEVER emits the committed
+ *  `src/generated` tree (boot writes only `generated-extras` via
+ *  `emitExtras`), so this directory is never written — it only has to wire
+ *  a valid, non-crashing `CodegenRoot`. It resolves to `<appRoot>/src/generated`
+ *  by convention. The committed tree is owned solely by the stack-free
+ *  `codegen` verb (wired separately, where it pins its own output path). */
+const productionCodegenOutputDir = (appRoot: string): string => resolve(appRoot, 'src/generated');
 
 /** Fallback `generated-extras` dir for the cold-start / no-config
  *  composition path (`buildDirectSnapshotLayers`). Callers that know
@@ -487,11 +479,8 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 		layerCodegenPaths.pipe(
 			Layer.provideMerge(
 				layerCodegenRoot({
-					outputDir: productionCodegenOutputDir(
-						router.codegen?.appRoot ?? process.cwd(),
-						router.codegen?.outputDir,
-					),
-					stackSubdir: router.codegen?.stackSubdir ?? null,
+					outputDir: productionCodegenOutputDir(router.codegen?.appRoot ?? process.cwd()),
+					stackSubdir: null,
 					extrasDir: productionCodegenExtrasDir(
 						router.codegen?.appRoot ?? process.cwd(),
 						router.codegen?.extrasDir,

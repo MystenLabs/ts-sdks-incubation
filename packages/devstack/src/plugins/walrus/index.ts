@@ -365,9 +365,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 					packageConfig: {
 						systemObjectId: resolved.systemObjectId,
 						stakingPoolId: resolved.stakingPoolId,
-						...(resolved.exchangeIds.length > 0
-							? { exchangeIds: [...resolved.exchangeIds] }
-							: {}),
+						...(resolved.exchangeIds.length > 0 ? { exchangeIds: [...resolved.exchangeIds] } : {}),
 					},
 					proxyUrl: resolved.proxyUrl,
 					aggregatorUrl: resolved.aggregatorUrl,
@@ -377,7 +375,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 			}),
 		],
 		// Known mode is a pure value-producer — `sui` is unused (the value
-		// reads `resolved.chain` from the deployment options) but the
+		// reads `resolved.network` from the deployment options) but the
 		// `dependsOn` edge still orders boot, so `start` is zero-arg.
 		// `ctx` arrives via the `PluginContext` service.
 		start: () =>
@@ -502,7 +500,7 @@ export const walrus = (opts?: { readonly local?: WalrusLocalClusterOptions }) =>
 /** Mode-narrowed factory namespace.
  *
  *  Usage:
- *      const network = { mode: 'local', chain: 'sui:localnet' } as const;
+ *      const network = { mode: 'local', network: 'localnet' } as const;
  *      walrusFor(network).local({...})    // OK
  *      walrusFor(network).known({...})    // type error: 'known' not in 'local' branch
  *

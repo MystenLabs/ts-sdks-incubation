@@ -101,21 +101,17 @@ export const materializeGitSource = (
 					await rm(staging, { recursive: true, force: true });
 					await mkdir(staging, { recursive: true });
 					await execFileAsync('git', ['init', '-q', staging], { timeout: CLONE_TIMEOUT_MS });
+					await execFileAsync('git', ['-C', staging, 'remote', 'add', 'origin', git.url], {
+						timeout: CLONE_TIMEOUT_MS,
+					});
 					await execFileAsync(
 						'git',
-						['-C', staging, 'remote', 'add', 'origin', git.url],
+						['-C', staging, 'fetch', '--depth', '1', 'origin', '--', rev],
 						{ timeout: CLONE_TIMEOUT_MS },
 					);
-					await execFileAsync(
-						'git',
-						['-C', staging, 'fetch', '--depth', '1', 'origin', rev],
-						{ timeout: CLONE_TIMEOUT_MS },
-					);
-					await execFileAsync(
-						'git',
-						['-C', staging, 'checkout', '-q', 'FETCH_HEAD'],
-						{ timeout: CLONE_TIMEOUT_MS },
-					);
+					await execFileAsync('git', ['-C', staging, 'checkout', '-q', 'FETCH_HEAD'], {
+						timeout: CLONE_TIMEOUT_MS,
+					});
 				}
 				await writeFile(join(staging, '.devstack-ok'), '');
 				// Publish atomically. If a concurrent apply already won the race,

@@ -157,9 +157,9 @@ const resolveIdentity = (params: {
  * Pure projector — exported for the focused unit test. Starts from
  * `emptyProjection()` (the closed-vocabulary baseline) and fills only
  * the two manifest-backed slices, so no display vocabulary can leak in.
- * The manifest identity tuple is `{ app, stack, chain }`; the
- * projection's identity is `{ app, stack, network }`, so `chain` maps
- * onto `network`. Endpoints get re-branded (`endpointKey` / `pluginKey`)
+ * The manifest identity tuple is `{ app, stack, network }`, matching
+ * the projection's identity shape directly. Endpoints get re-branded
+ * (`endpointKey` / `pluginKey`)
  * to the projection's branded shape; `registeredAt` is unknown offline,
  * so it defaults to `0`.
  */

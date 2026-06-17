@@ -49,7 +49,8 @@ const leafPaths = (value: unknown, prefix = ''): ReadonlyArray<string> => {
 // build/dev time via the injected `__DEVSTACK_IDS__` global.
 const containsBakedRuntimeValue = (value: unknown): boolean => {
 	if (isRawExpr(value)) return false;
-	if (typeof value === 'string') return /^0x[0-9a-fA-F]{6,}$/.test(value) || /^https?:\/\//.test(value);
+	if (typeof value === 'string')
+		return /^0x[0-9a-fA-F]{6,}$/.test(value) || /^https?:\/\//.test(value);
 	if (Array.isArray(value)) return value.some(containsBakedRuntimeValue);
 	if (typeof value === 'object' && value !== null) {
 		return Object.values(value as Record<string, unknown>).some(containsBakedRuntimeValue);
@@ -61,9 +62,7 @@ const containsBakedRuntimeValue = (value: unknown): boolean => {
 // the `config.ts` bucket (empty when the plugin emits no config).
 const staticConfigAggregates = (plugin: AnyPlugin): ReadonlyArray<CodegenableDecl> => {
 	if (plugin.staticCodegen === undefined) return [];
-	return plugin.staticCodegen({ packageId: () => '0x0' }).filter(
-		(decl) => decl.aggregate?.bucket === CONFIG_BUCKET,
-	);
+	return plugin.staticCodegen().filter((decl) => decl.aggregate?.bucket === CONFIG_BUCKET);
 };
 
 // -----------------------------------------------------------------------------
@@ -251,7 +250,10 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 	}> = [
 		// --- LOCAL / dev modes: dynamic ids → typed resolveValue. -------------
 		// A registry coin: resolves fullCoinType/decimals/packageId.
-		{ name: 'coin (registry)', decl: makeCoinStaticCodegen({ symbol: 'DUSDC', source: 'registry' }) },
+		{
+			name: 'coin (registry)',
+			decl: makeCoinStaticCodegen({ symbol: 'DUSDC', source: 'registry' }),
+		},
 		// A builtin coin (SUI): protocol constants are literals — exempt from
 		// the "every leaf is a resolveValue" assertion, included only to confirm
 		// it bakes no `0x…`/URL.
@@ -264,9 +266,18 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 			}),
 			literalOnly: true,
 		},
-		{ name: 'deepbook (local)', decl: makeDeepbookStaticCodegen({ name: 'deepbook', network: 'localnet' }) },
-		{ name: 'walrus (local)', decl: makeWalrusStaticCodegen({ mode: 'local', network: 'localnet' }) },
-		{ name: 'seal (local-keygen)', decl: makeSealStaticCodegen({ name: 'seal', mode: 'local-keygen' }) },
+		{
+			name: 'deepbook (local)',
+			decl: makeDeepbookStaticCodegen({ name: 'deepbook', network: 'localnet' }),
+		},
+		{
+			name: 'walrus (local)',
+			decl: makeWalrusStaticCodegen({ mode: 'local', network: 'localnet' }),
+		},
+		{
+			name: 'seal (local-keygen)',
+			decl: makeSealStaticCodegen({ name: 'seal', mode: 'local-keygen' }),
+		},
 		// --- KNOWN / pinned modes: DECLARED ids → literals (exempt). ----------
 		// A `coin.known(type)` bakes its declared `fullCoinType` literal;
 		// `decimals` / `packageId` still resolve (RPC-only) so it still carries
@@ -325,7 +336,10 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 					objectId: '0xcccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333',
 					keyServerUrl: 'https://seal.testnet.example',
 					serverConfigs: [
-						{ objectId: '0xcccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333', weight: 1 },
+						{
+							objectId: '0xcccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333',
+							weight: 1,
+						},
 					],
 				},
 			}),
@@ -403,7 +417,10 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 				objectId: '0xcccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333',
 				keyServerUrl: 'https://seal.testnet.example',
 				serverConfigs: [
-					{ objectId: '0xcccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333', weight: 1 },
+					{
+						objectId: '0xcccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333',
+						weight: 1,
+					},
 				],
 			},
 		});

@@ -26,7 +26,6 @@ import { Effect, FileSystem, Schema } from 'effect';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 import {
-	decodeJsonText,
 	decodeJsonTextSync,
 	type RuntimeDecodeIssue,
 } from '../../substrate/runtime/runtime-decode.ts';
@@ -207,27 +206,4 @@ export const decodeIdConfig = (text: string): IdConfig =>
 	decodeJsonTextSync(IdConfigSchema, text, {
 		source: ID_CONFIG_FILENAME,
 		mkError: mkIdConfigError,
-	});
-
-/** Read + decode the id-config at `path`. Resolves to `null` when the file
- *  is absent (no stack booted / no committed id-config); fails with
- *  `IdConfigError` on a read error or a malformed/invalid file. The Effect
- *  reader for Effect callers (`dump-ids`, the codegen verb); the Vite plugin
- *  is sync and uses {@link decodeIdConfig} over its own `readFileSync`. */
-export const readIdConfig = (
-	path: string,
-): Effect.Effect<IdConfig | null, IdConfigError, FileSystem.FileSystem> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-		const exists = yield* fs.exists(path).pipe(Effect.orElseSucceed(() => false));
-		if (!exists) return null;
-		const text = yield* fs
-			.readFileString(path)
-			.pipe(
-				Effect.mapError(
-					(cause) =>
-						new IdConfigError({ source: path, message: 'failed to read id-config', cause }),
-				),
-			);
-		return yield* decodeJsonText(IdConfigSchema, text, { source: path, mkError: mkIdConfigError });
 	});
