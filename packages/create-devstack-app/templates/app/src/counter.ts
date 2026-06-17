@@ -18,14 +18,14 @@ import { Counter, createAndShare, incrementEntry } from '@generated/bindings/cou
 /** Build a tx that creates + shares a fresh `Counter` (starts at 0). */
 export function createCounterTx(): Transaction {
 	const tx = new Transaction();
-	createAndShare()(tx);
+	tx.add(createAndShare());
 	return tx;
 }
 
 /** Build a tx that increments the shared `Counter` at `counterId` by one. */
 export function incrementTx(counterId: string): Transaction {
 	const tx = new Transaction();
-	incrementEntry({ arguments: { counter: counterId } })(tx);
+	tx.add(incrementEntry({ arguments: { counter: counterId } }));
 	return tx;
 }
 

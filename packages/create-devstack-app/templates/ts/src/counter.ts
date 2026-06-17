@@ -20,23 +20,19 @@
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
-import {
-	Counter,
-	createAndShare as buildCreateAndShare,
-	incrementEntry as buildIncrement,
-} from '@generated/bindings/counter/counter.ts';
+import { Counter, createAndShare, incrementEntry } from '@generated/bindings/counter/counter.ts';
 
 /** Build a tx that creates + shares a fresh `Counter` (starts at 0). */
 export function createCounterTx(): Transaction {
 	const tx = new Transaction();
-	buildCreateAndShare()(tx);
+	tx.add(createAndShare());
 	return tx;
 }
 
 /** Build a tx that increments the shared `Counter` at `counterId` by one. */
 export function incrementTx(counterId: string): Transaction {
 	const tx = new Transaction();
-	buildIncrement({ arguments: { counter: counterId } })(tx);
+	tx.add(incrementEntry({ arguments: { counter: counterId } }));
 	return tx;
 }
 

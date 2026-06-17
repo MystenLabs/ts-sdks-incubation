@@ -3,7 +3,7 @@ import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
 import { useEffect, useState } from 'react';
 
-import { mint as buildMint } from '@generated/bindings/token_studio/managed_coin.js';
+import { mint } from '@generated/bindings/token_studio/managed_coin.js';
 import { useCurrentWallet } from '@mysten/dapp-kit-react';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
@@ -37,16 +37,18 @@ export function MintForm() {
 			const raw = parseStudioAmount(amount);
 			if (raw <= 0n) throw new Error('Amount must be greater than zero');
 			const tx = new Transaction();
-			// `buildMint` defaults its package to the `@local/managed_coin`
+			// `mint` defaults its package to the `@local/managed_coin`
 			// MVR name, which the client's `mvr.overrides` (see `dapp-kit.ts`)
 			// resolves to the published managed_coin package id at call time.
-			buildMint({
-				arguments: {
-					treasury: TREASURY_CAP_ID,
-					amount: raw,
-					recipient,
-				},
-			})(tx);
+			tx.add(
+				mint({
+					arguments: {
+						treasury: TREASURY_CAP_ID,
+						amount: raw,
+						recipient,
+					},
+				}),
+			);
 			const result = await mutateAsync(tx);
 			invalidate();
 			setLastDigest(result.digest);

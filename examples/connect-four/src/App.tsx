@@ -9,12 +9,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQuery, type UseMutationResult } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 
-import {
-	Game,
-	createLobby as buildCreateLobby,
-	joinLobby as buildJoinLobby,
-	play as buildPlay,
-} from '@generated/bindings/connect_four/game.js';
+import { Game, createLobby, joinLobby, play } from '@generated/bindings/connect_four/game.js';
 
 import {
 	COLS,
@@ -208,11 +203,11 @@ export function App() {
 		}
 	}
 
-	async function createLobby() {
+	async function handleCreateLobby() {
 		if (!canCreateLobby) return;
 		await runFlow('create-lobby', async () => {
 			const tx = new Transaction();
-			buildCreateLobby()(tx);
+			tx.add(createLobby());
 			const result = await mutateAsync(tx);
 			const createdLobbyId = result.createdObjectIds[0];
 			if (createdLobbyId === undefined) {
@@ -224,11 +219,11 @@ export function App() {
 		});
 	}
 
-	async function joinLobby() {
+	async function handleJoinLobby() {
 		if (!canJoinLobby || lobbyId === null) return;
 		await runFlow('join-lobby', async () => {
 			const tx = new Transaction();
-			buildJoinLobby({ arguments: { lobby: lobbyId } })(tx);
+			tx.add(joinLobby({ arguments: { lobby: lobbyId } }));
 			const result = await mutateAsync(tx);
 			const createdGameId = result.createdObjectIds[0];
 			if (createdGameId === undefined) {
@@ -245,7 +240,7 @@ export function App() {
 		if (!canMove || gameId === null) return;
 		await runFlow(`play-${col}`, async () => {
 			const tx = new Transaction();
-			buildPlay({ arguments: { game: gameId, column: col } })(tx);
+			tx.add(play({ arguments: { game: gameId, column: col } }));
 			const result = await mutateAsync(tx);
 			setLastDigest(result.digest);
 			await gameQuery.refetch();
@@ -360,7 +355,7 @@ export function App() {
 										: undefined
 								}
 								disabled={!canCreateLobby}
-								onAction={createLobby}
+								onAction={handleCreateLobby}
 							/>
 							<PlayerSeat
 								name="bob"
@@ -377,7 +372,7 @@ export function App() {
 										: undefined
 								}
 								disabled={!canJoinLobby}
-								onAction={joinLobby}
+								onAction={handleJoinLobby}
 							/>
 						</div>
 					</div>
