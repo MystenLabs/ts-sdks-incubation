@@ -22,9 +22,9 @@
 // rest), per-package ids (+ captured object ids), account addresses, and
 // the MVR placeholder → id override map an app feeds dapp-kit.
 
-import { dirname as nodeDirname } from 'node:path';
-
 import { Effect, FileSystem, Schema } from 'effect';
+
+import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 
 // -----------------------------------------------------------------------------
 // Sentinel — the all-zero id that marks an UNRESOLVED on-chain id.
@@ -154,20 +154,16 @@ export const writeIdConfig = (
 	config: IdConfig,
 ): Effect.Effect<void, IdConfigError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
 		const text = `${JSON.stringify(config, null, 2)}\n`;
-		// Ensure the parent dir exists — the id-config write may run before
-		// the manifest write (which also creates the stack root).
-		yield* fs.makeDirectory(nodeDirname(path), { recursive: true }).pipe(
+		const bytes = new TextEncoder().encode(text);
+		// Atomic temp+rename — the Vite plugin reads this file with a plain
+		// `readFileSync` + `JSON.parse`, so a torn / partial write would surface
+		// as a parse error. `atomicWriteFile` ensures the parent dir (the
+		// id-config write may run before the manifest write) and fsyncs before
+		// the rename, so readers only ever see a complete file.
+		yield* atomicWriteFile(path, bytes, { mode: 0o644 }).pipe(
 			Effect.mapError(
-				(cause) =>
-					new IdConfigError({ source: path, message: 'failed to create id-config dir', cause }),
-			),
-		);
-		yield* fs.writeFileString(path, text).pipe(
-			Effect.mapError(
-				(cause) =>
-					new IdConfigError({ source: path, message: 'failed to write id-config', cause }),
+				(cause) => new IdConfigError({ source: path, message: 'failed to write id-config', cause }),
 			),
 		);
 	});

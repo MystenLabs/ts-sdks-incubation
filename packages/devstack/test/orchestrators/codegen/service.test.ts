@@ -921,3 +921,58 @@ describe('codegen.emitExtras', () => {
 		),
 	);
 });
+
+describe('codegen.assembleIdConfig — active-network agreement', () => {
+	// A sui-like config.ts contribution: the binding emits `network: 'localnet'`
+	// and a `networks` map keyed by 'localnet' for EVERY identity mode (mirrors
+	// plugins/sui/codegen.ts hard-coding LOCAL_NETWORK_NAME). The id-config's
+	// active `network` field MUST be a key present in `networks` — the committed
+	// runtime resolver does `resolveNetworks()[network]`.
+	const suiLikeDecl = (): CodegenableDecl<string> =>
+		fakeDecl({
+			emitterName: 'sui-network',
+			outputPath: 'config.ts',
+			outputLocation: 'generated',
+			aggregateOnly: true,
+			aggregate: {
+				kind: 'sui-network',
+				bucket: 'config.ts',
+				outputLocation: 'generated',
+				// Project the emitted `network` + `networks` straight into the
+				// config.ts bucket (what the real sui projection does).
+				project: (exported) => ({
+					network: exported.network,
+					networks: exported.networks,
+				}),
+			},
+			// Bound by the binding to LOCAL_NETWORK_NAME regardless of mode.
+			exports: {
+				network: 'localnet',
+				networks: { localnet: { rpc: 'http://127.0.0.1:9000', chainId: 'abc' } },
+			},
+		});
+
+	it.effect(
+		'a NON-localnet identity yields a network field that EXISTS in networks (no divergence)',
+		() =>
+			withTempRoot('codegen-idconfig-net', (root) =>
+				Effect.scoped(
+					Effect.gen(function* () {
+						const codegen = yield* CodegenOrchestratorService;
+						yield* codegen.registerContribution('sui', suiLikeDecl());
+						// Boot for a fork: identity network = 'testnet-fork', but the
+						// sui binding still keys `networks` by 'localnet'. Old behavior
+						// stamped network: 'testnet-fork' (absent from networks) →
+						// `resolveNetworks()['testnet-fork']` is undefined → throws +
+						// dev-wallet injection reads undefined.rpc. The fix derives the
+						// active network from the bucket so they AGREE.
+						const idConfig = yield* codegen.assembleIdConfig('testnet-fork');
+						// The active network MUST be a key present in `networks`.
+						expect(Object.keys(idConfig.networks)).toContain(idConfig.network);
+						// And it is the key the binding emitted ('localnet').
+						expect(idConfig.network).toBe('localnet');
+					}),
+				).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+			),
+	);
+});

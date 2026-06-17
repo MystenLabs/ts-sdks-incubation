@@ -998,8 +998,30 @@ const idConfigFromBucket = (
 		if (s !== undefined) mvrOverrides[mvr] = s;
 	}
 
+	// The active `network` field MUST be a key present in `networks` — the
+	// committed `config-runtime.ts` `resolveActiveNetwork()` does
+	// `resolveNetworks()[network]`, and the Vite dev-wallet injection reads
+	// `networks[network].rpc`. The `network` PARAM is the identity's network
+	// name (e.g. `"testnet-fork"`), but the sui binding keys the `networks`
+	// map by what it emitted (`"localnet"` for every mode). So PREFER the
+	// network the binding stamped into the bucket (`bucket['network']`, which
+	// matches the `networks` key); fall back to the param, then — if neither
+	// is a known key but exactly one network exists — that sole key. This
+	// keeps `network` in agreement with `networks` so resolution never
+	// dereferences `undefined`.
+	const networkKeys = Object.keys(networks);
+	const bucketNetwork = asString(bucket['network']);
+	const activeNetwork =
+		bucketNetwork !== undefined && networkKeys.includes(bucketNetwork)
+			? bucketNetwork
+			: networkKeys.includes(network)
+				? network
+				: networkKeys.length === 1
+					? networkKeys[0]!
+					: (bucketNetwork ?? network);
+
 	return {
-		network,
+		network: activeNetwork,
 		networks,
 		packages,
 		accounts,
@@ -1099,7 +1121,26 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				yield* validateUniqueness(extras);
 				yield* validateAggregatePathAvailability(extras);
 				const paths = yield* CodegenPathsService;
-				return yield* runEmitCycleInner({ contributions: extras, trackTree: false }, paths);
+				// Acquire the dedicated `codegenLockFile` for symmetry with
+				// `runEmitCycle` — the extras emit writes into the shared stack
+				// tree (`generated-extras`) and a concurrent codegen cycle could
+				// otherwise interleave. Scoped so the lock releases when the emit
+				// completes (or fails).
+				return yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* acquireStackLock(paths.codegenLockFile, CODEGEN_CYCLE_LOCK_TIMEOUT_MS).pipe(
+							Effect.mapError(
+								(cause) =>
+									new CodegenWriteFailed({
+										outputPath: paths.codegenLockFile,
+										stage: 'write',
+										cause,
+									}),
+							),
+						);
+						return yield* runEmitCycleInner({ contributions: extras, trackTree: false }, paths);
+					}),
+				);
 			});
 
 		return CodegenOrchestratorService.of({

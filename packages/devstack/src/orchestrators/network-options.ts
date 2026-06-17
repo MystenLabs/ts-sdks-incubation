@@ -62,7 +62,12 @@ export const resolveNetworkOptions = (
 	if (raw === null || typeof raw !== 'object') return base;
 	const o = raw as Record<string, unknown>;
 	return {
-		devWallet: asBool(o['devWallet']) ?? base.devWallet,
+		// HARD-CLAMP: the dev wallet is NEVER mounted on real `mainnet`,
+		// regardless of an explicit `{ mainnet: { devWallet: true } }` override.
+		// Honoring it would flush the secret `generated-extras` tree and inject
+		// a test-only signer into a production build. The default is already
+		// off for `mainnet`; this also blocks a silent explicit opt-in.
+		devWallet: network === 'mainnet' ? false : (asBool(o['devWallet']) ?? base.devWallet),
 		faucet: asBool(o['faucet']) ?? base.faucet,
 		autoApproveSigning: asBool(o['autoApproveSigning']) ?? base.autoApproveSigning,
 	};

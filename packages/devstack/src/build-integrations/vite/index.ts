@@ -335,8 +335,11 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			const env = process.env as Readonly<Record<string, string | undefined>>;
 			// `command` comes from the second hook arg (`{ command, mode }`);
 			// fall back to `config.command` (some callers pass it on the
-			// config), defaulting to `serve` for the dev-injection path.
-			const command = configEnv?.command ?? config.command ?? 'serve';
+			// config). Default the UNKNOWN case to `build` (build-safe): only an
+			// EXPLICIT `serve` takes the live local-stack id-injection path, so a
+			// programmatic `vite.build()` that omits the env arg never bakes
+			// dev-stack ids into a production bundle.
+			const command = configEnv?.command ?? config.command ?? 'build';
 			// Explicit `generatedDir` wins (relative → resolved against the
 			// Vite root). Otherwise always the committed `<root>/src/generated`
 			// tree — the single source of bindings written by `devstack

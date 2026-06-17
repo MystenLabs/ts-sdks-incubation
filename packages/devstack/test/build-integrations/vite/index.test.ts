@@ -59,7 +59,12 @@ afterEach(() => {
 /** Plant a stack manifest carrying the optional `codegen.extrasDir` (the
  *  `@devstack-dev` overlay source) at the supervisor-written path under an
  *  absolute state root. Bindings are not recorded in the manifest. */
-const writeStackManifest = (stateRoot: string, stack: string, extrasDir?: string): string => {
+const writeStackManifest = (
+	stateRoot: string,
+	stack: string,
+	extrasDir?: string,
+	idsFile?: string,
+): string => {
 	const dir = join(stateRoot, 'stacks', stack);
 	mkdirSync(dir, { recursive: true });
 	const path = join(dir, 'manifest.json');
@@ -71,7 +76,10 @@ const writeStackManifest = (stateRoot: string, stack: string, extrasDir?: string
 			services: {},
 			endpoints: {},
 			extras: {},
-			codegen: { ...(extrasDir !== undefined ? { extrasDir } : {}) },
+			codegen: {
+				...(extrasDir !== undefined ? { extrasDir } : {}),
+				...(idsFile !== undefined ? { idsFile } : {}),
+			},
 		}),
 	);
 	return path;
@@ -153,5 +161,44 @@ describe('devstackVitePlugin', () => {
 			const plugin = devstackVitePlugin({ extrasDir: explicit });
 			const patch = plugin.config({ root: tmp });
 			expect(patch.resolve.alias[DEFAULT_DEV_EXTRAS_ALIAS]).toBe(explicit);
+		}));
+
+	// --- command-defaulting: only an EXPLICIT `serve` takes the live-id path.
+	// A programmatic `vite.build()` that omits the env arg must NOT bake live
+	// local-stack ids into the bundle (build-safe default).
+	it('explicit { command: "serve" } injects the live local-stack ids', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
+			writeFileSync(
+				idsFile,
+				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
+			);
+			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin();
+			const patch = plugin.config({ root: tmp }, { command: 'serve' });
+			expect(patch.define.__DEVSTACK_IDS__).toContain('localnet');
+		}));
+
+	it('unknown command (no env arg) is build-safe: does NOT inject the live ids', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
+			writeFileSync(
+				idsFile,
+				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
+			);
+			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin();
+			// No configEnv + no config.command → unknown → defaults to `build`,
+			// so no live local-stack ids are read (define resolves to `null`).
+			const patch = plugin.config({ root: tmp });
+			expect(patch.define.__DEVSTACK_IDS__).toBe('null');
 		}));
 });

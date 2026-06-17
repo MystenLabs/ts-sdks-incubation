@@ -4,8 +4,13 @@ These are the curated devstack examples. Each one consumes
 `@mysten-incubation/devstack` from the workspace and uses the final directory
 name that a developer should reach for.
 
-Generated files under `src/generated/` are local lifecycle output and should not
-be committed.
+The bindings under `src/generated/` are committed: `devstack codegen` writes
+id-free Move/config bindings plus a runtime resolver (`config-runtime.ts`),
+which reads on-chain ids at app build/dev time via the injected
+`__DEVSTACK_IDS__` global. Because the tree carries no stack-specific ids, the
+same committed bindings serve every stack. (Dev-only secret artifacts — the dev
+wallet and managed accounts — stay out of the tree, in the gitignored
+`.devstack/stacks/<stack>/generated-extras/`.)
 
 ## Runnable Apps
 

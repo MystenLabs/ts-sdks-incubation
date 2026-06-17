@@ -47,9 +47,12 @@ describe('network-scoped options', () => {
 			});
 		});
 
-		it('lets an override OPT IN dev conveniences on mainnet', () => {
+		it('HARD-CLAMPS devWallet OFF on mainnet even with an explicit opt-in', () => {
+			// `{ mainnet: { devWallet: true } }` MUST NOT mount the test-only dev
+			// wallet on real mainnet — it would flush the secret generated-extras
+			// tree and inject a signer into a production build.
 			expect(resolveNetworkOptions('mainnet', { mainnet: { devWallet: true } })).toEqual({
-				devWallet: true,
+				devWallet: false,
 				faucet: false,
 				autoApproveSigning: false,
 			});
