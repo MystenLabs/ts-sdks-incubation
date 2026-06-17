@@ -1,5 +1,164 @@
 # @mysten-incubation/devstack
 
+## 0.2.0
+
+### Minor Changes
+
+- 9e1e1be: Dev wallet: explicit test-only connect, no pre-connect or storage seeding.
+
+  The injected dev wallet no longer seeds dApp Kit's localStorage to fake an auto-connect to a
+  specific account on page load. A fresh page now loads disconnected, and dApp Kit's own
+  `autoConnect` does only what it's meant to — re-connect a genuine prior session.
+
+  A new devstack `/dapp-kit` entrypoint exports `registerDAppKitForTesting(dAppKit)`, which the app
+  wires DEV-only after `createDAppKit(...)`. It publishes the `connectAs` slot that drives a REAL
+  connection through dApp Kit's public API (`connectWallet` / `switchAccount`, resolving accounts by
+  label) instead of narrowing/widening the wallet's exposed accounts to exploit reconciliation. The
+  dev wallet auto-approves `standard:connect` only when signing is auto-approved (the headless-e2e
+  `DEVSTACK_AUTO_APPROVE` signal); in normal dev a human approves the connect. This fixes wallet
+  connection under `@mysten/dapp-kit-core` ≥1.6, whose rewritten auto-connect state machine broke
+  the old storage-seeding approach.
+
+- 11c258a: Auto-inject the devstack dev wallet via the Vite plugin.
+
+  `@mysten-incubation/dev-wallet` adds a `/inject` entry (`registerDevstackDevWallet`) that
+  constructs the dev wallet from a devstack stack's config and registers it on the page via the
+  wallet-standard window protocol (plus the Playwright `connectAs` slot). The devstack Vite plugin
+  uses it to inject + register the dev wallet in DEV only, so dapp-kit apps discover it through
+  wallet-standard with no app-side wiring — apps no longer need a `dapp-kit.dev.ts` or any
+  `@devstack-dev` import, and production builds carry no dev-wallet code. The dev wallet exposes all
+  of its accounts to the dApp while `connectAs` still drives the active account.
+
+- 9e1e1be: New `codegen.includePhantomTypeParameters` stack option, passed through to
+  `@mysten/codegen`: phantom type parameters become required arguments on generated struct
+  factories, so the generated BCS classes compose into fully-qualified type tags
+  (`Pool(DBTC, DUSDC).name`). Default remains off.
+- 11c258a: Reshape generated codegen output, make `deepbook()` a one-liner local DeX, and fix
+  dashboard snapshot/restore.
+
+  **Codegen reshape (breaking for consumers of generated output).** `generated/` is now a
+  runtime-only surface: a single combined `config.ts`
+  (`{ network, networks, packages.byNetwork, objects }`) plus per-plugin siblings (`seal.ts`,
+  `walrus.ts`, `deepbook.ts`, `coins.ts`) and Move `bindings/`. Dev-only and secret artifacts (the
+  account name→address map and the dev-wallet pairing config) move out of the committed app surface
+  into `.devstack/stacks/<stack>/generated-extras/`, reachable via a new `@devstack-dev` path alias.
+  The old `accounts.ts` / `packages.ts` / `services.ts` / `sui/network.ts` / `dapp-kit/config.ts` /
+  `extras.ts` outputs are removed; the `dappKitConfig` export is now `devWallet`. `localPackage` /
+  `knownPackage` gain a `networks` option for per-network (testnet/mainnet) package and object ids,
+  projected into `config.packages.*.byNetwork` and `config.objects` — so the same generated shape
+  can target a real network with pre-deployed contracts by switching `config.network`.
+
+  **Deepbook one-liner.** `deepbook()` (or `deepbook({ mode: 'local' })`) with no arguments now
+  provisions a working local DeepBook DeX: it bundles the DeepBook v3 + sandbox-Pyth Move sources as
+  plugin assets, synthesizes the publish plus an ephemeral funded publisher, and seeds a default
+  DEEP/SUI pool — consumable directly through `@mysten/deepbook-v3` against localnet. `package` /
+  `pyth` / `pools` / `publisher` are now optional overrides; `known` / `override` modes are
+  unchanged.
+
+  **Dashboard snapshot/restore.** A restore triggered from the web dashboard now re-acquires
+  services automatically (no manual restart required) and surfaces `snapshotting` / `restoring`
+  status instead of staying on "running". The post-restore re-acquire excludes the dashboard and
+  host-service transport, so the restore mutation returns its result cleanly instead of tearing down
+  the connection it is answering on (previously surfaced as a 502).
+
+- 467ec8e: Remove unused plugin-authoring API surface that had no consumers.
+
+  The decl authoring helpers `routable`, `strategyContributor`, `snapshotable`, and `codegenable`
+  are removed from the package root. Built-in plugins build these contribution decls as inline
+  `{ kind: '...' }` object literals, so the helpers carried no callers; `projection` remains (it has
+  live call sites). The `PluginContext` passed to plugin contribution functions also drops its
+  unused `persist`, `requires`, and `fail` verbs — plugins persist via `CacheService` and read
+  strategies via the strategy registry directly — leaving a closed five-verb authoring surface
+  (`codegen`, `endpoint`, `snapshotExtra`, `publish`, `provides`).
+
+  No in-repo consumer used any of these. External plugin authors building decls through the removed
+  helpers should switch to the inline `kind` literals.
+
+- 467ec8e: Add `devstack up --warm` — a fingerprinted boot cache.
+
+  The first `--warm` boot is a normal cold boot that captures a baseline snapshot; subsequent
+  `--warm` boots restore that baseline (fast path) instead of cold-booting, as long as the inputs
+  are unchanged. The baseline is keyed on a fingerprint of the config source, the plugin/member
+  graph, watched Move source contents, the devstack version, and image-override env vars; any change
+  re-captures. Use `--no-warm` to force a cold boot, or set `warm: true` in devstack options. A
+  change to per-plugin options is detected via the config-source hash; config logic split across
+  imported modules or driven by environment is a known v1 limitation (use `--no-warm` / `wipe` after
+  such changes).
+
+- 9e1e1be: Disambiguate the conflated `chain` concept into three precise ones: `network` (the
+  network name — `localnet`/`testnet`/…), `chainId` (the genesis-digest chain identifier, unique per
+  spun-up network), and the wallet-standard `sui:<network>` chain name (derived only at the
+  dev-wallet wallet-standard boundary — `sui:` never appears in devstack internals).
+
+  **Breaking.** The substrate `Identity`/manifest field `chain` is now `network` and holds the bare
+  network name (previously a `sui:`-prefixed string). The network parser accepts only canonical
+  names — the `local` shorthand and the `sui:`-prefixed alias table are removed (use `localnet`);
+  `network ⇄ chain id` is now just a `sui:` prefix, not a lookup table. The sui plugin's resolved
+  value, on-disk cache-dir keys, and `chain-probe:`/`faucet:request:` capability keys now key on the
+  genesis-digest `chainId`. The generated `config.ts` active-network key is `localnet` (was
+  `local`), and `config.networks.<net>` / `byNetwork.<net>` are keyed by network name. The
+  dev-wallet `registerDevstackDevWallet` config and `DevWalletConfig` take `network` instead of
+  `chain`. The dashboard GraphQL surfaces `chainId` (sui) and `network` (deepbook) instead of
+  `chain`. Known walrus/deepbook deployments and the deepbook DEEP-funding gate now key on the
+  network name — fixing a latent bug where the gate compared a genesis digest against the
+  `'sui:testnet'` literal and was dead for every non-literal value.
+
+  On-disk state keyed by the old `sui:local` chain brand is invalidated; run `devstack wipe` on
+  existing local stacks after upgrading.
+
+### Patch Changes
+
+- 9e1e1be: Build-integration manifest discovery (vitest, playwright, vite) now infers the default
+  stack name from the nearest package.json `name`, matching the CLI's `resolveStackName` ladder
+  (explicit > `DEVSTACK_STACK` > package name > `main`). Previously the discovery ladder
+  hard-defaulted to `main`, so in a bare app — where `devstack up` names the stack after the package
+  — `pnpm test` (and any standalone consumer of the discovery ladder) failed with "no devstack
+  manifest found for stack 'main'" even though the stack was live. The vitest setup hook's stack
+  advisory now names the inferred stack too.
+- 467ec8e: Stage A of the devstack simplification: delete the dead `state-store` (and its snapshot
+  `state.json` phantom) and hoist the Sui-domain helpers (`sui-execute`, `sui-move-build`,
+  `sui-ledger`) out of the name-blind substrate into `plugins/sui/{exec,move,ledger}`. Internal
+  refactor only — no public API change (release-surface is unchanged); the substrate no longer
+  imports `@mysten/sui` or names any plugin.
+- 467ec8e: Fix the sui-owned GraphQL-indexer Postgres sidecar failing auth
+  (`FATAL: password authentication failed for user "devstack"`) on a reused/restored data dir, which
+  crash-looped the validator's embedded indexer and broke every e2e that boots a bare `sui()`
+  (snapshot-restore matrix + the deepbook/token-studio/warm-cache/action-cache/indexer-reverify
+  boots).
+
+  The sidecar password derived from `(app, stack, stackRoot)`, but its PGDATA rides the owner's
+  snapshot and its committed layer is aliased onto the content-addressed `devstack-build:*` build
+  tag, which a later boot reuses. The password baked into PGDATA at first init is never re-applied
+  on reuse/restore, so a `stackRoot`-folded credential (which churns whenever the runtime root
+  changes — every e2e boot mints a fresh tmpdir root) stopped matching the persisted data dir.
+  Sidecar passwords now derive from `(app, stack, role)` only — invariant across runs of the same
+  stack, matching how the snapshot/image persist — so reuse/restore is always credential-safe.
+  User-declared `postgres()` is unchanged (it keeps the per-checkout `stackRoot` isolation; it has
+  no sidecar's shared-image collapse).
+
+- 467ec8e: Local-mode Sui now bases on the upstream `mysten/sui-tools` image (pinned to the build
+  carrying the embedded-fullnode resume fix, sui #26884), so both the validator and the embedded
+  fullnode resume from their persisted dbs across `docker stop`/`start` — there is no per-boot
+  genesis re-sync.
+
+  GraphQL and its indexer run against a sui-owned Postgres sidecar that is ON BY DEFAULT for a bare
+  `sui()`: the sidecar auto-creates its `sui_indexer` DB, so the full GraphQL surface boots with no
+  cross-plugin wiring. `indexer: false` opts out (RPC + faucet only, no sidecar);
+  `indexerDb: { url, network, database? }` points GraphQL at a Postgres you already run instead.
+
+- 9e1e1be: Fix the injected dev wallet failing with `Illegal constructor` and an unusable connection
+  state on disconnect/reconnect in scaffolded apps. The Vite plugin now pre-bundles the dev-wallet
+  entries it injects (`optimizeDeps.include` for `@mysten-incubation/dev-wallet/inject` +
+  `/adapters`) and dedupes Lit (`resolve.dedupe`), so Vite never re-optimizes them mid-session into
+  a second Lit instance — which had registered the wallet's web components in a separate
+  custom-element realm the page couldn't construct.
+- b54e13a: Fix a stray NUL byte in the codegen orchestrator's `pathKey` separator
+  (`orchestrators/codegen/service.ts`). The NUL made `file(1)` classify the source as binary `data`
+  and caused `grep` to silently skip it, and it also broke the duplicate-output-path error message:
+  that path is extracted with `pathKey.slice(pathKey.indexOf(' ') + 1)`, which expects a space
+  separator the NUL wasn't. The separator is now a space, fixing both the tooling/grep issue and the
+  error-message extraction.
+
 ## 0.1.1
 
 ### Patch Changes
@@ -256,13 +415,13 @@ single root barrel (`@mysten-incubation/devstack`) carrying every built-in plugi
 authoring helper, capability decl type, and substrate helper namespace. The only public subpaths are
 the L5 build-integration entrypoints — `/vitest`, `/vitest/setup`, `/playwright`,
 `/playwright/global-setup`, `/vite`, `/runtime`, and `/dapp-kit` — exposed for tree-shaking and L5
-isolation. The `/vite` entrypoint is a `devstackVitePlugin()` that points a customizable `@generated`
-import alias at the active stack's codegen output (per-stack codegen so `pnpm dev` and
+isolation. The `/vite` entrypoint is a `devstackVitePlugin()` that points a customizable
+`@generated` import alias at the active stack's codegen output (per-stack codegen so `pnpm dev` and
 `pnpm test:e2e` coexist). The `/dapp-kit` entrypoint is a DEV-only test bridge
 (`registerDAppKitForTesting`) the app wires after `createDAppKit(...)` so the Playwright `connectAs`
 helper can drive a real connection through dApp Kit's public API — no localStorage seeding, no
-pre-connect on load.
-See `ARCHITECTURE.md` for layer boundaries and `STYLE_GUIDE.md` for code-level patterns.
+pre-connect on load. See `ARCHITECTURE.md` for layer boundaries and `STYLE_GUIDE.md` for code-level
+patterns.
 
 ### Critical correctness fixes
 
