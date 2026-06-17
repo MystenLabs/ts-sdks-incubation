@@ -96,6 +96,17 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 								await cp(sourcePath, stagedPkg, { recursive: true });
 								// Stage local relative deps so `sui move summary` resolves them.
 								await copyLocalMoveDeps(sourcePath, stagedPkg, dirname(stagedPkg));
+								// Place the source manifest beside the emitted summary: it
+								// is the dir we hand `@mysten/codegen`, which reads
+								// `Move.toml` there for its `[addresses]` labels. Without
+								// it the library logs "Failed to read Move.toml for <dir>"
+								// and falls back to `packageName`; with it the read
+								// succeeds (warning gone) and its native main-package
+								// resolution works. Best-effort — a manifest-less source
+								// just keeps the prior fallback.
+								await cp(join(sourcePath, 'Move.toml'), join(summaryPath, 'Move.toml')).catch(
+									() => {},
+								);
 							},
 							catch: (cause) =>
 								new CodegenBindingsFailed({
@@ -261,7 +272,13 @@ const prepareSummaryPackage = (
 	Effect.tryPromise({
 		// Only create the OUTPUT mount dir; the package itself is mounted from a
 		// disposable staged copy (see `stageSummarySource`), never the real source.
-		try: () => mkdir(summaryPath, { recursive: true }).then(() => undefined),
+		// Also drop in the source manifest so the host-side `@mysten/codegen` reads
+		// its `[addresses]` from this dir (see `layerSuiMoveSummaryRunnerHost`) —
+		// silences the "Failed to read Move.toml" warning. Best-effort.
+		try: async () => {
+			await mkdir(summaryPath, { recursive: true });
+			await cp(join(input.sourcePath, 'Move.toml'), join(summaryPath, 'Move.toml')).catch(() => {});
+		},
 		catch: (cause) =>
 			new CodegenBindingsFailed({
 				package: input.packageName,
