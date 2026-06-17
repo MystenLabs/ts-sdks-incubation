@@ -132,6 +132,9 @@ const makeHarness = (
 					return { exitCode: 0 };
 				}),
 		},
+		codegen: {
+			run: () => Effect.sync(() => ({ exitCode: 0 })),
+		},
 		status: {
 			reader: { readState: () => Effect.succeed(null) },
 		},
@@ -359,7 +362,7 @@ describe('dispatch', () => {
 	});
 
 	it('removed peer commands are not public routes', async () => {
-		for (const verb of ['down', 'logs', 'codegen', 'exec', 'fork', 'stack']) {
+		for (const verb of ['down', 'logs', 'exec', 'fork', 'stack']) {
 			const { deps, read } = makeHarness();
 			await run([verb], deps, { io: read().io });
 			const h = read();
@@ -719,6 +722,7 @@ describe('dispatch', () => {
 		expect(schema.verbs).toEqual([
 			'up',
 			'apply',
+			'codegen',
 			'status',
 			'doctor',
 			'config',

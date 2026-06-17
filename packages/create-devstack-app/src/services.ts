@@ -4,15 +4,17 @@
 // service contributes to the rendered `devstack.config.ts` lives in
 // `render-config.ts`.
 
-export type ServiceId = 'walrus' | 'seal';
+export type ServiceId = 'walrus' | 'seal' | 'deepbook' | 'pyth';
 
 /** All optional services, in canonical prompt + render order. The sui
- *  localnet is not listed — it is always part of the stack. DeepBook is
- *  deliberately absent: devstack no longer auto-synthesizes a local
- *  DeepBook (it needs vendored Move packages and explicit pool config),
- *  so it can't be a one-line service — the README points to
- *  examples/deepbook-trader instead. */
-export const SERVICE_IDS: ReadonlyArray<ServiceId> = ['walrus', 'seal'];
+ *  localnet is not listed — it is always part of the stack. DeepBook pulls its
+ *  Move package straight from the upstream repo (`localPackage({ git })`, no
+ *  vendored tree) and defaults to a seeded-less `DEEP/SUI` pool, so it scaffolds
+ *  as a small self-contained block. `pyth` is a DeepBook add-on: it publishes a
+ *  local mock-Pyth package and wires DEEP/SUI price feeds into the pool, so
+ *  selecting it implies `deepbook` (see `normalizeServices`). See
+ *  `examples/deepbook-trader` for the full multi-pool + multi-feed setup. */
+export const SERVICE_IDS: ReadonlyArray<ServiceId> = ['walrus', 'seal', 'deepbook', 'pyth'];
 
 export interface ServiceSpec {
 	/** Multiselect label. */
@@ -35,7 +37,31 @@ export const SERVICES: Readonly<Record<ServiceId, ServiceSpec>> = {
 		hint: 'encryption — encrypt & decrypt against a local key server',
 		deps: ['@mysten/seal'],
 	},
+	deepbook: {
+		label: 'deepbook',
+		hint: 'on-chain order book — publishes DeepBook from git + a default DEEP/SUI pool',
+		// No extra npm dep: the config uses `deepbook` from the devstack barrel.
+		// Add `@mysten/deepbook-v3` yourself when you build a trading UI.
+		deps: [],
+	},
+	pyth: {
+		label: 'pyth',
+		hint: 'price feeds for DeepBook — local mock Pyth + DEEP/SUI feeds (implies deepbook)',
+		// No extra npm dep: feeds are wired via `deepbook`'s `pyth` option.
+		deps: [],
+	},
 };
+
+/** Apply service implications: `pyth` is a DeepBook add-on, so selecting it
+ *  pulls in `deepbook`. Returns a new canonical-order set. Call this wherever a
+ *  user-chosen service set is finalized (render + package.json pruning) so the
+ *  two stay consistent. */
+export function normalizeServices(
+	selected: ReadonlySet<ServiceId>,
+): ReadonlySet<ServiceId> {
+	if (!selected.has('pyth') || selected.has('deepbook')) return selected;
+	return new Set<ServiceId>([...selected, 'deepbook']);
+}
 
 /** Parse a `--services walrus,seal` value into the canonical-order service
  *  list (deduplicated). Throws on unknown ids; empty segments are ignored,

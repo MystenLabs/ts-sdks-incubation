@@ -4,11 +4,13 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"codegen": "devstack codegen",
 		"dev": "devstack up",
 		"apply": "devstack apply",
-		"typecheck": "devstack apply && tsc -b --noEmit",
+		"typecheck": "tsc -b --noEmit",
 		"test": "vitest run",
-		"build": "devstack apply && tsc -b && vite build",
+		"test:e2e": "vitest run --config vitest.e2e.config.ts",
+		"build": "tsc -b && vite build",
 		"preview": "vite preview",
 		"clean": "rm -rf dist .turbo node_modules/.tmp"
 	},

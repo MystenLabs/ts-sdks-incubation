@@ -1,9 +1,11 @@
 // Stack-context loader for the vitest integration — thin wrapper
 // over `runtime/readStackContext`.
 //
-// The vitest preset is a passive reader of the supervisor's manifest.
-// Discovery, decode, and version-gate live in `runtime/`; this module
-// only:
+// This module is a passive reader of the supervisor's manifest. (Booting
+// a stack for `*.e2e` suites is the separate `global-setup.ts` seam, wired
+// by `devstackVitestTestConfig({ autoBoot: true })`; this reader is
+// unaffected by it.) Discovery, decode, and version-gate live in
+// `runtime/`; this module only:
 //   - resolves the vitest-flavored env contract (`DEVSTACK_RUNTIME_ROOT`
 //     plus `DEVSTACK_STATE_DIR` alias),
 //   - exposes the manifest plus `endpoint(name)` / `displayEndpoint(name)`

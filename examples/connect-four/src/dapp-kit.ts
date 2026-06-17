@@ -14,6 +14,16 @@ import { config } from '@generated/config.js';
 
 const devstackNetwork = 'localnet' as const;
 
+// `config.network`/`config.networks` are runtime-resolved (the active
+// network name + its connection map are injected via `__DEVSTACK_IDS__`, not
+// baked into the committed tree). The map is index-signature typed, so look
+// up the active entry once and fail loudly if it is missing rather than
+// silently using `undefined`.
+const activeNetwork = config.networks[config.network];
+if (activeNetwork === undefined) {
+	throw new Error(`[devstack] no network entry for "${config.network}"`);
+}
+
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],
 	defaultNetwork: devstackNetwork,
@@ -21,7 +31,7 @@ export const dAppKit = createDAppKit({
 	createClient() {
 		return new SuiGrpcClient({
 			network: devstackNetwork,
-			baseUrl: config.networks[config.network].rpc,
+			baseUrl: activeNetwork.rpc,
 			// `config.mvrOverrides` is the codegen-emitted active-network
 			// name→id map: each generated Move binding defaults its `package`
 			// to `@local/<name>` (e.g. `@local/connect-four`), and this map

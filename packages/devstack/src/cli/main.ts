@@ -47,6 +47,7 @@ import {
 import { makeDirectPruneDeps } from './prune-direct.ts';
 import { runUpLive } from './wirings/up.ts';
 import { runApplyLive } from './wirings/apply.ts';
+import { runCodegen } from './wirings/codegen.ts';
 import {
 	runSnapshotCaptureLiveAware,
 	runSnapshotDeleteDirect,
@@ -210,6 +211,9 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 		},
 		apply: {
 			run: (flags) => runApplyLive(flags.configPath, identity),
+		},
+		codegen: {
+			run: (flags) => runCodegen(flags.configPath),
 		},
 		status: { reader: projectionStatusReader(identity) },
 		snapshot: {

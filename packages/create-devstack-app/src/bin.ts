@@ -31,8 +31,9 @@ Arguments:
 
 Options:
   --template <id>     Template: app (React dapp) or ts (TypeScript only). Default: app.
-  --services <list>   Comma-separated services to include (walrus,seal).
-                      The sui localnet is always included. Skips the service prompt.
+  --services <list>   Comma-separated services to include (walrus,seal,deepbook,pyth).
+                      pyth implies deepbook. The sui localnet is always included.
+                      Skips the service prompt.
   --all               Include every service.
   --minimal           No optional services (sui localnet only).
   --yes               Non-interactive: accept defaults (app template, no services).

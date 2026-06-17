@@ -84,20 +84,41 @@ export const formatHeartbeat = (
 // Renderer implementation
 // -----------------------------------------------------------------------------
 
+export interface PlainRendererOptions {
+	/**
+	 * Quiet mode: emit only the milestones an operator tailing the stream
+	 * cares about — per-plugin readiness, endpoint registrations, codegen,
+	 * hard-kill escalations, and ALL warnings/errors — and drop the routine
+	 * intermediate transitions (starting/acquiring), info `log.appended`
+	 * lines, projection churn, build progress, and teardown chatter.
+	 *
+	 * OFF by default: the normal `--format plain` / CI stream keeps the
+	 * architecture invariant of one line per event (no aggregation). This
+	 * is opted into by embedded consumers that pipe the supervisor's output
+	 * through another tool — notably the Playwright `webServer`, where the
+	 * full firehose surfaces as confusing `[WebServer]`-prefixed noise.
+	 */
+	readonly quiet?: boolean;
+}
+
 /**
  * Build a plain renderer satisfying the `Renderer` contract.
  *
  * Mount subscribes to the live event stream, writes one line per
  * event to stderr. The state-ref is sampled for the initial sweep
  * (one line per declared row) so a renderer attached after boot
- * still sees a coherent baseline.
+ * still sees a coherent baseline. In quiet mode the sweep collapses
+ * to the single `stack.identity` line — at boot the per-row/account
+ * lines are all `<pending>` and the real signal arrives as readiness
+ * + endpoint events.
  */
-export const makePlainRenderer = (): Renderer => ({
+export const makePlainRenderer = (options: PlainRendererOptions = {}): Renderer => ({
 	mount: (stateRef, events) =>
 		Effect.gen(function* () {
 			const initial = yield* SubscriptionRef.get(stateRef);
-			yield* emitInitialSweep(initial);
-			yield* events.pipe(Stream.runForEach((event) => writeStderrLine(formatEventLine(event))));
+			yield* emitInitialSweep(initial, { quiet: options.quiet });
+			const stream = options.quiet ? events.pipe(Stream.filter(keepInQuiet)) : events;
+			yield* stream.pipe(Stream.runForEach((event) => writeStderrLine(formatEventLine(event))));
 		}).pipe(
 			Effect.catch((cause: unknown) =>
 				Effect.fail(mountFailed(cause instanceof Error ? cause.message : String(cause))),
@@ -105,6 +126,26 @@ export const makePlainRenderer = (): Renderer => ({
 		),
 	flush: Effect.void.pipe(Effect.catch(() => Effect.fail(mountFailed('flush')))),
 });
+
+/**
+ * Quiet-mode event predicate (pure; exported for tests). Keeps milestone
+ * and non-INFO events; drops routine INFO churn. Anything that formats as
+ * WARN/ERROR is always kept so failures are never silently filtered out.
+ */
+export const keepInQuiet = (event: EngineEvent): boolean => {
+	if (levelForEvent(event) !== 'INFO') return true;
+	switch (event.tag) {
+		case 'lifecycle.statusChanged':
+			// Only the readiness milestone, not every starting/acquiring tick.
+			return event.to === 'ready';
+		case 'endpoint.registered':
+		case 'codegen.emitted':
+		case 'shutdown.escalated':
+			return true;
+		default:
+			return false;
+	}
+};
 
 // -----------------------------------------------------------------------------
 // Internals — formatting
@@ -303,11 +344,18 @@ const tryDecodeProjection = <S extends Schema.Decoder<unknown>>(
 // Internals — initial sweep
 // -----------------------------------------------------------------------------
 
-const emitInitialSweep = (state: SubscribableState): Effect.Effect<void> =>
+const emitInitialSweep = (
+	state: SubscribableState,
+	options: { readonly quiet?: boolean } = {},
+): Effect.Effect<void> =>
 	Effect.gen(function* () {
 		yield* writeStderrLine(
 			`${isoTimestamp(state.cycle.startedAt || Date.now())} INFO stack.identity app=${state.identity.app} stack=${state.identity.stack} network=${state.identity.network} cycle=${state.cycle.id}`,
 		);
+		// Quiet mode: stop after the identity line. The per-row/account/
+		// endpoint/package sweep is all `<pending>` at boot; the real signal
+		// arrives as readiness + endpoint events on the (filtered) stream.
+		if (options.quiet) return;
 		for (const row of state.rows) {
 			yield* writeStderrLine(
 				`${isoTimestamp(Date.now())} INFO row.declared ${kv({

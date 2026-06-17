@@ -63,8 +63,12 @@ import { layerCodegenPaths, layerCodegenRoot } from '../../src/orchestrators/cod
 import {
 	CodegenOrchestratorService,
 	layerCodegenOrchestrator,
-	type RunEmitCycleResult,
 } from '../../src/orchestrators/codegen/service.ts';
+import {
+	ID_CONFIG_FILENAME,
+	writeIdConfig,
+	type IdConfig,
+} from '../../src/orchestrators/codegen/id-config.ts';
 import { CoinRegistryService, layerCoinRegistry } from '../../src/plugins/coin/registry.ts';
 import {
 	PackageRegistryService,
@@ -184,8 +188,14 @@ export type BootOptions = BootSource & {
 };
 
 export interface BootCodegenRun {
+	/** Directory holding the written `devstack-ids.json` (boot's only
+	 *  codegen-adjacent output now — the committed tree is the stack-free
+	 *  `devstack codegen` verb's job). */
 	readonly outputDir: string;
-	readonly result: RunEmitCycleResult;
+	/** Absolute path to the written id-config file. */
+	readonly idsFile: string;
+	/** The assembled id-config (the live on-chain ids). */
+	readonly idConfig: IdConfig;
 }
 
 export interface BootResult {
@@ -559,13 +569,25 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				}
 
 				const snap = yield* SubscriptionRef.get(state);
-				const codegenRun =
-					opts.runCodegen === true
-						? ({
-								outputDir: codegenOutputDir,
-								result: yield* codegen.runCycle().pipe(Effect.orDie),
-							} satisfies BootCodegenRun)
-						: null;
+				let codegenRun: BootCodegenRun | null = null;
+				if (opts.runCodegen === true) {
+					// Boot no longer emits a codegen tree — it assembles + writes
+					// the id-config (the live on-chain ids the Vite plugin injects).
+					// Mirror the production post-acquire path so the e2e exercises
+					// the real id-config write/round-trip.
+					const idConfig = yield* codegen.assembleIdConfig('localnet').pipe(Effect.orDie);
+					const idsFile = join(codegenOutputDir, ID_CONFIG_FILENAME);
+					yield* fs.makeDirectory(codegenOutputDir, { recursive: true }).pipe(Effect.orDie);
+					yield* writeIdConfig(idsFile, idConfig).pipe(
+						Effect.provideService(FileSystem.FileSystem, fs),
+						Effect.orDie,
+					);
+					codegenRun = {
+						outputDir: codegenOutputDir,
+						idsFile,
+						idConfig,
+					} satisfies BootCodegenRun;
+				}
 				const routerAppliedRoutes = yield* SubscriptionRef.get(router.applied);
 				return {
 					readyKeys,

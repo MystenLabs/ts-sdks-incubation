@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname as nodeHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect, Fiber, Stream } from 'effect';
@@ -277,11 +277,17 @@ describe('cli/main', () => {
 		}
 	});
 
-	it('apply runs production codegen lifecycle and emits importable generated code', async () => {
+	it('apply writes the id-config and does NOT emit the committed tree', async () => {
 		const appRoot = makeTempRoot('cli-codegen-app');
 		const stateRoot = makeTempRoot('cli-codegen-state');
 		const configPath = writeCodegenConfig(appRoot);
+		// Boot/apply no longer emits a committed codegen tree — it writes the
+		// gitignored id-config (the live ids the Vite plugin injects). The
+		// committed `src/generated` is the stack-free `devstack codegen` verb's
+		// job. Assert apply wrote `devstack-ids.json` and emitted NO
+		// `src/generated` file.
 		const generatedPath = join(appRoot, 'src', 'generated', 'cli-apply-proof.ts');
+		const idsPath = join(stateRoot, 'stacks', 'main', 'devstack-ids.json');
 		const previousExitCode = process.exitCode;
 		const previousEnv = {
 			DEVSTACK_APP: process.env.DEVSTACK_APP,
@@ -316,12 +322,11 @@ describe('cli/main', () => {
 			]);
 
 			expect(process.exitCode).toBe(0);
-			expect(existsSync(generatedPath)).toBe(true);
-
-			const mod = (await import(`${pathToFileURL(generatedPath).href}?t=${Date.now()}`)) as {
-				readonly cliApplyProof: { readonly message: string };
-			};
-			expect(mod.cliApplyProof).toEqual({ message: 'from-cli-apply' });
+			// Id-config written; committed tree untouched.
+			expect(existsSync(idsPath)).toBe(true);
+			expect(existsSync(generatedPath)).toBe(false);
+			const idConfig = JSON.parse(readFileSync(idsPath, 'utf8')) as { readonly network: string };
+			expect(idConfig.network).toBe('localnet');
 		} finally {
 			process.exitCode = previousExitCode;
 			for (const [key, value] of Object.entries(previousEnv)) {

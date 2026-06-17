@@ -9,7 +9,13 @@
 // No package id is threaded here: the generated builders default `package`
 // to `@local/counter`; construct your client with
 // `mvr: { overrides: { packages: config.mvrOverrides } }` (see
-// `./generated/config.ts`) and the name resolves to the deployed id.
+// `@generated/config.ts`) and the name resolves to the deployed id.
+//
+// Imports go through the `@generated` alias (NOT `./generated`) so the
+// devstack Vite plugin can point it at the ACTIVE stack's codegen output:
+// `src/generated` under `pnpm dev`, the per-stack `.devstack/stacks/<stack>/generated`
+// under `pnpm test:e2e`. Typecheck resolves it to `src/generated`
+// via the tsconfig `paths` entry (shapes are stack-invariant).
 
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
@@ -18,7 +24,7 @@ import {
 	Counter,
 	createAndShare as buildCreateAndShare,
 	incrementEntry as buildIncrement,
-} from './generated/bindings/counter/counter.ts';
+} from '@generated/bindings/counter/counter.ts';
 
 /** Build a tx that creates + shares a fresh `Counter` (starts at 0). */
 export function createCounterTx(): Transaction {

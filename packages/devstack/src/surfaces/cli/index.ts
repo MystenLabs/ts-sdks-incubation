@@ -54,9 +54,18 @@ export interface LifecycleCommandDeps {
 	readonly run: (flags: GlobalFlags) => Effect.Effect<CommandResult, CliError>;
 }
 
+/** The stack-free `codegen` verb takes only a config path — it boots no
+ *  stack, so it needs no renderer/snapshot/identity flags. */
+export interface CodegenCommandDeps {
+	readonly run: (flags: {
+		readonly configPath: string | undefined;
+	}) => Effect.Effect<CommandResult, CliError>;
+}
+
 export interface CliDeps {
 	readonly up: LifecycleCommandDeps;
 	readonly apply: LifecycleCommandDeps;
+	readonly codegen: CodegenCommandDeps;
 	readonly status: StatusDeps;
 	readonly snapshot: SnapshotDeps;
 	readonly prune: PruneDeps;
@@ -501,6 +510,18 @@ const applyCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
 	},
 });
 
+const codegenCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
+	parameters: { flags: configFlagParams },
+	docs: {
+		brief: 'Regenerate committed bindings from Move source (no stack boot)',
+	},
+	func: function (flags) {
+		return runWithFlags(this, 'codegen', flags, [], (global) =>
+			this.deps.codegen.run({ configPath: global.configPath }),
+		);
+	},
+});
+
 const statusCommand = buildCommand<IdentityFlags, [], DevstackCliContext>({
 	parameters: { flags: identityFlagParams },
 	docs: { brief: 'Show the current stack projection (offline: from the manifest)' },
@@ -655,6 +676,7 @@ const root = buildRouteMap({
 	routes: {
 		up: upCommand,
 		apply: applyCommand,
+		codegen: codegenCommand,
 		status: statusCommand,
 		doctor: doctorCommand,
 		config: configCommand,

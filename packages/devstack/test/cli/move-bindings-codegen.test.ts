@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -19,18 +19,6 @@ const hasSui = (): boolean => {
 	return result.status === 0;
 };
 
-/** The chain-build container backing real Move bindings codegen needs
- *  the local Docker daemon. Skip-gate here matches `hasSui` so a dev
- *  machine without docker-running gets a clean skip instead of a
- *  cryptic `image-build-failed` deep in the supervisor. */
-const hasDocker = (): boolean => {
-	const result = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	return result.status === 0;
-};
-
 const makeTempRoot = (prefix: string): string => {
 	const root = mkdtempSync(join(packageRoot, `.tmp-${prefix}-`));
 	tempRoots.push(root);
@@ -42,55 +30,34 @@ const writeMoveBindingsConfig = (appRoot: string, movePackagePath: string): stri
 	writeFileSync(
 		configPath,
 		`
-import { Effect } from 'effect';
-import {
-\tdefineDevstack,
-\tdefinePlugin,
-\tPluginContext,
-} from '@mysten-incubation/devstack';
+import { account, defineDevstack, localPackage, sui } from '@mysten-incubation/devstack';
 
-const moveBindingsProofPlugin = definePlugin({
-\tid: 'test/move-bindings-proof',
-\trole: 'service',
-\tsection: 'service',
-\tstart: () =>
-\t\tEffect.gen(function* () {
-\t\t\tconst ctx = yield* PluginContext;
-\t\t\tctx.codegen({
-\t\t\t\tkind: 'codegenable',
-\t\t\t\temitterName: 'package',
-\t\t\t\toutputPath: 'package/@local/hello.ts',
-\t\t\t\tsensitive: false,
-\t\t\t\temit: (emit) =>
-\t\t\t\t\tEffect.sync(() => {
-\t\t\t\t\t\temit.exportConst('packageBindings', {
-\t\t\t\t\t\t\tname: 'hello',
-\t\t\t\t\t\t\tpackageId: '0x123',
-\t\t\t\t\t\t\tmvrPlaceholder: '@local/hello',
-\t\t\t\t\t\t\tsourcePath: ${JSON.stringify(movePackagePath)},
-\t\t\t\t\t\t\texcluded: false,
-\t\t\t\t\t\t});
-\t\t\t\t\t\treturn emit.done();
-\t\t\t\t\t}),
-\t\t\t});
-\t\t\treturn { packageName: 'hello' } as const;
-\t\t}),
+const suiPlugin = sui();
+const alice = account('alice');
+const hello = localPackage('hello', {
+\tsourcePath: ${JSON.stringify(movePackagePath)},
+\tpublisher: alice,
 });
 
-export default defineDevstack({ members: [moveBindingsProofPlugin], stackName: 'main' });
+export default defineDevstack({ members: [suiPlugin, alice, hello], stackName: 'main' });
 `.trimStart(),
 	);
 	return configPath;
 };
 
-describe('cli apply Move bindings codegen', () => {
+// `devstack codegen` is stack-FREE: it Move-compiles local package sources
+// via the host `sui` binary + real `@mysten/codegen` and emits the committed
+// `src/generated` tree WITHOUT booting a stack (no Docker, no publish). The
+// emitted bindings are id-free (the `config.ts` resolves ids at app build
+// time via `__DEVSTACK_IDS__`), so this is a pure deterministic projection.
+describe('cli codegen Move bindings', () => {
 	afterEach(() => {
 		for (const root of tempRoots.splice(0)) {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	it.skipIf(!hasSui() || !hasDocker())(
+	it.skipIf(!hasSui())(
 		'runs host sui move summary, real @mysten/codegen, and imports generated bindings',
 		async () => {
 			const appRoot = makeTempRoot('cli-move-bindings-app');
@@ -101,6 +68,7 @@ describe('cli apply Move bindings codegen', () => {
 
 			const configPath = writeMoveBindingsConfig(appRoot, movePackagePath);
 			const generatedBindingPath = join(appRoot, 'src/generated/bindings/hello/hello.ts');
+			const generatedConfigPath = join(appRoot, 'src/generated/config.ts');
 			const sourceSummaryPath = join(movePackagePath, 'package_summaries/hello/hello.json');
 			const previousExitCode = process.exitCode;
 			const previousEnv = {
@@ -123,7 +91,7 @@ describe('cli apply Move bindings codegen', () => {
 				expect(existsSync(generatedBindingPath)).toBe(false);
 
 				await runCli([
-					'apply',
+					'codegen',
 					'--config',
 					configPath,
 					'--state-dir',
@@ -148,6 +116,17 @@ describe('cli apply Move bindings codegen', () => {
 				};
 				expect(mod.Greeting).toBeDefined();
 				expect(typeof mod.mint).toBe('function');
+
+				// The committed `config.ts` must runtime-resolve the active
+				// network + its connection map (sui's `staticCodegen`): NO baked
+				// network name, NO literal rpc URL. Regression guard for the
+				// missing-`network`/`networks` bug that broke app `tsc`.
+				const generatedConfig = readFileSync(generatedConfigPath, 'utf8');
+				expect(generatedConfig).toContain('network: resolveNetwork()');
+				expect(generatedConfig).toContain('networks: resolveNetworks()');
+				expect(generatedConfig).toMatch(
+					/import \{[^}]*\bresolveNetwork\b[^}]*\bresolveNetworks\b[^}]*\} from '\.\/config-runtime\.js';/,
+				);
 			} finally {
 				process.exitCode = previousExitCode;
 				for (const [key, value] of Object.entries(previousEnv)) {

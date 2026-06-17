@@ -8,6 +8,7 @@ import {
 	hashMoveSources as hashMoveSourcesNeutral,
 	runMoveBuild as runMoveBuildNeutral,
 	scrubLocksHost as scrubLocksHostNeutral,
+	withMoveBuildLock,
 	type BuildOutput,
 	type MoveBuildError,
 	type MoveBuildContainer,
@@ -16,6 +17,10 @@ import {
 import { publishError, type PublishError } from './errors.ts';
 
 export type { BuildOutput };
+
+// Re-exported verbatim: the lock is generic over the wrapped effect's channels,
+// so the package plugin uses the same process-wide Move-build permit as seal.
+export { withMoveBuildLock };
 
 export interface BuildInputs {
 	readonly sourcePath: string;

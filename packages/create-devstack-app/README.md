@@ -80,9 +80,12 @@ not in the scaffold.
 
 - **Every generated file survives into a real app.** No demo gallery to delete on day two.
 - **Services are config lines, not file sets.** Selecting walrus/seal adds one factory line each to
-  `devstack.config.ts` (plus their npm deps). It never adds or removes source files. (DeepBook is
-  not offered — devstack no longer synthesizes a local DeepBook, so it can't be a one-liner; the
-  generated README points to `examples/deepbook-trader` instead.)
+  `devstack.config.ts` (plus their npm deps). DeepBook adds a small self-contained block: it pulls
+  its Move package from the upstream repo (`localPackage({ git })` — no vendored tree) and omits the
+  pool list, so `deepbook(...)` synthesizes a default DEEP/SUI pool. Selecting **pyth** adds local
+  price feeds for that pool (a git-sourced mock-Pyth package + DEEP/SUI feeds) and implies deepbook.
+  No service ever adds or removes source files. See [`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader)
+  for the full multi-pool + multi-feed setup.
 - **One rendered file.** `devstack.config.ts` is the only file generated from the selection;
   everything else is copied verbatim from the template.
 - **One `package.json` mutation.** App name, pruning unselected-service deps, and injecting resolved

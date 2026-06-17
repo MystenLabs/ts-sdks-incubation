@@ -37,6 +37,11 @@
 			"types": "./dist/build-integrations/vitest/setup.d.mts",
 			"import": "./dist/build-integrations/vitest/setup.mjs"
 		},
+		"./vitest/global-setup": {
+			"types": "./dist/build-integrations/vitest/global-setup.d.mts",
+			"import": "./dist/build-integrations/vitest/global-setup.mjs",
+			"default": "./dist/build-integrations/vitest/global-setup.mjs"
+		},
 		"./playwright": {
 			"types": "./dist/build-integrations/playwright/index.d.mts",
 			"import": "./dist/build-integrations/playwright/index.mjs"

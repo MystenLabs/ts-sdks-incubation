@@ -7,10 +7,17 @@ generated bindings.
 ## The loop
 
 ```bash
-pnpm dev    # terminal 1: boots the localnet (+ any services), publishes move/counter,
-            # regenerates src/generated/, and prints the dashboard URL
-pnpm test   # terminal 2: runs src/**/*.test.ts against the running stack
+pnpm dev       # boots the `dev` localnet (+ any services), publishes move/counter,
+               # regenerates src/generated/, and prints the dashboard URL
+pnpm test      # unit tests (src/**/*.test.ts) — fast, boots nothing
+pnpm test:e2e  # full-stack tests (src/**/*.e2e.test.ts) — boots a throwaway `test`
+               # stack, runs them against it, then tears it down
 ```
+
+`pnpm test:e2e` is self-contained: it does **not** need `pnpm dev` running, and because it
+boots a separate `test` stack it runs in parallel with `pnpm dev` without contending or
+clobbering `src/generated`. To run the e2e suite against an already-running stack instead of
+booting a fresh one, set `DEVSTACK_TEST_REUSE=1` (and point `DEVSTACK_STACK` at that stack).
 
 Prefer a one-shot boot without the watch loop? `pnpm apply`. Day-2: `devstack status` (what's
 running + endpoints), `devstack doctor` (diagnose), `devstack wipe` (reset state).
@@ -18,8 +25,8 @@ running + endpoints), `devstack doctor` (diagnose), `devstack wipe` (reset state
 ## Standalone scripts
 
 Node 24 runs TypeScript natively — paste this into `src/main.ts` and run
-`node src/main.ts <counterId>` (see `src/counter.test.ts` for the full create → increment → read
-flow, including faucet funding):
+`node src/main.ts <counterId>` (see `src/counter.e2e.test.ts` for the full create → increment →
+read flow, including faucet funding):
 
 ```ts
 import { SuiGrpcClient } from '@mysten/sui/grpc';

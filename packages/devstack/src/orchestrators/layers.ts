@@ -26,15 +26,15 @@ import type { SupervisedStack } from '../substrate/runtime/index.ts';
  *  options). Use `buildDirectSnapshotLayers` when the verb does NOT
  *  load a config (e.g. restore/delete/wipe).
  *
- *  Resolves the per-stack codegen output location HERE — the one boot
- *  seam where both the primary stack (`stack.options.stackName`) and the
- *  EFFECTIVE stack (`String(identity.stack)`, already run through the
- *  explicit-`--stack` > `config.stackName` > inferred precedence ladder
- *  by `resolvedIdentityForStack`/`identityValueFor` upstream) are in
- *  scope. The primary run emits into `src/generated/`; a secondary run
- *  (concurrent `--stack e2e`/etc.) emits into
- *  `.devstack/stacks/<stack>/generated/` so the two never clobber. The
- *  resolved literal `outputDir`/`stackSubdir` flow into
+ *  Resolves the per-stack LIVE codegen output location HERE — the one
+ *  boot seam where the EFFECTIVE stack (`String(identity.stack)`, already
+ *  run through the explicit-`--stack` > `config.stackName` > inferred
+ *  precedence ladder by `resolvedIdentityForStack`/`identityValueFor`
+ *  upstream) is in scope. EVERY live run emits into
+ *  `.devstack/stacks/<stack>/generated/` (gitignored) so the id-bearing
+ *  tree never lands in committed source and two stacks never clobber; the
+ *  committed `src/generated` tree is owned by the stack-free `codegen`
+ *  verb. The resolved literal `outputDir`/`stackSubdir` flow into
  *  `layerProductionOrchestrators` unchanged — `paths.ts` keeps consuming
  *  a literal, minimal blast radius. */
 export const buildVerbLayers = (params: {
@@ -47,7 +47,6 @@ export const buildVerbLayers = (params: {
 		codegen: resolveProductionCodegenOptions({
 			appRoot: params.appRoot,
 			effectiveStack: String(params.identity.stack),
-			primaryStack: params.stack.options.stackName,
 			codegen: params.stack.options.codegen,
 		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(params.identity, params.runtimeRoot)));

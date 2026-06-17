@@ -3,9 +3,12 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import { deployment } from './deployment.js';
 
+// Pure amount/format helpers live in `amount.ts` (no @generated dependency,
+// unit-tested without a stack); re-exported here so callers keep one import site.
+export { COIN_DECIMALS, formatStudio, parseStudioAmount, shortAddress } from './amount.js';
+
 export const MANAGED_COIN_TYPE = deployment.managedCoinType;
 export const TREASURY_CAP_ID = deployment.treasuryCapId;
-export const COIN_DECIMALS = 6;
 
 /**
  * Build a transaction that transfers `amount` (raw units) of STUDIO to `recipient`.
@@ -46,29 +49,4 @@ export async function buildTransferTx(args: {
 	if (!split) throw new Error('splitCoins returned no result');
 	tx.transferObjects([split], recipient);
 	return tx;
-}
-
-export function parseStudioAmount(input: string): bigint {
-	const trimmed = input.trim();
-	if (!trimmed) return 0n;
-	if (!/^\d+(\.\d{0,6})?$/.test(trimmed)) {
-		throw new Error('Enter a non-negative number with up to 6 decimal places');
-	}
-	const [whole, frac = ''] = trimmed.split('.');
-	const padded = (frac + '0'.repeat(COIN_DECIMALS)).slice(0, COIN_DECIMALS);
-	return BigInt(whole ?? '0') * 10n ** BigInt(COIN_DECIMALS) + BigInt(padded || '0');
-}
-
-export function formatStudio(raw: bigint | string | number, fractionDigits = 2): string {
-	const big = typeof raw === 'bigint' ? raw : BigInt(raw);
-	const divisor = 10n ** BigInt(COIN_DECIMALS);
-	const whole = big / divisor;
-	const frac = big % divisor;
-	const fracStr = frac.toString().padStart(COIN_DECIMALS, '0').slice(0, fractionDigits);
-	return `${whole.toString()}.${fracStr}`;
-}
-
-export function shortAddress(address: string, head = 6, tail = 4): string {
-	if (address.length <= head + tail + 2) return address;
-	return `${address.slice(0, head + 2)}…${address.slice(-tail)}`;
 }

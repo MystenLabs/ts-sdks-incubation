@@ -505,11 +505,11 @@ jobs:
         # (the tarball install created a real `node_modules/.bin/devstack`,
         # unlike the in-repo examples) and treat the `codegen.emitted` log
         # line as boot-complete: it lands after the manifest flush and
-        # guarantees src/generated/ is fresh for the assert + `pnpm test`
-        # steps. Deliberately name-blind — the stack is named after the
-        # app via package.json inference (stacks/smoke-boot/, not
-        # stacks/main/). `--renderer plain` keeps line-oriented logs on
-        # the non-TTY runner.
+        # guarantees src/generated/ is fresh for the assert step. This is
+        # the PRIMARY `dev` stack (scaffolded config sets `stackName: 'dev'`
+        # → stacks/dev/, codegen → src/generated). The later `pnpm test:e2e`
+        # boots a SEPARATE secondary `test` stack alongside it. `--renderer
+        # plain` keeps line-oriented logs on the non-TTY runner.
         run: |
           nohup ./node_modules/.bin/devstack up --renderer plain > up.log 2>&1 &
           echo $! > up.pid
@@ -535,10 +535,22 @@ jobs:
           test -n "$(ls -A src/generated)"
           find src/generated -type f | head -50
 
-      - name: Run app tests against the live stack
+      - name: Run unit tests (no stack)
         working-directory: ${{ runner.temp }}/scaffold/smoke-boot
-        timeout-minutes: 10
+        timeout-minutes: 5
+        # `pnpm test` is unit-only now — fast, boots nothing. Validates the
+        # unit suite resolves + passes with no Docker.
         run: pnpm test
+
+      - name: Run e2e tests (auto-boots a `test` stack, parallel to the dev stack)
+        working-directory: ${{ runner.temp }}/scaffold/smoke-boot
+        timeout-minutes: 15
+        # `pnpm test:e2e` boots its OWN dedicated `test` stack (secondary →
+        # codegen under .devstack/stacks/test/generated) while the `devstack
+        # up` `dev` stack above stays live — proving tests run in parallel
+        # with dev without contending or clobbering src/generated. Tears the
+        # test stack down on completion.
+        run: pnpm test:e2e
 
       - name: Tear down (SIGINT supervisor, then wipe)
         working-directory: ${{ runner.temp }}/scaffold/smoke-boot

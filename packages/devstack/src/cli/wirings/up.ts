@@ -391,6 +391,13 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 				const renderer = makeTuiSurface({
 					mode: rendererMode,
 					publishCommand: makeQueueCommandPublisher(h.commands),
+					// Opt-in quiet plain stream (readiness/endpoint/codegen
+					// milestones + warns/errors only). Set by embedded consumers
+					// that pipe `devstack up` output through another tool — the
+					// Playwright `webServer` (see `devstackPlaywrightWebServer`)
+					// — where the full per-event firehose reads as `[WebServer]`
+					// noise. No effect on a TTY (`ink`) or normal CI `plain` run.
+					quiet: process.env.DEVSTACK_PLAIN_QUIET === '1',
 				});
 				yield* Effect.addFinalizer(() => renderer.flush.pipe(Effect.catch(() => Effect.void)));
 				yield* Effect.forkScoped(

@@ -355,20 +355,19 @@ export const runStackWithBoot = (
 		midRunCauseRef,
 	} = makeRunHandleSlots();
 
-	// Resolve the per-stack codegen output location through the ONE shared
-	// boot seam: primary run (effective stack === config `stackName`) →
-	// `src/generated/`; a secondary embedding →
-	// `.devstack/stacks/<stack>/generated/`. An explicit `opts.codegen`
-	// (or the stack's own `codegen`) is honored verbatim by the resolver.
-	// Both the primary stack (`engineStack.options.stackName`) and the
-	// effective stack (the resolved `identity.stack`) are in scope here,
-	// exactly as in the CLI's `buildVerbLayers` seam — both now route
-	// through `resolveProductionCodegenOptions`.
+	// Resolve the per-stack LIVE codegen output location through the ONE
+	// shared boot seam: EVERY live run emits into
+	// `.devstack/stacks/<stack>/generated/` (gitignored), so the id-bearing
+	// tree never lands in committed source. The committed `src/generated`
+	// tree is owned solely by the stack-free `codegen` verb. An explicit
+	// `opts.codegen` (or the stack's own `codegen`) is honored verbatim by
+	// the resolver. The effective stack (the resolved `identity.stack`) is
+	// in scope here, exactly as in the CLI's `buildVerbLayers` seam — both
+	// route through `resolveProductionCodegenOptions`.
 	const substrate = layerProductionOrchestrators({
 		codegen: resolveProductionCodegenOptions({
 			appRoot,
 			effectiveStack: String(identity.stack),
-			primaryStack: engineStack.options.stackName,
 			codegen,
 		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));

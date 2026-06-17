@@ -9,7 +9,7 @@
 // Factory call shapes are ported verbatim from the proven previous template
 // config; do not invent options here without checking the devstack API.
 
-import type { ServiceId } from './services.js';
+import { normalizeServices, type ServiceId } from './services.js';
 
 export type TemplateId = 'app' | 'ts';
 
@@ -20,20 +20,28 @@ export function renderDevstackConfig(
 	services: ReadonlySet<ServiceId>,
 ): string {
 	const isApp = template === 'app';
-	const hasWalrus = services.has('walrus');
-	const hasSeal = services.has('seal');
+	// `pyth` implies `deepbook` — normalize so the two render consistently
+	// regardless of how the set was assembled.
+	const resolved = normalizeServices(services);
+	const hasWalrus = resolved.has('walrus');
+	const hasSeal = resolved.has('seal');
+	const hasDeepbook = resolved.has('deepbook');
+	const hasPyth = resolved.has('pyth');
 
 	// Named imports from the devstack barrel, pre-sorted (case-insensitive,
 	// matching the repo's import-sort style). Filtered, never re-ordered.
 	const devstackImports: ReadonlyArray<string> = [
 		'account',
 		'dashboard',
+		...(hasPyth ? ['DEEP_PRICE_FEED_ID'] : []),
+		...(hasDeepbook ? ['deepbook'] : []),
 		'defineDevstack',
 		...(isApp ? ['HOST_SERVICE_PORT_TOKEN', 'hostService'] : []),
 		'localPackage',
 		...(hasSeal ? ['seal'] : []),
 		'type Stack',
 		'sui',
+		...(hasPyth ? ['SUI_PRICE_FEED_ID'] : []),
 		...(hasWalrus ? ['walCoin'] : []),
 		...(isApp ? ['wallet'] : []),
 		...(hasWalrus ? ['walrus'] : []),
@@ -93,6 +101,63 @@ export function renderDevstackConfig(
 		);
 	}
 
+	if (hasDeepbook) {
+		// DeepBook's Move package is pulled from upstream (no vendored tree) and
+		// the pool list is omitted, so `deepbook(...)` synthesizes a default
+		// DEEP/SUI pool. The publisher needs ample SUI for the publish + pool
+		// creation gas. See examples/deepbook-trader for multi-pool + Pyth.
+		lines.push(
+			"const deepbookPublisher = account('deepbook_publisher', {",
+			"\tkind: 'ephemeral',",
+			"\tfunding: [{ coin: 'sui', amount: 1_000_000_000_000n }],",
+			'});',
+			"const deepbookPackage = localPackage('deepbook', {",
+			'\tgit: {',
+			"\t\turl: 'https://github.com/MystenLabs/deepbookv3.git',",
+			"\t\tsubdir: 'packages/deepbook',",
+			"\t\trev: 'main',",
+			'\t},',
+			'\tpublisher: deepbookPublisher,',
+			'\tcapture: {',
+			"\t\tregistryId: '::registry::Registry',",
+			"\t\tadminCapId: '::registry::DeepbookAdminCap',",
+			'\t},',
+			'});',
+		);
+		if (hasPyth) {
+			// Local mock Pyth: publish the sandbox package from git, then feed
+			// DEEP + SUI prices for the default pool. The deepbook publisher
+			// doubles as the feed pusher.
+			lines.push(
+				"const pythPackage = localPackage('pyth', {",
+				'\tgit: {',
+				"\t\turl: 'https://github.com/MystenLabs/deepbook-sandbox.git',",
+				"\t\tsubdir: 'sandbox/packages/pyth',",
+				"\t\trev: 'main',",
+				'\t},',
+				'\tpublisher: deepbookPublisher,',
+				'});',
+				'const dex = deepbook({',
+				"\tmode: 'local',",
+				'\tpublisher: deepbookPublisher,',
+				'\tpackage: deepbookPackage,',
+				'\tpyth: {',
+				'\t\tpackage: pythPackage,',
+				'\t\tpusher: deepbookPublisher,',
+				'\t\tfeeds: [',
+				"\t\t\t{ symbol: 'DEEP', feedId: DEEP_PRICE_FEED_ID, initialPrice: 2_000_000n, expo: -8 },",
+				"\t\t\t{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },",
+				'\t\t],',
+				'\t},',
+				'});',
+			);
+		} else {
+			lines.push(
+				"const dex = deepbook({ mode: 'local', publisher: deepbookPublisher, package: deepbookPackage });",
+			);
+		}
+	}
+
 	// The selected services' stack roots, in render order. In the app
 	// template these ride along on the host service's `after`; in the ts
 	// template they are stack members directly (nothing else references the
@@ -101,6 +166,7 @@ export function renderDevstackConfig(
 	const serviceRoots: ReadonlyArray<string> = [
 		...(hasWalrus ? ['storage'] : []),
 		...(hasSeal ? ['sealKeyServer'] : []),
+		...(hasDeepbook ? ['dex'] : []),
 	];
 
 	if (isApp) {
@@ -127,6 +193,10 @@ export function renderDevstackConfig(
 		'',
 		'const stack: Stack = defineDevstack({',
 		`\tmembers: [${members.join(', ')}],`,
+		'\t// `pnpm dev` boots this primary stack (codegen → src/generated);',
+		'\t// `pnpm test:e2e` boots an isolated `test` stack so tests run in',
+		'\t// parallel without clobbering it.',
+		"\tstackName: 'dev',",
 		'});',
 		'',
 		'export default stack;',

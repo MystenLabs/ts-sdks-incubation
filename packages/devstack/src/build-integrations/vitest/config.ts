@@ -43,6 +43,21 @@ export interface DevstackVitestTestConfigOptions {
 	 *  uses defaults; an options object configures the captured
 	 *  fixture (e.g. `{ requireDevstack: true }`). Default: not wired. */
 	readonly testSetup?: boolean | TestSetupOptions;
+	/** Marks this as the E2E (full-stack) config: boots a dedicated `test`
+	 *  stack for the run via vitest `globalSetup` (tearing it down on
+	 *  completion), AND scopes the run to `*.e2e.{test,spec}` files only. A
+	 *  plain `devstackVitestTestConfig()` is the UNIT config — it runs the
+	 *  other suites and excludes the `*.e2e` ones. So `pnpm test` (unit) never
+	 *  touches Docker, and `pnpm test:e2e` boots an isolated stack that runs
+	 *  in parallel to a developer's `pnpm dev` without contending.
+	 *  Default: not wired (unit config).
+	 *
+	 *  The injected boot module reads its knobs from the environment
+	 *  (`DEVSTACK_STACK`, `DEVSTACK_RUNTIME_ROOT`, `DEVSTACK_TEST_REUSE`).
+	 *  For programmatic options (custom stack name, reuse, timeout), author a
+	 *  one-line `globalSetup` module calling `devstackVitestGlobalSetup(opts)`
+	 *  and pass its path via `test.globalSetup` instead. */
+	readonly autoBoot?: boolean;
 	/** Enable vitest's typecheck pass. Default `false` — most apps
 	 *  run `tsc` outside vitest. */
 	readonly typecheck?: boolean;
@@ -69,6 +84,12 @@ export interface DevstackVitestTestConfigOptions {
  *  `exports` alongside the integration). */
 const DEVSTACK_SETUP_MODULE = '@mysten-incubation/devstack/vitest/setup';
 
+/** Path to the bundled devstack `globalSetup` module. Injected into
+ *  `test.globalSetup` when `opts.autoBoot` is set — it boots a `test`
+ *  stack before the run and tears it down after. Resolved like any npm
+ *  package via the `./vitest/global-setup` subpath in package.json. */
+const DEVSTACK_GLOBAL_SETUP_MODULE = '@mysten-incubation/devstack/vitest/global-setup';
+
 /** Runtime-root prefix the watcher MUST ignore — per architecture §
  *  Invariants → "No-restart on harmless changes". The 500ms manifest
  *  tick would otherwise re-trigger reloads. */
@@ -93,8 +114,11 @@ const WATCH_IGNORED_PATTERNS = ['**/.devstack/**', '**/node_modules/**', '**/dis
  *
  * For chain-mode integration tests against a real devstack, build a
  * devstack handle and pass `handle.layer` to `@effect/vitest`'s
- * `it.layer(...)` directly. This helper does not boot devstack — the
- * test file owns its lifecycle.
+ * `it.layer(...)` directly — here the test file owns its lifecycle.
+ * Alternatively, `autoBoot: true` wires the `global-setup.ts` boot seam
+ * that boots a dedicated stack for the `*.e2e` run and tears it down
+ * after (so `pnpm test:e2e` is self-contained); a plain call boots
+ * nothing and just builds the `test` block below.
  *
  * For suites that need a shared StackContext fixture (manifest read
  * once per file), opt into the setup file:
@@ -131,13 +155,38 @@ export const devstackVitestTestConfig = (
 
 	const typecheckOverride = options.typecheck === true ? { typecheck: { enabled: true } } : {};
 
+	// `autoBoot` marks the E2E (full-stack) config: it both wires the boot
+	// `globalSetup` AND scopes the run to `*.e2e.{test,spec}` files. A plain
+	// `devstackVitestTestConfig()` is the UNIT config — it runs the other
+	// suites and EXCLUDES the `*.e2e` ones (which need a booted stack). So
+	// `pnpm test` (unit) never boots Docker, and `pnpm test:e2e` runs only
+	// the stack-requiring suites against a freshly-booted stack.
+	const isE2e = Boolean(options.autoBoot);
+	const autoBootOverride = isE2e ? { globalSetup: [DEVSTACK_GLOBAL_SETUP_MODULE] } : {};
+
+	const include = isE2e
+		? ['src/**/*.e2e.{test,spec}.ts?(x)', 'test/**/*.e2e.{test,spec}.ts?(x)']
+		: ['src/**/*.{test,spec}.ts?(x)', 'test/**/*.{test,spec}.ts?(x)'];
+	const exclude = [
+		// `e2e/**` keeps Playwright's browser specs out of the vitest run.
+		'e2e/**',
+		'node_modules',
+		'dist',
+		'.turbo',
+		'**/.devstack/**',
+		// Unit runs skip the full-stack `*.e2e` vitest suites (they boot a
+		// stack); the autoBoot config opts INTO them via `include` above.
+		...(isE2e ? [] : ['**/*.e2e.{test,spec}.ts?(x)']),
+	];
+
 	return {
-		include: ['src/**/*.{test,spec}.ts?(x)', 'test/**/*.{test,spec}.ts?(x)'],
-		exclude: ['e2e/**', 'node_modules', 'dist', '.turbo', '**/.devstack/**'],
+		include,
+		exclude,
 		passWithNoTests: true,
 		...(setupFiles.length > 0 ? { setupFiles } : {}),
 		...threadOverride,
 		...typecheckOverride,
+		...autoBootOverride,
 		// Caller overrides last. Shallow merge.
 		...options.test,
 	};
@@ -162,5 +211,6 @@ export const devstackVitestServerConfig = (): NonNullable<ViteUserConfig['server
  *  config snapshot. */
 export const _internal = {
 	DEVSTACK_SETUP_MODULE,
+	DEVSTACK_GLOBAL_SETUP_MODULE,
 	WATCH_IGNORED_PATTERNS,
 } as const;

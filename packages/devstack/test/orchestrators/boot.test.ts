@@ -147,12 +147,13 @@ const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 
 const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 	registerContribution: () => Effect.void,
-	runCycle: () =>
+	assembleIdConfig: (network) =>
 		Effect.succeed({
-			filesWritten: [],
-			filesUnchanged: [],
-			filesChmod: [],
-			bindings: null,
+			network,
+			networks: {},
+			packages: {},
+			accounts: {},
+			mvrOverrides: {},
 		}),
 } satisfies CodegenOrchestrator);
 
@@ -573,25 +574,25 @@ describe('resolveProductionCodegenOptions', () => {
 		const resolved = resolveProductionCodegenOptions({
 			appRoot: '/app',
 			effectiveStack: 'main',
-			primaryStack: 'main',
 			codegen: { includePhantomTypeParameters: true },
 		});
 		expect(resolved.includePhantomTypeParameters).toBe(true);
 		// The flag rides along without disturbing the output-dir resolution.
-		expect(resolved.outputDir).toBe(join('/app', 'src', 'generated'));
+		// EVERY live run emits under `.devstack` now (the committed
+		// `src/generated` tree is owned by the stack-free `codegen` verb).
+		expect(resolved.outputDir).toBe(join('/app', '.devstack', 'stacks', 'main', 'generated'));
 	});
 
 	it('leaves includePhantomTypeParameters unset when the config omits it', () => {
 		const resolved = resolveProductionCodegenOptions({
 			appRoot: '/app',
 			effectiveStack: 'main',
-			primaryStack: 'main',
 		});
 		// Unset stays unset — `@mysten/codegen`'s own default (false)
 		// applies at the generateFromPackageSummary call site, so default
 		// behavior is unchanged.
 		expect('includePhantomTypeParameters' in resolved).toBe(false);
-		expect(resolved.outputDir).toBe(join('/app', 'src', 'generated'));
+		expect(resolved.outputDir).toBe(join('/app', '.devstack', 'stacks', 'main', 'generated'));
 		expect(resolved.stackSubdir).toBeNull();
 	});
 });

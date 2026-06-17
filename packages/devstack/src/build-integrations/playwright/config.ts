@@ -5,22 +5,21 @@
 //
 //   Composable pieces for a canonical `PlaywrightTestConfig`
 //   (workers 1, fullyParallel false, `testDir: './e2e'`,
-//   CI-aware reporter/retries/forbidOnly, graceful-shutdown wiring
-//   with a SIGTERM + 10s timeout), plus `webServer` + `baseURL`
-//   low-level resolvers.
+//   CI-aware reporter/retries/forbidOnly), plus a `baseURL` resolver.
+//
+//   The stack is booted by the `globalSetup` (programmatic `runStack`,
+//   see `global-setup.ts`), NOT by Playwright's `webServer`. Playwright's
+//   `webServer` shells out (`pnpm dev`) and force-kills the supervisor on
+//   teardown before its container drain finishes, orphaning containers;
+//   the in-process `runStack` boot + `handle.stop` teardown drains cleanly.
 //
 // Load-bearing invariants this module enforces:
 //   - `workers: 1` and `fullyParallel: false` — single supervisor per
 //     stack; parallel tests would contend on shared faucet / wallet
 //     / RPC (distilled § Invariants).
-//   - `webServer.gracefulShutdown` SIGTERM + 10s — without this the
-//     default SIGKILL-on-shell orphans vite + supervisor descendants
-//     holding ports (distilled § Learnings: "Graceful-shutdown wiring
-//     at the Playwright layer fixed a real bug").
-//   - `webServer.url` settable at config-load time even with no
-//     manifest — via cold-start fallback to a conventional URL.
-//   - `webServer.reuseExistingServer: !CI` — dev iteration reuses,
-//     CI always boots fresh.
+//   - `use.baseURL` settable at config-load time even with no manifest —
+//     via cold-start fallback to a conventional URL (the stack the
+//     globalSetup boots later answers on that conventional router host).
 //
 // This module returns `PlaywrightTestConfig`-shaped fragments. We do
 // NOT import `@playwright/test` at module init: the types are
@@ -67,17 +66,6 @@ export interface PlaywrightProjectShape {
 	use: Record<string, unknown>;
 }
 
-export interface PlaywrightWebServerConfigShape {
-	readonly command: string;
-	readonly url: string;
-	readonly reuseExistingServer: boolean;
-	readonly timeout: number;
-	readonly stdout: 'pipe' | 'ignore';
-	readonly stderr: 'pipe' | 'ignore';
-	readonly gracefulShutdown: { readonly signal: 'SIGTERM'; readonly timeout: number };
-	readonly env?: Record<string, string>;
-}
-
 // -----------------------------------------------------------------------------
 // Public option shape
 // -----------------------------------------------------------------------------
@@ -102,25 +90,6 @@ export interface DevstackPlaywrightEndpointOptions extends ResolveStackContextOp
 	readonly baseURL?: string;
 }
 
-export interface DevstackPlaywrightWebServerOptions extends DevstackPlaywrightEndpointOptions {
-	/** Command Playwright runs to bring up the stack. Default:
-	 *  `'pnpm dev'`. */
-	readonly command?: string;
-
-	/** Hard cap (ms) for `webServer` URL to become reachable. Default:
-	 *  300_000 (5 min) — accounts for cold supervisor boot under
-	 *  Docker pulls. */
-	readonly webServerTimeoutMs?: number;
-
-	/** Hard cap (ms) for `webServer.gracefulShutdown`. Default: 10_000
-	 *  (10 s) — load-bearing per architecture § Invariants. */
-	readonly gracefulShutdownTimeoutMs?: number;
-
-	/** Extra env to forward to `webServer.command`. Merged after the
-	 *  preset's own env (PLAYWRIGHT=1, DEVSTACK_STACK). */
-	readonly env?: Record<string, string>;
-}
-
 export interface DevstackPlaywrightProjectsOptions {
 	/** Extra Playwright projects to append to the default Chromium
 	 *  project. */
@@ -138,9 +107,6 @@ export interface DevstackPlaywrightUseOptions extends DevstackPlaywrightEndpoint
 // -----------------------------------------------------------------------------
 
 const DEFAULT_TEST_DIR = './e2e';
-const DEFAULT_COMMAND = 'pnpm dev';
-const DEFAULT_WEBSERVER_TIMEOUT_MS = 300_000;
-const DEFAULT_GRACEFUL_SHUTDOWN_MS = 10_000;
 const DEFAULT_ENDPOINT_NAME = BUILT_IN_ENDPOINT_ALIASES.app;
 
 // -----------------------------------------------------------------------------
@@ -202,30 +168,3 @@ export const devstackPlaywrightProjects = (
 	},
 	...(options.projects ?? []),
 ];
-
-export const devstackPlaywrightWebServer = (
-	options: DevstackPlaywrightWebServerOptions = {},
-): PlaywrightWebServerConfigShape => {
-	const env = options.env ? { ...options.env } : {};
-	const ci = Boolean(process.env.CI);
-	const baseURL = resolveDevstackPlaywrightBaseURL(options);
-	const presetEnv: Record<string, string> = {
-		PLAYWRIGHT: '1',
-		...(options.stack !== undefined ? { DEVSTACK_STACK: options.stack } : {}),
-		...env,
-	};
-
-	return {
-		command: options.command ?? DEFAULT_COMMAND,
-		url: baseURL,
-		reuseExistingServer: !ci,
-		timeout: options.webServerTimeoutMs ?? DEFAULT_WEBSERVER_TIMEOUT_MS,
-		stdout: 'pipe',
-		stderr: 'pipe',
-		gracefulShutdown: {
-			signal: 'SIGTERM',
-			timeout: options.gracefulShutdownTimeoutMs ?? DEFAULT_GRACEFUL_SHUTDOWN_MS,
-		},
-		env: presetEnv,
-	};
-};

@@ -38,7 +38,7 @@
 // machinery the playwright/vitest integrations use.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
 
@@ -82,6 +82,15 @@ export interface DevstackVitePluginOptions {
 	 *  env (`'1'`/`'true'`). A single switch, replacing per-app
 	 *  `VITE_*_AUTO_APPROVE`. */
 	readonly autoApprove?: boolean;
+	/** Production id-config FILE — the known deployment's `devstack-ids.json`
+	 *  (same schema the dev stack writes), committed at e.g.
+	 *  `config/<network>.ids.json`. Used only for `command === 'build'` to
+	 *  inject `__DEVSTACK_IDS__`. Relative paths resolve against the Vite
+	 *  root. If omitted, the `DEVSTACK_IDS_FILE` env (a path pointer) is used.
+	 *  Neither ⇒ no ids baked, and the generated resolver throws loudly at
+	 *  id-access time. We deliberately take a FILE, not a JSON env blob: a
+	 *  real deployment's ids are many + nested. */
+	readonly ids?: string;
 }
 
 /** A `vite` `Plugin`'s `config` hook receives the partial user config.
@@ -92,6 +101,11 @@ export interface DevstackVitePluginOptions {
 interface ViteUserConfigLike {
 	readonly root?: string;
 	readonly command?: 'build' | 'serve';
+	/** Present (an object) when the config is a vitest config — vitest
+	 *  extends the Vite config with a `test` block. We use its presence
+	 *  (alongside the `VITEST` env) to detect "running under vitest" and
+	 *  switch `@generated` to LAZY resolution (see `resolveId`). */
+	readonly test?: unknown;
 }
 
 /** Virtual module id the dev-only HTML injection imports. Vite convention:
@@ -108,14 +122,26 @@ const VIRTUAL_DEV_WALLET_SCRIPT_SRC = `/@id/__x00__${VIRTUAL_DEV_WALLET_ID}`;
  *  the DEV-only dev-wallet-injection hooks. Typed as the loose object Vite
  *  accepts (Vite's `Plugin` is structurally compatible) so callers spread
  *  it into `plugins: []` without devstack depending on `vite`. */
+/** Vite's `config` hook second arg — `{ command, mode }`. We read only
+ *  `command` to pick the dev vs prod id-injection source. */
+interface ViteConfigEnvLike {
+	readonly command?: 'build' | 'serve';
+}
+
 export interface DevstackVitePlugin {
 	readonly name: string;
-	readonly config: (config: ViteUserConfigLike) => {
+	readonly config: (
+		config: ViteUserConfigLike,
+		env?: ViteConfigEnvLike,
+	) => {
 		readonly resolve: {
 			readonly alias: Record<string, string>;
 			readonly dedupe?: readonly string[];
 		};
 		readonly optimizeDeps?: { readonly include: readonly string[] };
+		/** Build-time `define` injecting the on-chain ids as the
+		 *  `__DEVSTACK_IDS__` global (the generated resolver reads it). */
+		readonly define: Record<string, string>;
 	};
 	/** Capture the resolved command so injection is DEV-only. */
 	readonly configResolved: (config: ViteUserConfigLike) => void;
@@ -168,6 +194,65 @@ const readGeneratedDirFromManifest = (
 		// best-effort alias resolver must never fail the Vite config load.
 		return null;
 	}
+};
+
+/** Best-effort, SYNC read of the manifest-recorded `codegen.idsFile` for
+ *  the active stack — the gitignored `devstack-ids.json` the boot wrote.
+ *  Returns the absolute path, or `null` on any miss. Mirrors
+ *  `readGeneratedDirFromManifest` exactly; never throws. */
+const readIdsFileFromManifest = (
+	env: Readonly<Record<string, string | undefined>>,
+	cwd: string,
+): string | null => {
+	try {
+		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
+		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
+		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
+		const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+		if (typeof parsed !== 'object' || parsed === null) return null;
+		const codegen = (parsed as { readonly codegen?: unknown }).codegen;
+		if (typeof codegen !== 'object' || codegen === null) return null;
+		const idsFile = (codegen as { readonly idsFile?: unknown }).idsFile;
+		return typeof idsFile === 'string' && idsFile.length > 0 ? idsFile : null;
+	} catch {
+		return null;
+	}
+};
+
+/** Best-effort, SYNC read+parse of an id-config FILE. Any miss (absent
+ *  path, missing file, bad JSON) collapses to `null` rather than failing
+ *  the Vite config load. */
+const readIdConfigFile = (idsFile: string | null): unknown => {
+	if (idsFile === null || !existsSync(idsFile)) return null;
+	try {
+		return JSON.parse(readFileSync(idsFile, 'utf8')) as unknown;
+	} catch {
+		return null;
+	}
+};
+
+/** Resolve the on-chain ids to inject as the `__DEVSTACK_IDS__` global —
+ *  ALWAYS from an id-config FILE (same schema in dev and prod), never a
+ *  JSON env blob. Dev (`serve`): the live `devstack-ids.json` (via the
+ *  manifest `codegen.idsFile`). Prod (`build`): the committed known-
+ *  deployment file — the plugin `ids` option, else the `DEVSTACK_IDS_FILE`
+ *  env (a PATH pointer, not data). Neither ⇒ `null`, so the generated
+ *  resolver throws loudly at id-access time. */
+const resolveInjectedIds = (
+	env: Readonly<Record<string, string | undefined>>,
+	root: string,
+	command: 'build' | 'serve' | undefined,
+	idsOption: string | undefined,
+): unknown => {
+	// Prod build: the known deployment's committed id-config file. Option
+	// wins; else a `DEVSTACK_IDS_FILE` path pointer. Relative → Vite root.
+	if (command === 'build') {
+		const pointer = idsOption ?? env['DEVSTACK_IDS_FILE'];
+		if (pointer === undefined || pointer.length === 0) return null;
+		return readIdConfigFile(isAbsolute(pointer) ? pointer : resolve(root, pointer));
+	}
+	// Dev serve (and config-load default): the live id-config file.
+	return readIdConfigFile(readIdsFileFromManifest(env, root));
 };
 
 /** Best-effort, SYNC read of the manifest-recorded `codegen.extrasDir`
@@ -238,6 +323,32 @@ const resolveExtrasDir = (
 		: (readExtrasDirFromManifest(env, root) ?? fallbackExtrasDir(env, root));
 };
 
+/** Lazily resolve a `@generated/<rest>` import to an absolute file under
+ *  the ACTIVE stack's codegen dir, reading the manifest AT CALL TIME.
+ *  Used only under vitest, where the stack is booted by `globalSetup`
+ *  AFTER the Vite config hook ran — so an eager config-load alias would
+ *  capture the pre-boot (wrong) dir. By the time a test actually imports
+ *  `@generated/*`, `globalSetup` has booted the stack + emitted codegen,
+ *  so the manifest now points at the right per-stack dir. Codegen emits
+ *  TypeScript, while imports use `.js` specifiers — map `.js`→`.ts` and
+ *  prefer the source file. Returns `undefined` (defer to other resolvers)
+ *  when nothing is on disk yet. */
+const resolveGeneratedImport = (
+	env: Readonly<Record<string, string | undefined>>,
+	root: string,
+	alias: string,
+	id: string,
+): string | undefined => {
+	const rest = id === alias ? '' : id.slice(alias.length).replace(/^\//, '');
+	if (rest === '') return undefined;
+	const dir = readGeneratedDirFromManifest(env, root) ?? resolve(root, FALLBACK_GENERATED_SUBPATH);
+	const tsCandidate = resolve(dir, rest.replace(/\.js$/, '.ts'));
+	if (existsSync(tsCandidate)) return tsCandidate;
+	const asIs = resolve(dir, rest);
+	if (existsSync(asIs)) return asIs;
+	return undefined;
+};
+
 /** Read the `DEVSTACK_AUTO_APPROVE` env (`'1'`/`'true'`, case-insensitive). */
 const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean => {
 	const raw = env['DEVSTACK_AUTO_APPROVE'];
@@ -285,13 +396,27 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 	let resolvedRoot = process.cwd();
 	let resolvedExtrasDir: string | null = null;
 	let isServe = false;
+	// Captured in `config`; gates LAZY `@generated` resolution (see
+	// `resolveGeneratedImport`). Under vitest the stack is booted by
+	// `globalSetup` AFTER config-load, so we MUST resolve `@generated` at
+	// import time instead of pinning the alias eagerly here.
+	let isVitest = false;
 
 	return {
 		name: 'devstack:generated-alias',
-		config: (config: ViteUserConfigLike) => {
+		config: (config: ViteUserConfigLike, configEnv?: ViteConfigEnvLike) => {
 			const root = config.root ?? process.cwd();
 			resolvedRoot = root;
 			const env = process.env as Readonly<Record<string, string | undefined>>;
+			// `command` comes from the second hook arg (`{ command, mode }`);
+			// fall back to `config.command` (some callers pass it on the
+			// config), defaulting to `serve` for the dev-injection path.
+			const command = configEnv?.command ?? config.command ?? 'serve';
+			// Detect "this is a vitest config" via the `test` block vitest adds
+			// to the Vite config (NOT `process.env.VITEST`, which is also set
+			// while THIS plugin's own vitest suite runs and would wrongly flip
+			// the eager-alias path it asserts).
+			isVitest = config.test !== undefined;
 			// Explicit `generatedDir` wins (relative → resolved against the
 			// Vite root). Otherwise consult the manifest-recorded dir, then
 			// fall back to the home-stack `src/generated/` for the
@@ -311,13 +436,28 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// pre-bundle the injected dev-wallet entries so Vite never re-optimizes
 			// them mid-session into a second Lit realm (see the constants above).
 			const includeDevWallet = injectDevWallet && devWalletInstalled(root);
+			// Inject the on-chain ids as a build-time global. The generated
+			// `config-runtime.ts` resolver reads `__DEVSTACK_IDS__`
+			// synchronously and throws `DevstackConfigMissingError` when an id
+			// is unresolved. `define` substitutes it identically in the dev
+			// server and the prod build.
+			const injectedIds = resolveInjectedIds(env, root, command, options.ids);
 			return {
 				resolve: {
+					// Under vitest, OMIT the eager `@generated` alias — it would
+					// pin the pre-`globalSetup`-boot dir. `resolveId` resolves it
+					// lazily at import time instead. `@devstack-dev` stays eager
+					// (tests don't use the dev wallet). Outside vitest (`pnpm dev`,
+					// Playwright's `webServer`) the supervisor boots BEFORE Vite
+					// reads config, so the eager alias is correct + cheapest.
 					alias: {
-						[alias]: generatedDir,
+						...(isVitest ? {} : { [alias]: generatedDir }),
 						[devExtrasAlias]: extrasDir,
 					},
 					dedupe: [...LIT_DEDUPE],
+				},
+				define: {
+					__DEVSTACK_IDS__: JSON.stringify(injectedIds ?? null),
 				},
 				...(includeDevWallet
 					? { optimizeDeps: { include: [...DEV_WALLET_OPTIMIZE_ENTRIES] } }
@@ -331,8 +471,20 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			isServe = config.command !== 'build';
 		},
 
-		resolveId: (id: string) =>
-			id === VIRTUAL_DEV_WALLET_ID ? RESOLVED_VIRTUAL_DEV_WALLET_ID : undefined,
+		resolveId: (id: string) => {
+			if (id === VIRTUAL_DEV_WALLET_ID) return RESOLVED_VIRTUAL_DEV_WALLET_ID;
+			// Lazy `@generated/*` resolution under vitest only (see
+			// `resolveGeneratedImport` + the omitted eager alias above).
+			if (isVitest && (id === alias || id.startsWith(`${alias}/`))) {
+				return resolveGeneratedImport(
+					process.env as Readonly<Record<string, string | undefined>>,
+					resolvedRoot,
+					alias,
+					id,
+				);
+			}
+			return undefined;
+		},
 
 		load: (id: string): string | undefined => {
 			if (id !== RESOLVED_VIRTUAL_DEV_WALLET_ID) return undefined;

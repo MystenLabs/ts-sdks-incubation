@@ -4,10 +4,15 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"codegen": "DEVSTACK_APP=dashboard-demo node ../../packages/devstack/dist/cli/main.mjs codegen",
 		"dev": "DEVSTACK_APP=dashboard-demo node ../../packages/devstack/dist/cli/main.mjs up",
-		"apply": "DEVSTACK_APP=dashboard-demo node ../../packages/devstack/dist/cli/main.mjs apply"
+		"apply": "DEVSTACK_APP=dashboard-demo node ../../packages/devstack/dist/cli/main.mjs apply",
+		"test": "vitest run"
 	},
 	"dependencies": {
 		"@mysten-incubation/devstack": "workspace:*"
+	},
+	"devDependencies": {
+		"vitest": "catalog:"
 	}
 }

@@ -6,7 +6,14 @@
 		"noEmit": true,
 		// Codegen emits `.ts` import extensions so Node 24's native
 		// type-stripping, vitest, and `tsc` all resolve one source of truth.
-		"allowImportingTsExtensions": true
+		"allowImportingTsExtensions": true,
+		// `@generated/*` resolves to the primary stack's committed output for
+		// typecheck. At runtime the devstack Vite plugin remaps it to the
+		// ACTIVE stack's dir (per-stack under `pnpm test:e2e`); the
+		// generated TYPES are stack-invariant, so typechecking against
+		// `src/generated` is correct for every stack.
+		"baseUrl": ".",
+		"paths": { "@generated/*": ["src/generated/*"] }
 	},
-	"include": ["src/**/*", "devstack.config.ts", "vitest.config.ts"]
+	"include": ["src/**/*", "devstack.config.ts", "vitest.config.ts", "vitest.e2e.config.ts"]
 }

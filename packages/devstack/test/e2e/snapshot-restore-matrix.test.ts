@@ -60,43 +60,41 @@ const ensureRealImages = (): void => {
 	delete process.env.SEAL_MOVE_SOURCE_OVERRIDE;
 };
 
-// The package plugin's Codegenable is `aggregateOnly` (since the PR #18 codegen
-// reshape): it no longer emits a standalone `package/<mvr>.ts` file but folds
-// its `packageId: "0x…"` literal into the combined aggregate `config.ts`
-// (bucket `config.ts`, under `config.packages.<name>.packageId`) — see
-// src/plugins/package/codegen.ts (`aggregateOnly: true`, `bucket: 'config.ts'`)
-// and the orchestrator's `if (decl.aggregateOnly === true) continue;` in
-// src/orchestrators/codegen/service.ts. Read the packageId back from that
-// aggregate file in the harness codegen output dir (`<runtimeRoot>/codegen`).
-//
-// This stack publishes exactly one local package (the vault — the codegen test
-// builds the matrix stack with `deepbook: false`), and only `localPackage`
-// contributes a `packages.*.packageId` entry (sui projects network entries,
-// seal/account/walrus route to their own buckets), so `config.ts` carries a
-// single `packageId:` literal == the vault's id.
-const PACKAGE_ID_RE = /packageId:\s*['"](0x[0-9a-fA-F]+)['"]/;
-const CONFIG_FILE = 'config.ts';
+// Boot no longer emits a codegen tree; it assembles + writes the id-config
+// (`devstack-ids.json`) carrying the live on-chain ids. The package plugin
+// contributes each package's resolved id under `packages.<name>.id` (and
+// the active-network `mvrOverrides` map). This stack publishes exactly one
+// local package (the vault — the codegen test builds the matrix stack with
+// `deepbook: false`), so the id-config carries a single package id == the
+// vault's id. Read it back from the harness-written id-config file.
+const ID_CONFIG_FILE = 'devstack-ids.json';
 
 // The codegen test boots under this app (`appName: CODEGEN_APP`); the matrix
 // invariant boots under `STACK_APP`. Both must be swept in `afterAll`.
 const CODEGEN_APP = 'snapshot-matrix-codegen';
 
+interface IdConfigLike {
+	readonly packages: { readonly [name: string]: { readonly id: string } };
+}
+
 const readCodegenPackageId = (outputDir: string): string => {
-	const file = join(outputDir, CONFIG_FILE);
-	const m = PACKAGE_ID_RE.exec(readFileSync(file, 'utf8'));
-	if (m) return m[1]!;
-	throw new Error(`no packageId literal in codegen aggregate ${file}`);
+	const file = join(outputDir, ID_CONFIG_FILE);
+	const parsed = JSON.parse(readFileSync(file, 'utf8')) as IdConfigLike;
+	const ids = Object.values(parsed.packages)
+		.map((p) => p.id)
+		.filter((id) => /^0x[0-9a-fA-F]+$/.test(id));
+	if (ids.length === 0) throw new Error(`no package id in id-config ${file}`);
+	return ids[0]!;
 };
 
-// Simulate post-snapshot codegen drift: overwrite the emitted packageId with a
-// sentinel. Codegen output lives OUTSIDE the runtime stack root, so a restore
-// does not roll it back — boot 2's codegen cycle must regenerate it.
+// Simulate post-snapshot drift: overwrite the written package id with a
+// sentinel. The id-config lives OUTSIDE the runtime stack root, so a restore
+// does not roll it back — boot 2's id-config write must regenerate it.
 const corruptCodegenPackageId = (outputDir: string): void => {
-	const p = join(outputDir, CONFIG_FILE);
-	writeFileSync(
-		p,
-		readFileSync(p, 'utf8').replace(PACKAGE_ID_RE, 'packageId: "0xdead0000dead0000"'),
-	);
+	const p = join(outputDir, ID_CONFIG_FILE);
+	const parsed = JSON.parse(readFileSync(p, 'utf8')) as { packages: Record<string, { id: string }> };
+	for (const entry of Object.values(parsed.packages)) entry.id = '0xdead0000dead0000';
+	writeFileSync(p, `${JSON.stringify(parsed, null, 2)}\n`);
 };
 
 describe('snapshot/restore matrix — real services @e2e', () => {

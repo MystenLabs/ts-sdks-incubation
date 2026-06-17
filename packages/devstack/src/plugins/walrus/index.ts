@@ -55,7 +55,8 @@ import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 
-import { makeCodegenable } from './codegen.ts';
+import { makeCodegenable, makeWalrusStaticCodegen } from './codegen.ts';
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import { walrusPluginKey } from './plugin-key.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { makeWalFaucetContribution, type WalFaucetStrategy } from './faucet-strategy.ts';
@@ -146,6 +147,10 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 		role: 'service',
 		section: 'service',
 		pluginKey: walrusKey,
+		// Stack-free codegen: a local walrus cluster's deploy ids / endpoint
+		// URLs are LOADED CONFIG DATA -- the committed `walrus.ts` stub emits
+		// `resolveValue('walrus', '<key>')`, never a baked object id / URL.
+		staticCodegen: () => [makeWalrusStaticCodegen({ mode: 'local', network: LOCAL_NETWORK_NAME })],
 		// `deps` auto-infers the resolved `[sui]` tuple from the
 		// `[suiResource] as const` dependency. `ctx` arrives via the
 		// `PluginContext` service.
@@ -345,6 +350,32 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 		// no long-running children.
 		role: 'task',
 		section: 'service',
+		// Stack-free codegen: a known deployment's ids / URLs are DECLARED
+		// config (not loaded-at-runtime data) — bake them as literals in the
+		// committed `walrus.ts` (mirrors `knownPackage`). `walrusPackageId` /
+		// `walPackageId` / `walCoinType` are null for a known deployment.
+		staticCodegen: () => [
+			makeWalrusStaticCodegen({
+				mode: 'known',
+				network: resolved.network,
+				known: {
+					walrusPackageId: null,
+					walPackageId: null,
+					walCoinType: null,
+					packageConfig: {
+						systemObjectId: resolved.systemObjectId,
+						stakingPoolId: resolved.stakingPoolId,
+						...(resolved.exchangeIds.length > 0
+							? { exchangeIds: [...resolved.exchangeIds] }
+							: {}),
+					},
+					proxyUrl: resolved.proxyUrl,
+					aggregatorUrl: resolved.aggregatorUrl,
+					publisherUrl: resolved.publisherUrl,
+					nodes: resolved.nodes,
+				},
+			}),
+		],
 		// Known mode is a pure value-producer — `sui` is unused (the value
 		// reads `resolved.chain` from the deployment options) but the
 		// `dependsOn` edge still orders boot, so `start` is zero-arg.

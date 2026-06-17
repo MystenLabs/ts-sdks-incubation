@@ -55,7 +55,7 @@ import {
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
-import { makeCodegenable } from './codegen.ts';
+import { makeCodegenable, makeStaticCodegen } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
@@ -447,6 +447,14 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		role: 'service',
 		section: 'service',
 		inputIdentity: staticInputIdentity(suiInputIdentity(opts)),
+		// Stack-free codegen: the `codegen` verb derives the committed
+		// `config.ts`'s `network`/`networks` from this hook. Both are
+		// environment/live data (dynamic local rpc port; a real deployment
+		// names a different network), so the committed tree carries
+		// `resolveNetwork()`/`resolveNetworks()` raw expressions that resolve
+		// at app build/dev time via the injected `__DEVSTACK_IDS__` global —
+		// never literal values. No id-resolver input needed.
+		staticCodegen: makeStaticCodegen(),
 		// Zero-arg `start` (no `dependsOn`); the substrate supplies the
 		// container runtime + identity via the plugin runtime context.
 		start: () =>
@@ -627,6 +635,7 @@ export {
 	hashMoveSources,
 	runMoveBuild,
 	scrubLocksHost,
+	withMoveBuildLock,
 	type BuildOutput,
 	type MoveBuildContainer,
 	type MoveBuildError,

@@ -44,7 +44,7 @@ import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.t
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { suiResource } from '../sui/index.ts';
 import type { AccountValue } from '../account/index.ts';
-import type { CoinValue } from '../coin/index.ts';
+import { builtin as builtinCoin, fromPackage as coinFromPackage, type CoinValue } from '../coin/index.ts';
 import type { LocalPackageResolved } from '../package/index.ts';
 
 import { deepbookPluginKey } from './plugin-key.ts';
@@ -56,7 +56,12 @@ import {
 	type DeepbookError,
 	type DeepbookPluginError,
 } from './errors.ts';
-import { makeDeepbookCodegenable, type DeepbookBindings } from './codegen.ts';
+import {
+	makeDeepbookCodegenable,
+	makeDeepbookStaticCodegen,
+	type DeepbookBindings,
+} from './codegen.ts';
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import {
 	makeDeepbookDeepFundingContribution,
 	makeDeepbookDeepFundingStrategy,
@@ -161,9 +166,13 @@ export interface DeepbookLocalOptions<
 	readonly adminCapIdKey?: string;
 	/** Optional capture key for a DEEP treasury object used by SDK bindings. */
 	readonly deepTreasuryIdKey?: string;
-	/** Pools to create after the DeepBook package publishes. Required; pass
-	 *  `[]` explicitly for composition tests or a known-empty deployment. */
-	readonly pools: Pools;
+	/** Pools to create after the DeepBook package publishes. OPTIONAL: when
+	 *  omitted, a single seeded `DEEP/SUI` pool is synthesized (the DEEP coin
+	 *  comes from `package`, SUI is built-in — no extra package needed), so a
+	 *  minimal `deepbook({ mode:'local', publisher, package })` boots a usable
+	 *  DeX. Pass `[]` explicitly for a known-empty deployment, or your own
+	 *  pools for full control. */
+	readonly pools?: Pools;
 }
 
 export type DeepbookKnownNetwork = 'mainnet' | 'testnet';
@@ -431,6 +440,18 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
+		// Override mode's deployment ids are DECLARED config — bake them as
+		// literals in the committed tree (mirrors `knownPackage`).
+		staticCodegen: () => [
+			makeDeepbookStaticCodegen({
+				name,
+				network: opts.network ?? LOCAL_NETWORK_NAME,
+				known: {
+					packageId: opts.packageId,
+					registryId: opts.registryId,
+				},
+			}),
+		],
 		// `deps` auto-infers the resolved `[sui]` tuple from the
 		// `[suiResource] as const` dependency. `ctx` arrives via the
 		// `PluginContext` service.
@@ -490,12 +511,35 @@ type ResolvedLocalOptions = DeepbookLocalOptions<
 	readonly pools: ReadonlyArray<DeepbookPoolSpec>;
 };
 
-/** Fail-fast guard for local mode: `publisher`, `package`, and `pools` are
- *  REQUIRED. A bare `deepbook()` / `deepbook({ mode: 'local' })` no longer
- *  auto-synthesizes a DeX from the bundled Move sources — the caller must
- *  publish the DeepBook package, fund a publisher, and declare the pools
- *  explicitly (see `examples/deepbook-trader`). Missing any of these raises a
- *  tagged `DeepbookConfigError` naming what to pass. `pyth` stays optional. */
+/** Default local pool synthesized when `pools` is omitted: a single whitelisted
+ *  `DEEP/SUI` pool. DEEP is the deepbook package's own coin (no extra package to
+ *  publish), SUI is built-in, so this needs nothing beyond the `package` the
+ *  caller already passes — and NO seed, so it requires no DEEP minting (i.e. no
+ *  `deepTreasuryIdKey`) and works for a bare `deepbook({ publisher, package })`.
+ *  The pool is created with an empty book; pass explicit `pools` with a `seed`
+ *  (see `examples/deepbook-trader`) for pre-populated liquidity. */
+const defaultLocalPools = (
+	pkg: DeepbookPackageMember,
+): ReadonlyArray<DeepbookPoolSpec> => [
+	{
+		name: 'DEEP_SUI',
+		base: { key: 'DEEP', coin: coinFromPackage(pkg, 'DEEP') },
+		quote: { key: 'SUI', coin: builtinCoin('sui') },
+		tickSize: 1_000_000n,
+		lotSize: 1_000_000n,
+		minSize: 10_000_000n,
+		whitelisted: true,
+		stablePool: false,
+	},
+];
+
+/** Fail-fast guard for local mode: `publisher` and `package` are REQUIRED — a
+ *  publish tx needs a signer and the DeepBook Move package must be published
+ *  (capturing `registry::Registry` + `registry::DeepbookAdminCap`). `pools` is
+ *  OPTIONAL: omit it for a default seeded `DEEP/SUI` pool (a minimal usable
+ *  DeX), pass `[]` for a pool-less deployment, or declare your own. `pyth`
+ *  stays optional (omit for a feed-less DeX). Missing a required field raises a
+ *  tagged `DeepbookConfigError` naming what to pass. */
 const resolveLocalOptions = (
 	opts: DeepbookLocalOptions<
 		AccountMemberAlias,
@@ -512,18 +556,17 @@ const resolveLocalOptions = (
 	if (!opts.package) {
 		missing.push('package');
 	}
-	if (opts.pools === undefined) {
-		missing.push('pools');
-	}
 	if (missing.length > 0) {
 		throw deepbookConfigError(
 			missing[0] as string,
 			`deepbook({mode:'local', name:'${name}'}) requires explicit ${missing.join(', ')}.`,
-			`Publish the DeepBook Move package and pass { publisher, package, pools } ` +
-				`(see examples/deepbook-trader). Local DeepBook is no longer auto-synthesized.`,
+			`Publish the DeepBook Move package and pass at least { publisher, package } ` +
+				`(see examples/deepbook-trader). Pools default to a seeded DEEP/SUI pool.`,
 		);
 	}
-	return opts as ResolvedLocalOptions;
+	// Default to a single seeded DEEP/SUI pool when none are declared.
+	const pools = opts.pools ?? defaultLocalPools(opts.package);
+	return { ...opts, pools } as ResolvedLocalOptions;
 };
 
 const buildLocalPlugin = <
@@ -564,6 +607,10 @@ const buildLocalPlugin = <
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
+		// Stack-free codegen: a local deployment's ids / pools / pyth feeds
+		// are LOADED CONFIG DATA -- the committed `deepbook.ts` stub emits
+		// `resolveValue('deepbook:<name>', '<key>')`, never a baked id.
+		staticCodegen: () => [makeDeepbookStaticCodegen({ name, network: LOCAL_NETWORK_NAME })],
 		// `deps` auto-infers from the runtime-built `dependsOn`; it
 		// resolves to a heterogeneous tuple the body re-narrows via the
 		// `as unknown as` cast below. `ctx` arrives via the
@@ -766,6 +813,34 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
+		// Known mode's deployment ids (package / registry / deep-treasury) and
+		// its declared testnet/mainnet Pyth ids are DECLARED config — bake them
+		// as literals in the committed tree (mirrors `knownPackage`).
+		staticCodegen: () => [
+			makeDeepbookStaticCodegen({
+				name,
+				network: opts.network ?? known?.network ?? LOCAL_NETWORK_NAME,
+				known: {
+					packageId,
+					registryId,
+					deepTreasuryId: known?.deepTreasuryId ?? null,
+					pyth: known?.pyth
+						? {
+								packageId: known.pyth.packageId,
+								stateId: known.pyth.stateId,
+								wormholeStateId: known.pyth.wormholeStateId,
+								feeds: known.pyth.feeds.map((feed) => ({
+									symbol: feed.symbol,
+									feedId: feed.feedId,
+									priceInfoObjectId: feed.priceInfoObjectId,
+									price: feed.price.toString(),
+									expo: feed.expo,
+								})),
+							}
+						: null,
+				},
+			}),
+		],
 		// `deps` auto-infers the resolved `[sui]` tuple from the
 		// `[suiResource] as const` dependency. `ctx` arrives via the
 		// `PluginContext` service.

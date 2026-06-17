@@ -10,7 +10,7 @@
 // to `@local/counter`, which the client's MVR overrides (see `dapp-kit.ts`)
 // resolve to the active network's deployed id at tx-build time.
 
-import type { ClientWithCoreApi, SuiClientTypes } from '@mysten/sui/client';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
 import { Counter, createAndShare, incrementEntry } from '@generated/bindings/counter/counter.js';
@@ -33,20 +33,4 @@ export function incrementTx(counterId: string): Transaction {
 export async function readCounter(client: ClientWithCoreApi, objectId: string): Promise<bigint> {
 	const counter = await Counter.get({ client, objectId });
 	return BigInt(counter.json.value);
-}
-
-/** Unwrap an executed-transaction result (dapp-kit's `signAndExecuteTransaction`
- *  and the SDK client's both return this union): throw on execution failure,
- *  otherwise return the digest plus the id of the object the tx created. */
-export function executedTx(result: SuiClientTypes.TransactionResult<{ effects: true }>): {
-	digest: string;
-	createdId: string | undefined;
-} {
-	if (result.$kind !== 'Transaction') {
-		throw new Error(result.FailedTransaction.status.error?.message ?? 'transaction failed');
-	}
-	const created = result.Transaction.effects.changedObjects.find(
-		(change) => change.idOperation === 'Created',
-	);
-	return { digest: result.Transaction.digest, createdId: created?.objectId };
 }

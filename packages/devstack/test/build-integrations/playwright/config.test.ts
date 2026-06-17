@@ -2,10 +2,12 @@
 //
 // Architecture invariants verified here:
 //   - workers=1, fullyParallel=false (single supervisor per stack)
-//   - webServer.gracefulShutdown SIGTERM + 10s
-//   - webServer.reuseExistingServer: !CI
 //   - explicit `baseURL` bypasses discovery
 //   - cold-start fallback when no manifest is present + port provided
+//
+// The stack lifecycle is owned by the programmatic `globalSetup`
+// (`global-setup.ts`), NOT a Playwright `webServer` — so there is no
+// webServer shape to assert here.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +19,6 @@ import {
 	devstackPlaywrightBaseConfig,
 	devstackPlaywrightProjects,
 	devstackPlaywrightUse,
-	devstackPlaywrightWebServer,
 } from '../../../src/build-integrations/playwright/index.ts';
 import { CURRENT_MANIFEST_VERSION } from '../../../src/substrate/runtime/manifest/manifest.ts';
 
@@ -27,33 +28,11 @@ describe('playwright config helpers', () => {
 		const use = devstackPlaywrightUse({
 			baseURL: 'http://localhost:8000',
 		});
-		const webServer = devstackPlaywrightWebServer({
-			baseURL: 'http://localhost:8000',
-		});
 		expect(base.workers).toBe(1);
 		expect(base.fullyParallel).toBe(false);
 		expect(base.testDir).toBe('./e2e');
 		expect(base.globalSetup).toBe('@mysten-incubation/devstack/playwright/global-setup');
 		expect(use.baseURL).toBe('http://localhost:8000');
-		expect(webServer.url).toBe('http://localhost:8000');
-		expect(webServer.gracefulShutdown).toEqual({
-			signal: 'SIGTERM',
-			timeout: 10_000,
-		});
-	});
-
-	it('defaults command to `pnpm dev`', () => {
-		const webServer = devstackPlaywrightWebServer({
-			baseURL: 'http://x.localhost:1',
-		});
-		expect(webServer.command).toBe('pnpm dev');
-	});
-
-	it('stamps PLAYWRIGHT=1 into webServer.env', () => {
-		const webServer = devstackPlaywrightWebServer({
-			baseURL: 'http://x.localhost:1',
-		});
-		expect(webServer.env?.PLAYWRIGHT).toBe('1');
 	});
 
 	it('falls back to conventional URL with port-provided cold-start', () => {
@@ -114,10 +93,7 @@ describe('playwright config helpers', () => {
 			);
 
 			const use = devstackPlaywrightUse({ cwd: workdir, env: {} });
-			const webServer = devstackPlaywrightWebServer({ cwd: workdir, env: {} });
-
 			expect(use.baseURL).toBe('http://dev.sample-app.localhost:5175');
-			expect(webServer.url).toBe('http://dev.sample-app.localhost:5175');
 		} finally {
 			rmSync(workdir, { recursive: true, force: true });
 		}

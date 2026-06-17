@@ -7,6 +7,7 @@
 
 import type { Effect } from 'effect';
 
+import type { StaticCodegenSource } from '../contracts/codegenable.ts';
 import type { PluginKey } from './brand.ts';
 import type { PluginRole } from './lifecycle.ts';
 import type { RowSection } from './projection.ts';
@@ -176,6 +177,12 @@ interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	 *  Dependencies' node input ids are included automatically; this field is
 	 *  for inputs owned by the node itself, including file hashes. */
 	readonly inputIdentity?: NodeInputContribution;
+	/** Stack-free codegen-decl source. When present, the `codegen` verb can
+	 *  emit this plugin's committed-projection contributions from config
+	 *  alone (no live acquire), drawing on-chain ids from the supplied
+	 *  resolver. Plugins whose contributions need live resolution — or which
+	 *  only land in the gitignored dev tree — omit it. */
+	readonly staticCodegen?: StaticCodegenSource;
 }
 
 export type PluginSpec<
@@ -204,6 +211,7 @@ export interface Plugin<
 	readonly endpointSection?: RowSection;
 	readonly keepAliveOnRestore?: true;
 	readonly inputIdentity?: NodeInputContribution;
+	readonly staticCodegen?: StaticCodegenSource;
 }
 
 export type AnyPlugin = Plugin<
@@ -347,6 +355,7 @@ export function definePlugin(
 			? {}
 			: { keepAliveOnRestore: spec.keepAliveOnRestore }),
 		...(spec.inputIdentity === undefined ? {} : { inputIdentity: spec.inputIdentity }),
+		...(spec.staticCodegen === undefined ? {} : { staticCodegen: spec.staticCodegen }),
 	} as AnyPlugin;
 }
 

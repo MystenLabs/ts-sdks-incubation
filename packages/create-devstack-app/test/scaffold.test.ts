@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderDevstackConfig } from '../src/render-config.js';
 import { resolveSdkVersions, scaffold } from '../src/scaffold.js';
-import { parseServiceList, SERVICES, type ServiceId } from '../src/services.js';
+import { normalizeServices, parseServiceList, SERVICES, type ServiceId } from '../src/services.js';
 
 const tempDirs: string[] = [];
 
@@ -208,6 +208,7 @@ describe('parseServiceList', () => {
 		expect(parseServiceList('seal,walrus,walrus')).toEqual(['walrus', 'seal']);
 		expect(parseServiceList('seal')).toEqual(['seal']);
 		expect(parseServiceList('walrus, seal ')).toEqual(['walrus', 'seal']);
+		expect(parseServiceList('deepbook,walrus')).toEqual(['walrus', 'deepbook']);
 	});
 
 	it('treats empty input as no services', () => {
@@ -217,7 +218,22 @@ describe('parseServiceList', () => {
 
 	it('throws a usage-style error on unknown services', () => {
 		expect(() => parseServiceList('walrus,postgres')).toThrow(
-			"unknown service 'postgres'. Valid: walrus, seal.",
+			"unknown service 'postgres'. Valid: walrus, seal, deepbook, pyth.",
 		);
+	});
+});
+
+describe('normalizeServices', () => {
+	it('makes pyth imply deepbook', () => {
+		expect([...normalizeServices(new Set(['pyth']))].sort()).toEqual(['deepbook', 'pyth']);
+		expect([...normalizeServices(new Set(['deepbook', 'pyth']))].sort()).toEqual([
+			'deepbook',
+			'pyth',
+		]);
+	});
+
+	it('leaves other selections untouched', () => {
+		expect([...normalizeServices(new Set(['walrus']))]).toEqual(['walrus']);
+		expect([...normalizeServices(new Set())]).toEqual([]);
 	});
 });

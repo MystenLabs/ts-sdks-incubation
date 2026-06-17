@@ -40,7 +40,7 @@ import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
 import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
 
-import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
+import { makeCoinCodegen, makeCoinStaticCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';
 import { CoinRegistryService } from './registry.ts';
 import { acquireCoin, type CoinAddressForm, type CoinValue } from './service.ts';
@@ -163,7 +163,7 @@ export const coinContributions = (
 		...(resolved.packageId !== undefined ? { packageId: resolved.packageId } : {}),
 	};
 	const snap: SnapshotableDecl = makeCoinSnapshotable({ symbol });
-	const codegen: CodegenableDecl<`coin/${string}`> = makeCoinCodegen({
+	const codegen: CodegenableDecl = makeCoinCodegen({
 		symbol,
 		resolved: bindings,
 	});
@@ -273,6 +273,10 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		// `'coin'` section would ripple through every projection / TUI
 		// consumer for marginal display value.
 		section: 'action',
+		// Stack-free codegen: a package coin's type / decimals / package id
+		// are LOADED CONFIG DATA -- the committed stub emits
+		// `resolveValue('coin:<symbol>', '<key>')`, never a baked coin type.
+		staticCodegen: () => [makeCoinStaticCodegen({ symbol, source: 'registry' })],
 		// `deps` auto-infers the resolved `{ pkg, sui }` dependency object;
 		// `ctx` arrives via the `PluginContext` service.
 		start: ({ pkg: resolved, sui }) =>
@@ -328,6 +332,13 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'action',
+		// Stack-free codegen: the caller DECLARED this on-chain coin type, so
+		// the committed stub bakes `fullCoinType` as a LITERAL; `decimals` /
+		// `packageId` still resolve at app build/dev time (they come from
+		// `getCoinMetadata`, only known after a live probe).
+		staticCodegen: () => [
+			makeCoinStaticCodegen({ symbol: id, source: 'on-chain', knownCoinType: fullCoinType }),
+		],
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
@@ -363,6 +374,20 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'action',
+		// Stack-free codegen: a builtin coin (SUI) is protocol-defined --
+		// its coin type + decimals are constants baked as LITERALS (no
+		// `resolveValue` that would throw at module load for a coin with no
+		// injected id).
+		staticCodegen: () => [
+			makeCoinStaticCodegen({
+				symbol,
+				source: 'builtin',
+				constants: {
+					fullCoinType: BUILTIN_COINS[name].fullCoinType,
+					decimals: BUILTIN_COINS[name].decimals,
+				},
+			}),
+		],
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;

@@ -18,10 +18,22 @@ const devstackNetwork = 'localnet' as const;
  * The MVR-resolved vault package id for the active network. Used by the
  * Seal IBE callsites (`SealClient.encrypt` / `SessionKey.create`) and the
  * Cap-type query string — consumers that are NOT tx moveCalls and so are
- * not resolved by the grpc client's MVR overrides. `undefined` until the
- * stack is applied.
+ * not resolved by the grpc client's MVR overrides. Sourced from the
+ * codegen-emitted `mvrOverrides` (the active-network name→id map) rather
+ * than indexing `byNetwork` by the runtime network name (whose key set is
+ * the committed-tree literal, not an index signature). `undefined` when the
+ * `@local/vault` placeholder is absent from the injected ids.
  */
-export const vaultPackageId: string | undefined = config.packages.vault?.byNetwork[config.network];
+export const vaultPackageId: string | undefined = config.mvrOverrides['@local/vault'];
+
+// `config.networks` is index-signature typed (the active network name + its
+// connection map are injected via `__DEVSTACK_IDS__`, not baked into the
+// committed tree). Look up the active entry once and fail loudly if it is
+// missing rather than silently using `undefined`.
+const activeNetwork = config.networks[config.network];
+if (activeNetwork === undefined) {
+	throw new Error(`[devstack] no network entry for "${config.network}"`);
+}
 
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],
@@ -30,7 +42,7 @@ export const dAppKit = createDAppKit({
 	createClient() {
 		return new SuiGrpcClient({
 			network: devstackNetwork,
-			baseUrl: config.networks[config.network].rpc,
+			baseUrl: activeNetwork.rpc,
 			// `config.mvrOverrides` is the codegen-emitted active-network
 			// name→id map: the vault bindings default `options.package ??
 			// '@local/vault'`, and this map resolves that name to the deployed

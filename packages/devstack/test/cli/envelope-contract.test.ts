@@ -274,6 +274,7 @@ const makeFailingUpDeps = (
 	const deps: CliDeps = {
 		up: { run: () => Effect.fail(error) },
 		apply: { run: () => Effect.sync(() => ({ exitCode: 0 })) },
+		codegen: { run: () => Effect.sync(() => ({ exitCode: 0 })) },
 		status: { reader: { readState: () => Effect.succeed(null) } },
 		snapshot: {
 			reader: {

@@ -13,15 +13,50 @@ serves the app with a browser dev wallet injected, and prints the dashboard URL.
 
 ## Day-2 commands
 
-| Command           | What it does                                                            |
-| ----------------- | ----------------------------------------------------------------------- |
-| `pnpm dev`        | Boot (or reuse) the stack and serve the app with the dev wallet.        |
-| `pnpm apply`      | Bring the stack up to date (publish + codegen) without serving the app. |
-| `pnpm typecheck`  | `devstack apply`, then `tsc -b --noEmit`.                               |
-| `pnpm test`       | Run `src/counter.test.ts` against the running stack.                    |
-| `pnpm build`      | Apply, typecheck, and produce a production bundle in `dist/`.           |
-| `devstack doctor` | Diagnose Docker / stack health.                                         |
-| `devstack wipe`   | Tear down the stack's containers and reset its on-disk state.           |
+| Command           | What it does                                                                  |
+| ----------------- | ---------------------------------------------------------------------------- |
+| `pnpm dev`        | Boot (or reuse) the `dev` stack and serve the app with the dev wallet; injects live ids automatically. |
+| `pnpm codegen`    | Regenerate `src/generated` bindings after a Move source change — deterministic, stack-free. |
+| `pnpm apply`      | Bring the stack up to date (publish + codegen) without serving the app.      |
+| `pnpm typecheck`  | `tsc -b --noEmit` — stack-free.                                             |
+| `pnpm test`       | Unit tests (`src/**/*.test.ts`) — fast, boots nothing.                       |
+| `pnpm test:e2e`   | Full-stack tests (`src/**/*.e2e.test.ts`) — auto-boots a throwaway `test` stack (parallel-safe with `pnpm dev`), then tears it down. |
+| `pnpm build`      | `tsc -b && vite build` — stack-free, no Docker; produces `dist/`. Works on a clean clone. |
+| `devstack doctor` | Diagnose Docker / stack health.                                             |
+| `devstack wipe`   | Tear down the stack's containers and reset its on-disk state.               |
+
+The committed `src/generated/config.ts` carries no on-chain ids — it resolves them at runtime
+from values injected at build time. `pnpm dev` injects the live stack's ids automatically.
+`pnpm build` is deterministic and stack-free: a build with no injected ids throws
+`DevstackConfigMissingError` at runtime rather than silently shipping zeros.
+
+## Deploy to a real network
+
+A production build needs a known deployment's id-config file — the same `devstack-ids.json`
+schema the local stack writes. Either point the stack at the target network once and copy the
+file it emits, or hand-author one:
+
+```bash
+# Option A: boot against the target network, then copy the emitted id-config
+devstack up --network testnet
+cp .devstack/stacks/dev/devstack-ids.json config/testnet.ids.json
+```
+
+For the full id-config schema (Option B, hand-authoring) see the canonical
+[Deploy to a real network](https://ts-sdks-incubation.vercel.app/devstack/features/codegen#deploy-to-a-real-network)
+section in the devstack docs. Commit the file, then point the build at it via the Vite plugin
+option or env:
+
+```ts title="vite.config.ts"
+devstackVitePlugin({ ids: './config/testnet.ids.json' });
+```
+
+```bash
+DEVSTACK_IDS_FILE=./config/testnet.ids.json pnpm build
+```
+
+Then deploy the static `dist/` bundle. A build with no ids throws `DevstackConfigMissingError`
+at runtime — loud, not a silent zero.
 
 ## Add a local service
 

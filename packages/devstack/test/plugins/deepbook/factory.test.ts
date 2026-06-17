@@ -181,37 +181,48 @@ describe('deepbook(opts) — primary factory', () => {
 			>,
 		);
 		// Name-keyed sibling aggregate: emitter is `deepbook/<name>`
-		// (default name `deepbook`); the export key is the instance name.
+		// (default name `deepbook`); the LIVE value is folded through the
+		// `deepbook.ts` aggregate projection (rooted under the instance key),
+		// not a bare `exportConst` — the unified config-binding derivation
+		// routes the resolved value into `aggregate.project`.
 		const codegen = captured.codegen.find((cap) => cap.emitterName === 'deepbook/deepbook') as
 			| {
 					readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
+					readonly aggregate?: {
+						readonly project: (
+							exported: Readonly<Record<string, unknown>>,
+						) => Readonly<Record<string, unknown>> | null;
+					};
 			  }
 			| undefined;
 		expect(codegen).toBeDefined();
 
-		const emitted: {
-			deepbook?: {
-				readonly pyth: {
-					readonly packageId: string | null;
-					readonly stateId: string | null;
-					readonly wormholeStateId: string | null;
-					readonly feeds: ReadonlyArray<unknown>;
-				} | null;
-			};
-		} = {};
+		// Run the emit (drives the placeholder export) then read the LIVE
+		// projection — the resolved `deepbook` entry is keyed under its
+		// instance name in the `deepbook.ts` bucket.
+		const exports: Record<string, unknown> = {};
 		Effect.runSync(
 			codegen!.emit({
 				exportConst: (name, value) => {
-					// Export key == instance name (`deepbook`).
-					if (name === 'deepbook') {
-						emitted.deepbook = value as typeof emitted.deepbook;
-					}
+					exports[name] = value;
 				},
 				importStatement: () => {},
 				done: () => ({ _tag: 'CodegenEmitDone' }),
 			}),
 		);
-		expect(emitted.deepbook?.pyth).toEqual({
+		const projected = codegen!.aggregate?.project(exports) as
+			| {
+					readonly deepbook?: {
+						readonly pyth: {
+							readonly packageId: string | null;
+							readonly stateId: string | null;
+							readonly wormholeStateId: string | null;
+							readonly feeds: ReadonlyArray<unknown>;
+						} | null;
+					};
+			  }
+			| undefined;
+		expect(projected?.deepbook?.pyth).toEqual({
 			packageId: TESTNET_PYTH.packageId,
 			stateId: TESTNET_PYTH.stateId,
 			wormholeStateId: TESTNET_PYTH.wormholeStateId,

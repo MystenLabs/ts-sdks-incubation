@@ -68,11 +68,7 @@ import {
 import type { ContributionDispatchContext } from '../substrate/runtime/supervisor/contribution-dispatcher.ts';
 import type { SupervisorPostAcquireContext } from '../substrate/runtime/supervisor/index.ts';
 
-import {
-	layerMystenMoveCodegen,
-	MoveCodegenService,
-	MoveSummaryRunnerService,
-} from './codegen/bindings.ts';
+import { layerMystenMoveCodegen } from './codegen/bindings.ts';
 import { layerSuiMoveSummaryRunnerDocker } from '../plugins/sui/move-summary-runner.ts';
 import { CodegenPathsService, layerCodegenPaths, layerCodegenRoot } from './codegen/paths.ts';
 import { resolveCodegenOutput } from './codegen/output-location.ts';
@@ -81,6 +77,8 @@ import {
 	layerCodegenOrchestrator,
 	type Codegenable,
 } from './codegen/service.ts';
+import { CodegenWriteFailed } from './codegen/errors.ts';
+import { ID_CONFIG_FILENAME, writeIdConfig } from './codegen/id-config.ts';
 import {
 	DEFAULT_TRAEFIK_IMAGE,
 	layerDockerUpstreamResolver,
@@ -330,24 +328,25 @@ export interface ProductionCodegenOptions {
 
 /**
  * The ONE boot seam that maps a stack's codegen config to the production
- * codegen orchestrator options. Both composition entry points
- * (`api/run-stack.ts` and `orchestrators/layers.ts`) call this so
- * the primary-vs-secondary output-dir branch (via `resolveCodegenOutput`)
- * is wired exactly once: primary run → `<appRoot>/src/generated`; a
- * secondary `--stack` run → `<appRoot>/.devstack/stacks/<stack>/generated`,
- * so the two never clobber. The resolved literal `outputDir`/`stackSubdir`/
- * `extrasDir` flow into `layerProductionOrchestrators({ codegen })`
- * unchanged — `paths.ts` keeps consuming literals (minimal blast radius).
+ * codegen orchestrator options for a LIVE (`'ran'`) projection. Both
+ * composition entry points (`api/run-stack.ts` and `orchestrators/layers.ts`)
+ * call this so the live output-dir decision (via `resolveCodegenOutput`)
+ * is wired exactly once: EVERY live run — including what used to be the
+ * "primary" stack — emits into `<appRoot>/.devstack/stacks/<stack>/generated`,
+ * so the id-bearing live tree never lands in the committed source tree and
+ * two stacks never clobber. The committed `src/generated` tree is owned
+ * solely by the stack-free `codegen` verb. The resolved literal
+ * `outputDir`/`stackSubdir`/`extrasDir` flow into
+ * `layerProductionOrchestrators({ codegen })` unchanged — `paths.ts` keeps
+ * consuming literals (minimal blast radius).
  *
  * The per-stack inputs: the app root, the resolved effective stack
  * (already through the explicit-`--stack` > `config.stackName` > inferred
- * ladder), the config's declared primary `stackName`, and the app's
- * optional explicit `codegen` pins.
+ * ladder), and the app's optional explicit `codegen` pins.
  */
 export const resolveProductionCodegenOptions = (input: {
 	readonly appRoot: string;
 	readonly effectiveStack: string;
-	readonly primaryStack: string | undefined;
 	readonly codegen?:
 		| {
 				readonly outputDir?: string;
@@ -359,7 +358,6 @@ export const resolveProductionCodegenOptions = (input: {
 	const resolved = resolveCodegenOutput({
 		appRoot: input.appRoot,
 		effectiveStack: input.effectiveStack,
-		primaryStack: input.primaryStack,
 		explicitOutputDir: input.codegen?.outputDir,
 		explicitStackSubdir: input.codegen?.stackSubdir ?? null,
 	});
@@ -709,8 +707,6 @@ export const buildProductionPostAcquireHook = (
 	never,
 	| CodegenOrchestratorService
 	| CodegenPathsService
-	| MoveSummaryRunnerService
-	| MoveCodegenService
 	| FileSystem.FileSystem
 	| StackPathsService
 	| PostAcquireTasksService
@@ -719,8 +715,6 @@ export const buildProductionPostAcquireHook = (
 	Effect.gen(function* () {
 		const codegen = yield* CodegenOrchestratorService;
 		const paths = yield* CodegenPathsService;
-		const summaryRunner = yield* MoveSummaryRunnerService;
-		const moveCodegen = yield* MoveCodegenService;
 		const fs = yield* FileSystem.FileSystem;
 		const stackPaths = yield* StackPathsService;
 		const postAcquireTasks = yield* PostAcquireTasksService;
@@ -733,6 +727,27 @@ export const buildProductionPostAcquireHook = (
 					...routableEndpoints,
 					...operationalManifestEndpointEntries(ctx, routableEndpoints),
 				];
+				// Boot no longer runs codegen. Its only job is to PRODUCE the
+				// id-config (loadable on-chain ids), which the Vite plugin injects
+				// via `__DEVSTACK_IDS__` in dev. The committed `src/generated` tree
+				// is written ONLY by the stack-free `devstack codegen` verb.
+				// Assemble the id-config from the SAME live-resolved contributions
+				// that fed `config.ts` and write it to the gitignored
+				// `.devstack/stacks/<stack>/`.
+				const idConfig = yield* codegen.assembleIdConfig(String(ctx.identity.network)).pipe(
+					Effect.mapError(
+						(cause) =>
+							new CodegenWriteFailed({
+								outputPath: ID_CONFIG_FILENAME,
+								stage: 'write',
+								cause,
+							}),
+					),
+				);
+				const idsFile = join(stackPaths.stackRoot, ID_CONFIG_FILENAME);
+				yield* writeIdConfig(idsFile, idConfig).pipe(
+					Effect.provideService(FileSystem.FileSystem, fs),
+				);
 				const envelope = yield* buildEnvelope({
 					identity: {
 						app: ctx.identity.app,
@@ -748,20 +763,12 @@ export const buildProductionPostAcquireHook = (
 					// resolved, stack-subdir-applied absolute path the runtime tree
 					// writes to; `paths.extrasDir` is the dev-only
 					// `generated-extras` tree the `@devstack-dev` alias resolves.
-					codegen: { generatedDir: paths.outputDir, extrasDir: paths.extrasDir },
+					codegen: { generatedDir: paths.outputDir, extrasDir: paths.extrasDir, idsFile },
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');
 				yield* writeManifest(envelope, manifestPath).pipe(
 					Effect.provideService(FileSystem.FileSystem, fs),
 				);
-				const result = yield* codegen
-					.runCycle()
-					.pipe(
-						Effect.provideService(CodegenPathsService, paths),
-						Effect.provideService(MoveSummaryRunnerService, summaryRunner),
-						Effect.provideService(MoveCodegenService, moveCodegen),
-						Effect.provideService(FileSystem.FileSystem, fs),
-					);
 				yield* postAcquireTasks.runAll;
 				return [
 					{
@@ -771,11 +778,7 @@ export const buildProductionPostAcquireHook = (
 					},
 					{
 						tag: 'codegen.emitted' as const,
-						files: [
-							...result.filesWritten,
-							...result.filesChmod,
-							...(result.bindings?.filesWritten ?? []),
-						],
+						files: [idsFile],
 						at: Date.now(),
 					},
 				];

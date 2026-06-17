@@ -9,6 +9,7 @@ export default defineConfig({
 		'src/index.ts',
 		'src/build-integrations/vitest/index.ts',
 		'src/build-integrations/vitest/setup.ts',
+		'src/build-integrations/vitest/global-setup.ts',
 		'src/build-integrations/playwright/index.ts',
 		'src/build-integrations/playwright/global-setup.ts',
 		'src/build-integrations/vite/index.ts',

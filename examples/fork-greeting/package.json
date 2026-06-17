@@ -4,6 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"codegen": "DEVSTACK_APP=fork-greeting node ../../packages/devstack/dist/cli/main.mjs codegen",
 		"apply": "DEVSTACK_APP=fork-greeting node ../../packages/devstack/dist/cli/main.mjs apply",
 		"dev": "DEVSTACK_APP=fork-greeting node ../../packages/devstack/dist/cli/main.mjs up",
 		"typecheck": "tsc -b --noEmit",

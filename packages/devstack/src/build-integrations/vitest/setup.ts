@@ -1,9 +1,12 @@
 // Vitest build-integration — test-setup hooks.
 //
 // Architecture (distilled/23-build-integrations.md § Per-integration
-// requirements → Vitest, § Lifecycle states): the preset itself does
-// NOT boot devstack; it is the test file's job (via
-// `@effect/vitest`'s `it.layer(stack.layer)`) to drive the lifecycle.
+// requirements → Vitest, § Lifecycle states): this per-file setup
+// module does NOT boot devstack. Booting is either the test file's job
+// (via `@effect/vitest`'s `it.layer(stack.layer)`) or, for `*.e2e`
+// suites, the separate `global-setup.ts` boot seam wired by
+// `devstackVitestTestConfig({ autoBoot: true })`. This module stays a
+// pure reader either way.
 //
 // But suites that talk to a LIVE devstack still need a small
 // before/after surface to:
@@ -31,8 +34,9 @@
 //     4. clear the captured fixture (so a stale handle doesn't survive
 //        between watch runs)
 //
-// No teardown of the devstack itself — that's the supervisor's job;
-// the preset is a pure reader.
+// No teardown of the devstack itself — that's the supervisor's job (or,
+// under `autoBoot`, the `global-setup.ts` teardown). This per-file setup
+// module is a pure reader.
 //
 // NOTE: this module must NOT import `vitest` at the top level. The
 // public `./vitest` barrel re-exports this file, and the build is

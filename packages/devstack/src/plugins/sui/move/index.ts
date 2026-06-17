@@ -9,7 +9,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'nod
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
-import { Effect, Schema, type Scope } from 'effect';
+import { Effect, Schema, type Scope, Semaphore } from 'effect';
 
 import type {
 	ContainerBuildContext,
@@ -342,6 +342,30 @@ export const scrubLocksHost = (
 				cause,
 			}),
 	});
+
+// Serialize the host-scrub → build critical section across ALL Move builds in
+// this process. The host `~/.move/git` cache is shared mutable state: every
+// build host-scrubs it (`scrubLocksHost`), the build container bind-mounts it
+// (see `buildViaOneShot`), and `sui move build` writes fresh `[pinned.*]`
+// sections that the in-container post-build scrub strips (Invariant 14). Under
+// concurrent builds those host-side `gawk -i inplace` scrubs collide with a
+// sibling container's live `git clone` into the same cache dir, corrupting the
+// in-flight fetch — only git-resolving builds are exposed, so a package that
+// pulls a Move dep (or the framework) from git is the usual casualty. A
+// single-permit semaphore makes the cache-touching section mutually exclusive
+// while leaving the on-chain publish-tx parallel. In-process only: a global
+// `~/.move` shared across concurrent devstack PROCESSES is a pre-existing
+// condition this does not (and the short-lived `stack.lock` cannot) cover.
+const moveBuildLock = Semaphore.makeUnsafe(1);
+
+/** Run `effect` while holding the process-wide Move-build permit. Wrap ONLY
+ *  the host-scrub → build critical section (never the on-chain publish, which
+ *  must stay parallel) so just one build mutates the shared `~/.move` git
+ *  cache at a time. Generic over the effect's channels — it neither adds
+ *  requirements nor changes the error type. */
+export const withMoveBuildLock = <A, E, R>(
+	effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> => moveBuildLock.withPermit(effect);
 
 const SuiBuildJsonSchema = Schema.Struct({
 	modules: Schema.Array(Schema.String),

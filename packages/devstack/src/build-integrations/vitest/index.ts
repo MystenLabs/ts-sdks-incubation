@@ -23,6 +23,12 @@ export {
 } from './config.ts';
 
 export {
+	devstackVitestGlobalSetup,
+	type DevstackVitestGlobalSetup,
+	type DevstackVitestGlobalSetupOptions,
+} from './global-setup.ts';
+
+export {
 	getStackContext,
 	runDevstackBeforeAll,
 	runDevstackAfterAll,

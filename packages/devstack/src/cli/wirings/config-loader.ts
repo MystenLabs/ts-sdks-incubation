@@ -3,70 +3,31 @@
 // config exported it, plus the validated internal engine stack for CLI
 // paths that need the erased runtime boundary shape.
 
-import { existsSync } from 'node:fs';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
-import { pathToFileURL } from 'node:url';
-
 import { Effect } from 'effect';
 
-import { readStackEngine, type Stack } from '../../api/define-devstack.ts';
+import {
+	DEFAULT_CONFIG_PATH,
+	loadDevstackConfig,
+	resolveConfigPath,
+	type DevstackConfigError,
+} from '../../api/load-config.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
 import { CliConfigInvalidError, CliConfigNotFoundError } from '../../surfaces/cli/index.ts';
-import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 
-export const DEFAULT_CONFIG_PATH = './devstack.config.ts';
+// Re-exported so existing CLI importers (`main.ts`, `snapshot.ts`) keep
+// their `./config-loader` import site. The implementation lives in the
+// CLI-free `api/load-config.ts` facade.
+export { DEFAULT_CONFIG_PATH, resolveConfigPath };
 
-/** Resolve a `--config <path>` argument to an absolute path, falling
- *  through to a parent-directory search when the default value is
- *  used. Returns `null` when no candidate exists. */
-export const resolveConfigPath = (configPath: string | undefined): string | null => {
-	const target = configPath ?? DEFAULT_CONFIG_PATH;
-	const explicit = isAbsolute(target) ? target : resolvePath(process.cwd(), target);
-	if (existsSync(explicit)) return explicit;
-	if (configPath !== undefined && configPath !== DEFAULT_CONFIG_PATH) return null;
-	let dir = process.cwd();
-	for (;;) {
-		const candidate = resolvePath(dir, 'devstack.config.ts');
-		if (existsSync(candidate)) return candidate;
-		const parent = resolvePath(dir, '..');
-		if (parent === dir) return null;
-		dir = parent;
-	}
-};
-
-interface RawConfigModule {
-	readonly default?: unknown;
-}
-
-const validateStackModule = (
-	resolvedConfigPath: string,
-	mod: unknown,
-): LoadedConfig & {
-	readonly stack: Stack<SupervisedStack['members']>;
-	readonly engine: SupervisedStack;
-} => {
-	const m = mod as RawConfigModule;
-	const def = m.default;
-	if (def === null || typeof def !== 'object' || (def as { _tag?: unknown })._tag !== 'Stack') {
-		throw new CliConfigInvalidError({
-			message: `config at ${resolvedConfigPath} does not default-export a Stack value (got _tag=${String((def as { _tag?: unknown })?._tag)})`,
-		});
-	}
-	let stack: SupervisedStack;
-	const publicStack = def as Stack<SupervisedStack['members']>;
-	try {
-		stack = readStackEngine(publicStack);
-	} catch (cause) {
-		throw new CliConfigInvalidError({
-			message: `config at ${resolvedConfigPath} default-exported an invalid Stack handle: ${cause instanceof Error ? cause.message : String(cause)}`,
-		});
-	}
-	return {
-		stack: publicStack,
-		engine: stack,
-		resolvedConfigPath,
-	};
-};
+/** Translate the CLI-free loader's failure into the CLI-flavored error
+ *  union so command exit codes stay stable. */
+const toCliError = (err: DevstackConfigError): CliConfigNotFoundError | CliConfigInvalidError =>
+	err.kind === 'not-found'
+		? new CliConfigNotFoundError({
+				message: err.message,
+				searchedPaths: err.searchedPaths ?? [],
+			})
+		: new CliConfigInvalidError({ message: err.message, cause: err.cause });
 
 export interface ConfigLoader {
 	readonly load: (
@@ -76,38 +37,8 @@ export interface ConfigLoader {
 
 export const makeConfigLoader = (): ConfigLoader => ({
 	load: (configPath) =>
-		Effect.gen(function* () {
-			const abs = resolveConfigPath(configPath);
-			if (abs === null) {
-				const attempted =
-					configPath !== undefined
-						? resolvePath(process.cwd(), configPath)
-						: resolvePath(process.cwd(), DEFAULT_CONFIG_PATH);
-				return yield* Effect.fail(
-					new CliConfigNotFoundError({
-						message: `devstack config not found at ${attempted}`,
-						searchedPaths: [attempted],
-					}),
-				);
-			}
-			const url = pathToFileURL(abs).href;
-			const mod = yield* Effect.tryPromise({
-				try: () => import(url) as Promise<unknown>,
-				catch: (cause) =>
-					new CliConfigInvalidError({
-						message: `failed to import ${abs}: ${cause instanceof Error ? cause.message : String(cause)}`,
-						cause,
-					}),
-			});
-			return yield* Effect.try({
-				try: () => validateStackModule(abs, mod),
-				catch: (cause) =>
-					cause instanceof CliConfigInvalidError
-						? cause
-						: new CliConfigInvalidError({
-								message: `invalid config at ${abs}`,
-								cause,
-							}),
-			});
-		}) as Effect.Effect<LoadedConfig, CliConfigNotFoundError | CliConfigInvalidError>,
+		loadDevstackConfig(configPath).pipe(Effect.mapError(toCliError)) as Effect.Effect<
+			LoadedConfig,
+			CliConfigNotFoundError | CliConfigInvalidError
+		>,
 });

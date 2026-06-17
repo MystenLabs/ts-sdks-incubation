@@ -19,9 +19,14 @@ export const dAppKit = createDAppKit({
 	defaultNetwork: deepbookNetwork,
 	autoConnect: import.meta.env.DEV,
 	createClient() {
+		// Single generated network — always exactly one entry, so the active
+		// entry resolves from the sole value (mirrors `App.tsx`). The non-null
+		// assertion is safe (`noUncheckedIndexedAccess` widens index access to
+		// `T | undefined`, and `config.network` is a runtime-resolved string).
+		const activeNetwork = config.networks[config.network] ?? Object.values(config.networks)[0]!;
 		return new SuiGrpcClient({
 			network: deepbookNetwork,
-			baseUrl: config.networks[config.network].rpc,
+			baseUrl: activeNetwork.rpc,
 			// `config.mvrOverrides` is the codegen-emitted active-network
 			// name→id map: each generated Move binding defaults its `package`
 			// to the `@local/<name>` MVR name (e.g. `@local/demo-coins`), and

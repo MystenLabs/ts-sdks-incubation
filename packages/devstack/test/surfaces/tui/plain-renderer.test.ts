@@ -8,7 +8,11 @@ import { describe, expect, it } from 'vitest';
 
 import { endpointKey, pluginKey } from '../../../src/substrate/brand.ts';
 import type { EngineEvent } from '../../../src/substrate/events.ts';
-import { formatEventLine, formatHeartbeat } from '../../../src/surfaces/tui/plain-renderer.ts';
+import {
+	formatEventLine,
+	formatHeartbeat,
+	keepInQuiet,
+} from '../../../src/surfaces/tui/plain-renderer.ts';
 import {
 	accountCells,
 	endpointLine,
@@ -305,5 +309,54 @@ describe('plain-renderer formatters', () => {
 		expect(out).toContain('heartbeat');
 		expect(out).toContain('key=sui');
 		expect(out).toContain('narration="pulling image"');
+	});
+});
+
+describe('keepInQuiet', () => {
+	const at = STATIC_AT;
+
+	it('keeps the readiness milestone but drops intermediate transitions', () => {
+		const sui = pluginKey('sui');
+		expect(
+			keepInQuiet({
+				tag: 'lifecycle.statusChanged',
+				pluginKey: sui,
+				from: 'acquiring',
+				to: 'ready',
+				at,
+			}),
+		).toBe(true);
+		expect(
+			keepInQuiet({
+				tag: 'lifecycle.statusChanged',
+				pluginKey: sui,
+				from: 'pending',
+				to: 'acquiring',
+				at,
+			}),
+		).toBe(false);
+		// Teardown chatter (`from=ready to=stopping`) is exactly the noise we drop.
+		expect(
+			keepInQuiet({
+				tag: 'lifecycle.statusChanged',
+				pluginKey: sui,
+				from: 'ready',
+				to: 'stopping',
+				at,
+			}),
+		).toBe(false);
+	});
+
+	it('always keeps warnings/errors, drops routine info log lines', () => {
+		const walrus = pluginKey('walrus');
+		expect(
+			keepInQuiet({ tag: 'log.appended', pluginKey: walrus, level: 'error', line: 'boom', at }),
+		).toBe(true);
+		expect(
+			keepInQuiet({ tag: 'log.appended', pluginKey: walrus, level: 'warn', line: 'careful', at }),
+		).toBe(true);
+		expect(
+			keepInQuiet({ tag: 'log.appended', pluginKey: walrus, level: 'info', line: 'tick', at }),
+		).toBe(false);
 	});
 });

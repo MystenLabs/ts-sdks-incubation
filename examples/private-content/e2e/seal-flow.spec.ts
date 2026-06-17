@@ -25,6 +25,29 @@ const FILENAME = `e2e-${Date.now()}.txt`;
 
 test.setTimeout(180_000);
 
+// Buffer browser console errors and surface them ONLY when a test fails, so a
+// green run stays quiet. dapp-kit auto-registers the hosted Slush wallet, whose
+// metadata fetch errors out against a localnet (expected, stack-independent
+// noise); printing every console error inline drowned the key-server / vault
+// errors we actually want a hint about. On failure we dump the buffer.
+const browserConsoleErrors: string[] = [];
+test.beforeEach(({ page }) => {
+	browserConsoleErrors.length = 0;
+	page.on('console', (m) => {
+		if (m.type() === 'error') browserConsoleErrors.push(m.text());
+	});
+});
+// Playwright requires the first hook arg to be an object-destructuring pattern
+// even when no fixture is used; `no-empty-pattern` flags the resulting `{}`.
+// eslint-disable-next-line no-empty-pattern
+test.afterEach(({}, testInfo) => {
+	if (testInfo.status !== testInfo.expectedStatus && browserConsoleErrors.length > 0) {
+		console.error(
+			`[browser console errors during failed test]\n  ${browserConsoleErrors.join('\n  ')}`,
+		);
+	}
+});
+
 /**
  * Read the full (untruncated) address of the currently connected account
  * from the app's `connected-account` slot. The app intentionally exposes
@@ -42,11 +65,8 @@ async function connectedAddress(page: import('@playwright/test').Page): Promise<
 }
 
 test('alice encrypts + uploads, grants bob a cap, bob decrypts', async ({ page }) => {
-	// Surface key server / vault errors loudly so flakes have a hint instead
-	// of an opaque "decryption failed".
-	page.on('console', (m) => {
-		if (m.type() === 'error') console.error('[console.error]', m.text());
-	});
+	// (Browser console errors are buffered in `beforeEach` and surfaced only on
+	// failure — see the afterEach hook above.)
 
 	// --- resolve bob's address through the app (no dev accounts import) ---
 	// Connect as bob first purely to read his full address from the

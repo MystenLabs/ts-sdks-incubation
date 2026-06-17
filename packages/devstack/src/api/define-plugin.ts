@@ -33,4 +33,6 @@ export {
 	type WatchDecl,
 } from '../substrate/plugin.ts';
 
+export type { CodegenIdResolver, StaticCodegenSource } from '../contracts/codegenable.ts';
+
 export type { RowSection } from '../substrate/projection.ts';

@@ -8,6 +8,34 @@
 
 import type { Effect } from 'effect';
 
+// -----------------------------------------------------------------------------
+// Raw-expression escape hatch
+// -----------------------------------------------------------------------------
+
+/**
+ * A value the codegen renderer emits VERBATIM (not as a quoted literal).
+ *
+ * The one authorized use is id resolution in the emitted `config.ts`:
+ * `byNetwork` / `mvrOverrides` / `packageId` entries hold a
+ * `RawExpr('resolveId("@local/foo")')` so the COMMITTED config carries NO
+ * on-chain id. The id resolves at app build/dev time through the injected
+ * `__DEVSTACK_IDS__` global (see the emitted `config-runtime.ts`), which
+ * throws loudly when an id is unresolved. Lives at the L0 contract layer
+ * so both the package plugin (producer) and the renderer (consumer) can
+ * reach it without a layering cycle.
+ */
+export class RawExpr {
+	readonly __rawExpr = true as const;
+	constructor(readonly expr: string) {}
+}
+
+/** Build a `RawExpr`. */
+export const rawExpr = (expr: string): RawExpr => new RawExpr(expr);
+
+/** Type guard for `RawExpr` — the renderer's verbatim-emit branch. */
+export const isRawExpr = (v: unknown): v is RawExpr =>
+	typeof v === 'object' && v !== null && (v as { __rawExpr?: unknown }).__rawExpr === true;
+
 /**
  * Opaque per-file emission context.
  *
@@ -78,6 +106,15 @@ export interface AggregateContribution {
 	 *  `CodegenableDecl.sensitive` for aggregate files. Defaults to
 	 *  `false`. */
 	readonly sensitive?: boolean;
+	/** Generic-channel contributions for the loadable id-config. Only the
+	 *  LIVE (boot) aggregate of a unified config-binding set sets this;
+	 *  boot's `assembleIdConfig` folds it into `idConfig.values[ns][key]`.
+	 *  Carries the live plugin JSON the typed id-config fields can't (pool
+	 *  ids, coin types, walrus/seal endpoints). The committed-tree (static)
+	 *  aggregate omits it — those values resolve at app build time. */
+	readonly idConfigValues?: {
+		readonly [namespace: string]: { readonly [key: string]: unknown };
+	};
 }
 
 /** Which codegen output tree a decl (or aggregate) emits into.
@@ -86,6 +123,52 @@ export interface AggregateContribution {
  *  `.devstack/stacks/<stack>/generated-extras/` dev-only tree reached
  *  via the `@devstack-dev` alias. */
 export type OutputLocation = 'generated' | 'generated-extras';
+
+/**
+ * The id-resolution seam a plugin's `staticCodegen` hook reads to bake
+ * ids into a STACK-FREE committed projection. The `codegen` verb builds
+ * ONE resolver from the optional id-config file (`--config`) and threads
+ * it into every member's `staticCodegen`.
+ *
+ * On-chain ids are LOADED CONFIG DATA, not generated output: the verb
+ * never introspects a live stack — it only reads the id-config. When no
+ * id-config is supplied, the resolver returns the all-zero sentinel
+ * (`UNRESOLVED_ID`) for every id, and the emitted resolver throws loudly
+ * at runtime if such an id is used (see `config-runtime.ts`).
+ *
+ * The committed `config.ts` carries structural NAMES; the concrete ids
+ * are resolved at app build/dev time through the injected
+ * `__DEVSTACK_IDS__` global. The resolver here only fills in literal
+ * `packages.<name>.byNetwork` entries for KNOWN (declared) packages
+ * whose ids are pinned in config; LOCAL package ids stay the sentinel in
+ * the committed stub (the live `.devstack` overlay / injected ids carry
+ * the real value).
+ */
+export interface CodegenIdResolver {
+	/** The `packageId` to bake into the active-network config entry for a
+	 *  package. A declared `networks` literal (KNOWN package) is honored;
+	 *  otherwise the all-zero sentinel (`UNRESOLVED_ID`). The committed
+	 *  stub never embeds a real LOCAL id — that arrives via injection. */
+	readonly packageId: (request: {
+		readonly networks?:
+			| Readonly<Record<string, { readonly packageId: string }>>
+			| undefined;
+	}) => string;
+}
+
+/**
+ * Static, stack-free codegen-decl source. A plugin that can describe its
+ * codegen contributions from CONFIG ALONE (no live acquire) exposes this
+ * on its spec so the `codegen` verb can emit a committed projection without
+ * booting a stack. The hook is pure: given the id-resolver, it returns the
+ * same `CodegenableDecl`s the live `acquire` would emit, but with ids drawn
+ * from the resolver instead of the chain. Plugins whose contributions
+ * genuinely require live resolution (or which only land in the gitignored
+ * `generated-extras` dev tree) omit this — the verb simply skips them.
+ */
+export type StaticCodegenSource = (
+	resolver: CodegenIdResolver,
+) => ReadonlyArray<CodegenableDecl>;
 
 /**
  * Codegen contribution. `Emitter` is a literal emitter name used

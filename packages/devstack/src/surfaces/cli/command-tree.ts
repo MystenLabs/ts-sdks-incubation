@@ -91,6 +91,17 @@ const commands = [
 		options: configOptions,
 	},
 	{
+		name: 'codegen',
+		summary: 'Regenerate committed bindings from Move source (no stack boot).',
+		usage: 'devstack codegen [options]',
+		lifecycle: 'one-shot',
+		sideEffects: 'write',
+		requiresDocker: false,
+		description:
+			'Move-compiles local package sources and emits the committed src/generated tree (type bindings + sentinel-id config stubs) without booting a stack.',
+		options: configOptions,
+	},
+	{
 		name: 'status',
 		summary: 'Show the current stack projection (offline: from the manifest).',
 		usage: 'devstack status [options]',

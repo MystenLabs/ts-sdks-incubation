@@ -61,6 +61,10 @@ export interface ManifestCodegen {
 	 *  additive — older manifests omit it; the reader falls back to
 	 *  `.devstack/stacks/<stack>/generated-extras`. */
 	readonly extrasDir?: string;
+	/** Absolute path to the gitignored `devstack-ids.json` the boot wrote
+	 *  for this stack (the live on-chain ids). The Vite plugin reads it to
+	 *  inject `__DEVSTACK_IDS__` in dev. Optional + additive. */
+	readonly idsFile?: string;
 }
 
 /** Manifest envelope. */
@@ -171,12 +175,17 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	),
 	extras: Schema.Record(Schema.String, Schema.Unknown),
 	// Optional codegen metadata. The Vite plugin reads
-	// `codegen.generatedDir` to point its `@generated` alias; on a
-	// miss it falls back to `src/generated/`.
+	// `codegen.generatedDir` to point its `@generated` alias (dev
+	// `generated-extras` overlay) and `codegen.idsFile` to inject the live
+	// on-chain ids via `__DEVSTACK_IDS__`; on a miss it falls back to
+	// `src/generated/` and `__DEVSTACK_IDS__ = null`.
 	codegen: Schema.optional(
 		Schema.Struct({
 			generatedDir: Schema.String,
 			extrasDir: Schema.optional(Schema.String),
+			/** Absolute path to the gitignored `devstack-ids.json` the boot
+			 *  wrote for this stack. The Vite plugin reads it in dev. */
+			idsFile: Schema.optional(Schema.String),
 		}),
 	),
 });

@@ -12,7 +12,12 @@ const ALL_COMBOS: ReadonlyArray<ReadonlyArray<ServiceId>> = [
 	[],
 	['walrus'],
 	['seal'],
+	['deepbook'],
+	['pyth'],
 	['walrus', 'seal'],
+	['seal', 'deepbook'],
+	['deepbook', 'pyth'],
+	['walrus', 'seal', 'deepbook', 'pyth'],
 ];
 
 const HEADER = [
@@ -34,6 +39,8 @@ const APP_ALL = [
 	'import {',
 	'\taccount,',
 	'\tdashboard,',
+	'\tDEEP_PRICE_FEED_ID,',
+	'\tdeepbook,',
 	'\tdefineDevstack,',
 	'\tHOST_SERVICE_PORT_TOKEN,',
 	'\thostService,',
@@ -41,6 +48,7 @@ const APP_ALL = [
 	'\tseal,',
 	'\ttype Stack,',
 	'\tsui,',
+	'\tSUI_PRICE_FEED_ID,',
 	'\twalCoin,',
 	'\twallet,',
 	'\twalrus,',
@@ -66,6 +74,43 @@ const APP_ALL = [
 	"\tfunding: [{ coin: 'sui', amount: 1_000_000_000n }],",
 	'});',
 	"const sealKeyServer = seal({ mode: 'local-keygen', signer: sealSigner });",
+	"const deepbookPublisher = account('deepbook_publisher', {",
+	"\tkind: 'ephemeral',",
+	"\tfunding: [{ coin: 'sui', amount: 1_000_000_000_000n }],",
+	'});',
+	"const deepbookPackage = localPackage('deepbook', {",
+	'\tgit: {',
+	"\t\turl: 'https://github.com/MystenLabs/deepbookv3.git',",
+	"\t\tsubdir: 'packages/deepbook',",
+	"\t\trev: 'main',",
+	'\t},',
+	'\tpublisher: deepbookPublisher,',
+	'\tcapture: {',
+	"\t\tregistryId: '::registry::Registry',",
+	"\t\tadminCapId: '::registry::DeepbookAdminCap',",
+	'\t},',
+	'});',
+	"const pythPackage = localPackage('pyth', {",
+	'\tgit: {',
+	"\t\turl: 'https://github.com/MystenLabs/deepbook-sandbox.git',",
+	"\t\tsubdir: 'sandbox/packages/pyth',",
+	"\t\trev: 'main',",
+	'\t},',
+	'\tpublisher: deepbookPublisher,',
+	'});',
+	'const dex = deepbook({',
+	"\tmode: 'local',",
+	'\tpublisher: deepbookPublisher,',
+	'\tpackage: deepbookPackage,',
+	'\tpyth: {',
+	'\t\tpackage: pythPackage,',
+	'\t\tpusher: deepbookPublisher,',
+	'\t\tfeeds: [',
+	"\t\t\t{ symbol: 'DEEP', feedId: DEEP_PRICE_FEED_ID, initialPrice: 2_000_000n, expo: -8 },",
+	"\t\t\t{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },",
+	'\t\t],',
+	'\t},',
+	'});',
 	'const devWallet = wallet({ accounts: [alice, sealSigner] });',
 	'const app = hostService({',
 	"\tname: 'app',",
@@ -73,11 +118,15 @@ const APP_ALL = [
 	'\tcwd: HERE,',
 	'\tport: 5179,',
 	"\tready: { kind: 'http' },",
-	'\tafter: [localnet, counter, devWallet, storage, sealKeyServer],',
+	'\tafter: [localnet, counter, devWallet, storage, sealKeyServer, dex],',
 	'});',
 	'',
 	'const stack: Stack = defineDevstack({',
 	'\tmembers: [localnet, app, dashboard()],',
+	'\t// `pnpm dev` boots this primary stack (codegen → src/generated);',
+	'\t// `pnpm test:e2e` boots an isolated `test` stack so tests run in',
+	'\t// parallel without clobbering it.',
+	"\tstackName: 'dev',",
 	'});',
 	'',
 	'export default stack;',
@@ -124,6 +173,10 @@ const APP_NONE = [
 	'',
 	'const stack: Stack = defineDevstack({',
 	'\tmembers: [localnet, app, dashboard()],',
+	'\t// `pnpm dev` boots this primary stack (codegen → src/generated);',
+	'\t// `pnpm test:e2e` boots an isolated `test` stack so tests run in',
+	'\t// parallel without clobbering it.',
+	"\tstackName: 'dev',",
 	'});',
 	'',
 	'export default stack;',
@@ -138,11 +191,14 @@ const TS_ALL = [
 	'import {',
 	'\taccount,',
 	'\tdashboard,',
+	'\tDEEP_PRICE_FEED_ID,',
+	'\tdeepbook,',
 	'\tdefineDevstack,',
 	'\tlocalPackage,',
 	'\tseal,',
 	'\ttype Stack,',
 	'\tsui,',
+	'\tSUI_PRICE_FEED_ID,',
 	'\twalCoin,',
 	'\twalrus,',
 	"} from '@mysten-incubation/devstack';",
@@ -167,9 +223,50 @@ const TS_ALL = [
 	"\tfunding: [{ coin: 'sui', amount: 1_000_000_000n }],",
 	'});',
 	"const sealKeyServer = seal({ mode: 'local-keygen', signer: sealSigner });",
+	"const deepbookPublisher = account('deepbook_publisher', {",
+	"\tkind: 'ephemeral',",
+	"\tfunding: [{ coin: 'sui', amount: 1_000_000_000_000n }],",
+	'});',
+	"const deepbookPackage = localPackage('deepbook', {",
+	'\tgit: {',
+	"\t\turl: 'https://github.com/MystenLabs/deepbookv3.git',",
+	"\t\tsubdir: 'packages/deepbook',",
+	"\t\trev: 'main',",
+	'\t},',
+	'\tpublisher: deepbookPublisher,',
+	'\tcapture: {',
+	"\t\tregistryId: '::registry::Registry',",
+	"\t\tadminCapId: '::registry::DeepbookAdminCap',",
+	'\t},',
+	'});',
+	"const pythPackage = localPackage('pyth', {",
+	'\tgit: {',
+	"\t\turl: 'https://github.com/MystenLabs/deepbook-sandbox.git',",
+	"\t\tsubdir: 'sandbox/packages/pyth',",
+	"\t\trev: 'main',",
+	'\t},',
+	'\tpublisher: deepbookPublisher,',
+	'});',
+	'const dex = deepbook({',
+	"\tmode: 'local',",
+	'\tpublisher: deepbookPublisher,',
+	'\tpackage: deepbookPackage,',
+	'\tpyth: {',
+	'\t\tpackage: pythPackage,',
+	'\t\tpusher: deepbookPublisher,',
+	'\t\tfeeds: [',
+	"\t\t\t{ symbol: 'DEEP', feedId: DEEP_PRICE_FEED_ID, initialPrice: 2_000_000n, expo: -8 },",
+	"\t\t\t{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },",
+	'\t\t],',
+	'\t},',
+	'});',
 	'',
 	'const stack: Stack = defineDevstack({',
-	'\tmembers: [localnet, counter, storage, sealKeyServer, dashboard()],',
+	'\tmembers: [localnet, counter, storage, sealKeyServer, dex, dashboard()],',
+	'\t// `pnpm dev` boots this primary stack (codegen → src/generated);',
+	'\t// `pnpm test:e2e` boots an isolated `test` stack so tests run in',
+	'\t// parallel without clobbering it.',
+	"\tstackName: 'dev',",
 	'});',
 	'',
 	'export default stack;',
@@ -204,6 +301,10 @@ const TS_NONE = [
 	'',
 	'const stack: Stack = defineDevstack({',
 	'\tmembers: [localnet, counter, dashboard()],',
+	'\t// `pnpm dev` boots this primary stack (codegen → src/generated);',
+	'\t// `pnpm test:e2e` boots an isolated `test` stack so tests run in',
+	'\t// parallel without clobbering it.',
+	"\tstackName: 'dev',",
 	'});',
 	'',
 	'export default stack;',
@@ -246,6 +347,9 @@ describe('renderDevstackConfig — every template × service combo', () => {
 				const out = renderDevstackConfig(template as TemplateId, new Set(combo));
 				const hasWalrus = combo.includes('walrus');
 				const hasSeal = combo.includes('seal');
+				const hasPyth = combo.includes('pyth');
+				// `pyth` implies `deepbook` (see normalizeServices).
+				const hasDeepbook = combo.includes('deepbook') || hasPyth;
 
 				// Core shape, always.
 				expect(out.startsWith('// This file defines the local development stack')).toBe(true);
@@ -254,11 +358,11 @@ describe('renderDevstackConfig — every template × service combo', () => {
 				expect(out).toContain("\tsourcePath: resolve(HERE, 'move/counter'),");
 				expect(out).toContain("const alice = account('alice', {");
 				expect(out).toContain('export default stack;');
-				// Tabs only, single trailing newline, no stackName.
+				// Tabs only, single trailing newline.
 				expect(/^ /m.test(out)).toBe(false);
 				expect(out.endsWith('\n')).toBe(true);
 				expect(out.endsWith('\n\n')).toBe(false);
-				expect(out).not.toContain('stackName');
+				expect(out).toContain("stackName: 'dev',");
 
 				// Service markers appear exactly when selected — and never as
 				// dead imports/identifiers when not.
@@ -278,10 +382,29 @@ describe('renderDevstackConfig — every template × service combo', () => {
 				} else {
 					expect(out).not.toContain('seal');
 				}
+				if (hasDeepbook) {
+					expect(out).toContain("const deepbookPublisher = account('deepbook_publisher', {");
+					expect(out).toContain("const deepbookPackage = localPackage('deepbook', {");
+					if (hasPyth) {
+						expect(out).toContain("const pythPackage = localPackage('pyth', {");
+						expect(out).toContain('\t\tpackage: pythPackage,');
+						expect(out).toContain('feedId: DEEP_PRICE_FEED_ID');
+						expect(out).toContain('feedId: SUI_PRICE_FEED_ID');
+					} else {
+						expect(out).toContain(
+							"const dex = deepbook({ mode: 'local', publisher: deepbookPublisher, package: deepbookPackage });",
+						);
+						expect(out).not.toContain('pyth');
+					}
+				} else {
+					expect(out).not.toContain('deepbook');
+					expect(out).not.toContain('pyth');
+				}
 
 				const serviceRoots = [
 					...(hasWalrus ? ['storage'] : []),
 					...(hasSeal ? ['sealKeyServer'] : []),
+					...(hasDeepbook ? ['dex'] : []),
 				];
 				if (template === 'app') {
 					const accounts = hasSeal ? 'alice, sealSigner' : 'alice';

@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,8 +30,13 @@ const DBTC_PRICE_FEED_ID = pythPriceFeedId(
 const DETH_PRICE_FEED_ID = pythPriceFeedId(
 	'd1e2f3a40516273849a5b6c7d8e9f00112233445566778899aabbccddeeff000',
 );
-const VENDORED_DEEPBOOK_SOURCE_ROOT = resolve(HERE, 'move/vendor/deepbookv3');
-const VENDORED_SANDBOX_SOURCE_ROOT = resolve(HERE, 'move/vendor/deepbook-sandbox');
+// DeepBook's Move packages are pulled straight from their upstream repos —
+// no vendored tree to maintain. The clone is cached host-side per (url, rev);
+// `main` tracks upstream (matching DeepBook's own `Move.toml`, which resolves
+// its `token` dep at `rev = "main"`). Pin these to a tag/SHA for a frozen demo.
+const DEEPBOOKV3_REPO = 'https://github.com/MystenLabs/deepbookv3.git';
+const SANDBOX_REPO = 'https://github.com/MystenLabs/deepbook-sandbox.git';
+const UPSTREAM_REV = 'main';
 
 const DEEP_SUI_POOL = {
 	name: 'DEEP_SUI',
@@ -86,22 +90,6 @@ const DETH_USDC_POOL = {
 	stablePool: false,
 } as const;
 
-function requirePackage(sourcePath: string, packageName: string) {
-	if (!existsSync(resolve(sourcePath, 'Move.toml'))) {
-		throw new Error(`Missing vendored ${packageName} Move package at ${sourcePath}`);
-	}
-
-	return sourcePath;
-}
-
-const deepbookSources = {
-	demoCoins: requirePackage(resolve(HERE, 'move/demo_coins'), 'demo coins'),
-	token: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'token'), 'DeepBook token'),
-	deepbook: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'deepbook'), 'DeepBook'),
-	dusdc: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'dusdc'), 'DUSDC'),
-	pyth: requirePackage(resolve(VENDORED_SANDBOX_SOURCE_ROOT, 'pyth'), 'Pyth'),
-};
-
 const localnet = sui();
 const publisher = account('publisher', {
 	kind: 'ephemeral',
@@ -121,12 +109,13 @@ const pythPublisher = account('pythPublisher', {
 });
 const suiCoin = coin.builtin('sui');
 const usdcPackage = localPackage('dusdc', {
-	sourcePath: deepbookSources.dusdc,
+	git: { url: DEEPBOOKV3_REPO, subdir: 'packages/dusdc', rev: UPSTREAM_REV },
 	publisher: usdcPublisher,
 });
 const usdc = coin.fromPackage(usdcPackage, 'DUSDC');
+// Demo coins are app-authored, so they stay a local Move package.
 const demoCoinsPackage = localPackage('demo_coins', {
-	sourcePath: deepbookSources.demoCoins,
+	sourcePath: resolve(HERE, 'move/demo_coins'),
 	publisher: demoCoinPublisher,
 });
 const dbtc = coin.fromPackage(demoCoinsPackage, 'DBTC');
@@ -141,7 +130,7 @@ const trader = account('trader', {
 	],
 });
 const deepbookPackage = localPackage('deepbook', {
-	sourcePath: deepbookSources.deepbook,
+	git: { url: DEEPBOOKV3_REPO, subdir: 'packages/deepbook', rev: UPSTREAM_REV },
 	publisher,
 	capture: {
 		registryId: '::registry::Registry',
@@ -150,7 +139,7 @@ const deepbookPackage = localPackage('deepbook', {
 	},
 });
 const pythPackage = localPackage('pyth', {
-	sourcePath: deepbookSources.pyth,
+	git: { url: SANDBOX_REPO, subdir: 'sandbox/packages/pyth', rev: UPSTREAM_REV },
 	publisher: pythPublisher,
 });
 const deep = coin.fromPackage(deepbookPackage, 'DEEP');
