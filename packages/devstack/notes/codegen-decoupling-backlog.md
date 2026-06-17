@@ -201,20 +201,25 @@ auto-approve signing) ON for every network EXCEPT mainnet; OFF for mainnet.
 
 ## 9. Open questions / needs investigation
 
-- ⬜ **Warm-boot + snapshot/restore × the id-config** (POTENTIAL GAP — not
-  audited). New model writes `.devstack/stacks/<name>/devstack-ids.json` at boot.
-  Does `up --warm` / snapshot-restore preserve it with STABLE ids? Warm-restart id
-  stability is load-bearing (private-content decryption breaks if vault/seal/
-  walrus ids churn). Does snapshot capture/restore `devstack-ids.json`? If a
-  restore brings back chain state but not the ids file, the vite plugin can't
-  inject ids → dev breaks. Check the lifecycle end-to-end (guarded today by
-  private-content-boot e2e — confirm it still covers this).
-- ⬜ **CI workflow alignment** (`.github/workflows/devstack-e2e.yml`): build step
-  must run stack-free (no `apply` before `build`); add the §2 drift-guard; confirm
-  the e2e still boots + injects ids (ties to §3 dev-wallet e2e hermeticity).
-- ⬜ **Prod id-config generation ergonomics**: today you hand-copy
-  `devstack-ids.json` for a real deployment. Worth a first-class way to emit/export
-  a known deployment's id-config (e.g. `devstack` flag) rather than manual copy.
+- ✅ **Warm-boot + snapshot/restore × the id-config** — AUDITED, VERDICT SOUND.
+  Warm restart (`command-loop.ts:54-72`) re-runs the post-acquire hook
+  (`maybeRunPostAcquire`) → re-derives `devstack-ids.json` deterministically from
+  the SAME live container state (no re-publish → same ids). Snapshot does NOT
+  capture `devstack-ids.json`, but it DOES capture the deploy-cache namespaces
+  (`descriptor.ts:191-199`: walrus-deploy/package/seal/deepbook/coin-mint/action)
+  carrying the on-chain object ids; restore re-derives the ids file post-acquire
+  from restored state. STABLE by construction. Guarded by
+  `test/e2e/private-content-boot.test.ts:570-652` which runs a WARM restart and
+  asserts chainId + vault packageId + seal objectId/serverConfigs + walrus/WAL
+  packageIds all survive. No code change needed.
+- ⬜ **CI codegen drift-guard** (ergonomic, low-risk): CI runs `apply` (one-shot
+  boot) but no `git diff --exit-code src/generated/` after a `devstack codegen`.
+  Stack-free design + dev-time vite id-injection mitigate, but a stale committed
+  binding could slip in silently. Add a drift-guard step (verify `devstack codegen`
+  toolchain availability in the CI job first).
+- ⬜ **Prod id-config export ergonomics** (ergonomic): no CLI verb to dump a known
+  deployment's `devstack-ids.json`; operators hand-copy or set `DEVSTACK_IDS_FILE`.
+  Candidate: `devstack config dump-ids [--output]`. Implement if cheap, else doc.
 - ✅ **Commit timing** RESOLVED: commit INCREMENTALLY as work progresses (owner).
   First increment = the done work below once suite is green.
 - NOTE: my `existsSync` stale-manifest band-aid was REVERTED (it broke 3 vite
