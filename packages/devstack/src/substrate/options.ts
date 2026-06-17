@@ -40,4 +40,11 @@ export interface DevstackOptions {
 	};
 	readonly renderer?: 'tui' | 'plain' | 'silent';
 	readonly extras?: ManifestExtrasInput;
+	/** Per-network options, keyed by the resolved network name. The
+	 *  name-blind substrate forwards this verbatim — it never reads the
+	 *  shape. The authoring surface (`api/define-devstack-with.ts`) narrows
+	 *  it to typed per-network toggles, and the plugin-aware orchestrator
+	 *  interprets it (`orchestrators/network-options.ts`
+	 *  `resolveNetworkOptions`). Mirrors the opaque `network` field. */
+	readonly networkOptions?: Readonly<Record<string, unknown>>;
 }

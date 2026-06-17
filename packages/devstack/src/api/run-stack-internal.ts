@@ -412,6 +412,7 @@ export const runStackWithBoot = (
 		// chained after the built-in, and the composed boot hooks below.
 		yield* superviseStackWithProductionBoot(supervisedStack, identity, state, {
 			extras: stack.options.extras,
+			networkOptions: stack.options.networkOptions,
 			...(opts.boot?.devstackVersion === undefined
 				? {}
 				: { devstackVersion: opts.boot.devstackVersion }),

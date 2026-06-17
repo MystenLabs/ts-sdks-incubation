@@ -155,6 +155,8 @@ const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 			accounts: {},
 			mvrOverrides: {},
 		}),
+	emitExtras: () =>
+		Effect.succeed({ filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null }),
 } satisfies CodegenOrchestrator);
 
 const routerLayer = Layer.effect(

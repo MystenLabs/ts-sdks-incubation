@@ -68,7 +68,11 @@ import {
 import type { ContributionDispatchContext } from '../substrate/runtime/supervisor/contribution-dispatcher.ts';
 import type { SupervisorPostAcquireContext } from '../substrate/runtime/supervisor/index.ts';
 
-import { layerMystenMoveCodegen } from './codegen/bindings.ts';
+import {
+	layerMystenMoveCodegen,
+	MoveCodegenService,
+	MoveSummaryRunnerService,
+} from './codegen/bindings.ts';
 import { layerSuiMoveSummaryRunnerDocker } from '../plugins/sui/move-summary-runner.ts';
 import { CodegenPathsService, layerCodegenPaths, layerCodegenRoot } from './codegen/paths.ts';
 import { resolveCodegenOutput } from './codegen/output-location.ts';
@@ -113,6 +117,7 @@ import {
 	type EndpointEntry,
 	type ManifestExtrasInput,
 } from '../substrate/manifest.ts';
+import { resolveNetworkOptions } from './network-options.ts';
 import { CoinRegistryService, layerCoinRegistry } from '../plugins/coin/registry.ts';
 import { PackageRegistryService, layerPackageRegistry } from '../plugins/package/registry.ts';
 
@@ -701,7 +706,10 @@ const operationalManifestEndpointEntries = (
 };
 
 export const buildProductionPostAcquireHook = (
-	options: { readonly extras?: ManifestExtrasInput } = {},
+	options: {
+		readonly extras?: ManifestExtrasInput;
+		readonly networkOptions?: Readonly<Record<string, unknown>>;
+	} = {},
 ): Effect.Effect<
 	SupervisorPostAcquireHook,
 	never,
@@ -711,6 +719,8 @@ export const buildProductionPostAcquireHook = (
 	| StackPathsService
 	| PostAcquireTasksService
 	| ManifestEndpointRegistryService
+	| MoveSummaryRunnerService
+	| MoveCodegenService
 > =>
 	Effect.gen(function* () {
 		const codegen = yield* CodegenOrchestratorService;
@@ -719,6 +729,10 @@ export const buildProductionPostAcquireHook = (
 		const stackPaths = yield* StackPathsService;
 		const postAcquireTasks = yield* PostAcquireTasksService;
 		const manifestEndpoints = yield* ManifestEndpointRegistryService;
+		// Yielded here (outside the per-ctx hook) so the conditional
+		// `generated-extras` flush below can provide them to `emitExtras`.
+		const moveRunner = yield* MoveSummaryRunnerService;
+		const moveCodegen = yield* MoveCodegenService;
 		return (ctx) =>
 			Effect.gen(function* () {
 				const extras = yield* resolveManifestExtras(options.extras, makeManifestExtrasContext(ctx));
@@ -769,6 +783,23 @@ export const buildProductionPostAcquireHook = (
 				yield* writeManifest(envelope, manifestPath).pipe(
 					Effect.provideService(FileSystem.FileSystem, fs),
 				);
+				// Conditionally flush the dev-only `generated-extras` tree
+				// (dev wallet + accounts) — the ONE acquire-resolved surface the
+				// stack-free `codegen` verb can't produce. Gated on the resolved
+				// network's `devWallet` flag (per-network options, ON for every
+				// network except live `mainnet`). When off, nothing is written
+				// and the Vite plugin's `@devstack-dev` `load` hook no-ops.
+				const netOpts = resolveNetworkOptions(String(ctx.identity.network), options.networkOptions);
+				const extrasFiles: string[] = [];
+				if (netOpts.devWallet) {
+					const extras = yield* codegen.emitExtras().pipe(
+						Effect.provideService(FileSystem.FileSystem, fs),
+						Effect.provideService(CodegenPathsService, paths),
+						Effect.provideService(MoveSummaryRunnerService, moveRunner),
+						Effect.provideService(MoveCodegenService, moveCodegen),
+					);
+					extrasFiles.push(...extras.filesWritten, ...extras.filesChmod);
+				}
 				yield* postAcquireTasks.runAll;
 				return [
 					{
@@ -778,7 +809,7 @@ export const buildProductionPostAcquireHook = (
 					},
 					{
 						tag: 'codegen.emitted' as const,
-						files: [idsFile],
+						files: [idsFile, ...extrasFiles],
 						at: Date.now(),
 					},
 				];
@@ -843,6 +874,11 @@ export interface ProductionBootOptions<HookR = Scope.Scope, HookE = never, Exten
 	/** Threaded into `buildProductionPostAcquireHook` — the stack's manifest
 	 *  `extras`. All three callers pass `stack.options.extras`. */
 	readonly extras?: ManifestExtrasInput;
+	/** Threaded into `buildProductionPostAcquireHook` — the stack's
+	 *  per-network options. The hook resolves the active network's slice to
+	 *  decide whether to flush the dev-only `generated-extras` tree. All
+	 *  three callers pass `stack.options.networkOptions`. */
+	readonly networkOptions?: Readonly<Record<string, unknown>>;
 	/** The resolved supervisor command handler (run-stack's snapshot bridge).
 	 *  One-shot verbs run no command loop, so they pass nothing. */
 	readonly commandHandler?: SupervisorCommandHandler;
@@ -890,9 +926,10 @@ export const superviseStackWithProductionBoot = <
 ) =>
 	Effect.gen(function* () {
 		const contributionDispatcher = yield* buildProductionContributionDispatcher();
-		const postAcquireHook = yield* buildProductionPostAcquireHook(
-			opts.extras === undefined ? {} : { extras: opts.extras },
-		);
+		const postAcquireHook = yield* buildProductionPostAcquireHook({
+			...(opts.extras === undefined ? {} : { extras: opts.extras }),
+			...(opts.networkOptions === undefined ? {} : { networkOptions: opts.networkOptions }),
+		});
 		yield* superviseStackEffect(stack, identity, state, {
 			contributionDispatcher,
 			postAcquireHook,

@@ -131,6 +131,14 @@ const resolveAt = (
 const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
 	decl.outputLocation ?? 'generated';
 
+/** A decl writes into the dev-only `generated-extras` tree if its
+ *  standalone location is `generated-extras` (e.g. the wallet's
+ *  `dev-wallet.ts`) OR it aggregates into a `generated-extras` bucket
+ *  (e.g. each account folding into `accounts.ts`). */
+const isExtrasDecl = (decl: Codegenable): boolean =>
+	declLocation(decl) === 'generated-extras' ||
+	(decl.aggregate !== undefined && (decl.aggregate.outputLocation ?? 'generated') === 'generated-extras');
+
 const buildParentModeResolver = (
 	paths: CodegenPaths,
 	entries: ReadonlyArray<{
@@ -910,6 +918,22 @@ export interface CodegenOrchestrator {
 	 *  injects). `network` is the active network name (`ctx.identity.network`).
 	 *  Pure projection over the registered decls — no I/O, no chain. */
 	readonly assembleIdConfig: (network: string) => Effect.Effect<IdConfig, CodegenEmitFailed>;
+
+	/** Flush ONLY the `generated-extras` contributions (the dev wallet's
+	 *  `dev-wallet.ts` + the account plugin's `accounts.ts`) to the
+	 *  gitignored `.devstack/stacks/<stack>/generated-extras` tree. These
+	 *  are acquire-resolved (can't be statically derived by the `codegen`
+	 *  verb), so boot writes them — but ONLY when the resolved network's
+	 *  `devWallet` flag is on. The committed `src/generated` tree is NEVER
+	 *  touched (no `generated`-located decl is emitted). Reuses the emit
+	 *  renderer + aggregate logic; skips the stage-and-swap of the runtime
+	 *  tree (extras live outside it). No-op (empty result) when nothing is
+	 *  routed to `generated-extras`. */
+	readonly emitExtras: () => Effect.Effect<
+		RunEmitCycleResult,
+		CodegenError,
+		FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
+	>;
 }
 
 export class CodegenOrchestratorService extends Context.Service<
@@ -1064,9 +1088,30 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				return idConfigFromBucket(bucket, network, values as IdConfigValues);
 			});
 
+		const emitExtras: CodegenOrchestrator['emitExtras'] = () =>
+			Effect.gen(function* () {
+				const registered = (yield* Ref.get(contributionsRef)).map((e) => e.decl);
+				const extras = registered.filter(isExtrasDecl);
+				if (extras.length === 0) {
+					// Nothing routed to the dev tree (no wallet/accounts mounted).
+					return { filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null };
+				}
+				// Validate the extras-only set up front (mirrors `runEmitCycle`'s
+				// pre-flight), then emit DIRECTLY against the real paths — no
+				// stage-and-swap, since the extras tree lives outside the runtime
+				// `outputDir`. Every `generated-extras` decl routes through
+				// `paths.resolveExtras`; no `generated`-located decl is present,
+				// so the committed `src/generated` tree is untouched.
+				yield* validateUniqueness(extras);
+				yield* validateAggregatePathAvailability(extras);
+				const paths = yield* CodegenPathsService;
+				return yield* runEmitCycleInner({ contributions: extras, trackTree: false }, paths);
+			});
+
 		return CodegenOrchestratorService.of({
 			registerContribution,
 			assembleIdConfig,
+			emitExtras,
 		});
 	}),
 );

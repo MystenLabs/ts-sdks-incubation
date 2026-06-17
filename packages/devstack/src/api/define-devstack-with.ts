@@ -9,6 +9,8 @@
 
 import { isPlugin, type AnyPlugin } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
+import type { NetworkScopedOptions } from '../orchestrators/network-options.ts';
+import type { DevstackNetworkName } from './inference-network.ts';
 import type { NetworkConfig, NetworkMode } from '../plugins/sui/network-config.ts';
 import type { __MissingProvidersError, MissingProviders } from '../substrate/plugin.ts';
 import { defineDevstack, type ComposedMembers, type Stack } from './define-devstack.ts';
@@ -28,6 +30,10 @@ export interface BuildCtx<Mode extends NetworkMode> {
  *  callback's `BuildCtx` is typed. */
 export interface DevstackOptionsWith<Mode extends NetworkMode> extends DevstackOptions {
 	readonly network: NetworkConfig<Mode>;
+	/** Per-network feature toggles, with keys narrowed to the canonical
+	 *  `DevstackNetworkName`s (autocomplete + typo-catching). Same shape as
+	 *  the flat-form `DevstackOptions.networkOptions`. */
+	readonly networkOptions?: Partial<Record<DevstackNetworkName, NetworkScopedOptions>>;
 }
 
 /** Validation gate. Mirrors the flat-form rule: resolves to the

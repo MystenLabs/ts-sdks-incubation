@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Layer } from 'effect';
-import { chmodSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // Subpath imports — the barrel re-exports `NodeRedis` which transitively
@@ -33,7 +33,11 @@ import {
 	CodegenPathConflict,
 } from '../../../src/orchestrators/codegen/errors.ts';
 import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/codegen/paths.ts';
-import { runEmitCycle } from '../../../src/orchestrators/codegen/service.ts';
+import {
+	CodegenOrchestratorService,
+	layerCodegenOrchestrator,
+	runEmitCycle,
+} from '../../../src/orchestrators/codegen/service.ts';
 
 // Helper — synthesise a Codegenable for tests.
 const writeExports = (
@@ -821,4 +825,99 @@ describe('codegen orchestrator source — plugin-name blindness', () => {
 			expect(source, `service.ts must not mention ${needle}`).not.toContain(needle);
 		}
 	});
+});
+
+describe('codegen.emitExtras', () => {
+	it.effect('flushes ONLY the generated-extras decls, leaving the runtime tree untouched', () =>
+		withTempRoot('codegen-extras-test', (root) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const codegen = yield* CodegenOrchestratorService;
+					// A dev-wallet-shaped decl routed to generated-extras (sensitive,
+					// like the real one) plus an account-shaped aggregate into
+					// `accounts.ts` (also generated-extras).
+					yield* codegen.registerContribution(
+						'wallet',
+						fakeDecl({
+							emitterName: 'dapp-kit-config',
+							outputPath: 'dev-wallet.ts',
+							outputLocation: 'generated-extras',
+							sensitive: true,
+							exports: { devWallet: { url: 'http://127.0.0.1:9999' } },
+						}),
+					);
+					yield* codegen.registerContribution(
+						'account',
+						fakeDecl({
+							emitterName: 'account/alice',
+							outputPath: 'accounts/alice.ts',
+							outputLocation: 'generated-extras',
+							aggregateOnly: true,
+							aggregate: {
+								kind: 'account',
+								bucket: 'accounts.ts',
+								outputLocation: 'generated-extras',
+								project: (exported) => exported,
+							},
+							exports: { alice: { address: '0xa11ce' } },
+						}),
+					);
+					// A `generated`-located decl that emitExtras MUST skip — it
+					// belongs to the committed `src/generated` tree written only by
+					// the stack-free `codegen` verb.
+					yield* codegen.registerContribution(
+						'sui',
+						fakeDecl({
+							emitterName: 'config',
+							outputPath: 'config.ts',
+							outputLocation: 'generated',
+							exports: { network: 'localnet' },
+						}),
+					);
+
+					const result = yield* codegen.emitExtras();
+
+					// dev-wallet.ts + accounts.ts land in the extras tree...
+					const extras = extrasOf(root);
+					const walletPath = `${extras}/dev-wallet.ts`;
+					const accountsPath = `${extras}/accounts.ts`;
+					expect(result.filesWritten).toContain(walletPath);
+					expect(result.filesWritten).toContain(accountsPath);
+					const walletSource = yield* Effect.promise(() => readFile(walletPath, 'utf8'));
+					expect(walletSource).toContain('devWallet');
+					// ...the sensitive wallet file is 0o600.
+					expect(statSync(walletPath).mode & 0o777).toBe(0o600);
+					const accountsSource = yield* Effect.promise(() => readFile(accountsPath, 'utf8'));
+					expect(accountsSource).toContain('0xa11ce');
+
+					// The `generated` decl is NEVER written by emitExtras.
+					expect(existsSync(`${root}/config.ts`)).toBe(false);
+					expect(result.filesWritten.some((p) => p === `${root}/config.ts`)).toBe(false);
+				}),
+			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+		),
+	);
+
+	it.effect('is a no-op (empty result) when nothing is routed to generated-extras', () =>
+		withTempRoot('codegen-extras-empty', (root) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const codegen = yield* CodegenOrchestratorService;
+					yield* codegen.registerContribution(
+						'sui',
+						fakeDecl({
+							emitterName: 'config',
+							outputPath: 'config.ts',
+							outputLocation: 'generated',
+							exports: { network: 'localnet' },
+						}),
+					);
+					const result = yield* codegen.emitExtras();
+					expect(result.filesWritten).toEqual([]);
+					expect(result.filesChmod).toEqual([]);
+					expect(existsSync(extrasOf(root))).toBe(false);
+				}),
+			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+		),
+	);
 });

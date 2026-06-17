@@ -30,22 +30,27 @@ Status keys: ✅ done · 🔄 in progress · ⬜ todo · ❗ needs owner decisio
 - ✅ Removed root `.gitignore` `**/src/generated/` blanket-ignore.
 - ✅ Managed in-tree `.gitignore` now TRACKS the committed tree.
 - 🔄 fork-greeting stale ignore (fixed by regen, item 1).
-- ⬜ **Scoped feature commit** (owner approved "scoped"): engine codegen changes
-  + all examples' `src/generated`/`package.json`/`README`/consumption fixes +
-  `.gitignore` + `codegen.mdx`. EXCLUDE sibling WIP (create-devstack-app code
-  beyond template README/ts scripts, `format.test.ts`, `private-content/
-  devstack.shared.ts`, `e2e/`, `token-studio/src/lib/coin.ts`).
+- ✅ **Committed** as `c2e1f03c0` (owner: commit everything, no separate WIP in
+  progress). 215 files, no `.devstack` (no-churn held). Working tree clean →
+  "don't disturb sibling WIP" guardrail LIFTED; normal git workflow from here.
 - ⬜ **CI drift-guard**: run `devstack codegen` in CI, fail on a non-empty
   `git diff` of `src/generated` (catches stale committed bindings when Move
   source changed without re-running codegen).
 
-## 3. 🔄 Dev-wallet / `generated-extras` regression (HIGH PRIORITY — real bug; direction DECIDED)
+## 3. ✅ Dev-wallet / `generated-extras` regression (FIXED via §8 — unit-verified; e2e gate pending)
 
-RESOLUTION (decided): dev-wallet becomes a per-network option (§8), ON for every
-network except mainnet. Implementation: restore a boot/api emit step that
-CONDITIONALLY flushes the buffered runtime `generated-extras` contributions to
-disk when the resolved network's dev-wallet flag is on. No open owner-decision —
-this is now implementation work under §8.
+RESOLUTION (implemented): dev-wallet is a per-network option (§8), ON for every
+network except mainnet. Boot's post-acquire hook now CONDITIONALLY flushes the
+buffered runtime `generated-extras` contributions via the new
+`CodegenOrchestratorService.emitExtras()` when `resolveNetworkOptions(network).
+devWallet` is on. `emitExtras` filters registered decls to `generated-extras`-
+located ones and writes ONLY that tree (no stage-and-swap of the runtime tree,
+committed `src/generated` untouched). Unit-locked by `test/orchestrators/codegen/
+service.test.ts` (writes dev-wallet.ts + accounts.ts @ 0o600, skips `generated`
+decls; no-op when empty) + `test/orchestrators/network-options.test.ts` (policy).
+- ⬜ REMAINING GATE: connect-four playwright `connectAs` e2e on a CLEAN tree
+  (delete `.devstack/.../generated-extras`, boot, run suite) — confirms the
+  end-to-end dev-wallet mount.
 
 The rework dropped the step that writes the `generated-extras` tree (dev-wallet +
 accounts: acquire-resolved, can't be statically derived). On a clean checkout
@@ -155,7 +160,25 @@ fails. Currently "passes" only on STALE local artifacts (non-hermetic).
   owner: handle via network-scoped config options (§8), not a one-off. Dev wallet
   enabled per-network (on for localnet/testnet, off for mainnet).
 
-## 8. Network-scoped config options — IN SCOPE for this work
+## 8. Network-scoped config options — ✅ MECHANISM SHIPPED (devWallet wired)
+
+IMPLEMENTED: `DevstackOptions.networkOptions?: Record<string, unknown>` (opaque,
+name-blind substrate forwards verbatim — mirrors the `network` field). Typed
+shape + policy live in `orchestrators/network-options.ts` (`NetworkScopedOptions
+{ devWallet, faucet, autoApproveSigning }`, `defaultNetworkOptions`,
+`resolveNetworkOptions`) — OUTSIDE substrate because it names plugin conveniences.
+Authoring surface `DevstackOptionsWith<Mode>` narrows keys to `DevstackNetworkName`.
+Default policy: ON for every network except live `mainnet` (forks stay ON).
+Threaded `stack.options.networkOptions` → `ProductionBootOptions` → post-acquire
+hook (resolves on `ctx.identity.network`). `devWallet` is FULLY wired (gates
+`emitExtras`). `faucet`/`autoApproveSigning` are DECLARED but NOT yet wired to a
+consumer — follow-up below.
+- ⬜ Wire `faucet` to the sui plugin's faucet-strategy decision (already
+  mode-conditional; thread the flag to force-disable) + `autoApproveSigning` to
+  the dev-wallet test bridge, OR document as declared-pending if it needs new
+  machinery. Don't ship dead options long-term.
+
+### 8-orig. (original notes)
 
 Owner: this is IN SCOPE for the decoupling effort (not a follow-up). A CONSISTENT,
 general mechanism to declare per-network options in the devstack config, instead

@@ -242,6 +242,7 @@ export const runSnapshotCaptureDirectLoaded = (
 				state,
 				{
 					extras: stack.options.extras,
+					networkOptions: stack.options.networkOptions,
 					lifetime: 'one-shot',
 					// Offline one-shot capture: the bounce gather → stop → commit →
 					// retag → hard-rm runs here; NO `resume` is injected because
