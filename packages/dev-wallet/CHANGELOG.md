@@ -1,5 +1,59 @@
 # @mysten-incubation/dev-wallet
 
+## 0.4.0
+
+### Minor Changes
+
+- 9e1e1be: Dev wallet: explicit test-only connect, no pre-connect or storage seeding.
+
+  The injected dev wallet no longer seeds dApp Kit's localStorage to fake an auto-connect to a
+  specific account on page load. A fresh page now loads disconnected, and dApp Kit's own
+  `autoConnect` does only what it's meant to — re-connect a genuine prior session.
+
+  A new devstack `/dapp-kit` entrypoint exports `registerDAppKitForTesting(dAppKit)`, which the app
+  wires DEV-only after `createDAppKit(...)`. It publishes the `connectAs` slot that drives a REAL
+  connection through dApp Kit's public API (`connectWallet` / `switchAccount`, resolving accounts by
+  label) instead of narrowing/widening the wallet's exposed accounts to exploit reconciliation. The
+  dev wallet auto-approves `standard:connect` only when signing is auto-approved (the headless-e2e
+  `DEVSTACK_AUTO_APPROVE` signal); in normal dev a human approves the connect. This fixes wallet
+  connection under `@mysten/dapp-kit-core` ≥1.6, whose rewritten auto-connect state machine broke
+  the old storage-seeding approach.
+
+- 11c258a: Auto-inject the devstack dev wallet via the Vite plugin.
+
+  `@mysten-incubation/dev-wallet` adds a `/inject` entry (`registerDevstackDevWallet`) that
+  constructs the dev wallet from a devstack stack's config and registers it on the page via the
+  wallet-standard window protocol (plus the Playwright `connectAs` slot). The devstack Vite plugin
+  uses it to inject + register the dev wallet in DEV only, so dapp-kit apps discover it through
+  wallet-standard with no app-side wiring — apps no longer need a `dapp-kit.dev.ts` or any
+  `@devstack-dev` import, and production builds carry no dev-wallet code. The dev wallet exposes all
+  of its accounts to the dApp while `connectAs` still drives the active account.
+
+- 9e1e1be: The injected devstack dev wallet now bundles a `WebCryptoSignerAdapter` alongside the
+  stack's server-resolved accounts, so users can create their own accounts from the wallet UI.
+  Created accounts persist across reloads in IndexedDB via non-extractable WebCrypto keys (not
+  in-memory), and the stack's `alice`/`bob`/`carol` accounts remain available.
+- 9e1e1be: Disambiguate the conflated `chain` concept into three precise ones: `network` (the
+  network name — `localnet`/`testnet`/…), `chainId` (the genesis-digest chain identifier, unique per
+  spun-up network), and the wallet-standard `sui:<network>` chain name (derived only at the
+  dev-wallet wallet-standard boundary — `sui:` never appears in devstack internals).
+
+  **Breaking.** The substrate `Identity`/manifest field `chain` is now `network` and holds the bare
+  network name (previously a `sui:`-prefixed string). The network parser accepts only canonical
+  names — the `local` shorthand and the `sui:`-prefixed alias table are removed (use `localnet`);
+  `network ⇄ chain id` is now just a `sui:` prefix, not a lookup table. The sui plugin's resolved
+  value, on-disk cache-dir keys, and `chain-probe:`/`faucet:request:` capability keys now key on the
+  genesis-digest `chainId`. The generated `config.ts` active-network key is `localnet` (was
+  `local`), and `config.networks.<net>` / `byNetwork.<net>` are keyed by network name. The
+  dev-wallet `registerDevstackDevWallet` config and `DevWalletConfig` take `network` instead of
+  `chain`. The dashboard GraphQL surfaces `chainId` (sui) and `network` (deepbook) instead of
+  `chain`. Known walrus/deepbook deployments and the deepbook DEEP-funding gate now key on the
+  network name — fixing a latent bug where the gate compared a genesis digest against the
+  `'sui:testnet'` literal and was dead for every non-literal value.
+
+  On-disk state keyed by the old `sui:local` chain brand is invalidated; run `devstack wipe` on
+  existing local stacks after upgrading.
+
 ## 0.3.0
 
 ### Minor Changes
