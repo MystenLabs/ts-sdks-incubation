@@ -132,13 +132,22 @@ const resolveAt = (
 const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
 	decl.outputLocation ?? 'generated';
 
-/** A decl writes into the dev-only `generated-extras` tree if its
- *  standalone location is `generated-extras` (e.g. the wallet's
- *  `dev-wallet.ts`) OR it aggregates into a `generated-extras` bucket
- *  (e.g. each account folding into `accounts.ts`). */
+/** A decl belongs to the `emitExtras` flush IFF it writes ONLY into the
+ *  dev-only `generated-extras` tree. INVARIANT: `emitExtras` must NEVER
+ *  touch the committed `src/generated` tree (it runs without stage-and-swap),
+ *  so a decl that would emit any file into `generated` is excluded.
+ *
+ *  - `aggregateOnly` decls write only their aggregate file: include iff the
+ *    aggregate's location is `generated-extras` (e.g. each account folding
+ *    into the gitignored `accounts.ts`).
+ *  - standalone decls write a per-decl file (and possibly an aggregate):
+ *    include iff that standalone file lands in `generated-extras` (e.g. the
+ *    wallet's `dev-wallet.ts`). A standalone-in-`generated` decl is excluded
+ *    even if its aggregate targets `generated-extras`. */
 const isExtrasDecl = (decl: Codegenable): boolean =>
-	declLocation(decl) === 'generated-extras' ||
-	(decl.aggregate !== undefined && (decl.aggregate.outputLocation ?? 'generated') === 'generated-extras');
+	decl.aggregateOnly === true
+		? (decl.aggregate?.outputLocation ?? 'generated') === 'generated-extras'
+		: declLocation(decl) === 'generated-extras';
 
 const buildParentModeResolver = (
 	paths: CodegenPaths,

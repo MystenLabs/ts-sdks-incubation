@@ -788,7 +788,7 @@ export const buildProductionPostAcquireHook = (
 				// network's `devWallet` flag (per-network options, ON for every
 				// network except live `mainnet`). When off, nothing is written
 				// and the Vite plugin's `@devstack-dev` `load` hook no-ops.
-				const netOpts = resolveNetworkOptions(String(ctx.identity.network), options.networkOptions);
+				const netOpts = resolveNetworkOptions(ctx.identity.network, options.networkOptions);
 				const extrasFiles: string[] = [];
 				if (netOpts.devWallet) {
 					const extras = yield* codegen.emitExtras().pipe(

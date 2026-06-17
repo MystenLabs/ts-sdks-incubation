@@ -60,5 +60,25 @@ describe('network-scoped options', () => {
 				defaultNetworkOptions('localnet'),
 			);
 		});
+
+		it('falls back to the policy for a null override value', () => {
+			expect(resolveNetworkOptions('localnet', { localnet: null as any })).toEqual(
+				defaultNetworkOptions('localnet'),
+			);
+		});
+
+		it('falls back to the policy for a non-object override value', () => {
+			expect(resolveNetworkOptions('localnet', { localnet: 'yes' as any })).toEqual(
+				defaultNetworkOptions('localnet'),
+			);
+		});
+
+		it('falls back to the policy default for a non-boolean field', () => {
+			// `devWallet: 'yes'` is not a boolean, so `asBool` discards it and
+			// the field keeps the policy default (true on localnet).
+			expect(
+				resolveNetworkOptions('localnet', { localnet: { devWallet: 'yes' as any } }).devWallet,
+			).toBe(true);
+		});
 	});
 });

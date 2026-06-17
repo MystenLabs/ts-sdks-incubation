@@ -32,6 +32,11 @@ import {
 	CodegenOrchestratorService,
 	type CodegenOrchestrator,
 } from '../../src/orchestrators/codegen/service.ts';
+import type {
+	PluginRegistry,
+	ResolvedGraph,
+} from '../../src/substrate/runtime/lifecycle/index.ts';
+import type { SupervisorPostAcquireContext } from '../../src/substrate/runtime/supervisor/index.ts';
 import { layerCodegenPaths, layerCodegenRoot } from '../../src/orchestrators/codegen/paths.ts';
 import {
 	MoveCodegenService,
@@ -597,4 +602,141 @@ describe('resolveProductionCodegenOptions', () => {
 		expect(resolved.outputDir).toBe(join('/app', '.devstack', 'stacks', 'main', 'generated'));
 		expect(resolved.stackSubdir).toBeNull();
 	});
+});
+
+describe('buildProductionPostAcquireHook — generated-extras flush gate', () => {
+	// The conditional flush wires TWO halves the rest of the suite tests in
+	// isolation: `resolveNetworkOptions(network, networkOptions).devWallet`
+	// and `codegen.emitExtras()`. These tests pin the WIRING — that the
+	// resolved `devWallet` flag actually gates the `emitExtras` call AND that
+	// the extras files propagate into the returned `codegen.emitted` event.
+
+	// A known extras file the recording `emitExtras` "writes" — distinct from
+	// the `idsFile` boot always emits, so we can assert inclusion/exclusion.
+	const EXTRAS_FILE = '/generated-extras/dev-wallet.ts';
+	const EXTRAS_CHMOD = '/generated-extras/.secret';
+
+	/** A codegen layer whose `emitExtras` records each call and returns a
+	 *  known non-empty result, so the post-acquire hook's `codegen.emitted`
+	 *  files can be asserted. Returns the call-count holder + the layer. */
+	const recordingCodegen = () => {
+		const calls = { emitExtras: 0 };
+		const layer = Layer.succeed(CodegenOrchestratorService)({
+			registerContribution: () => Effect.void,
+			assembleIdConfig: (network) =>
+				Effect.succeed({
+					network,
+					networks: {},
+					packages: {},
+					accounts: {},
+					mvrOverrides: {},
+				}),
+			emitExtras: () =>
+				Effect.sync(() => {
+					calls.emitExtras += 1;
+					return {
+						filesWritten: [EXTRAS_FILE],
+						filesUnchanged: [],
+						filesChmod: [EXTRAS_CHMOD],
+						bindings: null,
+					};
+				}),
+		} satisfies CodegenOrchestrator);
+		return { calls, layer };
+	};
+
+	/** Drive `buildProductionPostAcquireHook` against an EMPTY-graph
+	 *  post-acquire ctx whose `identity.network` is `network`, returning the
+	 *  recorded `emitExtras` call count and the `codegen.emitted` files. */
+	const runHook = (
+		network: string,
+		networkOptions: Readonly<Record<string, unknown>> | undefined,
+	) =>
+		Effect.gen(function* () {
+			const runtimeRoot = mkdtempSync(join(tmpdir(), 'extras-flush-gate-'));
+			const { calls, layer: codegen } = recordingCodegen();
+			const layer = Layer.mergeAll(
+				snapshotLayer,
+				codegen,
+				routerLayer,
+				layerManifestEndpointRegistry,
+				layerCodegenPaths.pipe(
+					Layer.provideMerge(
+						layerCodegenRoot({
+							outputDir: join(runtimeRoot, 'generated'),
+							stackSubdir: null,
+							extrasDir: join(runtimeRoot, 'generated-extras'),
+						}),
+					),
+				),
+				Layer.succeed(MoveSummaryRunnerService)({
+					runSummary: () => Effect.die('unused Move summary'),
+				}),
+				Layer.succeed(MoveCodegenService)({
+					generate: () => Effect.die('unused Move codegen'),
+				}),
+			).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
+
+			try {
+				const events = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const hook = yield* buildProductionPostAcquireHook(
+							networkOptions === undefined ? {} : { networkOptions },
+						);
+						// Empty graph → no routable/operational endpoints and no
+						// extras-context lookups; isolates the flush gate.
+						const ctx: SupervisorPostAcquireContext = {
+							graph: {
+								nodes: new Map(),
+								levels: [],
+								downstream: new Map(),
+							} satisfies ResolvedGraph,
+							registry: {} as unknown as PluginRegistry,
+							identity: { ...identity, network },
+							runtimeRoot,
+						};
+						return yield* hook(ctx);
+					}),
+				).pipe(Effect.provide(layer));
+
+				const emitted = events.find((event) => event.tag === 'codegen.emitted');
+				if (emitted?.tag !== 'codegen.emitted') {
+					return yield* Effect.die('expected a codegen.emitted event');
+				}
+				return { emitExtrasCalls: calls.emitExtras, files: emitted.files };
+			} finally {
+				rmSync(runtimeRoot, { recursive: true, force: true });
+			}
+		});
+
+	it.effect('localnet (devWallet ON by default) → emitExtras called, files include extras', () =>
+		Effect.gen(function* () {
+			const { emitExtrasCalls, files } = yield* runHook('localnet', undefined);
+			expect(emitExtrasCalls).toBe(1);
+			expect(files).toContain(EXTRAS_FILE);
+			expect(files).toContain(EXTRAS_CHMOD);
+		}),
+	);
+
+	it.effect('mainnet (devWallet OFF by default) → emitExtras NOT called, files exclude extras', () =>
+		Effect.gen(function* () {
+			const { emitExtrasCalls, files } = yield* runHook('mainnet', undefined);
+			expect(emitExtrasCalls).toBe(0);
+			expect(files).not.toContain(EXTRAS_FILE);
+			expect(files).not.toContain(EXTRAS_CHMOD);
+			// Only the always-emitted id-config file remains.
+			expect(files).toHaveLength(1);
+		}),
+	);
+
+	it.effect('localnet with devWallet:false override → emitExtras NOT called', () =>
+		Effect.gen(function* () {
+			const { emitExtrasCalls, files } = yield* runHook('localnet', {
+				localnet: { devWallet: false },
+			});
+			expect(emitExtrasCalls).toBe(0);
+			expect(files).not.toContain(EXTRAS_FILE);
+			expect(files).toHaveLength(1);
+		}),
+	);
 });

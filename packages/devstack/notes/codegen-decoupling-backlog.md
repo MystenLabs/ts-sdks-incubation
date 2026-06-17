@@ -11,6 +11,43 @@ Status keys: ✅ done · 🔄 in progress · ⬜ todo · ❗ needs owner decisio
 
 ---
 
+## FINAL STATUS (2026-06-17 session — committed 863188c2e..31f720207)
+
+SHIPPED + VERIFIED this session (suite green at each commit; two Docker e2e gates pass):
+- ✅ §8 per-network options mechanism + conditional `generated-extras` boot flush
+  (`emitExtras`) — fixes §3 dev-wallet regression. e2e VERIFIED hermetic.
+- ✅ #1a `@generated` → static `src/generated` alias (dead manifest-overlay removed).
+- ✅ §4 #1b (manifest `generatedDir` field removed) + #4 (`isPackageBindings` dedup)
+  + #5 (false-doc fixes) + `readCodegenField` helper.
+- ✅ §5 DX helpers `resolveActiveNetwork()` + `resolveValueOptional()` (examples
+  regenerated + adopted; trees stayed id-free).
+- ✅ Structural dedup: inline `DeepbookPoolBinding`, dedup `PackageBindings`
+  interface, collapse `packageDecl`→`configCodegenable`, promote
+  `bucket-config-bindings` → `contracts/`.
+- ✅ §9 warm-boot/snapshot id-stability AUDITED sound + warm-restart e2e re-confirmed.
+- ✅ §2/§9 CI codegen drift-guard added (validated by the PR's CI run).
+
+CLOSED (no action — obsolete / not-redundant / already-current):
+- §4 "lift MoveCodegen/MoveSummaryRunner out of boot" — OBSOLETE (boot now uses them
+  via emitExtras). · id-config `accounts` field — KEEP (stable contract).
+- §4 #3/#6 trackTree/sensitivePaths removal — OBSOLETE (emitExtras re-introduced a
+  live `trackTree:false` consumer). · §6 regex hoist — single-def already.
+- §6 example doc-prose — already on the runtime-resolution model.
+
+DEFERRED with rationale (net-negative or out of scope — surfaced in PR for owner):
+- §4 #4 inline-`tsType`-string dedup + §5 `declaredWhenKnown` BucketField helper —
+  both would ADD generic-type indirection for marginal gain (against "remove
+  complexity"); composites already hoisted, branching non-uniform across plugins.
+- §8 `faucet`/`autoApproveSigning` — DECLARED + policy-covered but RESERVED (no
+  consumer yet; documented as such so they aren't mistaken for live knobs).
+- §9 prod `dump-ids` CLI verb — a feature, not a decoupling fix.
+- §6 external "Failed to read Move.toml" log — unsuppressible without masking risk.
+- §7 strip dead file-emission attrs, drop `stackSubdir` — owner-marked optional/defer.
+- Hardening ideas: connect-four globalSetup extras-exist assertion; example dist
+  freshness guard (stale dist can mask behavior).
+
+---
+
 ## 1. Example + template migration
 
 - ✅ connect-four, deepbook-trader, dashboard-demo (config-only), token-studio,
@@ -37,7 +74,7 @@ Status keys: ✅ done · 🔄 in progress · ⬜ todo · ❗ needs owner decisio
   `git diff` of `src/generated` (catches stale committed bindings when Move
   source changed without re-running codegen).
 
-## 3. ✅ Dev-wallet / `generated-extras` regression (FIXED via §8 — unit-verified; e2e gate pending)
+## 3. ✅ Dev-wallet / `generated-extras` regression (FIXED via §8 — unit + e2e VERIFIED)
 
 RESOLUTION (implemented): dev-wallet is a per-network option (§8), ON for every
 network except mainnet. Boot's post-acquire hook now CONDITIONALLY flushes the
@@ -48,9 +85,14 @@ located ones and writes ONLY that tree (no stage-and-swap of the runtime tree,
 committed `src/generated` untouched). Unit-locked by `test/orchestrators/codegen/
 service.test.ts` (writes dev-wallet.ts + accounts.ts @ 0o600, skips `generated`
 decls; no-op when empty) + `test/orchestrators/network-options.test.ts` (policy).
-- ⬜ REMAINING GATE: connect-four playwright `connectAs` e2e on a CLEAN tree
-  (delete `.devstack/.../generated-extras`, boot, run suite) — confirms the
-  end-to-end dev-wallet mount.
+- ✅ E2E GATE PASSED: deleted the whole `examples/connect-four/.devstack`, ran the
+  connect-four playwright suite (`pnpm test:e2e`) — PASS on the fresh tree.
+  Directly observed the §8 hook writing `.devstack/stacks/e2e/generated-extras/
+  {dev-wallet.ts,accounts.ts}` (alice+bob) on fresh boot → Vite `@devstack-dev`
+  load hook injects the wallet → connectAs works. Fixed end-to-end + hermetic.
+- 💡 FOLLOW-UP (hardening): a `globalSetup` assertion that the two extras files
+  exist post-boot would make §8 self-checking/explicit in CI (the connectAs e2e
+  already guards it implicitly).
 
 The rework dropped the step that writes the `generated-extras` tree (dev-wallet +
 accounts: acquire-resolved, can't be statically derived). On a clean checkout
@@ -213,14 +255,18 @@ auto-approve signing) ON for every network EXCEPT mainnet; OFF for mainnet.
   `test/e2e/private-content-boot.test.ts:570-652` which runs a WARM restart and
   asserts chainId + vault packageId + seal objectId/serverConfigs + walrus/WAL
   packageIds all survive. No code change needed.
-- ⬜ **CI codegen drift-guard** (ergonomic, low-risk): CI runs `apply` (one-shot
-  boot) but no `git diff --exit-code src/generated/` after a `devstack codegen`.
-  Stack-free design + dev-time vite id-injection mitigate, but a stale committed
-  binding could slip in silently. Add a drift-guard step (verify `devstack codegen`
-  toolchain availability in the CI job first).
-- ⬜ **Prod id-config export ergonomics** (ergonomic): no CLI verb to dump a known
-  deployment's `devstack-ids.json`; operators hand-copy or set `DEVSTACK_IDS_FILE`.
-  Candidate: `devstack config dump-ids [--output]`. Implement if cheap, else doc.
+- ✅ **CI codegen drift-guard** SHIPPED: `.github/workflows/devstack-e2e.yml` `seed`
+  matrix now runs the stack-free `devstack codegen` + `git diff --exit-code
+  src/generated` (before the apply boot) for connect-four/private-content/
+  deepbook-trader. Catches stale committed bindings. (Behavioral validation is the
+  PR's own CI run — can't run Actions locally.)
+- ⏸️ **Prod id-config export ergonomics** DEFERRED (out of decoupling scope): a new
+  `devstack config dump-ids` CLI verb is a feature, not a decoupling fix. Today:
+  hand-copy `devstack-ids.json` or set `DEVSTACK_IDS_FILE` (documented in the prod
+  build path). Tracked as a follow-up; not blocking this effort.
+- ✅ **Warm-restart e2e re-confirmed** post-§8: `DEVSTACK_RUN_E2E=1 vitest
+  private-content-boot` PASSES — all decryption-critical ids survive the warm
+  restart, so §8's emitExtras change did not perturb id stability.
 - ✅ **Commit timing** RESOLVED: commit INCREMENTALLY as work progresses (owner).
   First increment = the done work below once suite is green.
 - NOTE: my `existsSync` stale-manifest band-aid was REVERTED (it broke 3 vite
