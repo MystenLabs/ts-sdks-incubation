@@ -173,6 +173,32 @@ jobs:
       - name: Build devstack runtime packages
         run: pnpm turbo build --filter @mysten-incubation/devstack --filter @mysten-incubation/dev-wallet
 
+      # Codegen drift-guard. The `devstack codegen` verb is deterministic
+      # and STACK-FREE — it boots no stack, deriving the committed
+      # `src/generated` tree from Move source + config alone. Re-run it
+      # here and fail if the regenerated tree differs from what's
+      # committed: that means an example's Move source changed without a
+      # follow-up `pnpm codegen` + commit, so the checked-in bindings are
+      # stale. Runs BEFORE the heavyweight `apply` boot so a stale tree
+      # fails fast without paying the container-boot cost; it's a cheap
+      # `git diff` once codegen runs. Invocation mirrors each example's own
+      # `codegen` package script (`DEVSTACK_APP=<example> node
+      # ../../packages/devstack/dist/cli/main.mjs codegen`); the verb keys
+      # the app off `DEVSTACK_APP`, not the boot `--app`/`--stack` flags.
+      # deepbook-trader's codegen needs a real git-based Move summary build
+      # (the 2024-edition sui-cli auto-fetches Sui/DeepBook system deps over
+      # the network); the runner already has network + git available here
+      # since the `apply` step below boots the same stack, so no example is
+      # scoped out.
+      - name: Codegen drift-guard (committed src/generated is fresh)
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          DEVSTACK_APP=${{ matrix.example }} node ../../packages/devstack/dist/cli/main.mjs codegen
+          if ! git diff --exit-code -- src/generated; then
+            echo '::error::src/generated is stale — run `pnpm codegen` in examples/${{ matrix.example }} and commit the regenerated bindings'
+            exit 1
+          fi
+
       # Invoke the built CLI directly via node so this step doesn't
       # depend on pnpm having created the `devstack` bin symlink in
       # `examples/<example>/node_modules/.bin/`. pnpm skips bin creation
