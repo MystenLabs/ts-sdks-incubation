@@ -135,21 +135,21 @@ functions exported from the generated `config-runtime.ts`. Each reads the build-
 `__DEVSTACK_IDS__` global and throws a `DevstackConfigMissingError` when a required value is absent
 — never a silent zero.
 
-| Resolver                       | Returns                                                                 |
-| ------------------------------ | ----------------------------------------------------------------------- |
-| `resolveId(pkg, key?)`         | A package id (or a named object id under that package).                 |
-| `resolveValue(ns, key)`        | A namespaced value (pool ids, coin types, walrus/seal endpoints, etc.). |
-| `resolveValueOptional(ns,key)` | Same as `resolveValue`, but returns `undefined` instead of throwing.    |
-| `resolveNetwork(name)`         | The resolved config (RPC, etc.) for one named network.                  |
-| `resolveNetworks()`            | All resolved networks as a map.                                         |
-| `resolveActiveNetwork()`       | The currently active network's name.                                    |
+| Resolver                        | Returns                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `resolveId(mvrPlaceholder)`     | The on-chain package id for an MVR placeholder (`@local/<slug>`).              |
+| `resolveValue(ns, key)`         | A namespaced value (object ids, pool ids, coin types, walrus/seal endpoints).  |
+| `resolveValueOptional(ns, key)` | Same as `resolveValue`, but returns `undefined` instead of throwing.           |
+| `resolveNetwork()`              | The active network's name (e.g. `'localnet'`).                                 |
+| `resolveNetworks()`             | All resolved networks as a `{ [name]: { rpc, … } }` map.                       |
+| `resolveActiveNetwork()`        | The active network's connection entry: `{ rpc, chainId?, faucet?, graphql? }`. |
 
 ```ts title="src/generated/config.ts (excerpt)"
 import { resolveId, resolveValue, resolveNetworks } from './config-runtime.js';
 
-export const helloPackageId = resolveId('hello');
-export const vaultObjectId = resolveId('hello', 'vault');
-export const usdcType = resolveValue('coins', 'USDC');
+export const helloPackageId = resolveId('@local/hello');
+export const vaultObjectId = resolveValue('package:hello:objects', 'vault');
+export const usdcType = resolveValue('coin:USDC', 'fullCoinType');
 export const networks = resolveNetworks();
 ```
 

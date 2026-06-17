@@ -11,6 +11,7 @@ import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit'
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
+import { resolveActiveNetwork } from '@generated/config-runtime.js';
 
 const deepbookNetwork = 'localnet' as const;
 
@@ -19,11 +20,12 @@ export const dAppKit = createDAppKit({
 	defaultNetwork: deepbookNetwork,
 	autoConnect: import.meta.env.DEV,
 	createClient() {
-		// Single generated network — always exactly one entry, so the active
-		// entry resolves from the sole value (mirrors `App.tsx`). The non-null
-		// assertion is safe (`noUncheckedIndexedAccess` widens index access to
-		// `T | undefined`, and `config.network` is a runtime-resolved string).
-		const activeNetwork = config.networks[config.network] ?? Object.values(config.networks)[0]!;
+		// The active network's connection is runtime-resolved (injected via
+		// `__DEVSTACK_IDS__`, never baked into the committed tree).
+		// `resolveActiveNetwork()` returns the active entry with a non-undefined
+		// type and fails loudly if absent — no `config.networks[config.network]`
+		// index-signature footgun.
+		const activeNetwork = resolveActiveNetwork();
 		return new SuiGrpcClient({
 			network: deepbookNetwork,
 			baseUrl: activeNetwork.rpc,

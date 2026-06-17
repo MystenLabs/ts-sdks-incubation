@@ -192,7 +192,7 @@ export const runEmitCycle = (
 > =>
 	// Per-process lock. The supervisor's serialized post-acquire path
 	// is fine for the normal lifecycle, but custom callers (CLI direct
-	// invocations, future watcher hooks) can call `runCycle`
+	// invocations, future watcher hooks) can call `runEmitCycle`
 	// concurrently. With `stageAndSwap` writing under shared
 	// `<outputDir>.staging.<cycleId>` and `<outputDir>.bak.<cycleId>`
 	// siblings — and with the pre-seed `fs.copy` reading from the
