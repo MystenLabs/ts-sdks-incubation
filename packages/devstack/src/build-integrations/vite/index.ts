@@ -149,17 +149,17 @@ export interface DevstackVitePlugin {
 		| undefined;
 }
 
-/** Best-effort, SYNC read of the manifest-recorded `codegen.idsFile` for
- *  the active stack — the gitignored `devstack-ids.json` the boot wrote.
- *  Returns the absolute path, or `null` on any miss. We read +
- *  `JSON.parse` directly (rather than the schema-decoding
+/** Best-effort, SYNC read of a string-valued `codegen.<field>` from the
+ *  active stack's manifest. Returns the value, or `null` on any miss. We
+ *  read + `JSON.parse` directly (rather than the schema-decoding
  *  `readStackContext`, which drops the `codegen` field in its projection
  *  and throws on a version mismatch) so an out-of-date or partially-
  *  written manifest degrades gracefully instead of crashing the dev
  *  server. Never throws. */
-const readIdsFileFromManifest = (
+const readCodegenField = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
+	field: 'idsFile' | 'extrasDir',
 ): string | null => {
 	try {
 		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
@@ -169,12 +169,19 @@ const readIdsFileFromManifest = (
 		if (typeof parsed !== 'object' || parsed === null) return null;
 		const codegen = (parsed as { readonly codegen?: unknown }).codegen;
 		if (typeof codegen !== 'object' || codegen === null) return null;
-		const idsFile = (codegen as { readonly idsFile?: unknown }).idsFile;
-		return typeof idsFile === 'string' && idsFile.length > 0 ? idsFile : null;
+		const value = (codegen as Record<string, unknown>)[field];
+		return typeof value === 'string' && value.length > 0 ? value : null;
 	} catch {
 		return null;
 	}
 };
+
+/** The gitignored `devstack-ids.json` path the boot wrote for the active
+ *  stack (`codegen.idsFile`), or `null` on any miss. */
+const readIdsFileFromManifest = (
+	env: Readonly<Record<string, string | undefined>>,
+	cwd: string,
+): string | null => readCodegenField(env, cwd, 'idsFile');
 
 /** Best-effort, SYNC read+parse of an id-config FILE. Any miss (absent
  *  path, missing file, bad JSON) collapses to `null` rather than failing
@@ -212,28 +219,13 @@ const resolveInjectedIds = (
 	return readIdConfigFile(readIdsFileFromManifest(env, root));
 };
 
-/** Best-effort, SYNC read of the manifest-recorded `codegen.extrasDir`
- *  for the active stack (the dev-extras tree the `@devstack-dev` alias
- *  points at). Returns the absolute dir, or `null` on any miss. Mirrors
- *  `readIdsFileFromManifest` exactly; never throws. */
+/** The manifest-recorded dev-extras tree (`codegen.extrasDir`) the
+ *  `@devstack-dev` alias points at for the active stack, or `null` on any
+ *  miss. */
 const readExtrasDirFromManifest = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-): string | null => {
-	try {
-		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
-		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
-		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
-		const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-		if (typeof parsed !== 'object' || parsed === null) return null;
-		const codegen = (parsed as { readonly codegen?: unknown }).codegen;
-		if (typeof codegen !== 'object' || codegen === null) return null;
-		const extrasDir = (codegen as { readonly extrasDir?: unknown }).extrasDir;
-		return typeof extrasDir === 'string' && extrasDir.length > 0 ? extrasDir : null;
-	} catch {
-		return null;
-	}
-};
+): string | null => readCodegenField(env, cwd, 'extrasDir');
 
 /**
  * Build the devstack Vite plugin that aliases `options.alias`

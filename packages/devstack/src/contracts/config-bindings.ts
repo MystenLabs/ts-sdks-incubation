@@ -18,8 +18,10 @@
 //     aggregate emits `rawExpr(resolveValue(...))` / typed-sugar resolvers
 //     (and pure literals as literals).
 //   - `configCodegenable(set, { mode: 'live', state })` → the boot decl
-//     whose aggregate bakes concrete values, AND whose values feed the
-//     loadable id-config (typed channel + the generic `values` channel).
+//     whose aggregate carries concrete resolved values that feed ONLY the
+//     loadable id-config (typed channel + the generic `values` channel) —
+//     no per-stack generated source is written; the committed `src/generated`
+//     tree stays the single bindings source.
 //
 // One declaration, two derivations — no parallel projectors to drift.
 

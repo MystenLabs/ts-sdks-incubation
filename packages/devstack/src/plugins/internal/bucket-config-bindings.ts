@@ -14,9 +14,12 @@
 // KEY (the coin symbol, the deepbook/seal instance name). Both behaviors
 // derive from it:
 //   - LIVE (boot, `devstack up`): `configCodegenable(set, {mode:'live'})`
-//     bakes the concrete values into the ephemeral `.devstack` tree AND
-//     feeds `idConfig.values[namespace][key]` (the generic resolver channel
-//     `assembleIdConfig` folds bucket-blind).
+//     feeds the concrete values into `idConfig.values[namespace][key]` (the
+//     generic resolver channel `assembleIdConfig` folds bucket-blind),
+//     written to the gitignored `devstack-ids.json`. It writes NO per-stack
+//     generated source — the committed `src/generated` tree is the only
+//     bindings source, and the live ids reach it at build/dev time via the
+//     injected `__DEVSTACK_IDS__` global.
 //   - STATIC (committed tree, the `codegen` verb):
 //     `configCodegenable(set, 'static')` emits `resolveValue(namespace,key)`
 //     raw expressions, so the committed `<bucket>.ts` carries NO baked id /
@@ -36,9 +39,9 @@ import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
 /** One field of an instance's bucket entry, classified as either a pure
  *  STRUCTURAL literal (a name / mode / decimals — the same in both paths)
  *  or a runtime-RESOLVED value (an on-chain id, coin type, or endpoint URL —
- *  the static path emits `resolveValue`, the live path bakes the concrete
- *  value). The `key` is the leaf field name written under the instance key
- *  in the bucket object literal. */
+ *  the static path emits `resolveValue`, the live path feeds the concrete
+ *  value into the id-config). The `key` is the leaf field name written under
+ *  the instance key in the bucket object literal. */
 export type BucketField<State> =
 	| { readonly key: string; readonly variant: 'literal'; readonly value: JsonValue }
 	| {
@@ -112,8 +115,8 @@ export const siblingBucketBindings = <State>(
 	};
 };
 
-/** Derive the LIVE bucket decl — bakes concrete values + feeds the generic
- *  id-config `values` channel. */
+/** Derive the LIVE bucket decl — feeds concrete values into the generic
+ *  id-config `values` channel (no per-stack generated file is written). */
 export const liveBucketCodegen = <State>(
 	spec: SiblingBucketSpec<State>,
 	state: State,

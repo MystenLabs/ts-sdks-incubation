@@ -2,9 +2,10 @@
 //
 // `resolveCodegenOutput` is the single decision point that maps
 // (appRoot, effective stack) → the absolute dir the LIVE (`'ran'`)
-// codegen owns for THIS stack (recorded later in
-// `manifest.codegen.generatedDir` and read back by the Vite `@generated`
-// alias plugin). Pure: no `process.env`, no I/O — so these are plain
+// codegen owns for THIS stack. The dev-extras sibling is recorded in
+// `manifest.codegen.extrasDir`; the bindings tree is the committed
+// `src/generated`, resolved directly by the Vite `@generated` alias.
+// Pure: no `process.env`, no I/O — so these are plain
 // assertions over its return shape, no temp dir / env harness needed.
 //
 // Rules under test (see src/orchestrators/codegen/output-location.ts):

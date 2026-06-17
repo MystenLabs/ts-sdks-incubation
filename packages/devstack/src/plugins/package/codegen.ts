@@ -65,18 +65,6 @@ export interface PackageBindings {
 	readonly excluded: boolean;
 }
 
-/** Type guard for the `packageBindings` shape emitted into the
- *  CodegenEmitContext below. Lives in the plugin so the codegen
- *  orchestrator never has to recognize the shape — it only calls
- *  the projector. */
-export const isPackageBindings = (v: unknown): v is PackageBindings =>
-	typeof v === 'object' &&
-	v !== null &&
-	'name' in v &&
-	'packageId' in v &&
-	'mvrPlaceholder' in v &&
-	'sourcePath' in v;
-
 /** The typed shape one `config.packages.<name>` entry exports. */
 export interface PackageConfigEntry {
 	readonly mvr: string;

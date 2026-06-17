@@ -19,12 +19,12 @@
 //     explicitly (`defineDevstack({ codegen })`) owns that output path;
 //     per-stack isolation is then the app's responsibility.
 //
-// The resolved absolute `outputDir` is recorded in the per-stack manifest
-// (`codegen.generatedDir`) so the reader (the Vite plugin) consults the
-// SAME location the writer chose — read and write are gated by one
-// decision, not two. The Vite plugin overlays that live tree when a stack
-// is running and falls back to the committed `./src/generated` otherwise.
-// Pure + unit-testable; no `process.env`, no I/O.
+// The resolved absolute `extrasDir` is recorded in the per-stack manifest
+// (`codegen.extrasDir`) so the reader (the Vite plugin's `@devstack-dev`
+// alias) consults the SAME location the writer chose. The committed
+// `src/generated` bindings tree is NOT recorded — the `@generated` alias
+// always resolves to it directly. Pure + unit-testable; no `process.env`,
+// no I/O.
 
 import { isAbsolute, join, resolve } from 'node:path';
 
@@ -56,8 +56,9 @@ export interface ResolveCodegenOutputInput {
 
 export interface ResolvedCodegenOutput {
 	/** Absolute path to the directory codegen owns and overwrites for
-	 *  THIS stack's LIVE projection. Recorded in the manifest as
-	 *  `codegen.generatedDir`. Always under `.devstack` (gitignored). */
+	 *  THIS stack's LIVE projection. Always under `.devstack` (gitignored).
+	 *  Not recorded in the manifest — the committed `src/generated` tree is
+	 *  the binding source the `@generated` alias resolves. */
 	readonly outputDir: string;
 	/** Absolute path to the dev-only + secret `generated-extras` tree
 	 *  for THIS stack — always

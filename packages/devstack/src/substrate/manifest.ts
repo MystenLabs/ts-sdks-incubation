@@ -42,19 +42,16 @@ export class ManifestExtrasLookupError extends Schema.TaggedErrorClass<ManifestE
 ) {}
 
 /** Codegen metadata recorded per stack. The supervisor writes the
- *  resolved absolute output dir here at manifest-flush time so the
- *  read-side build integrations (the Vite plugin) point an `@generated`
- *  alias at the EXACT dir codegen emitted into for THIS stack — read
- *  and write share one decision (see
- *  `orchestrators/codegen/output-location.ts`). Optional + additive:
- *  manifests written before this field existed (and stacks that somehow
- *  flush without it) still decode; consumers fall back to
- *  `src/generated/`. */
+ *  dev-only `extrasDir` (the `@devstack-dev` overlay) and the live
+ *  `idsFile` (the gitignored `devstack-ids.json` injected as
+ *  `__DEVSTACK_IDS__`) here at manifest-flush time so the read-side
+ *  build integrations (the Vite plugin) consult the exact locations the
+ *  boot wrote — read and write share one decision. Bindings themselves
+ *  are NOT recorded here: the `@generated` alias always resolves to the
+ *  committed `src/generated` tree written by the stack-free `codegen`
+ *  verb. Optional + additive: manifests written before these fields
+ *  existed still decode; consumers fall back to their cold-start paths. */
 export interface ManifestCodegen {
-	/** Absolute path to the directory codegen emitted into for this
-	 *  stack (primary → `<appRoot>/src/generated`; secondary →
-	 *  `<appRoot>/.devstack/stacks/<stack>/generated`). */
-	readonly generatedDir: string;
 	/** Absolute path to the dev-only + secret `generated-extras` tree
 	 *  for this stack (`<appRoot>/.devstack/stacks/<stack>/generated-extras`).
 	 *  The `@devstack-dev` Vite alias resolves here. Optional +
@@ -175,13 +172,14 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	),
 	extras: Schema.Record(Schema.String, Schema.Unknown),
 	// Optional codegen metadata. The Vite plugin reads
-	// `codegen.generatedDir` to point its `@generated` alias (dev
-	// `generated-extras` overlay) and `codegen.idsFile` to inject the live
-	// on-chain ids via `__DEVSTACK_IDS__`; on a miss it falls back to
-	// `src/generated/` and `__DEVSTACK_IDS__ = null`.
+	// `codegen.extrasDir` to point its `@devstack-dev` overlay alias and
+	// `codegen.idsFile` to inject the live on-chain ids via
+	// `__DEVSTACK_IDS__`; on a miss it falls back to the cold-start
+	// `generated-extras` path and `__DEVSTACK_IDS__ = null`. Bindings are
+	// not recorded here — `@generated` always resolves to the committed
+	// `src/generated` tree.
 	codegen: Schema.optional(
 		Schema.Struct({
-			generatedDir: Schema.String,
 			extrasDir: Schema.optional(Schema.String),
 			/** Absolute path to the gitignored `devstack-ids.json` the boot
 			 *  wrote for this stack. The Vite plugin reads it in dev. */

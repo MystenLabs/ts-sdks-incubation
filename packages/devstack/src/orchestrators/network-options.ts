@@ -10,19 +10,23 @@
  * `mainnet`). A CONSISTENT mechanism: declare these once per network in
  * the config instead of scattering one-off flags. `devWallet` is the
  * load-bearing consumer today (gates the dev-wallet `generated-extras`
- * flush at boot, which the Vite plugin injects); `faucet` /
- * `autoApproveSigning` round out the initial set.
+ * flush at boot, which the Vite plugin injects). `faucet` /
+ * `autoApproveSigning` are RESERVED — part of the declared set + default
+ * policy, but not yet enforced by a consumer (§8 follow-up in
+ * notes/codegen-decoupling-backlog.md).
  */
 export interface NetworkScopedOptions {
-	/** Mount the test-only dev wallet and flush its `generated-extras`
-	 *  tree (`dev-wallet.ts` + `accounts.ts`) at boot so the Vite plugin's
-	 *  `@devstack-dev` injection has files to load. Off → no flush, and
-	 *  the Vite `load` hook gracefully no-ops. */
+	/** ENFORCED. Mount the test-only dev wallet and flush its
+	 *  `generated-extras` tree (`dev-wallet.ts` + `accounts.ts`) at boot so
+	 *  the Vite plugin's `@devstack-dev` injection has files to load. Off →
+	 *  no flush, and the Vite `load` hook gracefully no-ops. */
 	readonly devWallet?: boolean;
-	/** Run a funding faucet for this network (a local faucet container in
-	 *  local mode; the network's real faucet endpoint in live mode). */
+	/** RESERVED (not yet enforced): run a funding faucet for this network.
+	 *  Faucet provisioning is currently decided by the sui plugin's mode
+	 *  (local container / fork whale / live endpoint), not this flag. */
 	readonly faucet?: boolean;
-	/** Auto-approve dev-wallet signing requests (browser-test ergonomics). */
+	/** RESERVED (not yet enforced): auto-approve dev-wallet signing
+	 *  requests (browser-test ergonomics). */
 	readonly autoApproveSigning?: boolean;
 }
 

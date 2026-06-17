@@ -22,7 +22,7 @@
 //   - `config` is a PLAIN SYNC FUNCTION (not a `{ handler }` object):
 //     `config(userConfig) => ({ resolve: { alias: { [prefix]: dir } } })`.
 //   - The hook reads `userConfig.root` (defaults to `process.cwd()`),
-//     used for relative-`generatedDir` resolution and the fallback.
+//     used for relative-`options.generatedDir` resolution and the fallback.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -56,14 +56,10 @@ afterEach(() => {
 	}
 });
 
-/** Plant a stack manifest containing `codegen.generatedDir` at the
- *  supervisor-written path under an absolute state root. */
-const writeStackManifest = (
-	stateRoot: string,
-	stack: string,
-	generatedDir: string,
-	extrasDir?: string,
-): string => {
+/** Plant a stack manifest carrying the optional `codegen.extrasDir` (the
+ *  `@devstack-dev` overlay source) at the supervisor-written path under an
+ *  absolute state root. Bindings are not recorded in the manifest. */
+const writeStackManifest = (stateRoot: string, stack: string, extrasDir?: string): string => {
 	const dir = join(stateRoot, 'stacks', stack);
 	mkdirSync(dir, { recursive: true });
 	const path = join(dir, 'manifest.json');
@@ -75,7 +71,7 @@ const writeStackManifest = (
 			services: {},
 			endpoints: {},
 			extras: {},
-			codegen: { generatedDir, ...(extrasDir !== undefined ? { extrasDir } : {}) },
+			codegen: { ...(extrasDir !== undefined ? { extrasDir } : {}) },
 		}),
 	);
 	return path;
@@ -90,9 +86,9 @@ describe('devstackVitePlugin', () => {
 
 	it('@generated statically resolves to <root>/src/generated', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			// A manifest with a per-stack `codegen.generatedDir` is present and
-			// must be IGNORED: `@generated` is always the committed tree.
-			writeStackManifest(tmp, 'e2e', join(tmp, '.devstack', 'stacks', 'e2e', 'generated'));
+			// A manifest is present; `@generated` is always the committed
+			// `src/generated` tree regardless of what the manifest records.
+			writeStackManifest(tmp, 'e2e');
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
@@ -127,9 +123,8 @@ describe('devstackVitePlugin', () => {
 
 	it('manifest hit → also aliases @devstack-dev at codegen.extrasDir', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
 			const extrasDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated-extras');
-			writeStackManifest(tmp, 'e2e', generatedDir, extrasDir);
+			writeStackManifest(tmp, 'e2e', extrasDir);
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
@@ -140,9 +135,8 @@ describe('devstackVitePlugin', () => {
 
 	it('manifest hit without extrasDir → @devstack-dev cold-start fallback under .devstack/stacks/<stack>', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
-			// Older manifest with generatedDir but no extrasDir.
-			writeStackManifest(tmp, 'e2e', generatedDir);
+			// Manifest with codegen present but no extrasDir.
+			writeStackManifest(tmp, 'e2e');
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 

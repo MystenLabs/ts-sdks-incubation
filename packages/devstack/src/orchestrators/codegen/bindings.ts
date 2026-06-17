@@ -111,6 +111,23 @@ export interface PackageBindings {
 	readonly excluded: boolean;
 }
 
+/**
+ * Consumer-side shape guard: does an aggregated value look like a
+ * Move-bindings contribution that `emitBindings` knows how to consume?
+ * This is structural validation of the orchestrator's own input
+ * contract, NOT a plugin-name match — any plugin whose
+ * `aggregate.project` returns objects with this shape is forwarded to
+ * the Move bindings emitter. The single definition of the seam; both
+ * the codegen orchestrator service and the Package plugin reference it.
+ */
+export const isPackageBindings = (v: unknown): v is PackageBindings =>
+	typeof v === 'object' &&
+	v !== null &&
+	'name' in v &&
+	'packageId' in v &&
+	'mvrPlaceholder' in v &&
+	'sourcePath' in v;
+
 export interface EmitBindingsInput {
 	readonly bindingsDir: string;
 	readonly packages: ReadonlyArray<PackageBindings>;

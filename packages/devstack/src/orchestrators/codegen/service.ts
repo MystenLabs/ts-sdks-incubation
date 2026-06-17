@@ -63,6 +63,7 @@ import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-a
 import {
 	emitBindings,
 	type EmitBindingsResult,
+	isPackageBindings,
 	MoveCodegenService,
 	MoveSummaryRunnerService,
 	type PackageBindings,
@@ -868,22 +869,6 @@ const resolversUsedBy = (
 	for (const v of Object.values(exports)) collectResolversInValue(v, found);
 	return CONFIG_RUNTIME_RESOLVERS.filter((name) => found.has(name));
 };
-
-/**
- * Consumer-side shape guard: does this aggregated value look like a
- * Move-bindings contribution that `emitBindings` knows how to
- * consume? This is structural validation of the orchestrator's own
- * input contract, NOT a plugin-name match. Any plugin whose
- * `aggregate.project` returns objects with this shape will be
- * forwarded to the Move bindings emitter.
- */
-const isPackageBindings = (v: unknown): v is PackageBindings =>
-	typeof v === 'object' &&
-	v !== null &&
-	'name' in v &&
-	'packageId' in v &&
-	'mvrPlaceholder' in v &&
-	'sourcePath' in v;
 
 // -----------------------------------------------------------------------------
 // Service surface — registration API + emit-cycle trigger
