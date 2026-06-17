@@ -11,18 +11,15 @@ import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit'
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
+import { resolveActiveNetwork } from '@generated/config-runtime.js';
 
 const devstackNetwork = 'localnet' as const;
 
-// `config.network`/`config.networks` are runtime-resolved (the active
-// network name + its connection map are injected via `__DEVSTACK_IDS__`, not
-// baked into the committed tree). The map is index-signature typed, so look
-// up the active entry once and fail loudly if it is missing rather than
-// silently using `undefined`.
-const activeNetwork = config.networks[config.network];
-if (activeNetwork === undefined) {
-	throw new Error(`[devstack] no network entry for "${config.network}"`);
-}
+// The active network's connection map is runtime-resolved (injected via
+// `__DEVSTACK_IDS__`, not baked into the committed tree). `resolveActiveNetwork`
+// returns the active entry with a non-undefined type and fails loudly if it is
+// missing — no index-signature footgun.
+const activeNetwork = resolveActiveNetwork();
 
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],

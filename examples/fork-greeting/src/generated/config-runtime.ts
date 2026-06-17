@@ -93,6 +93,22 @@ export const resolveNetwork = (): string => ids().network;
 export const resolveNetworks = (): { readonly [name: string]: DevstackNetworkEntry } =>
 	ids().networks;
 
+/** Resolve the ACTIVE network's connection entry —
+ *  `resolveNetworks()[resolveNetwork()]` with a non-undefined return type and
+ *  a loud throw. Removes the `config.networks[config.network]` index-signature
+ *  footgun: the app reads `.rpc` etc. off a guaranteed entry instead of
+ *  threading an `undefined` past the index lookup. Throws
+ *  `DevstackConfigMissingError` when no ids were injected or the active
+ *  network has no entry in the injected map. */
+export const resolveActiveNetwork = (): DevstackNetworkEntry => {
+	const network = resolveNetwork();
+	const entry = resolveNetworks()[network];
+	if (entry === undefined) {
+		throw new DevstackConfigMissingError(`active network "${network}" has no entry`);
+	}
+	return entry;
+};
+
 /** Resolve a generic plugin value (`values[namespace][key]`). The committed
  *  `config.ts` calls this for any live plugin value that isn't a package id
  *  or the network — deepbook pool ids, coin types, walrus/seal endpoints.
@@ -106,6 +122,25 @@ export const resolveValue = <T = unknown>(namespace: string, key: string): T => 
 		throw new DevstackConfigMissingError(
 			`value "${namespace}.${key}" is unresolved`,
 		);
+	}
+	return value as T;
+};
+
+/** Non-throwing variant of `resolveValue`: returns `undefined` instead of
+ *  throwing `DevstackConfigMissingError` when no ids were injected, the value
+ *  is missing, or it is the all-zero sentinel. For discovery-only ids the app
+ *  GATES on (e.g. a coin's `treasuryCapId`/`metadataId`, only known after a
+ *  live publish) rather than the load-bearing fields that should fail loud. */
+export const resolveValueOptional = <T = unknown>(
+	namespace: string,
+	key: string,
+): T | undefined => {
+	const injected = typeof __DEVSTACK_IDS__ === 'undefined' ? null : __DEVSTACK_IDS__;
+	const values = injected?.values ?? {};
+	const namespaceValues = values[namespace];
+	const value = namespaceValues === undefined ? undefined : namespaceValues[key];
+	if (value === undefined || value === UNRESOLVED_ID) {
+		return undefined;
 	}
 	return value as T;
 };

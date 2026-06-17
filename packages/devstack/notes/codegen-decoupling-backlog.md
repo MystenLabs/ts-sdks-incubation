@@ -130,12 +130,13 @@ fails. Currently "passes" only on STALE local artifacts (non-hermetic).
 
 ## 5. DX frictions (the new model created repetitive boilerplate)
 
-- ⬜ Generated `resolveActiveNetwork()` helper in `config-runtime.ts` — removes
-  the repeated `config.networks[config.network]` index-signature footgun that bit
-  connect-four / token-studio / private-content `dapp-kit.ts`.
-- ⬜ `resolveValueOptional()` (non-throwing, returns `undefined`) — coin apps
-  hand-roll a tolerant wrapper for discovery-only ids
-  (`token-studio` `discoveryId` for `treasuryCapId`/`metadataId`).
+- ✅ Generated `resolveActiveNetwork(): DevstackNetworkEntry` helper in
+  `config-runtime.ts` — kills the `config.networks[config.network]` index-signature
+  footgun; adopted in connect-four / token-studio / private-content `dapp-kit.ts`.
+- ✅ `resolveValueOptional<T>()` (non-throwing, returns `undefined`) — replaced
+  token-studio's hand-rolled try/catch discovery wrapper (`treasuryCapId`/
+  `metadataId`). All 6 examples regenerated + built (deepbook via real git-Move);
+  committed trees stayed id-free. Guarded by `config-runtime.test.ts` (8 tests).
 - ⬜ First-class "declared-when-known" `BucketField` helper — removes the
   literal-vs-resolved branching duplicated across coin/deepbook/walrus/seal.
 - ✅ Single-source the id-config schema doc (deduped to `codegen.mdx` link).

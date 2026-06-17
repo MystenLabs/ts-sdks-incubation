@@ -24,25 +24,18 @@
 // generated key follows the witness struct name.
 
 import { coins } from '@generated/coins.js';
-import { DevstackConfigMissingError, resolveValue } from '@generated/config-runtime.js';
+import { resolveValueOptional } from '@generated/config-runtime.js';
 
 const studio = coins.managed_coin;
 
 // Resolve a discovery-only coin object id from the injected ids, tolerating
 // absence: a build with no injected ids (or a coin not yet published) yields
-// `''`, which the UI gates on (`isDeployed`, query `enabled`). The hard
+// `''`, which the UI gates on (`isDeployed`, query `enabled`). The non-throwing
+// `resolveValueOptional` returns `undefined` for these optional ids; the hard
 // `DevstackConfigMissingError` from the typed resolvers stays loud for the
-// load-bearing fields (rpc, package ids); these optional ids do not.
-const discoveryId = (key: string): string => {
-	try {
-		return resolveValue<string>('coin:managed_coin', key);
-	} catch (error) {
-		if (error instanceof DevstackConfigMissingError) {
-			return '';
-		}
-		throw error;
-	}
-};
+// load-bearing fields (rpc, package ids).
+const discoveryId = (key: string): string =>
+	resolveValueOptional<string>('coin:managed_coin', key) ?? '';
 
 export const deployment = {
 	// Display-only: the published package id (header/footer + deployed gate).
