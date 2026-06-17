@@ -230,16 +230,26 @@ export const liveValuesOf = <State>(
  * values from `state`; boot's `assembleIdConfig` reads those back into the
  * loadable id-config (typed channel + the generic `values` channel).
  */
-export const configCodegenable = <State>(
+export const configCodegenable = <State, Emitter extends string = string>(
 	set: ConfigBindingSet<State>,
 	how: 'static' | { readonly mode: 'live'; readonly state: State },
-): CodegenableDecl => {
+	options: {
+		/** Extra `export const <name> = <value>` declarations to emit on the
+		 *  decl's `emit` context, instead of the default placeholder export.
+		 *  The package plugin uses this to export its `packageBindings` object
+		 *  so the orchestrator's `isPackageBindings` seam can forward it to the
+		 *  Move-bindings emitter. When omitted, a single minimal placeholder
+		 *  export is emitted (the projection is what the aggregate folds). */
+		readonly extraExports?: Readonly<Record<string, unknown>>;
+	} = {},
+): CodegenableDecl<Emitter> => {
 	const live = how !== 'static';
 	const projected = live ? projectLiveConfig(set, how.state) : projectStaticConfig(set);
 	const idConfigValues = live ? liveValuesOf(set, how.state) : {};
+	const extraExports = options.extraExports;
 	return {
 		kind: 'codegenable',
-		emitterName: set.emitterName,
+		emitterName: set.emitterName as Emitter,
 		outputPath: set.outputPath,
 		aggregateOnly: true,
 		...(set.allowEmitterNameRepetition === true ? { allowEmitterNameRepetition: true } : {}),
@@ -255,10 +265,122 @@ export const configCodegenable = <State>(
 		},
 		emit: (ctx) =>
 			Effect.sync(() => {
-				// A placeholder export so the emitter runs; the projection is
-				// what the aggregate folds. Kept minimal + name-stable.
-				ctx.exportConst('__configBindings', set.kind);
+				if (extraExports !== undefined) {
+					for (const [name, value] of Object.entries(extraExports)) {
+						ctx.exportConst(name, value);
+					}
+				} else {
+					// A placeholder export so the emitter runs; the projection is
+					// what the aggregate folds. Kept minimal + name-stable.
+					ctx.exportConst('__configBindings', set.kind);
+				}
 				return ctx.done();
 			}),
 	};
 };
+
+// -----------------------------------------------------------------------------
+// Sibling-keyed bucket bindings
+// -----------------------------------------------------------------------------
+//
+// The own-bucket service plugins (coin → `coins.ts`, deepbook → `deepbook.ts`,
+// seal → `seal.ts`) emit a name-keyed bucket where distinct instances deep-merge
+// into one `<bucket>.ts` exporting `{ <instanceKey>: { ...fields } }`. They
+// declare their per-instance contribution as a flat list of `BucketField`s
+// (each a structural literal or a runtime-resolved value rooted under the
+// instance key); the helpers below derive the `ConfigBindingSet` and both the
+// live/static decls from it, so there are no parallel projectors to drift.
+
+/** One field of an instance's bucket entry, classified as either a pure
+ *  STRUCTURAL literal (a name / mode / decimals — the same in both paths)
+ *  or a runtime-RESOLVED value (an on-chain id, coin type, or endpoint URL —
+ *  the static path emits `resolveValue`, the live path feeds the concrete
+ *  value into the id-config). The `key` is the leaf field name written under
+ *  the instance key in the bucket object literal. */
+export type BucketField<State> =
+	| { readonly key: string; readonly variant: 'literal'; readonly value: JsonValue }
+	| {
+			readonly key: string;
+			readonly variant: 'resolved';
+			/** `resolveValue(namespace, valueKey)` coordinates. `valueKey`
+			 *  defaults to `key` when omitted. */
+			readonly valueKey?: string;
+			/** The field's STATIC TypeScript type as a source string (see
+			 *  `ConfigBinding.tsType`). When set, the static path emits
+			 *  `resolveValue(...) as <tsType>` so the committed value carries its
+			 *  concrete type instead of `unknown`. */
+			readonly tsType?: string;
+			readonly live: (state: State) => JsonValue;
+	  };
+
+export interface SiblingBucketSpec<State> {
+	/** The aggregate bucket filename, e.g. `'coins.ts'`. */
+	readonly bucket: string;
+	/** Diagnostic kind tag (e.g. `'coin'`) — the orchestrator never
+	 *  branches on it. */
+	readonly kind: string;
+	/** The emitter name the derived decl carries (literal, e.g.
+	 *  `coin/<symbol>`). */
+	readonly emitterName: string;
+	/** A non-empty dead output path (the decl is `aggregateOnly`). */
+	readonly outputPath: string;
+	/** The instance key the entry lives under in the bucket object
+	 *  (e.g. the coin symbol, the deepbook instance name). */
+	readonly instanceKey: string;
+	/** The `resolveValue` namespace shared by every resolved field
+	 *  (e.g. `coin:<symbol>`, `deepbook:<name>`). */
+	readonly namespace: string;
+	/** The instance's fields. */
+	readonly fields: ReadonlyArray<BucketField<State>>;
+	/** When `true`, the derived decl sets `allowEmitterNameRepetition`
+	 *  (sibling instances share an emitter-name prefix). */
+	readonly allowEmitterNameRepetition?: boolean;
+}
+
+/** Build the `ConfigBindingSet` for a sibling-keyed bucket instance. The
+ *  `configPath` of every binding is rooted at the instance key, so distinct
+ *  instances deep-merge into one `<bucket>.ts` exporting
+ *  `{ <instanceKey>: { ...fields } }`. */
+export const siblingBucketBindings = <State>(
+	spec: SiblingBucketSpec<State>,
+): ConfigBindingSet<State> => {
+	const bindings: Array<ConfigBinding<State>> = spec.fields.map((field) => {
+		const configPath = [spec.instanceKey, field.key] as const;
+		if (field.variant === 'literal') {
+			return { variant: 'literal', configPath: [...configPath], value: field.value };
+		}
+		return {
+			variant: 'resolved',
+			configPath: [...configPath],
+			namespace: spec.namespace,
+			key: field.valueKey ?? field.key,
+			// No `sugar` — these are generic `resolveValue` bindings (the typed
+			// id-config channel only carries network/packages/mvrOverrides).
+			...(field.tsType !== undefined ? { tsType: field.tsType } : {}),
+			live: field.live,
+		};
+	});
+	return {
+		bucket: spec.bucket,
+		kind: spec.kind,
+		emitterName: spec.emitterName,
+		outputPath: spec.outputPath,
+		...(spec.allowEmitterNameRepetition === true ? { allowEmitterNameRepetition: true } : {}),
+		bindings,
+	};
+};
+
+/** Derive the LIVE bucket decl — feeds concrete values into the generic
+ *  id-config `values` channel (no per-stack generated file is written). */
+export const liveBucketCodegen = <State>(
+	spec: SiblingBucketSpec<State>,
+	state: State,
+): CodegenableDecl =>
+	configCodegenable(siblingBucketBindings(spec), { mode: 'live', state });
+
+/** Derive the STATIC (stack-free) bucket decl — emits
+ *  `resolveValue(namespace, key)` for resolved fields, literals for the
+ *  rest. The committed `<bucket>.ts` carries no baked runtime value. */
+export const staticBucketCodegen = <State>(
+	spec: SiblingBucketSpec<State>,
+): CodegenableDecl => configCodegenable(siblingBucketBindings(spec), 'static');

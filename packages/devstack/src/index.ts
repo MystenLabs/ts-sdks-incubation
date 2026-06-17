@@ -372,7 +372,6 @@ export {
 	type DeepbookKnownNetwork,
 	type DeepbookOptions,
 	type DeepbookBindings,
-	type DeepbookPoolBinding,
 	type DeepbookError,
 	type DeepbookPluginError,
 	type DeepbookConfigError,

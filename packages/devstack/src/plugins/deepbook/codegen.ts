@@ -4,7 +4,7 @@
 // ONE declaration, TWO derivations. A deepbook instance declares its
 // `deepbook.ts` contribution ONCE as a `ConfigBindingSet` (rooted under its
 // instance name). The framework derives both behaviors (see
-// `bucket-config-bindings.ts`):
+// `contracts/config-bindings.ts`):
 //   - LIVE (boot): bakes the resolved deployment (package / registry / pool
 //     ids, pyth feed ids, …) AND feeds the generic id-config `values`
 //     channel.
@@ -19,23 +19,13 @@
 // so each is resolved as ONE whole-value blob through the generic channel.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
-
 import {
 	liveBucketCodegen,
 	staticBucketCodegen,
 	type BucketField,
 	type SiblingBucketSpec,
-} from '../internal/bucket-config-bindings.ts';
-
-export interface DeepbookPoolBinding {
-	readonly name: string;
-	readonly poolId: string;
-	readonly base: string;
-	readonly quote: string;
-	readonly baseCoinType: string;
-	readonly quoteCoinType: string;
-}
+} from '../../contracts/config-bindings.ts';
+import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
 
 export interface DeepbookBindings {
 	readonly name: string;
@@ -44,7 +34,16 @@ export interface DeepbookBindings {
 	readonly registryId: string;
 	readonly adminCapId: string | null;
 	readonly deepTreasuryId: string | null;
-	readonly pools: ReadonlyArray<DeepbookPoolBinding>;
+	/** Per-pool typed shape (informational only — pools resolve as one blob):
+	 *  `{ name, poolId, base, quote, baseCoinType, quoteCoinType }`. */
+	readonly pools: ReadonlyArray<{
+		readonly name: string;
+		readonly poolId: string;
+		readonly base: string;
+		readonly quote: string;
+		readonly baseCoinType: string;
+		readonly quoteCoinType: string;
+	}>;
 	readonly pyth: {
 		readonly packageId: string | null;
 		readonly stateId: string | null;

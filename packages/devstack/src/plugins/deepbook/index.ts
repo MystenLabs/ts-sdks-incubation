@@ -1076,7 +1076,7 @@ export {
 	type DeepbookConfigError,
 	type DeepbookPhase,
 } from './errors.ts';
-export type { DeepbookBindings, DeepbookPoolBinding } from './codegen.ts';
+export type { DeepbookBindings } from './codegen.ts';
 export type {
 	AccountMemberAlias,
 	CoinMemberAlias,

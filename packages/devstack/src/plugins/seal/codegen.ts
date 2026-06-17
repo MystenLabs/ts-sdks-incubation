@@ -4,7 +4,7 @@
 // The seal plugin contributes ONE codegen shape — the `seal-key-server`
 // config the user-facing bindings consume to construct a `SealClient`.
 //
-// ONE declaration, TWO derivations (see `bucket-config-bindings.ts`). Every
+// ONE declaration, TWO derivations (see `contracts/config-bindings.ts`). Every
 // seal instance folds into a single `generated/seal.ts` exporting
 // `export const seal = { <name>: SealBindings, ... }` (sibling-keyed bucket):
 //   - LIVE (boot): bakes the resolved key-server object id / URL / configs
@@ -17,15 +17,14 @@
 // config data), resolved at app build/dev time.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
-import type { SealKeyServerEntry } from './registry-publish.ts';
-
 import {
 	liveBucketCodegen,
 	staticBucketCodegen,
 	type BucketField,
 	type SiblingBucketSpec,
-} from '../internal/bucket-config-bindings.ts';
+} from '../../contracts/config-bindings.ts';
+import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { SealKeyServerEntry } from './registry-publish.ts';
 
 /** Codegen-emitted shape for seal. */
 export interface SealBindings {

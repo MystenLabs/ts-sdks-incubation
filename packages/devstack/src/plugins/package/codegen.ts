@@ -25,17 +25,14 @@
 // orchestrator's `isPackageBindings` seam forwards it to the Move-bindings
 // emitter (bindings stay in `generated/bindings/`).
 
-import { Effect } from 'effect';
-
 import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import type { CodegenableDecl, StaticCodegenSource } from '../../contracts/codegenable.ts';
 import {
-	liveValuesOf,
-	projectLiveConfig,
-	projectStaticConfig,
+	configCodegenable,
 	type ConfigBinding,
 	type ConfigBindingSet,
 } from '../../contracts/config-bindings.ts';
+import type { PackageBindings } from '../../orchestrators/codegen/bindings.ts';
 import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
 import { mvrNamedForm, mvrNamedFormFrom, mvrSlugify } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
@@ -50,20 +47,10 @@ export interface PackageNetworkEntry {
 export type PackageNetworks = Readonly<Record<string, PackageNetworkEntry>>;
 
 /** Codegenable shape — what each Package contributes to the codegen
- *  orchestrator. Two variants mirror the local/known split. */
-export interface PackageBindings {
-	readonly name: string;
-	readonly packageId: string;
-	readonly mvrPlaceholder: string;
-	/** Present for local packages only — the bindings emitter reads
-	 *  this; KnownPackages omit it and the orchestrator skips them
-	 *  for bindings emission (compile-time enforcement at the
-	 *  factory layer per distilled doc Invariant 9). */
-	readonly sourcePath: string | null;
-	/** Per-package opt-out (distilled doc §Inputs — "Codegen
-	 *  exclusion flag"). */
-	readonly excluded: boolean;
-}
+ *  orchestrator. Defined once on the orchestrator's `emitBindings` consumer
+ *  contract (`orchestrators/codegen/bindings.ts`); re-exported here as the
+ *  package plugin's public surface. */
+export type { PackageBindings };
 
 /** The typed shape one `config.packages.<name>` entry exports. */
 export interface PackageConfigEntry {
@@ -213,41 +200,19 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 };
 
 /**
- * Build the package's `CodegenableDecl` from its binding set. Mode `'live'`
- * bakes concrete values + feeds the id-config; `'static'` emits resolver
- * expressions. The decl ALSO exports `packageBindings` so the orchestrator's
- * `isPackageBindings` seam forwards it to the Move-bindings emitter.
+ * Build the package's `CodegenableDecl` from its binding set via the unified
+ * `configCodegenable` derivation. Mode `'live'` bakes concrete values + feeds
+ * the id-config; `'static'` emits resolver expressions. The decl ALSO exports
+ * `packageBindings` (the `extraExports` hook) so the orchestrator's
+ * `isPackageBindings` seam forwards it to the Move-bindings emitter (bindings
+ * stay in `generated/bindings/`).
  */
 const packageDecl = (
 	set: ConfigBindingSet<PackageLiveState>,
 	bindings: PackageBindings,
 	how: 'static' | { readonly mode: 'live'; readonly state: PackageLiveState },
-): CodegenableDecl<'package'> => {
-	const live = how !== 'static';
-	const projected = live ? projectLiveConfig(set, how.state) : projectStaticConfig(set);
-	const idConfigValues = live ? liveValuesOf(set, how.state) : {};
-	return {
-		kind: 'codegenable',
-		emitterName: 'package',
-		outputPath: set.outputPath,
-		allowEmitterNameRepetition: true,
-		aggregateOnly: true,
-		aggregate: {
-			kind: 'package',
-			bucket: 'config.ts',
-			project: () => projected,
-			...(live && Object.keys(idConfigValues).length > 0 ? { idConfigValues } : {}),
-		},
-		emit: (ctx) =>
-			Effect.sync(() => {
-				// `packageBindings` feeds the orchestrator's `isPackageBindings`
-				// seam → the Move-bindings emitter (bindings stay in
-				// `generated/bindings/`).
-				ctx.exportConst('packageBindings', bindings);
-				return ctx.done();
-			}),
-	};
-};
+): CodegenableDecl<'package'> =>
+	configCodegenable<PackageLiveState, 'package'>(set, how, { extraExports: { packageBindings: bindings } });
 
 /** Build the Codegenable contribution for a local package (LIVE path).
  *  Bakes the resolved active-network id + captured objects. */

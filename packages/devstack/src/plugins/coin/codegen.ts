@@ -11,7 +11,7 @@
 //
 // ONE declaration, TWO derivations. A coin declares its `coins.ts`
 // contribution ONCE as a `ConfigBindingSet` (rooted under its symbol key).
-// The framework derives both behaviors (see `bucket-config-bindings.ts`):
+// The framework derives both behaviors (see `contracts/config-bindings.ts`):
 //   - LIVE (boot): bakes the resolved on-chain values (fullCoinType,
 //     decimals, ids) AND feeds the generic id-config `values` channel.
 //   - STATIC (committed tree): emits `resolveValue('coin:<symbol>', '<key>')`
@@ -22,14 +22,13 @@
 // resolved at app build/dev time via the injected `__DEVSTACK_IDS__` global.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
-
 import {
 	liveBucketCodegen,
 	staticBucketCodegen,
 	type BucketField,
 	type SiblingBucketSpec,
-} from '../internal/bucket-config-bindings.ts';
+} from '../../contracts/config-bindings.ts';
+import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
 
 /** The typed shape per emitted coin record. */
 export interface CoinBindings {
