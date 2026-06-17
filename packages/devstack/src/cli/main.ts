@@ -213,7 +213,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 			run: (flags) => runApplyLive(flags.configPath, identity),
 		},
 		codegen: {
-			run: (flags) => runCodegen(flags.configPath),
+			run: (flags) => runCodegen(flags.configPath, identity),
 		},
 		status: { reader: projectionStatusReader(identity) },
 		snapshot: {

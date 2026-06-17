@@ -192,6 +192,14 @@ jobs:
       # scoped out.
       - name: Codegen drift-guard (committed src/generated is fresh)
         working-directory: examples/${{ matrix.example }}
+        # CI never installs a host `sui` CLI, so force the Docker Move-summary
+        # runner: `devstack codegen` then runs `sui move summary` inside the
+        # pinned Sui CLI image (the same runner `up`/`apply` use). It produces
+        # byte-identical bindings to the host runner, so the drift-guard `git
+        # diff` is meaningful regardless of which runner emitted the committed
+        # tree. Docker is available on hosted ubuntu runners.
+        env:
+          DEVSTACK_CODEGEN_RUNNER: docker
         run: |
           DEVSTACK_APP=${{ matrix.example }} node ../../packages/devstack/dist/cli/main.mjs codegen
           if ! git diff --exit-code -- src/generated; then

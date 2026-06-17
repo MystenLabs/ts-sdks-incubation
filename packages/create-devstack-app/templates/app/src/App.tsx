@@ -3,7 +3,8 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 
-import { createCounterTx, executedTx, incrementTx, readCounter } from './counter.js';
+import { createCounterTx, incrementTx, readCounter } from './counter.js';
+import { executedTx } from './tx.js';
 
 export function App() {
 	const dAppKit = useDAppKit();

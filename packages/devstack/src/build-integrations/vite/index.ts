@@ -119,9 +119,15 @@ export interface DevstackVitePlugin {
 	) => {
 		readonly resolve: {
 			readonly alias: Record<string, string>;
-			readonly dedupe?: readonly string[];
+			// Mutable `string[]` (NOT `readonly`): Vite's `ResolveOptions.dedupe`
+			// and `DepOptimizationConfig.include` are both `string[] | undefined`,
+			// and a `readonly string[]` return makes the whole `config` hook
+			// unassignable to Vite's `Plugin` type in a consuming app's
+			// `vite.config.ts`/`vitest.config.ts`. The values we return
+			// (`[...LIT_DEDUPE]`, a freshly built array) are already mutable.
+			readonly dedupe?: string[];
 		};
-		readonly optimizeDeps?: { readonly include: readonly string[] };
+		readonly optimizeDeps?: { readonly include: string[] };
 		/** Build-time `define` injecting the on-chain ids as the
 		 *  `__DEVSTACK_IDS__` global (the generated resolver reads it). */
 		readonly define: Record<string, string>;

@@ -1,10 +1,17 @@
-// Guards against scaffolds carrying generated/runtime state, at two layers:
-//   1. the copy skip-set never copies devstack runtime dirs / codegen output /
-//      build artifacts out of a dev checkout of the authored `templates/`, and
+// Guards against scaffolds carrying runtime/build state, at two layers:
+//   1. the copy skip-set never copies devstack runtime dirs / build artifacts
+//      out of a dev checkout of the authored `templates/`, and
 //   2. each template's `_gitignore` (restored to `.gitignore` at scaffold)
 //      ignores the same state, so a run before the initial commit stays clean.
+//
+// `src/generated` is NOT in either layer: the templates ship the committed
+// codegen projection tree (id-free bindings + sentinel-id config + the emitted
+// `src/generated/.gitignore` that governs it), exactly like the examples, so a
+// freshly-scaffolded app builds on a clean checkout with no stack running.
+// `devstack up`/`apply` no longer write `src/generated` (output moved to the
+// gitignored `.devstack/`), so the bindings must travel with the template.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,9 +32,10 @@ describe('template copy skip-set', () => {
 		expect(shouldSkipTemplatePath('nested/tsconfig.app.tsbuildinfo')).toBe(true);
 	});
 
-	it('skips codegen output (src/generated) but not lookalike paths', () => {
-		expect(shouldSkipTemplatePath('src/generated')).toBe(true);
-		expect(shouldSkipTemplatePath('src/generated/counter.ts')).toBe(true);
+	it('copies the committed codegen projection tree (src/generated)', () => {
+		expect(shouldSkipTemplatePath('src/generated')).toBe(false);
+		expect(shouldSkipTemplatePath('src/generated/config.ts')).toBe(false);
+		expect(shouldSkipTemplatePath('src/generated/bindings/counter/counter.ts')).toBe(false);
 		expect(shouldSkipTemplatePath('src/generated-helpers.ts')).toBe(false);
 	});
 
@@ -41,11 +49,20 @@ describe('template copy skip-set', () => {
 
 describe('template _gitignore contract', () => {
 	for (const template of ['app', 'ts'] as const) {
-		it(`templates/${template}/_gitignore ignores devstack runtime + codegen output`, () => {
+		it(`templates/${template}/_gitignore ignores devstack runtime but tracks src/generated`, () => {
 			const text = readFileSync(join(TEMPLATES, template, '_gitignore'), 'utf8');
 			expect(text).toMatch(/^node_modules\/?$/m);
 			expect(text).toMatch(/^\.devstack\/?$/m);
-			expect(text).toMatch(/src\/generated/);
+			// The committed projection tree is tracked — NOT ignored at the app root.
+			expect(text).not.toMatch(/^src\/generated\/?$/m);
+		});
+
+		it(`templates/${template} ships the committed codegen projection tree`, () => {
+			const generated = join(TEMPLATES, template, 'src', 'generated');
+			expect(existsSync(join(generated, 'config.ts'))).toBe(true);
+			expect(existsSync(join(generated, 'bindings', 'counter', 'counter.ts'))).toBe(true);
+			// The emitted in-tree `.gitignore` governs what stays tracked.
+			expect(existsSync(join(generated, '.gitignore'))).toBe(true);
 		});
 	}
 });

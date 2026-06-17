@@ -3,9 +3,11 @@ dist/
 .turbo/
 *.tsbuildinfo
 
-# Devstack runtime state and generated bindings — recreated by `devstack up` / `apply`.
+# Devstack runtime state. The committed `src/generated` projection tree is
+# tracked (its own `src/generated/.gitignore` governs what stays) so the app
+# builds on a clean checkout with no stack running; regenerate it with
+# `devstack codegen`.
 .devstack/
-src/generated/
 
 # Move build artifacts.
 move/**/build/

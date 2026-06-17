@@ -17,14 +17,20 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { describe, expect, it } from 'vitest';
 
 import { config } from '@generated/config.js';
+import { resolveActiveNetwork } from '@generated/config-runtime.js';
 import { createCounterTx, incrementTx, readCounter } from './counter.js';
 import { executedTx } from './tx.js';
 
-const net = config.networks[config.network];
+// `resolveActiveNetwork` returns the active (test) stack's connection entry
+// with a non-undefined type and a loud throw — no `config.networks[...]`
+// index-signature footgun (which would type `net` as possibly-undefined).
+const net = resolveActiveNetwork();
 
 describe('counter (local devstack)', () => {
 	it('creates a shared Counter and increments it', async () => {
-		if (net.faucet === null) throw new Error('the test stack exposes no faucet endpoint');
+		// `faucet` is optional AND nullable (`string | null | undefined`); `== null`
+		// narrows BOTH `null` and `undefined` away so the faucet host is `string`.
+		if (net.faucet == null) throw new Error('the test stack exposes no faucet endpoint');
 
 		const client = new SuiGrpcClient({
 			network: 'localnet',

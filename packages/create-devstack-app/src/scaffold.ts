@@ -69,9 +69,17 @@ const INJECTED_SDK_PACKAGES = [
 // authored templates — these must never be copied into a scaffolded app.
 const SKIP_SEGMENTS: ReadonlySet<string> = new Set(['node_modules', 'dist', '.devstack', '.turbo']);
 
-/** True if a template-relative posix path must not be copied. */
+/** True if a template-relative posix path must not be copied.
+ *
+ *  `src/generated` is COPIED, not skipped: the templates ship the committed
+ *  codegen projection tree (id-free bindings + sentinel-id config + the
+ *  emitted `src/generated/.gitignore` that tracks it), exactly like the
+ *  examples. This lets a freshly-scaffolded app `tsc`/`vite build` on a
+ *  clean checkout with no stack running — `devstack up`/`apply` no longer
+ *  write `src/generated` (codegen output moved to the gitignored `.devstack/`),
+ *  so the bindings MUST travel with the template. `move/**\/build` and
+ *  `package_summaries` are still skipped as genuine build artifacts. */
 export function shouldSkipTemplatePath(rel: string): boolean {
-	if (rel === 'src/generated' || rel.startsWith('src/generated/')) return true;
 	for (const segment of rel.split('/')) {
 		if (SKIP_SEGMENTS.has(segment)) return true;
 		if (segment.endsWith('.tsbuildinfo')) return true;

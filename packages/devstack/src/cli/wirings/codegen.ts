@@ -23,6 +23,7 @@
 // This is the same provision shape `apply` uses and compiles cleanly
 // under the strict tsconfig.
 
+import { spawnSync } from 'node:child_process';
 import { dirname, resolve as resolvePath } from 'node:path';
 
 import { Cause, Effect, Exit, Layer, Logger } from 'effect';
@@ -34,7 +35,11 @@ import type { CodegenIdResolver, CodegenableDecl } from '../../contracts/codegen
 import type { AnyPlugin } from '../../substrate/plugin.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 import { layerMystenMoveCodegen } from '../../orchestrators/codegen/bindings.ts';
-import { layerSuiMoveSummaryRunnerHost } from '../../plugins/sui/move-summary-runner.ts';
+import {
+	layerSuiMoveSummaryRunnerDocker,
+	layerSuiMoveSummaryRunnerHost,
+} from '../../plugins/sui/move-summary-runner.ts';
+import { buildSubstrateLayers } from '../../orchestrators/boot.ts';
 import {
 	layerCodegenPaths,
 	layerCodegenRoot,
@@ -48,6 +53,7 @@ import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts'
 
 import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeConfigLoader } from './config-loader.ts';
+import { identityValueFor, type ResolvedIdentity } from './identity.ts';
 
 /** Build the id-resolver the plugin `staticCodegen` hooks read. A KNOWN
  *  package carries a declared per-network literal in config — honor it;
@@ -79,6 +85,38 @@ const deriveContributions = (
 	return decls;
 };
 
+/** Which Move-summary runner the stack-free codegen verb uses.
+ *
+ *   - `host`   — invoke a local `sui` CLI on PATH directly (fast, no Docker).
+ *   - `docker` — run `sui move summary` inside the pinned Sui CLI image
+ *     (the same runner `boot.ts` wires for `up`/`apply`). Needs Docker but
+ *     NO host `sui`, which is what CI has.
+ *
+ * Selection follows `DEVSTACK_CODEGEN_RUNNER` (`docker`/`host`); when unset,
+ * auto-detect: use `host` if a `sui` binary is on PATH, else fall back to
+ * `docker`. CI never installs `sui`, so it lands on `docker` automatically;
+ * a workflow can still force it with `DEVSTACK_CODEGEN_RUNNER=docker`. */
+type CodegenRunner = 'host' | 'docker';
+
+/** True if a `sui` binary is resolvable on PATH (cheap `--version` probe). */
+const hostSuiAvailable = (): boolean => {
+	try {
+		const probe = spawnSync('sui', ['--version'], {
+			timeout: 5_000,
+			stdio: ['ignore', 'ignore', 'ignore'],
+		});
+		return probe.status === 0;
+	} catch {
+		return false;
+	}
+};
+
+const selectCodegenRunner = (): CodegenRunner => {
+	const requested = process.env['DEVSTACK_CODEGEN_RUNNER']?.trim().toLowerCase();
+	if (requested === 'docker' || requested === 'host') return requested;
+	return hostSuiAvailable() ? 'host' : 'docker';
+};
+
 /**
  * Build the codegen service layer: `CodegenPathsService` +
  * `MoveSummaryRunnerService` + `MoveCodegenService`, with the Node
@@ -86,8 +124,16 @@ const deriveContributions = (
  * `apply`'s substrate-layer provision shape — one merged layer providing
  * the services, with `Logger` supplied as a separate outer layer over the
  * program (`consolePretty` needs no FileSystem).
+ *
+ * The Move-summary runner is selected per `selectCodegenRunner`. The
+ * `host` runner only needs a child-process spawner; the `docker` runner
+ * needs the full Docker `ContainerRuntimeService`, so it provides the
+ * substrate layer stack (`buildSubstrateLayers`) UNDER it. The Docker
+ * runner produces byte-identical bindings to the host runner — it runs the
+ * SAME `sui move summary` argv, just inside the pinned CLI image — so the
+ * committed `src/generated` tree is independent of which runner emitted it.
  */
-const buildCodegenLayer = (appRoot: string) => {
+const buildCodegenLayer = (appRoot: string, runner: CodegenRunner, identity: ResolvedIdentity) => {
 	const generatedDir = resolvePath(appRoot, 'src', 'generated');
 	const platform = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 	const codegenPaths = layerCodegenPaths.pipe(
@@ -102,9 +148,16 @@ const buildCodegenLayer = (appRoot: string) => {
 			}),
 		),
 	);
-	const moveRunner = layerSuiMoveSummaryRunnerHost.pipe(
-		Layer.provideMerge(NodeChildProcessSpawner.layer),
-	);
+	const moveRunner =
+		runner === 'docker'
+			? layerSuiMoveSummaryRunnerDocker.pipe(
+					// The Docker runner only needs `ContainerRuntimeService`; the
+					// substrate layer stack provides it (along with the rest of L0).
+					// No stack containers are created — only one-shot `sui move
+					// summary` runs against the pinned CLI image.
+					Layer.provideMerge(buildSubstrateLayers(identityValueFor(identity), identity.runtimeRoot)),
+				)
+			: layerSuiMoveSummaryRunnerHost.pipe(Layer.provideMerge(NodeChildProcessSpawner.layer));
 	return Layer.mergeAll(codegenPaths, moveRunner, layerMystenMoveCodegen()).pipe(
 		Layer.provideMerge(platform),
 	);
@@ -117,6 +170,7 @@ const buildCodegenLayer = (appRoot: string) => {
  */
 export const runCodegen = (
 	configPath: string | undefined,
+	identity: ResolvedIdentity,
 ): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
@@ -130,10 +184,11 @@ export const runCodegen = (
 
 		const resolver = makeIdResolver();
 		const contributions = deriveContributions(stack.members, resolver);
+		const runner = selectCodegenRunner();
 
 		const exit = yield* Effect.exit(
 			runEmitCycle({ contributions, trackTree: true }).pipe(
-				Effect.provide(buildCodegenLayer(appRoot)),
+				Effect.provide(buildCodegenLayer(appRoot, runner, identity)),
 				Effect.provide(Logger.layer([Logger.consolePretty()])),
 			),
 		);

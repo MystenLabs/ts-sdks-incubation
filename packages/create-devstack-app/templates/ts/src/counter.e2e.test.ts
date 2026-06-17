@@ -19,10 +19,14 @@ import type { Transaction } from '@mysten/sui/transactions';
 import { describe, expect, it } from 'vitest';
 
 import { config } from '@generated/config.ts';
+import { resolveActiveNetwork } from '@generated/config-runtime.ts';
 import { createCounterTx, incrementTx, readCounter } from './counter.ts';
 import { executedTx } from './tx.ts';
 
-const net = config.networks[config.network];
+// `resolveActiveNetwork` returns the active (test) stack's connection entry
+// with a non-undefined type and a loud throw — no `config.networks[...]`
+// index-signature footgun (which would type `net` as possibly-undefined).
+const net = resolveActiveNetwork();
 
 /** Sign with `signer`, execute, wait for finality, and return the
  *  digest + created object id (via the unit-tested `executedTx`). */
@@ -42,7 +46,9 @@ async function signAndExecute(client: ClientWithCoreApi, signer: Ed25519Keypair,
 
 describe('counter (local devstack)', () => {
 	it('creates, increments, and reads back a shared Counter', async () => {
-		if (net.faucet === null) throw new Error('the test stack exposes no faucet endpoint');
+		// `faucet` is optional AND nullable (`string | null | undefined`); `== null`
+		// narrows BOTH `null` and `undefined` away so the faucet host is `string`.
+		if (net.faucet == null) throw new Error('the test stack exposes no faucet endpoint');
 
 		const client: ClientWithCoreApi = new SuiGrpcClient({
 			network: 'localnet',
