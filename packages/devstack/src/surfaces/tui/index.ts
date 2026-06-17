@@ -33,6 +33,10 @@ export interface TuiSurfaceOptions {
 	 *  `EngineCommand` invoked here. Required for `ink` mode; ignored
 	 *  for `plain` / `silent` (those modes are pure consumers). */
 	readonly publishCommand?: (command: EngineCommand) => void;
+	/** Plain-mode quiet filter — emit only readiness/endpoint/codegen
+	 *  milestones + warnings/errors instead of every event. Ignored for
+	 *  `ink` / `silent`. See {@link makePlainRenderer}. */
+	readonly quiet?: boolean;
 }
 
 /**
@@ -52,7 +56,7 @@ export const makeTuiSurface = (options: TuiSurfaceOptions = {}): Renderer => {
 		case 'silent':
 			return makeSilentRenderer();
 		case 'plain':
-			return makePlainRenderer();
+			return makePlainRenderer({ quiet: options.quiet });
 		case 'ink':
 			return makeInkRenderer({
 				publishCommand:

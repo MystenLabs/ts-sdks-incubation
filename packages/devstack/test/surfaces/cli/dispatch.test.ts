@@ -132,6 +132,12 @@ const makeHarness = (
 					return { exitCode: 0 };
 				}),
 		},
+		codegen: {
+			run: () => Effect.sync(() => ({ exitCode: 0 })),
+		},
+		dumpIds: {
+			run: () => Effect.sync(() => ({ exitCode: 0 })),
+		},
 		status: {
 			reader: { readState: () => Effect.succeed(null) },
 		},
@@ -303,7 +309,7 @@ const makeSnapshotCatalog = () => {
 				createdAt: 1_700_000_000_000,
 				app: 'app',
 				stack: 'main',
-				network: 'sui:local',
+				network: 'localnet',
 				graphInput: {
 					version: SNAPSHOT_GRAPH_INPUT_VERSION,
 					graphInputId: 'graph-fixture',
@@ -359,7 +365,7 @@ describe('dispatch', () => {
 	});
 
 	it('removed peer commands are not public routes', async () => {
-		for (const verb of ['down', 'logs', 'codegen', 'exec', 'fork', 'stack']) {
+		for (const verb of ['down', 'logs', 'exec', 'fork', 'stack']) {
 			const { deps, read } = makeHarness();
 			await run([verb], deps, { io: read().io });
 			const h = read();
@@ -670,7 +676,7 @@ describe('dispatch', () => {
 					createdAt: 1_700_000_001_000,
 					app: 'app',
 					stack: 'main',
-					network: 'sui:local',
+					network: 'localnet',
 					graphInput: {
 						version: SNAPSHOT_GRAPH_INPUT_VERSION,
 						graphInputId: 'graph-fixture',
@@ -719,6 +725,8 @@ describe('dispatch', () => {
 		expect(schema.verbs).toEqual([
 			'up',
 			'apply',
+			'codegen',
+			'dump-ids',
 			'status',
 			'doctor',
 			'config',

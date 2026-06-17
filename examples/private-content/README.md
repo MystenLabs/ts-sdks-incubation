@@ -28,10 +28,47 @@ Docker layer cache. The Playwright config bumps the test timeout to
 
 ```
 pnpm dev          # devstack up: localnet + walrus + seal + publish + wallet-app + vite (port 5170)
-pnpm test         # typecheck plus Vitest unit coverage
-pnpm test:e2e     # full Playwright run; expect a long first cycle
+pnpm codegen      # regenerate src/generated bindings after a Move source change (stack-free)
+pnpm build        # tsc -b && vite build — stack-free, no Docker; works on a clean clone
+pnpm test         # Vitest unit tests only — fast, boots nothing (no devstack, no Docker)
+pnpm test:e2e     # full Playwright Seal flow on an isolated `e2e` stack
+                  # (parallel-safe with `pnpm dev`; expect a long first cycle)
 ```
+
+`pnpm dev` injects live on-chain ids; the committed `src/generated/config.ts` (plus the
+`seal.ts` / `walrus.ts` buckets) resolves them at runtime — vault package id, Seal key-server
+url + object id, and the local Walrus node/package config all resolve at runtime and are never
+baked in. `pnpm build` is deterministic and stack-free (no Docker) — a build with no injected
+ids throws `DevstackConfigMissingError` at runtime rather than silently shipping zeros.
 
 The `e2e/seal-flow.spec.ts` spec drives the full
 `SealClient.encrypt → upload → grant → SessionKey → seal_approve →
 fetchKeys → decrypt` round trip with no mocks.
+
+## Deploy to a real network
+
+The build needs a known deployment's id-config file (the same `devstack-ids.json` schema the
+local stack writes). Either point the stack at the target network once and copy the file it
+emits, or hand-author one:
+
+```bash
+# Option A: boot against the target network, then copy the emitted id-config
+devstack up --network testnet
+cp .devstack/stacks/main/devstack-ids.json config/testnet.ids.json
+```
+
+For the full id-config schema (Option B, hand-authoring) see the canonical
+[Deploy to a real network](https://ts-sdks-incubation.vercel.app/devstack/features/codegen#deploy-to-a-real-network)
+section in the devstack docs. For this example the `values` channel carries the Seal key-server
+url/object id and the Walrus endpoints + package config. Commit the file, then point the build
+at it:
+
+```bash
+# via the Vite plugin option (vite.config.ts):
+#   devstackVitePlugin({ ids: './config/testnet.ids.json' })
+# or via env:
+DEVSTACK_IDS_FILE=./config/testnet.ids.json pnpm build
+```
+
+Then deploy the static `dist/` bundle. A build with no ids throws `DevstackConfigMissingError`
+at runtime — loud, not a silent zero.

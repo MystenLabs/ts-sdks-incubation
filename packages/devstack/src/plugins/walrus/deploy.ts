@@ -526,7 +526,7 @@ export const deployWalrusContracts = (
 						}
 						return Effect.logWarning(
 							`walrus.deploy verify probe surfaced an authoritative error (` +
-								`reason=${err.reason}, chain=${err.chain}, detail=${err.detail}); ` +
+								`reason=${err.reason}, chain=${err.chainId}, detail=${err.detail}); ` +
 								`re-deploying.`,
 						).pipe(Effect.as(null as WalrusDeployVerified | null));
 					}),

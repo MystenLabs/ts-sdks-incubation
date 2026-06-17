@@ -48,12 +48,14 @@
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
 import { dirname } from 'node:path';
 
-import type {
-	CodegenableDecl,
-	CodegenEmitDone,
-	CodegenEmitContext,
-	OutputLocation,
+import {
+	isRawExpr,
+	type CodegenableDecl,
+	type CodegenEmitDone,
+	type CodegenEmitContext,
+	type OutputLocation,
 } from '../../contracts/codegenable.ts';
+import { CONFIG_RUNTIME_OUTPUT_PATH, CONFIG_RUNTIME_SOURCE } from './config-runtime.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-and-swap/index.ts';
@@ -61,6 +63,7 @@ import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-a
 import {
 	emitBindings,
 	type EmitBindingsResult,
+	isPackageBindings,
 	MoveCodegenService,
 	MoveSummaryRunnerService,
 	type PackageBindings,
@@ -76,6 +79,8 @@ import {
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
+import { UNRESOLVED_ID } from './id-config.ts';
+import type { IdConfig, IdConfigNetwork, IdConfigPackage, IdConfigValues } from './id-config.ts';
 import { CodegenPathsService, type CodegenPaths } from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
@@ -94,6 +99,12 @@ export interface RunEmitCycleInput {
 	readonly contributions: ReadonlyArray<Codegenable>;
 	/** Optional: import-extension for bindings emission. Default `.ts`. */
 	readonly bindingsImportExtension?: '.ts' | '.js' | '';
+	/** When `true`, this is the COMMITTED projection tree (`src/generated`,
+	 *  written by the stack-free `codegen` verb): the `.gitignore` TRACKS
+	 *  the stubs (bindings, config, config-runtime) so `tsc`/`vite build`
+	 *  work on a fresh clone, ignoring only `sensitivePaths`. When
+	 *  `false`/omitted, the ephemeral tree is blanket-ignored. */
+	readonly trackTree?: boolean;
 }
 
 export interface RunEmitCycleResult {
@@ -116,6 +127,23 @@ const resolveAt = (
 
 const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
 	decl.outputLocation ?? 'generated';
+
+/** A decl belongs to the `emitExtras` flush IFF it writes ONLY into the
+ *  dev-only `generated-extras` tree. INVARIANT: `emitExtras` must NEVER
+ *  touch the committed `src/generated` tree (it runs without stage-and-swap),
+ *  so a decl that would emit any file into `generated` is excluded.
+ *
+ *  - `aggregateOnly` decls write only their aggregate file: include iff the
+ *    aggregate's location is `generated-extras` (e.g. each account folding
+ *    into the gitignored `accounts.ts`).
+ *  - standalone decls write a per-decl file (and possibly an aggregate):
+ *    include iff that standalone file lands in `generated-extras` (e.g. the
+ *    wallet's `dev-wallet.ts`). A standalone-in-`generated` decl is excluded
+ *    even if its aggregate targets `generated-extras`. */
+const isExtrasDecl = (decl: Codegenable): boolean =>
+	decl.aggregateOnly === true
+		? (decl.aggregate?.outputLocation ?? 'generated') === 'generated-extras'
+		: declLocation(decl) === 'generated-extras';
 
 const buildParentModeResolver = (
 	paths: CodegenPaths,
@@ -165,7 +193,7 @@ export const runEmitCycle = (
 > =>
 	// Per-process lock. The supervisor's serialized post-acquire path
 	// is fine for the normal lifecycle, but custom callers (CLI direct
-	// invocations, future watcher hooks) can call `runCycle`
+	// invocations, future watcher hooks) can call `runEmitCycle`
 	// concurrently. With `stageAndSwap` writing under shared
 	// `<outputDir>.staging.<cycleId>` and `<outputDir>.bak.<cycleId>`
 	// siblings — and with the pre-seed `fs.copy` reading from the
@@ -321,6 +349,7 @@ const runEmitCycleInner = (
 	FileSystem.FileSystem | MoveSummaryRunnerService | MoveCodegenService
 > =>
 	Effect.gen(function* () {
+		yield* Effect.logInfo(`codegen: emitting projection (trackTree=${input.trackTree === true}).`);
 		const fileEmitters: Array<Codegenable> = [...input.contributions];
 
 		const filesWritten: Array<string> = [];
@@ -453,12 +482,26 @@ const runEmitCycleInner = (
 		}
 
 		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta);
+		// True once any aggregate references a `config-runtime.ts` resolver
+		// (the committed `config.ts`): then we ALSO emit the fixed
+		// `config-runtime.ts` resolver and import the referenced resolvers into
+		// that file.
+		let needsConfigRuntime = false;
 		for (const aggregate of aggregateFiles) {
+			const resolvers = resolversUsedBy(aggregate.exports);
+			if (resolvers.length > 0) needsConfigRuntime = true;
 			const rendered = renderFile({
 				emitterName: aggregate.emitterName,
 				outputPath: aggregate.outputPath,
 				sensitive: aggregate.sensitive,
 				exports: aggregate.exports,
+				// The committed `config.ts` resolves ids/network at runtime —
+				// import exactly the resolvers it references (no unused imports;
+				// oxlint is pinned and flags them). `.js` specifier (ESM/TS-
+				// resolved) mirrors the bindings' import style.
+				...(resolvers.length > 0
+					? { imports: [`import { ${resolvers.join(', ')} } from './config-runtime.js';`] }
+					: {}),
 			});
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
@@ -468,6 +511,31 @@ const runEmitCycleInner = (
 				path: abs,
 				content: rendered.text,
 				mode: aggregate.sensitive ? 0o600 : 0o644,
+				parentMode: parentModeFor(abs),
+			});
+			switch (outcome.outcome) {
+				case 'wrote':
+					filesWritten.push(abs);
+					break;
+				case 'unchanged':
+					filesUnchanged.push(abs);
+					break;
+				case 'chmod-only':
+					filesChmod.push(abs);
+					break;
+			}
+		}
+
+		// Emit the FIXED `config-runtime.ts` resolver (a constant string, NOT
+		// routed through the literal renderer) when `config.ts` resolves ids
+		// at runtime. It reads the injected `__DEVSTACK_IDS__` global and
+		// THROWS `DevstackConfigMissingError` on an unresolved id.
+		if (needsConfigRuntime) {
+			const abs = yield* paths.resolve(CONFIG_RUNTIME_OUTPUT_PATH);
+			const outcome = yield* emitOne({
+				path: abs,
+				content: CONFIG_RUNTIME_SOURCE,
+				mode: 0o644,
 				parentMode: parentModeFor(abs),
 			});
 			switch (outcome.outcome) {
@@ -522,10 +590,15 @@ const runEmitCycleInner = (
 				.filter((a) => a.sensitive && a.location === 'generated')
 				.map((a) => a.outputPath),
 		];
+		// A committed projection (written by the stack-free `codegen` verb
+		// into `src/generated`) is TRACKED: the stubs are committed so
+		// `tsc`/`vite build` work on a fresh clone. Any ephemeral tree keeps
+		// the blanket ignore.
 		yield* writeGitignore({
 			path: paths.gitignoreFile,
 			sensitivePaths,
 			parentMode: parentModeFor(paths.gitignoreFile),
+			trackTree: input.trackTree === true,
 		});
 
 		return {
@@ -547,6 +620,18 @@ interface CodegenEmission {
 
 const runEmitter = (decl: Codegenable): Effect.Effect<CodegenEmission, CodegenEmitFailed> =>
 	Effect.gen(function* () {
+		// Annotate the emit span with the contributor's plugin-supplied
+		// `kind` tag (declared on the decl's `aggregate`). The orchestrator
+		// stays name-blind — it never reads the tag's VALUE or branches on it
+		// (per the `AggregateContribution` contract); wiring it here makes the
+		// otherwise-dead field observable so a trace attributes each emit to
+		// the plugin family that produced it. `annotateCurrentSpan` only lands
+		// inside an enclosing `withSpan` — the `codegen.emit` span this body is
+		// wrapped in below.
+		const kind = decl.aggregate?.kind;
+		if (kind !== undefined) {
+			yield* Effect.annotateCurrentSpan('codegen.kind', kind);
+		}
 		const exports: Record<string, unknown> = {};
 		const imports: Array<string> = [];
 		const done: CodegenEmitDone = { _tag: 'CodegenEmitDone' };
@@ -570,7 +655,7 @@ const runEmitter = (decl: Codegenable): Effect.Effect<CodegenEmission, CodegenEm
 			),
 		);
 		return { exports, imports };
-	});
+	}).pipe(Effect.withSpan('codegen.emit', { attributes: { 'codegen.emitter': decl.emitterName } }));
 
 /**
  * Uniqueness check: emitter name (literal) must be unique unless
@@ -697,7 +782,7 @@ interface AggregateFile {
  * Recursively merge `source` into `target`. Distinct buckets are
  * shallow records keyed by name, but a single bucket (e.g. `config.ts`)
  * accumulates contributions from MANY plugins into nested sub-records
- * (`networks.local` from sui, `packages.<name>` / `objects.<name>`
+ * (`networks.localnet` from sui, `packages.<name>` / `objects.<name>`
  * from each package). A shallow `Object.assign` would have the last
  * package's `{packages:{...}}` clobber the prior ones. Deep-merge so
  * sibling keys at every level coexist.
@@ -718,7 +803,12 @@ const deepMerge = (
 		if (isPlainObject(existing) && isPlainObject(value)) {
 			deepMerge(existing, value);
 		} else {
-			target[key] = value;
+			// `value` may be a decl-owned cached projection object (or array).
+			// Storing it by reference would let a sibling decl that later
+			// recurses into the same nested key mutate this decl's cache in
+			// place, leaking state across emit cycles. Deep-clone any plain
+			// object / array so the shared bucket never aliases decl state.
+			target[key] = isPlainObject(value) || Array.isArray(value) ? structuredClone(value) : value;
 		}
 	}
 };
@@ -760,21 +850,45 @@ const buildAggregateFiles = (
 
 const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').replace(/^.*\//, '');
 
-/**
- * Consumer-side shape guard: does this aggregated value look like a
- * Move-bindings contribution that `emitBindings` knows how to
- * consume? This is structural validation of the orchestrator's own
- * input contract, NOT a plugin-name match. Any plugin whose
- * `aggregate.project` returns objects with this shape will be
- * forwarded to the Move bindings emitter.
- */
-const isPackageBindings = (v: unknown): v is PackageBindings =>
-	typeof v === 'object' &&
-	v !== null &&
-	'name' in v &&
-	'packageId' in v &&
-	'mvrPlaceholder' in v &&
-	'sourcePath' in v;
+/** The config-runtime resolver names a committed `config.ts` aggregate may
+ *  reference as raw expressions. Each is imported from `./config-runtime.js`
+ *  only when the aggregate actually calls it (oxlint flags unused imports). */
+const CONFIG_RUNTIME_RESOLVERS = [
+	'resolveId',
+	'resolveNetwork',
+	'resolveNetworks',
+	'resolveValue',
+] as const;
+type ConfigRuntimeResolver = (typeof CONFIG_RUNTIME_RESOLVERS)[number];
+
+/** Recursively collect which `config-runtime.ts` resolvers an exports map
+ *  references via raw expressions — i.e. the committed `config.ts` needs each
+ *  imported + the fixed `config-runtime.ts` emitted alongside it. */
+const collectResolversInValue = (value: unknown, found: Set<ConfigRuntimeResolver>): void => {
+	if (isRawExpr(value)) {
+		for (const name of CONFIG_RUNTIME_RESOLVERS) {
+			if (value.expr.includes(`${name}(`)) found.add(name);
+		}
+		return;
+	}
+	if (Array.isArray(value)) {
+		for (const v of value) collectResolversInValue(v, found);
+		return;
+	}
+	if (isPlainObject(value)) {
+		for (const v of Object.values(value)) collectResolversInValue(v, found);
+	}
+};
+
+/** The ordered set of config-runtime resolvers an aggregate's exports use
+ *  (empty when none — the aggregate needs no resolver import). */
+const resolversUsedBy = (exports: {
+	readonly [key: string]: unknown;
+}): ReadonlyArray<ConfigRuntimeResolver> => {
+	const found = new Set<ConfigRuntimeResolver>();
+	for (const v of Object.values(exports)) collectResolversInValue(v, found);
+	return CONFIG_RUNTIME_RESOLVERS.filter((name) => found.has(name));
+};
 
 // -----------------------------------------------------------------------------
 // Service surface — registration API + emit-cycle trigger
@@ -784,8 +898,14 @@ const isPackageBindings = (v: unknown): v is PackageBindings =>
  * The codegen orchestrator's Context-bound service. The substrate's
  * supervisor calls `registerContribution(pluginKey, decl)` once per
  * `CodegenableDecl` on each plugin's `capabilities` tuple, scope-bound
- * to that plugin's acquire scope. `runCycle()` walks the registered
- * set and runs one full emit pipeline.
+ * to that plugin's acquire scope.
+ *
+ * Boot no longer runs codegen — the emit pipeline is the stack-free
+ * `devstack codegen` verb (which calls `runEmitCycle` directly off the
+ * config-derived `staticCodegen` decls). This service keeps the dispatcher
+ * seam closed: every `codegenable` contribution still has a handler, so
+ * plugins emit decls uniformly even though boot writes the id-config (not
+ * the committed tree).
  */
 export interface CodegenOrchestrator {
 	/** Register a `CodegenableDecl` from a plugin. Scope-bound — when
@@ -796,14 +916,25 @@ export interface CodegenOrchestrator {
 		decl: Codegenable,
 	) => Effect.Effect<void, never, Scope.Scope>;
 
-	/** Run one emit cycle against the currently-registered set.
-	 *  `extraContributions` are merged into the active set (callers
-	 *  that have a one-off decl not tied to a plugin scope).
-	 *  `bindingsImportExtension` mirrors `runEmitCycle`. */
-	readonly runCycle: (args?: {
-		readonly extraContributions?: ReadonlyArray<Codegenable>;
-		readonly bindingsImportExtension?: '.ts' | '.js' | '';
-	}) => Effect.Effect<
+	/** Assemble the id-config from the currently-registered (live-resolved)
+	 *  contributions. Boot calls this in its post-acquire hook to WRITE the
+	 *  id-config file (the same `networks` / `packages` / `mvrOverrides`
+	 *  data that fed `config.ts`, but as loadable JSON the Vite plugin
+	 *  injects). `network` is the active network name (`ctx.identity.network`).
+	 *  Pure projection over the registered decls — no I/O, no chain. */
+	readonly assembleIdConfig: (network: string) => Effect.Effect<IdConfig, CodegenEmitFailed>;
+
+	/** Flush ONLY the `generated-extras` contributions (the dev wallet's
+	 *  `dev-wallet.ts` + the account plugin's `accounts.ts`) to the
+	 *  gitignored `.devstack/stacks/<stack>/generated-extras` tree. These
+	 *  are acquire-resolved (can't be statically derived by the `codegen`
+	 *  verb), so boot writes them — but ONLY when the resolved network's
+	 *  `devWallet` flag is on. The committed `src/generated` tree is NEVER
+	 *  touched (no `generated`-located decl is emitted). Reuses the emit
+	 *  renderer + aggregate logic; skips the stage-and-swap of the runtime
+	 *  tree (extras live outside it). No-op (empty result) when nothing is
+	 *  routed to `generated-extras`. */
+	readonly emitExtras: () => Effect.Effect<
 		RunEmitCycleResult,
 		CodegenError,
 		FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
@@ -814,6 +945,103 @@ export class CodegenOrchestratorService extends Context.Service<
 	CodegenOrchestratorService,
 	CodegenOrchestrator
 >()('@devstack/orchestrators/Codegen') {}
+
+/**
+ * Slice the deep-merged `config.ts` aggregate bucket into the loadable
+ * `IdConfig` interchange shape. The bucket is the live codegen
+ * accumulation (sui `networks`, per-package `packages`/`objects`/
+ * `mvrOverrides`, account `accounts`); this picks the id-bearing fields
+ * the Vite plugin injects. Reads are defensive — any missing slice
+ * collapses to an empty record so a partial stack still writes a valid
+ * (if sparse) id-config.
+ */
+const idConfigFromBucket = (
+	bucket: Record<string, unknown>,
+	network: string,
+	values: IdConfigValues,
+): IdConfig => {
+	const asRecord = (v: unknown): Record<string, unknown> => (isPlainObject(v) ? v : {});
+	const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+
+	const networks: Record<string, IdConfigNetwork> = {};
+	for (const [name, raw] of Object.entries(asRecord(bucket['networks']))) {
+		const entry = asRecord(raw);
+		const rpc = asString(entry['rpc']);
+		if (rpc === undefined) continue;
+		networks[name] = {
+			rpc,
+			...(asString(entry['chainId']) !== undefined ? { chainId: asString(entry['chainId']) } : {}),
+			...(entry['faucet'] !== undefined ? { faucet: asString(entry['faucet']) ?? null } : {}),
+			...(entry['graphql'] !== undefined ? { graphql: asString(entry['graphql']) ?? null } : {}),
+		};
+	}
+
+	const packages: Record<string, IdConfigPackage> = {};
+	for (const [name, raw] of Object.entries(asRecord(bucket['packages']))) {
+		const entry = asRecord(raw);
+		// The active-network id is `packageId` (convenience field the package
+		// projection sets = `byNetwork[activeNetwork]`). An empty/missing
+		// packageId maps to the UNRESOLVED_ID sentinel — an empty string would
+		// slip past `isUnresolvedId` and ship as a real, resolved id.
+		const rawId = asString(entry['packageId']);
+		const id = rawId === undefined || rawId === '' ? UNRESOLVED_ID : rawId;
+		const objectsRaw = asRecord(entry['objects']);
+		const objects: Record<string, string> = {};
+		for (const [k, v] of Object.entries(objectsRaw)) {
+			const s = asString(v);
+			if (s !== undefined) objects[k] = s;
+		}
+		packages[name] = {
+			id,
+			...(Object.keys(objects).length > 0 ? { objects } : {}),
+		};
+	}
+
+	const accounts: Record<string, string> = {};
+	for (const [name, v] of Object.entries(asRecord(bucket['accounts']))) {
+		// Account bindings are an object keyed by name; the injectable id is
+		// the `address`. Tolerate a bare string too (a pinned known-config).
+		const address = asString(v) ?? asString(asRecord(v)['address']);
+		if (address !== undefined) accounts[name] = address;
+	}
+
+	const mvrOverrides: Record<string, string> = {};
+	for (const [mvr, v] of Object.entries(asRecord(bucket['mvrOverrides']))) {
+		const s = asString(v);
+		if (s !== undefined) mvrOverrides[mvr] = s;
+	}
+
+	// The active `network` field MUST be a key present in `networks` — the
+	// committed `config-runtime.ts` `resolveActiveNetwork()` does
+	// `resolveNetworks()[network]`, and the Vite dev-wallet injection reads
+	// `networks[network].rpc`. The `network` PARAM is the identity's network
+	// name (e.g. `"testnet-fork"`), but the sui binding keys the `networks`
+	// map by what it emitted (`"localnet"` for every mode). So PREFER the
+	// network the binding stamped into the bucket (`bucket['network']`, which
+	// matches the `networks` key); fall back to the param, then — if neither
+	// is a known key but exactly one network exists — that sole key. This
+	// keeps `network` in agreement with `networks` so resolution never
+	// dereferences `undefined`.
+	const networkKeys = Object.keys(networks);
+	const bucketNetwork = asString(bucket['network']);
+	const activeNetwork =
+		bucketNetwork !== undefined && networkKeys.includes(bucketNetwork)
+			? bucketNetwork
+			: networkKeys.includes(network)
+				? network
+				: networkKeys.length === 1
+					? networkKeys[0]!
+					: (bucketNetwork ?? network);
+
+	return {
+		network: activeNetwork,
+		networks,
+		packages,
+		accounts,
+		mvrOverrides,
+		...(Object.keys(values).length > 0 ? { values } : {}),
+	};
+};
 
 interface RegisteredCodegenEntry {
 	readonly pluginKey: string;
@@ -840,21 +1068,98 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				);
 			}) as Effect.Effect<void, never, Scope.Scope>;
 
-		const runCycle: CodegenOrchestrator['runCycle'] = (args) =>
+		const assembleIdConfig: CodegenOrchestrator['assembleIdConfig'] = (network) =>
 			Effect.gen(function* () {
 				const registered = (yield* Ref.get(contributionsRef)).map((e) => e.decl);
-				const merged: ReadonlyArray<Codegenable> = args?.extraContributions
-					? [...registered, ...args.extraContributions]
-					: registered;
-				return yield* runEmitCycle({
-					contributions: merged,
-					bindingsImportExtension: args?.bindingsImportExtension,
-				});
+				// Deep-merge every contribution's `config.ts` aggregate
+				// projection into ONE bucket — the SAME accumulation the live
+				// codegen cycle performed (sui's `networks.<net>` + each
+				// package's `packages.<name>` / `objects` / `mvrOverrides`,
+				// the account plugin's `accounts`). The merged bucket carries
+				// real (live-`acquire`-resolved) ids; we then slice it into the
+				// loadable `IdConfig` shape.
+				const bucket: Record<string, unknown> = {};
+				// `accounts.ts` is a SEPARATE aggregate bucket (the account
+				// plugin routes it to `generated-extras`); fold its projection
+				// under an `accounts` key so the id-config carries account
+				// addresses alongside the `config.ts`-derived ids.
+				const accounts: Record<string, unknown> = {};
+				// The generic resolver channel — `values[namespace][key]` —
+				// accumulated from any LIVE config-binding aggregate that
+				// declared `idConfigValues` (the plugin live JSON the typed
+				// fields can't carry). Deep-merged so sibling namespaces /
+				// keys from distinct plugins coexist.
+				const values: Record<string, unknown> = {};
+				for (const decl of registered) {
+					if (decl.aggregate === undefined) continue;
+					// The generic `values` channel is BUCKET-BLIND: any LIVE
+					// config-binding aggregate (config.ts, coins.ts, deepbook.ts,
+					// walrus.ts, seal.ts, ...) may declare `idConfigValues`. Fold
+					// every contributor's so the committed-tree `resolveValue` calls
+					// those buckets emit resolve at app build/dev time -- not just the
+					// `config.ts` plugins'. Slicing the TYPED id-config fields
+					// (`networks` / `packages` / `mvrOverrides`) stays scoped to the
+					// `config.ts` bucket below.
+					if (decl.aggregate.idConfigValues !== undefined) {
+						deepMerge(values, decl.aggregate.idConfigValues);
+					}
+					if (decl.aggregate.bucket === 'config.ts') {
+						const emission = yield* runEmitter(decl);
+						const projected = decl.aggregate.project(emission.exports);
+						if (projected !== null) deepMerge(bucket, projected);
+					} else if (decl.aggregate.bucket === 'accounts.ts') {
+						const emission = yield* runEmitter(decl);
+						const projected = decl.aggregate.project(emission.exports);
+						if (projected !== null) deepMerge(accounts, projected);
+					}
+				}
+				bucket['accounts'] = accounts;
+				return idConfigFromBucket(bucket, network, values as IdConfigValues);
+			});
+
+		const emitExtras: CodegenOrchestrator['emitExtras'] = () =>
+			Effect.gen(function* () {
+				const registered = (yield* Ref.get(contributionsRef)).map((e) => e.decl);
+				const extras = registered.filter(isExtrasDecl);
+				if (extras.length === 0) {
+					// Nothing routed to the dev tree (no wallet/accounts mounted).
+					return { filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null };
+				}
+				// Validate the extras-only set up front (mirrors `runEmitCycle`'s
+				// pre-flight), then emit DIRECTLY against the real paths — no
+				// stage-and-swap, since the extras tree lives outside the runtime
+				// `outputDir`. Every `generated-extras` decl routes through
+				// `paths.resolveExtras`; no `generated`-located decl is present,
+				// so the committed `src/generated` tree is untouched.
+				yield* validateUniqueness(extras);
+				yield* validateAggregatePathAvailability(extras);
+				const paths = yield* CodegenPathsService;
+				// Acquire the dedicated `codegenLockFile` for symmetry with
+				// `runEmitCycle` — the extras emit writes into the shared stack
+				// tree (`generated-extras`) and a concurrent codegen cycle could
+				// otherwise interleave. Scoped so the lock releases when the emit
+				// completes (or fails).
+				return yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* acquireStackLock(paths.codegenLockFile, CODEGEN_CYCLE_LOCK_TIMEOUT_MS).pipe(
+							Effect.mapError(
+								(cause) =>
+									new CodegenWriteFailed({
+										outputPath: paths.codegenLockFile,
+										stage: 'write',
+										cause,
+									}),
+							),
+						);
+						return yield* runEmitCycleInner({ contributions: extras, trackTree: false }, paths);
+					}),
+				);
 			});
 
 		return CodegenOrchestratorService.of({
 			registerContribution,
-			runCycle,
+			assembleIdConfig,
+			emitExtras,
 		});
 	}),
 );

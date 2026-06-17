@@ -53,7 +53,7 @@ const cluster = defineModeNamespace({
 // Local-mode stack: keyval service + cluster service (local factory).
 // The cluster service depends on the `keyval` resource — the keyval service provides it.
 
-const localNetwork: NetworkConfig<'local'> = { mode: 'local', chain: 'demo:local' };
+const localNetwork: NetworkConfig<'local'> = { mode: 'local', chainId: 'demo:local' };
 
 export const localStack = defineDevstackWith(
 	{ network: localNetwork, stackName: 'complex-local' },
@@ -81,7 +81,7 @@ const resourceRefConsumer = definePlugin({
 	dependsOn: { sui: suiExternal },
 	role: 'service',
 	section: 'service',
-	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
+	start: ({ sui }) => Effect.succeed({ chain: sui.chainId } as const),
 });
 
 export const recursiveSuiDependencyStack = defineDevstack({
@@ -111,7 +111,7 @@ export const missingDep = defineDevstack({
 
 const forkNetwork: NetworkConfig<'fork'> = {
 	mode: 'fork',
-	chain: 'demo:fork@1',
+	chainId: 'demo:fork@1',
 	checkpoint: '1',
 };
 

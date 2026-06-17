@@ -55,7 +55,7 @@ const CHAIN = 'sui:e2e-action-test';
 const identity: Identity = {
 	app: appName('e2e-action'),
 	stack: stackName('main'),
-	chain: CHAIN,
+	network: 'e2e-action-test',
 };
 
 // `mkdtempSync` at module top-level (rather than per-`it`) because

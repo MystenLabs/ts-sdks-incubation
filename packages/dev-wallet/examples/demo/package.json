@@ -10,19 +10,19 @@
 	},
 	"dependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:^",
-		"@mysten/dapp-kit-react": "^2.0.1",
-		"@mysten/sui": "^2.9.1",
+		"@mysten/dapp-kit-react": "catalog:",
+		"@mysten/sui": "catalog:",
 		"@nanostores/react": "^1.0.0",
-		"react": "^19.2.3",
-		"react-dom": "^19.2.3"
+		"react": "catalog:",
+		"react-dom": "^19.2.7"
 	},
 	"devDependencies": {
-		"@tailwindcss/vite": "^4.0.0",
-		"@types/react": "^19.2.8",
+		"@tailwindcss/vite": "^4.3.1",
+		"@types/react": "^19.2.17",
 		"@types/react-dom": "^19.2.3",
-		"@vitejs/plugin-react": "^5.1.2",
-		"tailwindcss": "^4.1.18",
-		"typescript": "^5.9.3",
-		"vite": "^7.3.1"
+		"@vitejs/plugin-react": "catalog:",
+		"tailwindcss": "catalog:",
+		"typescript": "catalog:",
+		"vite": "catalog:"
 	}
 }

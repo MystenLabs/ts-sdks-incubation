@@ -13,8 +13,8 @@ export type ChainProbeMode = 'lenient' | 'strict';
 
 /** Capability-key constructor — chain-probes are dispatched through
  *  the StrategyContributor registry by this key shape. */
-export const chainProbeCapabilityKey = (chain: string): `chain-probe:${string}` =>
-	`chain-probe:${chain}`;
+export const chainProbeCapabilityKey = (chainId: string): `chain-probe:${string}` =>
+	`chain-probe:${chainId}`;
 
 /**
  * Plugin-typed read interface. `Key` is the chain's native id
@@ -42,6 +42,6 @@ export interface ChainProbe<Key> {
 export interface ChainProbeError {
 	readonly _tag: 'ChainProbeError';
 	readonly reason: 'decode-failed' | 'not-found' | 'transient' | 'no-probe-registered';
-	readonly chain: string;
+	readonly chainId: string;
 	readonly detail: string;
 }

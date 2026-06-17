@@ -55,7 +55,8 @@ import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 
-import { makeCodegenable } from './codegen.ts';
+import { makeCodegenable, makeWalrusStaticCodegen } from './codegen.ts';
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import { walrusPluginKey } from './plugin-key.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { makeWalFaucetContribution, type WalFaucetStrategy } from './faucet-strategy.ts';
@@ -80,7 +81,8 @@ import { buildWalrusNetworkName, type WalrusStorageNode } from './storage-nodes.
 /** The Walrus resolved value carried by the resource. */
 export interface WalrusResolved {
 	readonly mode: 'local' | 'known';
-	readonly chain: string;
+	/** Network name the walrus deployment targets (`localnet`/`testnet`/…). */
+	readonly network: string;
 	readonly walrusPackageId: string | null;
 	readonly walPackageId: string | null;
 	/** SDK-ready `packageConfig` — structurally compatible with
@@ -145,6 +147,10 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 		role: 'service',
 		section: 'service',
 		pluginKey: walrusKey,
+		// Stack-free codegen: a local walrus cluster's deploy ids / endpoint
+		// URLs are LOADED CONFIG DATA -- the committed `walrus.ts` stub emits
+		// `resolveValue('walrus', '<key>')`, never a baked object id / URL.
+		staticCodegen: () => [makeWalrusStaticCodegen({ mode: 'local', network: LOCAL_NETWORK_NAME })],
 		// `deps` auto-infers the resolved `[sui]` tuple from the
 		// `[suiResource] as const` dependency. `ctx` arrives via the
 		// `PluginContext` service.
@@ -169,7 +175,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 				const stackPaths = yield* StackPathsService;
 				const path = yield* Path.Path;
 				const publisher = yield* CacheService;
-				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chainId);
 
 				// Resolve the deploy-output bind-mount source from the
 				// per-stack paths bundle. The deploy one-shot owns preparing
@@ -229,7 +235,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						publisher,
 						probe,
 						suiSdk: sui.sdk,
-						suiChainId: sui.chain,
+						suiChainId: sui.chainId,
 						suiRpcUrlInNetwork,
 						walrusFaucetUrlInNetwork,
 						waitForFundsReady: sui.waitForTransactionsReady.wait,
@@ -255,7 +261,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 
 				const resolvedValue: WalrusResolved = {
 					mode: 'local',
-					chain: sui.chain,
+					network: identity.network,
 					walrusPackageId: boot.walrusPackageId,
 					walPackageId: boot.walPackageId,
 					packageConfig: {
@@ -290,12 +296,12 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						identity.app,
 						identity.stack,
 						resolved.name,
-						resolvedValue.chain,
+						resolvedValue.network,
 						resolved.nodeCount,
 					),
 					makeCodegenable({
 						mode: 'local',
-						chain: resolvedValue.chain,
+						network: resolvedValue.network,
 						walrusPackageId: resolvedValue.walrusPackageId,
 						walPackageId: resolvedValue.walPackageId,
 						walCoinType: resolvedValue.walCoinType,
@@ -344,8 +350,32 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 		// no long-running children.
 		role: 'task',
 		section: 'service',
+		// Stack-free codegen: a known deployment's ids / URLs are DECLARED
+		// config (not loaded-at-runtime data) — bake them as literals in the
+		// committed `walrus.ts` (mirrors `knownPackage`). `walrusPackageId` /
+		// `walPackageId` / `walCoinType` are null for a known deployment.
+		staticCodegen: () => [
+			makeWalrusStaticCodegen({
+				mode: 'known',
+				network: resolved.network,
+				known: {
+					walrusPackageId: null,
+					walPackageId: null,
+					walCoinType: null,
+					packageConfig: {
+						systemObjectId: resolved.systemObjectId,
+						stakingPoolId: resolved.stakingPoolId,
+						...(resolved.exchangeIds.length > 0 ? { exchangeIds: [...resolved.exchangeIds] } : {}),
+					},
+					proxyUrl: resolved.proxyUrl,
+					aggregatorUrl: resolved.aggregatorUrl,
+					publisherUrl: resolved.publisherUrl,
+					nodes: resolved.nodes,
+				},
+			}),
+		],
 		// Known mode is a pure value-producer — `sui` is unused (the value
-		// reads `resolved.chain` from the deployment options) but the
+		// reads `resolved.network` from the deployment options) but the
 		// `dependsOn` edge still orders boot, so `start` is zero-arg.
 		// `ctx` arrives via the `PluginContext` service.
 		start: () =>
@@ -354,7 +384,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 				const identity = yield* IdentityContext;
 				const resolvedValue = {
 					mode: 'known',
-					chain: resolved.chain,
+					network: resolved.network,
 					walrusPackageId: null,
 					walPackageId: null,
 					packageConfig: {
@@ -378,13 +408,13 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 						identity.app,
 						identity.stack,
 						'walrusKnownDeployment',
-						resolvedValue.chain,
+						resolvedValue.network,
 					),
 				);
 				ctx.codegen(
 					makeCodegenable({
 						mode: 'known',
-						chain: resolvedValue.chain,
+						network: resolvedValue.network,
 						walrusPackageId: resolvedValue.walrusPackageId,
 						walPackageId: resolvedValue.walPackageId,
 						walCoinType: resolvedValue.walCoinType,
@@ -406,7 +436,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 						name: 'walrusKnownDeployment',
 						systemObjectId: resolvedValue.packageConfig.systemObjectId,
 						stakingObjectId: resolvedValue.packageConfig.stakingPoolId,
-						chain: resolvedValue.chain,
+						network: resolvedValue.network,
 					},
 					autoMounted: true,
 				} satisfies StrategyContributorDecl<typeof WALRUS_STATE_REGISTRY_KEY, WalrusStateEntry>);
@@ -470,7 +500,7 @@ export const walrus = (opts?: { readonly local?: WalrusLocalClusterOptions }) =>
 /** Mode-narrowed factory namespace.
  *
  *  Usage:
- *      const network = { mode: 'local', chain: 'sui:localnet' } as const;
+ *      const network = { mode: 'local', network: 'localnet' } as const;
  *      walrusFor(network).local({...})    // OK
  *      walrusFor(network).known({...})    // type error: 'known' not in 'local' branch
  *

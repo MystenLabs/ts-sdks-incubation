@@ -89,12 +89,12 @@ export interface SuiClient {
 		readonly faucetUrl: string | null;
 		readonly graphqlUrl: string | null;
 	};
-	/** Chain identity — the substrate's content-addressed cache folds
-	 *  this into its keys (`(namespace, chain, contentHash)`) so
-	 *  on-chain artifacts re-derive when the chain is wiped. A plain
-	 *  string value handed directly to `chainProbeCapabilityKey(chain)`
-	 *  / `faucetCapabilityKey(chain)`. */
-	readonly chain: string;
+	/** Genesis-digest chain identifier — the substrate's content-addressed
+	 *  cache folds this into its keys (`(namespace, chainId, contentHash)`)
+	 *  so on-chain artifacts re-derive when the chain is wiped. A plain
+	 *  string value handed directly to `chainProbeCapabilityKey(chainId)`
+	 *  / `faucetCapabilityKey(chainId)`. NOT the network name. */
+	readonly chainId: string;
 	/** Mode-aware funds-transferable gate; trivially-succeeding on
 	 *  faucet-less networks. */
 	readonly waitForTransactionsReady: WaitForTransactionsReady;

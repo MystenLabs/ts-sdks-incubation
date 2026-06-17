@@ -66,7 +66,7 @@ export type CoinAddressForm =
 export interface CoinAcquireContext {
 	readonly registry: CoinRegistry;
 	readonly sdk: MetadataSdkShim & MintSdkShim;
-	readonly chain: string;
+	readonly chainId: string;
 	readonly publisher: ArtifactPublisher;
 }
 
@@ -164,7 +164,7 @@ export const acquireCoin = (
 				recipient: opts.to,
 				amount: opts.amount,
 			};
-			return performMint(ctx.publisher, ctx.chain, signer, ctx.sdk, inputs);
+			return performMint(ctx.publisher, ctx.chainId, signer, ctx.sdk, inputs);
 		};
 		const fundingSigner = form.kind === 'witness' ? form.fundingSigner : undefined;
 		const fundingTreasuryCapId = resolved.treasuryCapId;

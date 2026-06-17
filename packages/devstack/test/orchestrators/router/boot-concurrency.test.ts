@@ -82,7 +82,7 @@ const upstreamsLayer = Layer.succeed(UpstreamResolverService)({
 const identity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: 'sui:localnet',
+	network: 'localnet',
 };
 const identityLayer = layerIdentity(identity);
 

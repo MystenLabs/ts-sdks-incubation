@@ -21,12 +21,12 @@
 //   - `kind: '<plugin-key>'` — string literal, identifies the plugin so
 //     two plugins can't accidentally write the same identity row.
 //   - additional string-valued fields describe the identity scope
-//     (chain, name, app, stack — only what the plugin's restore-side
+//     (chainId, name, app, stack — only what the plugin's restore-side
 //     guard needs to compare).
 //
 // Example shapes (see `plugins/{sui,seal,account,wallet}/snapshot.ts`):
 //
-//   { kind: 'sui-chain', chain: 'sui:testnet' }
+//   { kind: 'sui-chain', chainId: 'sui:testnet' }
 //   { kind: 'seal', name: 'default' }
 //   { kind: 'account-secret', account: 'alice', app: 'demo', stack: 'main' }
 //   { kind: 'wallet-pairing-token' }

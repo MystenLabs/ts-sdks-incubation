@@ -41,7 +41,7 @@ import type { StrategyContributorDecl } from '../../src/contracts/strategy-contr
 const identity: Identity = {
 	app: appName('frame-equiv-app'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 // -----------------------------------------------------------------------------

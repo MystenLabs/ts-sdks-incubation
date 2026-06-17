@@ -16,22 +16,35 @@
 // via dApp Kit (`useCurrentWallet().accounts`), so it reflects whatever
 // accounts the active wallet exposes in any build.
 //
-// `coins.managed_coin.{treasuryCapId, metadataId, fullCoinType}` are populated
-// by coin auto-discovery on every publish; the generated key follows the
-// witness struct name.
+// `coins.managed_coin.{fullCoinType, packageId}` are emitted by the generated
+// (stack-free) coin table; the discovery-only object ids (`treasuryCapId` /
+// `metadataId`) are NON-DETERMINISTIC — they are only known after a live
+// publish, so the committed table omits them and they are resolved at runtime
+// from the injected ids' generic `values` channel (`coin:managed_coin`). The
+// generated key follows the witness struct name.
 
 import { coins } from '@generated/coins.js';
+import { resolveValueOptional } from '@generated/config-runtime.js';
 
 const studio = coins.managed_coin;
+
+// Resolve a discovery-only coin object id from the injected ids, tolerating
+// absence: a build with no injected ids (or a coin not yet published) yields
+// `''`, which the UI gates on (`isDeployed`, query `enabled`). The non-throwing
+// `resolveValueOptional` returns `undefined` for these optional ids; the hard
+// `DevstackConfigMissingError` from the typed resolvers stays loud for the
+// load-bearing fields (rpc, package ids).
+const discoveryId = (key: string): string =>
+	resolveValueOptional<string>('coin:managed_coin', key) ?? '';
 
 export const deployment = {
 	// Display-only: the published package id (header/footer + deployed gate).
 	packageId: studio?.packageId ?? '0x0',
 	// Coin TYPE string — sourced from generated coin config, never concatenated.
 	managedCoinType: studio?.fullCoinType ?? '',
-	// Known objects, sourced from coin auto-discovery.
-	treasuryCapId: studio?.treasuryCapId ?? '',
-	metadataId: studio?.metadataId ?? '',
+	// Known objects, sourced from coin auto-discovery (runtime-resolved).
+	treasuryCapId: discoveryId('treasuryCapId'),
+	metadataId: discoveryId('metadataId'),
 } as const;
 
 export const isDeployed: boolean = (deployment.packageId as string) !== '0x0';

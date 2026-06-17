@@ -23,10 +23,12 @@ export type NetworkMode = keyof DevstackNetworkModeRegistry & string;
 export type NetworkConfig<Mode extends NetworkMode = NetworkMode> = Readonly<
 	{
 		readonly mode: Mode;
-		/** Chain identity the plugin uses for cache-key folding, ChainProbe
-		 *  dispatch, etc. A plain string value: downstream lookups
-		 *  (chain-probe / faucet capability keys) key on it directly. */
-		readonly chain: string;
+		/** Genesis-digest chain identifier (the node's real chain id, fetched
+		 *  via `fetchChainId`) the plugin folds into cache keys + `ChainProbe`
+		 *  / faucet capability keys — unique per spun-up network so two
+		 *  same-named localnets never share a cache namespace. NOT the network
+		 *  name (that is the substrate `Identity.network`). */
+		readonly chainId: string;
 		/** Source provenance for renderer display. */
 		readonly source?: 'cli' | 'env' | 'config' | 'default';
 	} & DevstackNetworkModeRegistry[Mode]

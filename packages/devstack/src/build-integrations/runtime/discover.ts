@@ -12,10 +12,13 @@
 //      semantics as the env var, one rung lower.
 //   3. Walk up from `opts.cwd ?? process.cwd()`. At each directory,
 //      check `<stateDir>/stacks/<stack>/manifest.json`. Build
-//      integrations resolve `<stack>` from explicit option, then
-//      `DEVSTACK_STACK`, then `main`; package metadata is app identity,
-//      not an implicit manifest stack selector. The walk stops at the
-//      filesystem root.
+//      integrations resolve `<stack>` with the same ladder as the CLI's
+//      `resolveStackName`: explicit option, then `DEVSTACK_STACK`, then
+//      the nearest package.json `name` above the walk-up start, then
+//      `main`. The package rung exists because `devstack up` in a bare
+//      app names the stack after the package — without it, discovery
+//      (and therefore `pnpm test`) would look for a `main` manifest the
+//      supervisor never wrote. The walk stops at the filesystem root.
 //
 // Stack-scoped ONLY. The supervisor writes to
 // `<stateDir>/stacks/<stack>/manifest.json` exclusively; a hit at a
@@ -45,10 +48,20 @@ import { inferPackageNameFromCwd, readPackageName } from '../../api/inference-ne
  *  shared-resolver default so this module's public surface is stable. */
 export const DEFAULT_STATE_DIR = DEFAULT_DISCOVERY_STATE_DIR;
 
-/** Default stack name when neither `opts.stack` nor `$DEVSTACK_STACK`
- *  yields a useful value. */
+/** Default stack name when neither `opts.stack`, `$DEVSTACK_STACK`,
+ *  nor the package-name walk-up yields a useful value. */
 export const DEFAULT_STACK = DEFAULT_DISCOVERY_STACK;
 
+/** Explicit > `$DEVSTACK_STACK` > `'main'` — deliberately WITHOUT the
+ *  package-name rung (no `cwd`). The sole production caller is the
+ *  cold-start URL path (`cold-start-url.ts`), where package metadata
+ *  supplies the APP name; deriving the stack from it too would double
+ *  the package name into every minted hostname
+ *  (`<service>.<pkg>.<pkg>.localhost`) — a separate decision, pinned by
+ *  the cold-start tests. Manifest discovery, which must agree with the
+ *  CLI about which stack a bare app runs, goes through
+ *  `discoverManifestPath` below, which threads its walk-up cwd into the
+ *  package rung. */
 export const resolveBuildIntegrationStack = (
 	explicit: string | undefined,
 	env: Readonly<Record<string, string | undefined>> = process.env,
@@ -62,7 +75,9 @@ export interface DiscoverManifestPathOptions {
 	/** Starting directory for the walk-up. Defaults to
 	 *  `process.cwd()`. */
 	readonly cwd?: string;
-	/** Stack name. Defaults through `$DEVSTACK_STACK`, then `'main'`. */
+	/** Stack name. Defaults through `$DEVSTACK_STACK`, then the nearest
+	 *  package.json `name` above `cwd` (the CLI's stack-inference rung),
+	 *  then `'main'`. */
 	readonly stack?: string;
 	/** State-dir name. Defaults through `$DEVSTACK_RUNTIME_ROOT`, then
 	 *  `$DEVSTACK_STATE_DIR`, then `'.devstack'` (see
@@ -133,6 +148,9 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 	const { stack, stateDir } = resolveDiscoveryEnv(env, {
 		...(opts.stack !== undefined ? { stack: opts.stack } : {}),
 		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
+		// Package-name rung: infer from the same dir the manifest walk-up
+		// starts at, so "which stack" and "where to look" always agree.
+		cwd: startDir,
 	});
 	// An absolute `stateDir` / `DEVSTACK_RUNTIME_ROOT` pins the state
 	// root, so the cwd walk-up is meaningless — `path.join` would also

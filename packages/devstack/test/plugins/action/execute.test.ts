@@ -151,7 +151,7 @@ const makeFakeSui = (): SuiClient => {
 			faucetUrl: null,
 			graphqlUrl: null,
 		},
-		chain: 'sui:e2e-action-test',
+		chainId: 'sui:e2e-action-test',
 		waitForTransactionsReady: {
 			wait: Effect.void as never,
 			invalidate: Effect.void,

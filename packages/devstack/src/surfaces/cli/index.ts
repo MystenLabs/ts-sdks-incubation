@@ -54,9 +54,31 @@ export interface LifecycleCommandDeps {
 	readonly run: (flags: GlobalFlags) => Effect.Effect<CommandResult, CliError>;
 }
 
+/** The stack-free `codegen` verb takes only a config path — it boots no
+ *  stack, so it needs no renderer/snapshot/identity flags. */
+export interface CodegenCommandDeps {
+	readonly run: (flags: {
+		readonly configPath: string | undefined;
+	}) => Effect.Effect<CommandResult, CliError>;
+}
+
+/** `dump-ids` emits the stack's `devstack-ids.json` id-config. It owns
+ *  its own output (file via `--out`, else stdout), so it receives `io`
+ *  and the resolved `outputMode` alongside the config path + destination. */
+export interface DumpIdsCommandDeps {
+	readonly run: (flags: {
+		readonly configPath: string | undefined;
+		readonly out: string | undefined;
+		readonly io: CliIO;
+		readonly outputMode: OutputMode;
+	}) => Effect.Effect<CommandResult, CliError>;
+}
+
 export interface CliDeps {
 	readonly up: LifecycleCommandDeps;
 	readonly apply: LifecycleCommandDeps;
+	readonly codegen: CodegenCommandDeps;
+	readonly dumpIds: DumpIdsCommandDeps;
 	readonly status: StatusDeps;
 	readonly snapshot: SnapshotDeps;
 	readonly prune: PruneDeps;
@@ -173,6 +195,10 @@ interface UpFlags extends ConfigFlags {
 	readonly fromSnapshot?: string;
 	readonly snapshotCache?: string;
 	readonly snapshotStale?: SnapshotStalePolicy;
+}
+
+interface DumpIdsFlags extends ConfigFlags {
+	readonly out?: string;
 }
 
 interface DestructiveFlags extends IdentityFlags {
@@ -501,6 +527,40 @@ const applyCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
 	},
 });
 
+const codegenCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
+	parameters: { flags: configFlagParams },
+	docs: {
+		brief: 'Regenerate committed bindings from Move source (no stack boot)',
+	},
+	func: function (flags) {
+		return runWithFlags(this, 'codegen', flags, [], (global) =>
+			this.deps.codegen.run({ configPath: global.configPath }),
+		);
+	},
+});
+
+const dumpIdsCommand = buildCommand<DumpIdsFlags, [], DevstackCliContext>({
+	parameters: {
+		flags: {
+			...configFlagParams,
+			out: stringFlag('Write the id-config JSON to this file instead of stdout', 'path'),
+		},
+	},
+	docs: {
+		brief: 'Emit the stack id-config (devstack-ids.json) for a real-network deploy',
+	},
+	func: function (flags) {
+		return runWithFlags(this, 'dump-ids', flags, [], (global) =>
+			this.deps.dumpIds.run({
+				configPath: global.configPath,
+				out: flags.out,
+				io: this.io,
+				outputMode: global.outputMode,
+			}),
+		);
+	},
+});
+
 const statusCommand = buildCommand<IdentityFlags, [], DevstackCliContext>({
 	parameters: { flags: identityFlagParams },
 	docs: { brief: 'Show the current stack projection (offline: from the manifest)' },
@@ -655,6 +715,8 @@ const root = buildRouteMap({
 	routes: {
 		up: upCommand,
 		apply: applyCommand,
+		codegen: codegenCommand,
+		dumpIds: dumpIdsCommand,
 		status: statusCommand,
 		doctor: doctorCommand,
 		config: configCommand,

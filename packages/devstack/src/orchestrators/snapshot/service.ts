@@ -432,7 +432,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								label: snapshotName,
 								app: identity.app,
 								stack: identity.stack,
-								network: identity.chain,
+								network: identity.network,
 								graphInput,
 								runtimeStackRoot: paths.stackRoot,
 								participants: effectiveParticipants,
@@ -504,7 +504,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 							runtimeIdentity: {
 								app: identity.app,
 								stack: identity.stack,
-								network: identity.chain,
+								network: identity.network,
 							},
 							...(currentGraphInput === undefined ? {} : { currentGraphInput }),
 							...(graphInputMismatchPolicy === undefined ? {} : { graphInputMismatchPolicy }),

@@ -1,0 +1,28 @@
+node_modules/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+*.log
+
+# Local environment
+.env
+.env.local
+.env.*.local
+*.local
+
+# Devstack runtime state. The committed `src/generated` projection tree is
+# tracked (its own `src/generated/.gitignore` governs what stays) so the app
+# builds on a clean checkout with no stack running; regenerate it with
+# `devstack codegen`.
+.devstack/
+
+# Move build artifacts.
+move/**/build/
+move/**/package_summaries/
+*.mv
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

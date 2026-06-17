@@ -62,12 +62,13 @@ export const app = hostService({
 export default defineDevstack({
 	members: [localnet, app],
 	stackName: 'main',
-	codegen: { outputDir: 'src/generated' },
 });
 ```
 
 Add a Vite config. The stack passes the allocated port through the `hostService` command, and
-`devstackVitePlugin()` wires the `@generated` alias to the active stack's codegen output.
+`devstackVitePlugin()` wires the `@generated` alias. The alias is static — it always resolves to the
+committed `src/generated` tree, regardless of which stack is active; only the on-chain ids injected
+into that tree vary per stack.
 
 ```ts title="vite.config.ts"
 import react from '@vitejs/plugin-react';
@@ -77,40 +78,40 @@ import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
 export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
 ```
 
-The generated files are importable from application code through the `@generated` alias. For
-dapp-kit wiring, consume the generated config file and the generated Sui network file:
+The generated files are importable from application code through the `@generated` alias. The
+generated config is a flat set of buckets — the active network and the package MVR overrides both
+live in the single `config.ts` bucket. Wire dapp-kit from `@generated/config.js` (the typed config
+object) and `@generated/config-runtime.js` (the loud-failing id resolvers). The dev wallet is
+**not** wired in app code: in dev the devstack Vite plugin injects it on the page and dApp Kit
+auto-discovers it via wallet-standard, and a production build carries no dev wallet.
 
 ```ts title="src/dapp-kit.ts"
 import { createDAppKit } from '@mysten/dapp-kit-react';
-import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
-import { DevstackSignerAdapter, parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { dappKitConfig } from '@generated/dapp-kit/config.js';
-import { suiNetwork } from '@generated/sui/network.js';
+import { config } from '@generated/config.js';
+import { resolveActiveNetwork } from '@generated/config-runtime.js';
+
+const devstackNetwork = 'localnet' as const;
+
+// The active network's connection is runtime-resolved (injected via
+// `__DEVSTACK_IDS__`, never baked into the committed tree).
+// `resolveActiveNetwork()` returns the active entry and fails loudly if absent.
+const activeNetwork = resolveActiveNetwork();
 
 export const dAppKit = createDAppKit({
-	networks: [dappKitConfig.chain],
-	defaultNetwork: dappKitConfig.chain,
+	networks: [devstackNetwork],
+	defaultNetwork: devstackNetwork,
+	autoConnect: import.meta.env.DEV,
 	createClient() {
 		return new SuiGrpcClient({
-			network: dappKitConfig.chain,
-			baseUrl: suiNetwork.rpcUrl,
+			network: devstackNetwork,
+			baseUrl: activeNetwork.rpc,
+			// Generated bindings default `package` to `@local/<name>`;
+			// `config.mvrOverrides` points each name at its deployed id.
+			mvr: { overrides: { packages: config.mvrOverrides } },
 		});
 	},
-	walletInitializers: [
-		devWalletInitializer({
-			adapters: [
-				new DevstackSignerAdapter({
-					serverOrigin: dappKitConfig.walletUrl,
-					token: parseDevstackToken(dappKitConfig.pairUrl),
-					name: 'Devstack',
-				}),
-			],
-			autoConnect: true,
-			createInitialAccount: false,
-		}),
-	],
 });
 ```
 

@@ -47,6 +47,8 @@ import {
 import { makeDirectPruneDeps } from './prune-direct.ts';
 import { runUpLive } from './wirings/up.ts';
 import { runApplyLive } from './wirings/apply.ts';
+import { runCodegen } from './wirings/codegen.ts';
+import { runDumpIds } from './wirings/dump-ids.ts';
 import {
 	runSnapshotCaptureLiveAware,
 	runSnapshotDeleteDirect,
@@ -119,13 +121,13 @@ const resolveIdentity = (params: {
 	// Centralized explicit > env > default ladder. Throws
 	// `DevstackNetworkParseError` on a malformed value so the CLI fails
 	// fast with a structured error instead of a downstream cryptic
-	// chain-probe failure. The raw input is preserved (not the
-	// canonical name) so chain-keyed cache namespaces stay stable.
+	// network-probe failure. The identity's network is the canonical name
+	// (`localnet`, `testnet`, …), independent of how it was spelled.
 	const network = resolveNetworkSync({
 		explicit: params.network,
 		env: process.env.DEVSTACK_NETWORK,
 		explicitSource: '--network',
-	}).raw;
+	}).parsed.name;
 	const stackRoot = resolvePath(stacksRoot, stack);
 	return {
 		app,
@@ -155,9 +157,9 @@ const resolveIdentity = (params: {
  * Pure projector — exported for the focused unit test. Starts from
  * `emptyProjection()` (the closed-vocabulary baseline) and fills only
  * the two manifest-backed slices, so no display vocabulary can leak in.
- * The manifest identity tuple is `{ app, stack, chain }`; the
- * projection's identity is `{ app, stack, network }`, so `chain` maps
- * onto `network`. Endpoints get re-branded (`endpointKey` / `pluginKey`)
+ * The manifest identity tuple is `{ app, stack, network }`, matching
+ * the projection's identity shape directly. Endpoints get re-branded
+ * (`endpointKey` / `pluginKey`)
  * to the projection's branded shape; `registeredAt` is unknown offline,
  * so it defaults to `0`.
  */
@@ -166,7 +168,7 @@ export const degradedStatusFromContext = (ctx: StackContext): SubscribableState 
 	identity: {
 		app: ctx.identity.app,
 		stack: ctx.identity.stack,
-		network: ctx.identity.chain,
+		network: ctx.identity.network,
 	},
 	endpoints: ctx.endpoints.all().map((endpoint) => ({
 		endpointKey: endpointKey(endpoint.endpointKey),
@@ -210,6 +212,18 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 		},
 		apply: {
 			run: (flags) => runApplyLive(flags.configPath, identity),
+		},
+		codegen: {
+			run: (flags) => runCodegen(flags.configPath, identity),
+		},
+		dumpIds: {
+			run: (flags) =>
+				runDumpIds(identity, {
+					configPath: flags.configPath,
+					out: flags.out,
+					io: flags.io,
+					outputMode: flags.outputMode,
+				}),
 		},
 		status: { reader: projectionStatusReader(identity) },
 		snapshot: {

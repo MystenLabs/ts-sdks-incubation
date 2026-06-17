@@ -8,6 +8,34 @@
 
 import type { Effect } from 'effect';
 
+// -----------------------------------------------------------------------------
+// Raw-expression escape hatch
+// -----------------------------------------------------------------------------
+
+/**
+ * A value the codegen renderer emits VERBATIM (not as a quoted literal).
+ *
+ * The one authorized use is id resolution in the emitted `config.ts`:
+ * `byNetwork` / `mvrOverrides` / `packageId` entries hold a
+ * `RawExpr('resolveId("@local/foo")')` so the COMMITTED config carries NO
+ * on-chain id. The id resolves at app build/dev time through the injected
+ * `__DEVSTACK_IDS__` global (see the emitted `config-runtime.ts`), which
+ * throws loudly when an id is unresolved. Lives at the L0 contract layer
+ * so both the package plugin (producer) and the renderer (consumer) can
+ * reach it without a layering cycle.
+ */
+export class RawExpr {
+	readonly __rawExpr = true as const;
+	constructor(readonly expr: string) {}
+}
+
+/** Build a `RawExpr`. */
+export const rawExpr = (expr: string): RawExpr => new RawExpr(expr);
+
+/** Type guard for `RawExpr` — the renderer's verbatim-emit branch. */
+export const isRawExpr = (v: unknown): v is RawExpr =>
+	typeof v === 'object' && v !== null && (v as { __rawExpr?: unknown }).__rawExpr === true;
+
 /**
  * Opaque per-file emission context.
  *
@@ -48,7 +76,7 @@ export interface AggregateContribution {
 	 *  `'accounts.ts'`, `'coins.ts'`, `'config.ts'`). The plugin
 	 *  chooses; the orchestrator treats it as opaque. Distinct decls
 	 *  that target the same `bucket` deep-merge into one aggregate
-	 *  file (so e.g. sui's `networks.local` and every package's
+	 *  file (so e.g. sui's `networks.localnet` and every package's
 	 *  `packages.<name>` coexist in one `config.ts`). */
 	readonly bucket: string;
 	/** Project this decl's `exported` map into the value to merge
@@ -78,6 +106,15 @@ export interface AggregateContribution {
 	 *  `CodegenableDecl.sensitive` for aggregate files. Defaults to
 	 *  `false`. */
 	readonly sensitive?: boolean;
+	/** Generic-channel contributions for the loadable id-config. Only the
+	 *  LIVE (boot) aggregate of a unified config-binding set sets this;
+	 *  boot's `assembleIdConfig` folds it into `idConfig.values[ns][key]`.
+	 *  Carries the live plugin JSON the typed id-config fields can't (pool
+	 *  ids, coin types, walrus/seal endpoints). The committed-tree (static)
+	 *  aggregate omits it — those values resolve at app build time. */
+	readonly idConfigValues?: {
+		readonly [namespace: string]: { readonly [key: string]: unknown };
+	};
 }
 
 /** Which codegen output tree a decl (or aggregate) emits into.
@@ -86,6 +123,20 @@ export interface AggregateContribution {
  *  `.devstack/stacks/<stack>/generated-extras/` dev-only tree reached
  *  via the `@devstack-dev` alias. */
 export type OutputLocation = 'generated' | 'generated-extras';
+
+/**
+ * Static, stack-free codegen-decl source. A plugin that can describe its
+ * codegen contributions from CONFIG ALONE (no live acquire) exposes this
+ * on its spec so the `codegen` verb can emit a committed projection without
+ * booting a stack. The hook is pure: it returns the same `CodegenableDecl`s
+ * the live `acquire` would emit, but stack-free — KNOWN package ids come
+ * from the declared `networks` literals, LOCAL ids stay the all-zero
+ * sentinel (`UNRESOLVED_ID`) resolved at app build/dev time through the
+ * injected `__DEVSTACK_IDS__` global. Plugins whose contributions genuinely
+ * require live resolution (or which only land in the gitignored
+ * `generated-extras` dev tree) omit this — the verb simply skips them.
+ */
+export type StaticCodegenSource = () => ReadonlyArray<CodegenableDecl>;
 
 /**
  * Codegen contribution. `Emitter` is a literal emitter name used

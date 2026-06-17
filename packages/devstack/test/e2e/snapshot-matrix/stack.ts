@@ -50,10 +50,15 @@ const VAULT_SOURCE = requirePackage(
 	resolve(REPO_ROOT, 'examples/private-content/move/vault'),
 	'vault',
 );
-const DEEPBOOK_SOURCE = requirePackage(
-	resolve(REPO_ROOT, 'examples/deepbook-trader/move/vendor/deepbookv3/deepbook'),
-	'deepbook',
-);
+// DeepBook's Move package is fetched from upstream git — there is no vendored
+// copy on disk (the codegen-decoupling work removed it in favor of git
+// sourcing). The canonical `examples/deepbook-trader` config tracks `main`, but
+// this is a determinism-sensitive snapshot/restore fixture: a moving `main`
+// would let an unrelated upstream change break (or silently alter) the boot, so
+// we pin a known-good commit instead. Bump deliberately when the example's
+// deepbook surface changes.
+const DEEPBOOKV3_REPO = 'https://github.com/MystenLabs/deepbookv3.git';
+const DEEPBOOK_REV = '5411ef3aa93f7722409b2a85047baa3d4d830c07';
 
 export const STACK_APP = 'snapshot-restore-matrix';
 export const STACK_NAME = 'snapshot-restore-matrix';
@@ -118,7 +123,7 @@ export const buildMatrixStack = (opts: MatrixStackOptions = {}): Stack => {
 	}
 
 	const deepbookPackage = localPackage('deepbook', {
-		sourcePath: DEEPBOOK_SOURCE,
+		git: { url: DEEPBOOKV3_REPO, subdir: 'packages/deepbook', rev: DEEPBOOK_REV },
 		publisher: deepbookPublisher,
 		capture: {
 			registryId: '::registry::Registry',

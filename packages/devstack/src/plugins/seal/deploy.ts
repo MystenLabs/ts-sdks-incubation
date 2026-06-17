@@ -24,6 +24,7 @@ import {
 	hashMoveSources,
 	runMoveBuild,
 	scrubLocksHost,
+	withMoveBuildLock,
 	type BuildOutput,
 	type ExecutedReceipt,
 	type MoveBuildError,
@@ -80,7 +81,7 @@ export type SealPackageVerified = Schema.Schema.Type<typeof SealPackageVerifySha
 
 export interface SealPublishInputs {
 	readonly name: string;
-	readonly chain: string;
+	readonly chainId: string;
 	readonly movePackagePath: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
@@ -162,20 +163,27 @@ export const runSealPublishTransaction = (
 	inputs: SealPublishInputs,
 ): Effect.Effect<SealPackageCached, SealError, Scope.Scope> =>
 	Effect.gen(function* () {
-		// Scrub the shared Move git cache so a stale pin can't leak into the
-		// build. The package's own Move.lock is scrubbed inside the container
-		// on a disposable copy, so the developer's checked-in source is left
-		// untouched host-side.
-		yield* scrubLocksHost(inputs.movePackagePath, '~/.move').pipe(
-			Effect.mapError((err) => moveBuildToSealError(inputs.name, err)),
-		);
+		// Scrub the shared Move git cache, then build — both under the
+		// process-wide Move-build permit (`withMoveBuildLock`) so this build
+		// can't race a concurrent package build's host scrub against a sibling
+		// container's `git clone` into the same `~/.move/git` cache. The host
+		// scrub strips stale pins so they can't leak into the build; the
+		// package's own Move.lock is scrubbed inside the container on a
+		// disposable copy, leaving the developer's checked-in source untouched.
+		const buildOutput = yield* withMoveBuildLock(
+			Effect.gen(function* () {
+				yield* scrubLocksHost(inputs.movePackagePath, '~/.move').pipe(
+					Effect.mapError((err) => moveBuildToSealError(inputs.name, err)),
+				);
 
-		const buildOutput = yield* runMoveBuild({
-			sourcePath: inputs.movePackagePath,
-			packageName: inputs.name,
-			runtime: inputs.runtime,
-			...(inputs.buildImage !== undefined ? { buildImage: inputs.buildImage } : {}),
-		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
+				return yield* runMoveBuild({
+					sourcePath: inputs.movePackagePath,
+					packageName: inputs.name,
+					runtime: inputs.runtime,
+					...(inputs.buildImage !== undefined ? { buildImage: inputs.buildImage } : {}),
+				}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
+			}),
+		);
 
 		const result = yield* executeSuiTx({
 			client: inputs.sdk.client,
@@ -230,7 +238,7 @@ export const publishSealPackage = (
 			SealPackageVerified
 		>({
 			namespace: SEAL_PACKAGE_NAMESPACE,
-			chain: inputs.chain,
+			chain: inputs.chainId,
 			contentHash: inputsHash,
 			verify: (cached) =>
 				verifyObjectLenient(inputs.chainProbe, cached.packageId, SealPackageVerifyShape),
@@ -268,7 +276,7 @@ export interface RegisterKeyServerTransactionInputs {
 
 export interface RegisterKeyServerInputs extends RegisterKeyServerTransactionInputs {
 	readonly name: string;
-	readonly chain: string;
+	readonly chainId: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
 	readonly chainProbe: ChainProbe<SealObjectProbeKey>;
@@ -420,7 +428,7 @@ export const registerKeyServer = (
 			SealKeyServerVerified
 		>({
 			namespace: SEAL_KEY_SERVER_NAMESPACE,
-			chain: inputs.chain,
+			chain: inputs.chainId,
 			contentHash: inputsHash,
 			verify: (cached) =>
 				verifyObjectLenient(inputs.chainProbe, cached.objectId, SealKeyServerVerifyShape),

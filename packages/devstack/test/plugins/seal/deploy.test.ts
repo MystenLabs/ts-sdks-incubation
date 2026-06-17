@@ -258,7 +258,7 @@ describe('seal deploy publish helpers', () => {
 				const exit = yield* Effect.exit(
 					runSealPublishTransaction({
 						name: 'seal',
-						chain: 'localnet',
+						chainId: 'localnet',
 						movePackagePath: sourcePath,
 						signer: signerNotReached,
 						sdk: { client: {} as never },

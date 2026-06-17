@@ -301,7 +301,7 @@ describe('account impersonation variant', () => {
 		const ctx: AccountAcquireContext = {
 			sui: {
 				mode: 'fork',
-				chain: 'sui:mainnet-fork',
+				chainId: 'sui:mainnet-fork',
 				sdk: {
 					core: {
 						getObject: () => Promise.reject(new Error('unused')),

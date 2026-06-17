@@ -358,7 +358,7 @@ export const DeepbookInfo = builder.objectRef<DashboardDeepbookInfo>('DeepbookIn
 		pluginKey: t.exposeString('pluginKey'),
 		name: t.exposeString('name'),
 		mode: t.field({ type: DeepbookMode, resolve: (d) => d.mode }),
-		chain: t.exposeString('chain'),
+		network: t.exposeString('network'),
 		packageId: t.exposeString('packageId'),
 		registryId: t.exposeString('registryId'),
 		adminCapId: t.exposeString('adminCapId', { nullable: true }),

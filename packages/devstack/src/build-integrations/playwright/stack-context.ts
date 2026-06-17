@@ -50,7 +50,9 @@ export interface ResolveStackContextOptions {
 	/** Explicit `<stateDir>` root override. Combined with `stack` to
 	 *  form `<root>/stacks/<stack>/manifest.json`. */
 	readonly stateDir?: string;
-	/** Stack name override. Defaults to env `DEVSTACK_STACK`. */
+	/** Stack name override. Defaults to env `DEVSTACK_STACK`, then the
+	 *  nearest package.json `name` above `cwd` (the CLI's stack-
+	 *  inference rung), then `'main'`. */
 	readonly stack?: string;
 	/** Env bag (defaults to `process.env`). Injectable for tests. */
 	readonly env?: Readonly<Record<string, string | undefined>>;
@@ -108,18 +110,22 @@ const buildRuntimeDiscoverOpts = (
 	options: ResolveStackContextOptions,
 ): DiscoverManifestPathOptions => {
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
+	const cwd = options.cwd ?? process.cwd();
 	// Shared ladder: option > DEVSTACK_RUNTIME_ROOT > DEVSTACK_STATE_DIR
 	// > '.devstack'. Routing through `resolveDiscoveryEnv` keeps this
-	// surface aligned with the vitest + runtime surfaces.
+	// surface aligned with the vitest + runtime surfaces. The stack rung
+	// threads the walk-up start so the package-name inference (the CLI's
+	// `resolveStackName` rung) applies before the 'main' fallback.
 	const { stack, stateDir } = resolveDiscoveryEnv(env, {
 		...(options.stack !== undefined ? { stack: options.stack } : {}),
 		...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
+		cwd,
 	});
 	return {
 		env,
 		stack,
 		stateDir,
-		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+		cwd,
 		...(options.manifestPath !== undefined ? { override: options.manifestPath } : {}),
 	};
 };

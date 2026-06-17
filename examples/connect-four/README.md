@@ -16,9 +16,42 @@ connect-four/
 ## Run
 
 ```
-pnpm dev          # devstack up (vite on port 5176, router on 5175)
-pnpm test:e2e     # Playwright: open lobby, two players, complete a game
+pnpm dev          # devstack up (the `connect-four` dev stack); injects live ids automatically
+pnpm codegen      # regenerate src/generated bindings after a Move source change (stack-free)
+pnpm build        # tsc -b && vite build — stack-free, no Docker; works on a clean clone
+pnpm test         # unit tests — fast, boots nothing
+pnpm test:e2e     # Playwright on an isolated `e2e` stack (parallel-safe with `pnpm dev`)
 ```
+
+`pnpm dev` injects live on-chain ids; the committed `src/generated/config.ts` resolves them
+at runtime and never bakes them in. `pnpm build` is deterministic and stack-free — a build with
+no injected ids throws `DevstackConfigMissingError` at runtime rather than silently shipping zeros.
+
+## Deploy to a real network
+
+The build needs a known deployment's id-config file (the same `devstack-ids.json` schema the
+local stack writes). Either point the stack at the target network once and copy the file it
+emits, or hand-author one:
+
+```bash
+# Option A: boot against the target network, then copy the emitted id-config
+devstack up --network testnet
+cp .devstack/stacks/main/devstack-ids.json config/testnet.ids.json
+```
+
+For the full id-config schema (Option B, hand-authoring) see the canonical
+[Deploy to a real network](https://ts-sdks-incubation.vercel.app/devstack/features/codegen#deploy-to-a-real-network)
+section in the devstack docs. Commit the file, then point the build at it:
+
+```bash
+# via the Vite plugin option (vite.config.ts):
+#   devstackVitePlugin({ ids: './config/testnet.ids.json' })
+# or via env:
+DEVSTACK_IDS_FILE=./config/testnet.ids.json pnpm build
+```
+
+Then deploy the static `dist/` bundle. A build with no ids throws `DevstackConfigMissingError`
+at runtime — loud, not a silent zero.
 
 ## See also
 

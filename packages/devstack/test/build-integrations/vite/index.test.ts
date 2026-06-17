@@ -1,28 +1,28 @@
-// `devstackVitePlugin` — `@generated` alias resolution tests.
+// `devstackVitePlugin` — `@generated` / `@devstack-dev` alias tests.
 //
-// The plugin points an import alias (default `@generated`) at the
-// ACTIVE stack's codegen output dir so two stacks of the same app
-// resolve `@generated/*` to different directories. Resolution order
+// `@generated` STATICALLY resolves to the committed `<root>/src/generated`
+// tree (the single source of bindings, written by `devstack codegen`;
+// ids resolve at runtime via `__DEVSTACK_IDS__`). Resolution order
 // (src/build-integrations/vite/index.ts):
 //   1. `options.generatedDir` — explicit escape hatch, resolved against
 //      the Vite root.
-//   2. manifest-recorded `codegen.generatedDir` for the active stack
-//      (discovered via `resolveDiscoveryEnv(process.env)` +
-//      `discoverManifestPath(...)`).
-//   3. cold-start fallback → `<root>/src/generated`.
+//   2. `<root>/src/generated` — always.
 //
-// The plugin reads `process.env` directly, so we snapshot/restore it
-// around every test. To make manifest discovery deterministic (no cwd
-// walk-up), we set `DEVSTACK_STATE_DIR` to the ABSOLUTE temp root:
-// `discoverManifestPath` degenerates an absolute stateDir to a single
-// existence check at `<stateDir>/stacks/<stack>/manifest.json`.
+// The `@devstack-dev` extras alias STILL resolves dynamically off the
+// manifest's `codegen.extrasDir` (dev-only secret artifacts), so those
+// tests plant a manifest. The plugin reads `process.env` directly, so we
+// snapshot/restore it around every test. To make manifest discovery
+// deterministic (no cwd walk-up), we set `DEVSTACK_STATE_DIR` to the
+// ABSOLUTE temp root: `discoverManifestPath` degenerates an absolute
+// stateDir to a single existence check at
+// `<stateDir>/stacks/<stack>/manifest.json`.
 //
 // Signature notes matched from the impl:
 //   - `devstackVitePlugin(options?)` returns `{ name, config }`.
 //   - `config` is a PLAIN SYNC FUNCTION (not a `{ handler }` object):
 //     `config(userConfig) => ({ resolve: { alias: { [prefix]: dir } } })`.
 //   - The hook reads `userConfig.root` (defaults to `process.cwd()`),
-//     used for relative-`generatedDir` resolution and the fallback.
+//     used for relative-`options.generatedDir` resolution and the fallback.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -56,13 +56,14 @@ afterEach(() => {
 	}
 });
 
-/** Plant a stack manifest containing `codegen.generatedDir` at the
- *  supervisor-written path under an absolute state root. */
+/** Plant a stack manifest carrying the optional `codegen.extrasDir` (the
+ *  `@devstack-dev` overlay source) at the supervisor-written path under an
+ *  absolute state root. Bindings are not recorded in the manifest. */
 const writeStackManifest = (
 	stateRoot: string,
 	stack: string,
-	generatedDir: string,
 	extrasDir?: string,
+	idsFile?: string,
 ): string => {
 	const dir = join(stateRoot, 'stacks', stack);
 	mkdirSync(dir, { recursive: true });
@@ -70,12 +71,15 @@ const writeStackManifest = (
 	writeFileSync(
 		path,
 		JSON.stringify({
-			identity: { app: 'demo', stack, chain: 'sui:local' },
+			identity: { app: 'demo', stack, network: 'localnet' },
 			manifestVersion: 1,
 			services: {},
 			endpoints: {},
 			extras: {},
-			codegen: { generatedDir, ...(extrasDir !== undefined ? { extrasDir } : {}) },
+			codegen: {
+				...(extrasDir !== undefined ? { extrasDir } : {}),
+				...(idsFile !== undefined ? { idsFile } : {}),
+			},
 		}),
 	);
 	return path;
@@ -88,28 +92,21 @@ describe('devstackVitePlugin', () => {
 		expect(typeof plugin.config).toBe('function');
 	});
 
-	it('manifest hit → aliases @generated at the manifest codegen.generatedDir', () =>
+	it('@generated statically resolves to <root>/src/generated', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
-			writeStackManifest(tmp, 'e2e', generatedDir);
-			// Absolute state root → single-existence-check discovery, no
-			// cwd dependence. DEVSTACK_STACK selects the stack subdir.
+			// A manifest is present; `@generated` is always the committed
+			// `src/generated` tree regardless of what the manifest records.
+			writeStackManifest(tmp, 'e2e');
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
 			const plugin = devstackVitePlugin();
 			const patch = plugin.config({ root: tmp });
-			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(generatedDir);
+			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(resolve(tmp, 'src/generated'));
 		}));
 
-	it('options.generatedDir escape hatch wins over the manifest (absolute passthrough)', () =>
+	it('options.generatedDir escape hatch wins (absolute passthrough)', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			// A manifest exists, but the explicit escape hatch must bypass
-			// discovery entirely.
-			writeStackManifest(tmp, 'e2e', join(tmp, 'manifest-dir'));
-			process.env.DEVSTACK_STATE_DIR = tmp;
-			process.env.DEVSTACK_STACK = 'e2e';
-
 			const explicit = join(tmp, 'hand', 'picked', 'generated');
 			const plugin = devstackVitePlugin({ generatedDir: explicit });
 			const patch = plugin.config({ root: tmp });
@@ -125,49 +122,29 @@ describe('devstackVitePlugin', () => {
 
 	it('custom options.alias prefix is used as the alias key', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
-			writeStackManifest(tmp, 'e2e', generatedDir);
-			process.env.DEVSTACK_STATE_DIR = tmp;
-			process.env.DEVSTACK_STACK = 'e2e';
-
 			const plugin = devstackVitePlugin({ alias: '@gen' });
 			const patch = plugin.config({ root: tmp });
-			expect(patch.resolve.alias['@gen']).toBe(generatedDir);
+			expect(patch.resolve.alias['@gen']).toBe(resolve(tmp, 'src/generated'));
 			// And the default prefix is NOT also present.
 			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBeUndefined();
 		}));
 
-	it('no manifest → cold-start fallback to <root>/src/generated', () =>
-		withTempRootSync('devstack-vite', (tmp) => {
-			// Point discovery at the temp root but write NO manifest, so the
-			// single existence check misses and the plugin falls back.
-			process.env.DEVSTACK_STATE_DIR = tmp;
-			process.env.DEVSTACK_STACK = 'main';
-
-			const plugin = devstackVitePlugin();
-			const patch = plugin.config({ root: tmp });
-			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(resolve(tmp, 'src/generated'));
-		}));
-
 	it('manifest hit → also aliases @devstack-dev at codegen.extrasDir', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
 			const extrasDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated-extras');
-			writeStackManifest(tmp, 'e2e', generatedDir, extrasDir);
+			writeStackManifest(tmp, 'e2e', extrasDir);
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
 			const plugin = devstackVitePlugin();
 			const patch = plugin.config({ root: tmp });
-			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(generatedDir);
 			expect(patch.resolve.alias[DEFAULT_DEV_EXTRAS_ALIAS]).toBe(extrasDir);
 		}));
 
 	it('manifest hit without extrasDir → @devstack-dev cold-start fallback under .devstack/stacks/<stack>', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
-			// Older manifest with generatedDir but no extrasDir.
-			writeStackManifest(tmp, 'e2e', generatedDir);
+			// Manifest with codegen present but no extrasDir.
+			writeStackManifest(tmp, 'e2e');
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
@@ -186,27 +163,42 @@ describe('devstackVitePlugin', () => {
 			expect(patch.resolve.alias[DEFAULT_DEV_EXTRAS_ALIAS]).toBe(explicit);
 		}));
 
-	it('manifest present but missing codegen field → cold-start fallback', () =>
+	// --- command-defaulting: only an EXPLICIT `serve` takes the live-id path.
+	// A programmatic `vite.build()` that omits the env arg must NOT bake live
+	// local-stack ids into the bundle (build-safe default).
+	it('explicit { command: "serve" } injects the live local-stack ids', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			// A back-compat manifest with NO `codegen` key → readGeneratedDir
-			// returns null → fallback to src/generated.
-			const dir = join(tmp, 'stacks', 'main');
-			mkdirSync(dir, { recursive: true });
+			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
 			writeFileSync(
-				join(dir, 'manifest.json'),
-				JSON.stringify({
-					identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
-					manifestVersion: 1,
-					services: {},
-					endpoints: {},
-					extras: {},
-				}),
+				idsFile,
+				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
 			);
+			writeStackManifest(tmp, 'e2e', undefined, idsFile);
 			process.env.DEVSTACK_STATE_DIR = tmp;
-			process.env.DEVSTACK_STACK = 'main';
+			process.env.DEVSTACK_STACK = 'e2e';
 
 			const plugin = devstackVitePlugin();
+			const patch = plugin.config({ root: tmp }, { command: 'serve' });
+			expect(patch.define.__DEVSTACK_IDS__).toContain('localnet');
+		}));
+
+	it('unknown command (no env arg) is build-safe: does NOT inject the live ids', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
+			writeFileSync(
+				idsFile,
+				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
+			);
+			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin();
+			// No configEnv + no config.command → unknown → defaults to `build`,
+			// so no live local-stack ids are read (define resolves to `null`).
 			const patch = plugin.config({ root: tmp });
-			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(resolve(tmp, 'src/generated'));
+			expect(patch.define.__DEVSTACK_IDS__).toBe('null');
 		}));
 });

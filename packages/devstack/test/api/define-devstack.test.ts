@@ -42,7 +42,7 @@ const customNeedsSui = definePlugin({
 	dependsOn: { sui: localnet },
 	role: 'service',
 	section: 'service',
-	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
+	start: ({ sui }) => Effect.succeed({ chain: sui.chainId } as const),
 });
 const customNeedsBareSui = definePlugin({
 	id: 'custom/needs-bare-sui',

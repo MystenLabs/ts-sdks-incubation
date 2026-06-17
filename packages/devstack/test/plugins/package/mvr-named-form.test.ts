@@ -118,12 +118,12 @@ describe('package codegen emits the named form as binding default AND config.mvr
 				expect(isValidNamedPackage(expected)).toBe(true);
 
 				// `config.mvrOverrides` contribution is the active-network
-				// (`local`) name→id entry — exactly what the old per-app
+				// (`localnet`) name→id entry — exactly what the old per-app
 				// `mvrOverrides()` helper computed for this package. Keyed by
-				// the package's `mvr` placeholder, valued by `byNetwork.local`.
+				// the package's `mvr` placeholder, valued by `byNetwork.localnet`.
 				expect(projected.mvrOverrides).toEqual({ '@local/connect-four': '0xpkg' });
 				expect(projected.mvrOverrides[expected]).toBe(
-					projected.packages['connect-four']!.byNetwork['local'],
+					projected.packages['connect-four']!.byNetwork['localnet'],
 				);
 			}),
 	);

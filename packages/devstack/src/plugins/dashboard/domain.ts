@@ -57,7 +57,7 @@ export interface DashboardDeepbookInfo {
 	readonly pluginKey: string;
 	readonly name: string;
 	readonly mode: 'local' | 'override' | 'known';
-	readonly chain: string;
+	readonly network: string;
 	readonly packageId: string;
 	readonly registryId: string;
 	readonly adminCapId: string | null;
@@ -206,7 +206,7 @@ export interface DashboardDomain {
 
 interface DeepbookShape {
 	readonly mode?: unknown;
-	readonly chain?: unknown;
+	readonly network?: unknown;
 	readonly packageId?: unknown;
 	readonly registryId?: unknown;
 	readonly adminCapId?: unknown;
@@ -252,10 +252,10 @@ interface CoinShape {
 
 interface SuiShape {
 	readonly mode?: unknown;
-	/** Substrate-level chain id (`'sui:localnet'`, `'sui:testnet'`,
+	/** Genesis-digest chain id (`'sui:localnet'`, `'sui:testnet'`,
 	 *  `'sui:mainnet-fork@123'`). Composes the faucet capability key
 	 *  (`faucet:request:<chainId>`) the SUI funding path resolves. */
-	readonly chain?: unknown;
+	readonly chainId?: unknown;
 }
 
 /** Structural shape of the resolved account value (`account/<name>`). The
@@ -471,7 +471,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 						pluginKey,
 						name: pluginKey.replace(/^deepbook:/, ''),
 						mode: dbMode,
-						chain: reqStr(v.chain, 'deepbook.chain', faults),
+						network: reqStr(v.network, 'deepbook.network', faults),
 						packageId: reqStr(v.packageId, 'deepbook.packageId', faults),
 						registryId: reqStr(v.registryId, 'deepbook.registryId', faults),
 						adminCapId: optStr(v.adminCapId),
@@ -674,11 +674,11 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 	// `{ ok:false, detail }` so a single bad fund can't take down the query.
 
 	/** The chain id the SUI funding path keys on, read from the resolved sui
-	 *  value (same `chain` field the sui codegen/snapshot decls stamp). */
+	 *  value (same `chainId` field the sui codegen/snapshot decls stamp). */
 	const readChainId = control.resolvedValues.pipe(
 		Effect.map((values) => {
 			const sui = matching(values, (id) => id === 'sui')[0];
-			return sui === undefined ? null : optStr((sui.value as SuiShape).chain);
+			return sui === undefined ? null : optStr((sui.value as SuiShape).chainId);
 		}),
 	);
 

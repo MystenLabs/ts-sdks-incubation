@@ -1,0 +1,7 @@
+# Generated devstack codegen output — committed, id-FREE bindings plus the
+# fixed runtime resolver (`config-runtime.ts`), produced deterministically by
+# the stack-free `devstack codegen` verb. They are checked in so apps build
+# without booting a stack, but they are machine-generated: mark them so GitHub
+# collapses them in diffs and excludes them from language statistics. (CI's
+# codegen drift-guard keeps them fresh, so reviewers don't need to read them.)
+**/src/generated/** linguist-generated=true

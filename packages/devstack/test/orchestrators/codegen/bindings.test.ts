@@ -4,13 +4,29 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@effect/vitest';
+import { generateFromPackageSummary } from '@mysten/codegen';
 import { Effect } from 'effect';
+import { vi } from 'vitest';
 
 import type { ContainerRuntime, OneShotSpec } from '../../../src/contracts/container-runtime.ts';
-import { MoveSummaryRunnerService } from '../../../src/orchestrators/codegen/bindings.ts';
+import {
+	layerMystenMoveCodegen,
+	MoveCodegenService,
+	MoveSummaryRunnerService,
+} from '../../../src/orchestrators/codegen/bindings.ts';
 import { layerSuiMoveSummaryRunnerDocker } from '../../../src/plugins/sui/move-summary-runner.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/service.ts';
 import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
+
+// Replace the heavyweight `@mysten/codegen` renderer with a spy so the
+// `layerMystenMoveCodegen` tests below can assert exactly what reaches
+// `generateFromPackageSummary` without rendering a real package summary.
+// (The Docker summary-runner test in this file never invokes it.)
+vi.mock('@mysten/codegen', () => ({
+	generateFromPackageSummary: vi.fn(async () => {}),
+}));
+
+const generateFromPackageSummaryMock = vi.mocked(generateFromPackageSummary);
 
 const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime =>
 	makeContainerRuntimeStub({ runOneShot });
@@ -122,5 +138,58 @@ describe('codegen Move summary runner', () => {
 				rmSync(root, { recursive: true, force: true });
 			}
 		}),
+	);
+});
+
+describe('layerMystenMoveCodegen', () => {
+	// A nonexistent sourcePath is deliberate: `resolveSummaryDirName` falls
+	// back to the symbolic package name when the source Move.toml is
+	// unreadable, so no fixture tree is needed to exercise the generate seam.
+	const generateInput = (sourcePath: string) => ({
+		packageName: 'hello',
+		sourcePath,
+		summary: {
+			packageName: 'hello',
+			sourcePath,
+			summaryPath: join(sourcePath, 'summary'),
+			summaryJson: {},
+		},
+		mvrPlaceholder: '@local-pkg/hello',
+		importExtension: '.ts' as const,
+	});
+
+	it.effect('threads includePhantomTypeParameters into generateFromPackageSummary', () =>
+		Effect.gen(function* () {
+			generateFromPackageSummaryMock.mockClear();
+			const sourcePath = join(tmpdir(), 'devstack-phantom-on-nonexistent');
+			const generator = yield* MoveCodegenService;
+			yield* generator.generate(generateInput(sourcePath));
+			expect(generateFromPackageSummaryMock).toHaveBeenCalledTimes(1);
+			expect(generateFromPackageSummaryMock.mock.calls[0]![0]).toMatchObject({
+				package: {
+					path: join(sourcePath, 'summary'),
+					package: '@local-pkg/hello',
+					packageName: 'hello',
+				},
+				importExtension: '.ts',
+				includePhantomTypeParameters: true,
+			});
+		}).pipe(Effect.provide(layerMystenMoveCodegen({ includePhantomTypeParameters: true }))),
+	);
+
+	it.effect('leaves includePhantomTypeParameters unset by default (zero-arg layer)', () =>
+		Effect.gen(function* () {
+			generateFromPackageSummaryMock.mockClear();
+			const sourcePath = join(tmpdir(), 'devstack-phantom-default-nonexistent');
+			const generator = yield* MoveCodegenService;
+			yield* generator.generate(generateInput(sourcePath));
+			expect(generateFromPackageSummaryMock).toHaveBeenCalledTimes(1);
+			// `undefined`, not a devstack-forced `false`: `@mysten/codegen`'s
+			// own destructuring default applies, so default output stays
+			// byte-identical to the pre-option behavior.
+			expect(
+				generateFromPackageSummaryMock.mock.calls[0]![0].includePhantomTypeParameters,
+			).toBeUndefined();
+		}).pipe(Effect.provide(layerMystenMoveCodegen())),
 	);
 });

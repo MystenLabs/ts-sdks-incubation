@@ -45,10 +45,13 @@ export {
 } from './api/define-plugin.ts';
 export { PluginContext, type PluginCtx } from './substrate/plugin-ctx.ts';
 export {
+	chainIdForNetwork,
 	DEFAULT_DEVSTACK_NETWORK,
 	DEFAULT_STACK_NAME,
 	DEVSTACK_NETWORK_NAMES,
 	DevstackNetworkParseError,
+	LOCAL_NETWORK_NAME,
+	networkNameFromChain,
 	parseDevstackNetwork,
 	parseDevstackNetworkName,
 	resolveAppName,
@@ -369,7 +372,6 @@ export {
 	type DeepbookKnownNetwork,
 	type DeepbookOptions,
 	type DeepbookBindings,
-	type DeepbookPoolBinding,
 	type DeepbookError,
 	type DeepbookPluginError,
 	type DeepbookConfigError,

@@ -29,6 +29,8 @@
 // hook is a no-op on emitted bytes — that's load-bearing for the
 // "no mtime touch on identical content" idempotency invariant.
 
+import { isRawExpr } from '../../contracts/codegenable.ts';
+
 import { CodegenRenderError } from './errors.ts';
 
 // -----------------------------------------------------------------------------
@@ -144,6 +146,12 @@ const tryErr = (detail: string): TryRenderResult => ({ ok: false, detail });
 const tryRender = (value: unknown, seen: Set<object>, depth = 1): TryRenderResult => {
 	if (value === null) return tryOk('null');
 	if (value === undefined) return tryErr('undefined is not serialisable — emit null instead');
+	// Raw-expression escape hatch: a `RawExpr` is emitted VERBATIM (e.g.
+	// `resolveId("@local/foo")`) instead of as a quoted literal. The single
+	// authorized use is id resolution in the emitted `config.ts` — ids are
+	// LOADED CONFIG DATA injected at app build time, not codegen output, so
+	// the config calls a runtime resolver rather than embedding a literal id.
+	if (isRawExpr(value)) return tryOk(value.expr);
 	const t = typeof value;
 	if (t === 'string') return tryOk(JSON.stringify(value));
 	if (t === 'number') {

@@ -255,9 +255,13 @@ The package was rewritten over eight planned phases that landed before this entr
 single root barrel (`@mysten-incubation/devstack`) carrying every built-in plugin factory, plugin
 authoring helper, capability decl type, and substrate helper namespace. The only public subpaths are
 the L5 build-integration entrypoints — `/vitest`, `/vitest/setup`, `/playwright`,
-`/playwright/global-setup`, `/vite`, and `/runtime` — exposed for tree-shaking and L5 isolation. The
-`/vite` entrypoint is a `devstackVitePlugin()` that points a customizable `@generated` import alias
-at the active stack's codegen output (per-stack codegen so `pnpm dev` and `pnpm test:e2e` coexist).
+`/playwright/global-setup`, `/vite`, `/runtime`, and `/dapp-kit` — exposed for tree-shaking and L5
+isolation. The `/vite` entrypoint is a `devstackVitePlugin()` that points a customizable `@generated`
+import alias at the active stack's codegen output (per-stack codegen so `pnpm dev` and
+`pnpm test:e2e` coexist). The `/dapp-kit` entrypoint is a DEV-only test bridge
+(`registerDAppKitForTesting`) the app wires after `createDAppKit(...)` so the Playwright `connectAs`
+helper can drive a real connection through dApp Kit's public API — no localStorage seeding, no
+pre-connect on load.
 See `ARCHITECTURE.md` for layer boundaries and `STYLE_GUIDE.md` for code-level patterns.
 
 ### Critical correctness fixes

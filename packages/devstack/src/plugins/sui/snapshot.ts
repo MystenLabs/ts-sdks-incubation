@@ -36,7 +36,7 @@
 // resolve to the SAME chain id — e.g. a caller wrapping their own
 // localnet reporting `sui:localnet`, identical to the in-container
 // validator. Without the `mode` key the guard would compare only
-// `{kind, chain}` and let a container-`local` snapshot restore against a
+// `{kind, chainId}` and let a container-`local` snapshot restore against a
 // `local-rpc` stack (and vice versa): restoring container chain-state
 // against an external RPC is a silent no-op masquerading as success.
 // With `mode` in the record the values differ on the `mode` key and the
@@ -62,7 +62,7 @@ export const makeSnapshotable = (
 	mode: SuiPluginMode,
 	app: string,
 	stack: string,
-	chain: string,
+	chainId: string,
 	hasIndexer: boolean,
 ): SnapshotableDecl => {
 	const labels = (role: string): ContainerLabelTuple => ({
@@ -91,7 +91,7 @@ export const makeSnapshotable = (
 					? [labels('validator'), labels(SUI_INDEXER_DB_ROLE)]
 					: [labels('validator')],
 				missingTolerance: 'fine',
-				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'local' as const, chain }),
+				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'local' as const, chainId }),
 				postRestore: Effect.void,
 			};
 		}
@@ -108,7 +108,7 @@ export const makeSnapshotable = (
 				kind: 'snapshotable',
 				subtrees: [],
 				missingTolerance: 'fine',
-				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode, chain }),
+				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode, chainId }),
 			};
 		}
 		case 'fork': {
@@ -121,7 +121,7 @@ export const makeSnapshotable = (
 				subtrees: ['sui-fork/'],
 				managedContainers: [labels('fork-validator')],
 				missingTolerance: 'fine',
-				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'fork' as const, chain }),
+				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'fork' as const, chainId }),
 			};
 		}
 	}

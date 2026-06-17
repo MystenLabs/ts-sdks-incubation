@@ -240,3 +240,11 @@ Live accounts should use the `signer` variant: pass a `Keypair` built from an en
 inline `suiprivkey1...` literal, or a hardware/KMS `Signer`. Fork replay accounts can use
 `impersonate`. The default ephemeral form is designed for local development, not custody of real
 assets.
+
+### Network-options policy
+
+Dev conveniences — `devWallet`, `faucet`, and `autoApproveSigning` — default **on** for every
+network, **except live mainnet**, where they are hard-clamped **off**. This keeps localnet, fork,
+and even live testnet ergonomic for development while ensuring a build pointed at live mainnet can
+never ship a dev wallet, a faucet, or auto-approved signing. The clamp is not opt-out: it applies
+whenever the resolved surface network is live mainnet.

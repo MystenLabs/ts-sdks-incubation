@@ -47,7 +47,7 @@ import { suiResource } from '../sui/index.ts';
 
 import type { SealObjectProbeKey } from './deploy.ts';
 import { sealPluginKey } from './plugin-key.ts';
-import { makeSealCodegenable, type SealBindings } from './codegen.ts';
+import { makeSealCodegenable, makeSealStaticCodegen, type SealBindings } from './codegen.ts';
 import { sealError, type SealError } from './errors.ts';
 import { validateForkKnownInputs, type ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
@@ -187,6 +187,10 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 		role: 'service',
 		section: 'service',
 		pluginKey: sealPluginKey(resolved.name),
+		// Stack-free codegen: the key-server object id / URL / committee are
+		// LOADED CONFIG DATA -- the committed `seal.ts` stub emits
+		// `resolveValue('seal:<name>', '<key>')`, never a baked object id.
+		staticCodegen: () => [makeSealStaticCodegen({ name: resolved.name, mode: 'local-keygen' })],
 		// `deps` auto-infers the resolved `{ sui, signer }` dependency
 		// object from seal's `dependsOn: { sui: suiResource, signer:
 		// opts.signer }`. `ctx` is the typed plugin-authoring surface the
@@ -217,7 +221,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				const stackPaths = yield* StackPathsService;
 				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
-				const probe = yield* chainProbeFor<SealObjectProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SealObjectProbeKey>(sui.chainId);
 
 				// Resolve the seal service dir from the per-stack paths
 				// bundle. The dir must exist before the key-server's
@@ -282,7 +286,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 					sdk: sui.sdk,
 					...(sui.buildImage !== null ? { buildImage: sui.buildImage } : {}),
 					chainProbe: probe,
-					chain: sui.chain,
+					chainId: sui.chainId,
 					servicePath,
 					containerName: `devstack-${identity.app}-${identity.stack}-seal-${resolved.name}-key-server`,
 					labels: {
@@ -360,6 +364,20 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		id: sealResource.id,
 		role: 'task',
 		section: 'service',
+		// Live mode resolves its `{objectId, keyServerUrl, serverConfigs}` tuple
+		// at factory time (DECLARED config) — bake them as literals in the
+		// committed `seal.ts` (mirrors `knownPackage`).
+		staticCodegen: () => [
+			makeSealStaticCodegen({
+				name,
+				mode: 'live',
+				known: {
+					objectId: bindings.objectId,
+					keyServerUrl: bindings.keyServerUrl,
+					serverConfigs: bindings.serverConfigs,
+				},
+			}),
+		],
 		// Live mode has no `dependsOn`, so `start` is zero-arg. `ctx`
 		// drives the contribution emission below; it arrives via the
 		// `PluginContext` service.
@@ -411,6 +429,22 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		id: sealResource.id,
 		role: 'task',
 		section: 'service',
+		// Fork-known mode resolves its `{objectId, keyServerUrl}` tuple at
+		// factory time (DECLARED config, via `validateForkKnownInputs`) — bake
+		// them as literals in the committed `seal.ts` (mirrors `knownPackage`).
+		// The committee `serverConfigs` is the single declared key-server (the
+		// same shape `acquireLive` derives), so it is declared config too.
+		staticCodegen: () => [
+			makeSealStaticCodegen({
+				name,
+				mode: 'fork-known',
+				known: {
+					objectId: validated.objectId,
+					keyServerUrl: validated.keyServerUrl,
+					serverConfigs: [{ objectId: validated.objectId, weight: 1 }],
+				},
+			}),
+		],
 		// Fork-known mode has no `dependsOn`, so `start` is zero-arg.
 		// `ctx` drives the contribution emission below; it arrives via the
 		// `PluginContext` service.

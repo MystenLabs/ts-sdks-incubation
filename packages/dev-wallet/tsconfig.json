@@ -2,6 +2,7 @@
 	"extends": "../../tsconfig.shared.json",
 	"include": ["src"],
 	"compilerOptions": {
+		"types": ["node"],
 		"noEmit": true,
 		"experimentalDecorators": true,
 		"useDefineForClassFields": false

@@ -34,11 +34,11 @@ const leaf = definePlugin({
 
 const localNetwork: NetworkConfig<'local'> = {
 	mode: 'local',
-	chain: 'demo:local',
+	chainId: 'demo:local',
 };
 const forkNetwork: NetworkConfig<'fork'> = {
 	mode: 'fork',
-	chain: 'demo:fork@1',
+	chainId: 'demo:fork@1',
 	checkpoint: '1',
 };
 

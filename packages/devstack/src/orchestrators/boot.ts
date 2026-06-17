@@ -81,6 +81,8 @@ import {
 	layerCodegenOrchestrator,
 	type Codegenable,
 } from './codegen/service.ts';
+import { CodegenWriteFailed } from './codegen/errors.ts';
+import { ID_CONFIG_FILENAME, writeIdConfig } from './codegen/id-config.ts';
 import {
 	DEFAULT_TRAEFIK_IMAGE,
 	layerDockerUpstreamResolver,
@@ -115,6 +117,7 @@ import {
 	type EndpointEntry,
 	type ManifestExtrasInput,
 } from '../substrate/manifest.ts';
+import { resolveNetworkOptions } from './network-options.ts';
 import { CoinRegistryService, layerCoinRegistry } from '../plugins/coin/registry.ts';
 import { PackageRegistryService, layerPackageRegistry } from '../plugins/package/registry.ts';
 
@@ -311,51 +314,72 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
 
 export interface ProductionCodegenOptions {
 	readonly appRoot?: string;
-	readonly outputDir?: string;
-	readonly stackSubdir?: string | null;
 	/** Resolved absolute path to the dev-only + secret `generated-extras`
 	 *  tree for this stack, threaded into `CodegenRoot.extrasDir` and
 	 *  recorded in the manifest as `codegen.extrasDir` for the
-	 *  `@devstack-dev` Vite alias. */
+	 *  `@devstack-dev` Vite alias. This is the ONLY tree boot's codegen
+	 *  writes (`emitExtras`); boot never emits the committed `src/generated`
+	 *  tree, so it pins no live `outputDir` — the `CodegenRoot.outputDir`
+	 *  the production path carries is an unwritten default. The committed
+	 *  tree is owned solely by the stack-free `codegen` verb (wired
+	 *  separately, where it resolves its own output path). */
 	readonly extrasDir?: string;
+	/** Forwarded verbatim to `@mysten/codegen`'s
+	 *  `generateFromPackageSummary` via `layerMystenMoveCodegen` — see
+	 *  `DevstackOptions['codegen']` for the full contract. Default `false`
+	 *  (`@mysten/codegen`'s own default): phantom-only structs render as
+	 *  consts with the phantom placeholder baked into `.name`; `true`
+	 *  renders them as factories whose required type arguments compose a
+	 *  fully-qualified type tag. */
+	readonly includePhantomTypeParameters?: boolean;
 }
 
 /**
  * The ONE boot seam that maps a stack's codegen config to the production
- * codegen orchestrator options. Both composition entry points
- * (`api/run-stack.ts` and `orchestrators/layers.ts`) call this so
- * the primary-vs-secondary output-dir branch (via `resolveCodegenOutput`)
- * is wired exactly once: primary run → `<appRoot>/src/generated`; a
- * secondary `--stack` run → `<appRoot>/.devstack/stacks/<stack>/generated`,
- * so the two never clobber. The resolved literal `outputDir`/`stackSubdir`/
- * `extrasDir` flow into `layerProductionOrchestrators({ codegen })`
- * unchanged — `paths.ts` keeps consuming literals (minimal blast radius).
+ * codegen orchestrator options for a LIVE (`'ran'`) projection. Both
+ * composition entry points (`api/run-stack.ts` and `orchestrators/layers.ts`)
+ * call this so the live output-dir decision (via `resolveCodegenOutput`)
+ * is wired exactly once: EVERY live run — including what used to be the
+ * "primary" stack — emits into `<appRoot>/.devstack/stacks/<stack>/generated`,
+ * so the id-bearing live tree never lands in the committed source tree and
+ * two stacks never clobber. The committed `src/generated` tree is owned
+ * solely by the stack-free `codegen` verb. The resolved literal
+ * `outputDir`/`stackSubdir`/`extrasDir` flow into
+ * `layerProductionOrchestrators({ codegen })` unchanged — `paths.ts` keeps
+ * consuming literals (minimal blast radius).
  *
  * The per-stack inputs: the app root, the resolved effective stack
  * (already through the explicit-`--stack` > `config.stackName` > inferred
- * ladder), the config's declared primary `stackName`, and the app's
- * optional explicit `codegen` pins.
+ * ladder), and the app's optional explicit `codegen` pins.
  */
 export const resolveProductionCodegenOptions = (input: {
 	readonly appRoot: string;
 	readonly effectiveStack: string;
-	readonly primaryStack: string | undefined;
 	readonly codegen?:
-		| { readonly outputDir?: string; readonly stackSubdir?: string | null }
+		| {
+				readonly includePhantomTypeParameters?: boolean;
+		  }
 		| undefined;
 }): ProductionCodegenOptions => {
+	// Every live run resolves its dev tree to
+	// `<appRoot>/.devstack/stacks/<stack>/generated-extras` (the default
+	// rule). Nothing is ever emitted into the live `generated` tree at boot
+	// (boot writes only the per-stack `generated-extras` overlay +
+	// `devstack-ids.json`), so there is no live `outputDir` to resolve — the
+	// committed `src/generated` tree is owned solely by the stack-free
+	// `codegen` verb (wired separately).
 	const resolved = resolveCodegenOutput({
 		appRoot: input.appRoot,
 		effectiveStack: input.effectiveStack,
-		primaryStack: input.primaryStack,
-		explicitOutputDir: input.codegen?.outputDir,
-		explicitStackSubdir: input.codegen?.stackSubdir ?? null,
 	});
 	return {
 		appRoot: input.appRoot,
-		outputDir: resolved.outputDir,
-		stackSubdir: resolved.stackSubdir,
 		extrasDir: resolved.extrasDir,
+		// Pass-through verbatim — no resolution step; "unset" stays unset so
+		// `@mysten/codegen`'s own default (false) applies at the call site.
+		...(input.codegen?.includePhantomTypeParameters === undefined
+			? {}
+			: { includePhantomTypeParameters: input.codegen.includePhantomTypeParameters }),
 	};
 };
 
@@ -410,10 +434,14 @@ export const layerManifestEndpointRegistry: Layer.Layer<ManifestEndpointRegistry
 export const productionRouterProfile = (options: DefaultRouterProfileOptions = {}): RouterProfile =>
 	makeDefaultRouterProfile(options);
 
-const productionCodegenOutputDir = (appRoot: string, outputDir: string | undefined): string => {
-	const target = outputDir ?? 'src/generated';
-	return isAbsolute(target) ? target : resolve(appRoot, target);
-};
+/** `outputDir` for the `CodegenRoot` of a `layerProductionOrchestrators`
+ *  composition. The production codegen path NEVER emits the committed
+ *  `src/generated` tree (boot writes only `generated-extras` via
+ *  `emitExtras`), so this directory is never written — it only has to wire
+ *  a valid, non-crashing `CodegenRoot`. It resolves to `<appRoot>/src/generated`
+ *  by convention. The committed tree is owned solely by the stack-free
+ *  `codegen` verb (wired separately, where it pins its own output path). */
+const productionCodegenOutputDir = (appRoot: string): string => resolve(appRoot, 'src/generated');
 
 /** Fallback `generated-extras` dir for the cold-start / no-config
  *  composition path (`buildDirectSnapshotLayers`). Callers that know
@@ -451,11 +479,8 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 		layerCodegenPaths.pipe(
 			Layer.provideMerge(
 				layerCodegenRoot({
-					outputDir: productionCodegenOutputDir(
-						router.codegen?.appRoot ?? process.cwd(),
-						router.codegen?.outputDir,
-					),
-					stackSubdir: router.codegen?.stackSubdir ?? null,
+					outputDir: productionCodegenOutputDir(router.codegen?.appRoot ?? process.cwd()),
+					stackSubdir: null,
 					extrasDir: productionCodegenExtrasDir(
 						router.codegen?.appRoot ?? process.cwd(),
 						router.codegen?.extrasDir,
@@ -464,7 +489,9 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 			),
 		),
 		layerSuiMoveSummaryRunnerDocker,
-		layerMystenMoveCodegen,
+		layerMystenMoveCodegen({
+			includePhantomTypeParameters: router.codegen?.includePhantomTypeParameters,
+		}),
 	);
 };
 
@@ -684,28 +711,33 @@ const operationalManifestEndpointEntries = (
 };
 
 export const buildProductionPostAcquireHook = (
-	options: { readonly extras?: ManifestExtrasInput } = {},
+	options: {
+		readonly extras?: ManifestExtrasInput;
+		readonly networkOptions?: Readonly<Record<string, unknown>>;
+	} = {},
 ): Effect.Effect<
 	SupervisorPostAcquireHook,
 	never,
 	| CodegenOrchestratorService
 	| CodegenPathsService
-	| MoveSummaryRunnerService
-	| MoveCodegenService
 	| FileSystem.FileSystem
 	| StackPathsService
 	| PostAcquireTasksService
 	| ManifestEndpointRegistryService
+	| MoveSummaryRunnerService
+	| MoveCodegenService
 > =>
 	Effect.gen(function* () {
 		const codegen = yield* CodegenOrchestratorService;
 		const paths = yield* CodegenPathsService;
-		const summaryRunner = yield* MoveSummaryRunnerService;
-		const moveCodegen = yield* MoveCodegenService;
 		const fs = yield* FileSystem.FileSystem;
 		const stackPaths = yield* StackPathsService;
 		const postAcquireTasks = yield* PostAcquireTasksService;
 		const manifestEndpoints = yield* ManifestEndpointRegistryService;
+		// Yielded here (outside the per-ctx hook) so the conditional
+		// `generated-extras` flush below can provide them to `emitExtras`.
+		const moveRunner = yield* MoveSummaryRunnerService;
+		const moveCodegen = yield* MoveCodegenService;
 		return (ctx) =>
 			Effect.gen(function* () {
 				const extras = yield* resolveManifestExtras(options.extras, makeManifestExtrasContext(ctx));
@@ -714,35 +746,66 @@ export const buildProductionPostAcquireHook = (
 					...routableEndpoints,
 					...operationalManifestEndpointEntries(ctx, routableEndpoints),
 				];
+				// Boot no longer runs codegen. Its only job is to PRODUCE the
+				// id-config (loadable on-chain ids), which the Vite plugin injects
+				// via `__DEVSTACK_IDS__` in dev. The committed `src/generated` tree
+				// is written ONLY by the stack-free `devstack codegen` verb.
+				// Assemble the id-config from the SAME live-resolved contributions
+				// that fed `config.ts` and write it to the gitignored
+				// `.devstack/stacks/<stack>/`.
+				const idConfig = yield* codegen.assembleIdConfig(String(ctx.identity.network)).pipe(
+					Effect.mapError(
+						(cause) =>
+							new CodegenWriteFailed({
+								outputPath: ID_CONFIG_FILENAME,
+								stage: 'write',
+								cause,
+							}),
+					),
+				);
+				const idsFile = join(stackPaths.stackRoot, ID_CONFIG_FILENAME);
+				yield* writeIdConfig(idsFile, idConfig).pipe(
+					Effect.provideService(FileSystem.FileSystem, fs),
+				);
 				const envelope = yield* buildEnvelope({
 					identity: {
 						app: ctx.identity.app,
 						stack: ctx.identity.stack,
-						chain: ctx.identity.chain,
+						network: ctx.identity.network,
 					},
 					endpoints,
 					extras,
-					// Record the EXACT dirs codegen emits into for this stack so
-					// the read-side `@generated` / `@devstack-dev` aliases (the
-					// Vite plugin) point where the files actually are — one
-					// decision, one source of truth. `paths.outputDir` is the
-					// resolved, stack-subdir-applied absolute path the runtime tree
-					// writes to; `paths.extrasDir` is the dev-only
-					// `generated-extras` tree the `@devstack-dev` alias resolves.
-					codegen: { generatedDir: paths.outputDir, extrasDir: paths.extrasDir },
+					// Record the dev-only `generated-extras` tree the
+					// `@devstack-dev` Vite alias resolves and the live `idsFile`
+					// the plugin injects as `__DEVSTACK_IDS__` — one decision, one
+					// source of truth. Bindings are NOT recorded: `@generated`
+					// always resolves to the committed `src/generated` tree written
+					// by the stack-free `codegen` verb.
+					codegen: { extrasDir: paths.extrasDir, idsFile },
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');
 				yield* writeManifest(envelope, manifestPath).pipe(
 					Effect.provideService(FileSystem.FileSystem, fs),
 				);
-				const result = yield* codegen
-					.runCycle()
-					.pipe(
-						Effect.provideService(CodegenPathsService, paths),
-						Effect.provideService(MoveSummaryRunnerService, summaryRunner),
-						Effect.provideService(MoveCodegenService, moveCodegen),
-						Effect.provideService(FileSystem.FileSystem, fs),
-					);
+				// Conditionally flush the dev-only `generated-extras` tree
+				// (dev wallet + accounts) — the ONE acquire-resolved surface the
+				// stack-free `codegen` verb can't produce. Gated on the resolved
+				// network's `devWallet` flag (per-network options, ON for every
+				// network except live `mainnet`). When off, nothing is written
+				// and the Vite plugin's `@devstack-dev` `load` hook no-ops.
+				const netOpts = resolveNetworkOptions(ctx.identity.network, options.networkOptions);
+				const extrasFiles: string[] = [];
+				if (netOpts.devWallet) {
+					const extras = yield* codegen
+						.emitExtras()
+						.pipe(
+							Effect.provideService(FileSystem.FileSystem, fs),
+							Effect.provideService(CodegenPathsService, paths),
+							Effect.provideService(MoveSummaryRunnerService, moveRunner),
+							Effect.provideService(MoveCodegenService, moveCodegen),
+						);
+					extrasFiles.push(...extras.filesWritten, ...extras.filesChmod);
+				}
 				yield* postAcquireTasks.runAll;
 				return [
 					{
@@ -752,11 +815,7 @@ export const buildProductionPostAcquireHook = (
 					},
 					{
 						tag: 'codegen.emitted' as const,
-						files: [
-							...result.filesWritten,
-							...result.filesChmod,
-							...(result.bindings?.filesWritten ?? []),
-						],
+						files: [idsFile, ...extrasFiles],
 						at: Date.now(),
 					},
 				];
@@ -821,6 +880,11 @@ export interface ProductionBootOptions<HookR = Scope.Scope, HookE = never, Exten
 	/** Threaded into `buildProductionPostAcquireHook` — the stack's manifest
 	 *  `extras`. All three callers pass `stack.options.extras`. */
 	readonly extras?: ManifestExtrasInput;
+	/** Threaded into `buildProductionPostAcquireHook` — the stack's
+	 *  per-network options. The hook resolves the active network's slice to
+	 *  decide whether to flush the dev-only `generated-extras` tree. All
+	 *  three callers pass `stack.options.networkOptions`. */
+	readonly networkOptions?: Readonly<Record<string, unknown>>;
 	/** The resolved supervisor command handler (run-stack's snapshot bridge).
 	 *  One-shot verbs run no command loop, so they pass nothing. */
 	readonly commandHandler?: SupervisorCommandHandler;
@@ -868,9 +932,10 @@ export const superviseStackWithProductionBoot = <
 ) =>
 	Effect.gen(function* () {
 		const contributionDispatcher = yield* buildProductionContributionDispatcher();
-		const postAcquireHook = yield* buildProductionPostAcquireHook(
-			opts.extras === undefined ? {} : { extras: opts.extras },
-		);
+		const postAcquireHook = yield* buildProductionPostAcquireHook({
+			...(opts.extras === undefined ? {} : { extras: opts.extras }),
+			...(opts.networkOptions === undefined ? {} : { networkOptions: opts.networkOptions }),
+		});
 		yield* superviseStackEffect(stack, identity, state, {
 			contributionDispatcher,
 			postAcquireHook,

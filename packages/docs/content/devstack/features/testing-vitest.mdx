@@ -59,5 +59,24 @@ test('has a wallet endpoint', () => {
 ```
 
 The helpers do not boot a supervisor by themselves. Start one with `devstack up`, or run
-`devstack apply` before tests that only need generated files and a manifest. If a matching
-supervisor is already live, `apply` reuses it instead of starting a second stack.
+`devstack apply` before tests that only need an ids file and a manifest. If a matching supervisor is
+already live, `apply` reuses it instead of starting a second stack.
+
+## How live ids reach a test
+
+The committed `src/generated` tree is id-free — every on-chain value is a resolver call that reads
+the build-injected `__DEVSTACK_IDS__` global (see [Codegen](/devstack/features/codegen)). Under
+Vitest there is a timing problem: Vite's `define` evaluates `__DEVSTACK_IDS__` **before**
+`globalSetup` boots the stack, so it bakes to `null` in the Node test environment.
+
+The handoff closes that gap:
+
+1. Vitest's `globalSetup` boots the stack and publishes the booted stack's ids-file path as
+   `process.env.DEVSTACK_IDS_FILE`.
+2. The generated `config-runtime.ts` carries a Node-only lazy fallback: when `__DEVSTACK_IDS__` is
+   `null` and `process.env.DEVSTACK_IDS_FILE` is set, it reads that file the first time a resolver
+   is called.
+
+The net effect is that resolver calls inside a test pick up the **live** ids of the stack that
+`globalSetup` booted, with no extra wiring. This fallback is Node-only; the browser build still
+relies on the injected `__DEVSTACK_IDS__` value.

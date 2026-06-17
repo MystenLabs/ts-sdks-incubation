@@ -229,7 +229,7 @@ export function App() {
 									{network}
 								</span>
 								<span className="font-mono" data-testid="localnet-chain">
-									{shortId(networkEndpoints.chain, 8, 6)}
+									{shortId(networkEndpoints.chainId ?? 'unknown', 8, 6)}
 								</span>
 								<span className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
 									local DeepBook

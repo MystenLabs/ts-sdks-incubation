@@ -74,7 +74,7 @@ const stubSdk = (executeResult: unknown) => ({
 
 const registerInputs: RegisterKeyServerInputs = {
 	name: 'seal',
-	chain: 'localnet',
+	chainId: 'localnet',
 	signer: stubSigner,
 	sdk: stubSdk(undefined),
 	chainProbe: stubChainProbe,

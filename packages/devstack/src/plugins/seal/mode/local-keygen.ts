@@ -139,7 +139,7 @@ export interface LocalKeygenDeps {
 	readonly sdk: SealSuiSdk;
 	readonly buildImage?: ImageRef;
 	readonly chainProbe: ChainProbe<SealObjectProbeKey>;
-	readonly chain: string;
+	readonly chainId: string;
 	/** Per-stack on-disk dir under `runtime/seal/`. Host path for the
 	 *  config yaml + master-key env-file. */
 	readonly servicePath: string;
@@ -343,7 +343,7 @@ const ensureLocalKeygenArtifacts = (
 		const movePackagePath = yield* resolveMovePackagePath(deps, opts);
 		const { packageId } = yield* publishSealPackage(deps.publisher, {
 			name: opts.name,
-			chain: deps.chain,
+			chainId: deps.chainId,
 			movePackagePath,
 			signer: deps.signer,
 			sdk: deps.sdk,
@@ -353,7 +353,7 @@ const ensureLocalKeygenArtifacts = (
 		});
 		const { objectId: keyServerObjectId } = yield* registerKeyServer(deps.publisher, {
 			name: opts.name,
-			chain: deps.chain,
+			chainId: deps.chainId,
 			keyServerUrl: deps.routedUrl,
 			sealPackageId: packageId,
 			publicKeyHex: publicKey,

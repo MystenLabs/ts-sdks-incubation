@@ -9,6 +9,7 @@ import {
 	discoverManifestPath,
 	discoverSingleStackManifestPath,
 	ManifestDiscoveryError,
+	resolveDiscoveryEnv,
 } from '../../../src/build-integrations/runtime/index.ts';
 import { withTempRootSync } from '../../helpers/with-temp-root.ts';
 
@@ -113,10 +114,24 @@ describe('discoverManifestPath', () => {
 			expect(discoverManifestPath({ cwd: tmp })).toBe(path);
 		}));
 
-	it('does not infer stack selection from package metadata when DEVSTACK_STACK is unset', () =>
+	it('infers stack selection from package metadata when explicit + env rungs miss', () =>
+		withTempRootSync('devstack-discover', (tmp) => {
+			// The CLI's `resolveStackName` names a bare app's stack after the
+			// nearest package.json `name`, so discovery must apply the same
+			// ladder — otherwise `pnpm test` looks for a 'main' manifest the
+			// supervisor never wrote.
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@scope/wallet-demo' }));
+			makeStackManifest(tmp, 'main'); // decoy at the old hard-default
+			const path = makeStackManifest(tmp, 'wallet-demo');
+			expect(discoverManifestPath({ cwd: tmp })).toBe(path);
+		}));
+
+	it('DEVSTACK_STACK wins over package-metadata stack inference', () =>
 		withTempRootSync('devstack-discover', (tmp) => {
 			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@scope/wallet-demo' }));
-			const path = makeStackManifest(tmp, 'main');
+			makeStackManifest(tmp, 'wallet-demo'); // decoy — must NOT be picked
+			const path = makeStackManifest(tmp, 'feature-x');
+			process.env.DEVSTACK_STACK = 'feature-x';
 			expect(discoverManifestPath({ cwd: tmp })).toBe(path);
 		}));
 
@@ -202,6 +217,54 @@ describe('discoverManifestPath', () => {
 				expect(discoverManifestPath({ override: overridePath })).toBe(envPath);
 			}),
 		));
+});
+
+describe('resolveDiscoveryEnv stack ladder', () => {
+	// The package-name rung mirrors the CLI's `resolveStackName`
+	// (explicit > $DEVSTACK_STACK > package name > 'main') and is opt-in
+	// via `cwd`. Env bags are passed explicitly so process.env never
+	// leaks in.
+
+	it('cwd with a package.json name and no env/explicit → stack = package name', () =>
+		withTempRootSync('devstack-ladder', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@scope/smoke-app' }));
+			expect(resolveDiscoveryEnv({}, { cwd: tmp }).stack).toBe('smoke-app');
+		}));
+
+	it('walks up from a nested cwd to the nearest package.json name', () =>
+		withTempRootSync('devstack-ladder', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'smoke-app' }));
+			const nested = join(tmp, 'src', 'deep');
+			mkdirSync(nested, { recursive: true });
+			expect(resolveDiscoveryEnv({}, { cwd: nested }).stack).toBe('smoke-app');
+		}));
+
+	it('$DEVSTACK_STACK wins over the package name', () =>
+		withTempRootSync('devstack-ladder', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'smoke-app' }));
+			expect(resolveDiscoveryEnv({ DEVSTACK_STACK: 'from-env' }, { cwd: tmp }).stack).toBe(
+				'from-env',
+			);
+		}));
+
+	it('explicit option wins over env and package name', () =>
+		withTempRootSync('devstack-ladder', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'smoke-app' }));
+			expect(
+				resolveDiscoveryEnv({ DEVSTACK_STACK: 'from-env' }, { stack: 'explicit', cwd: tmp }).stack,
+			).toBe('explicit');
+		}));
+
+	it("no cwd option → exactly the old ladder ('main'), even with a package.json on disk", () =>
+		withTempRootSync('devstack-ladder', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'smoke-app' }));
+			expect(resolveDiscoveryEnv({}).stack).toBe('main');
+		}));
+
+	it("cwd whose walk-up finds no package.json → 'main'", () =>
+		withTempRootSync('devstack-ladder', (tmp) => {
+			expect(resolveDiscoveryEnv({}, { cwd: tmp }).stack).toBe('main');
+		}));
 });
 
 describe('discoverSingleStackManifestPath', () => {

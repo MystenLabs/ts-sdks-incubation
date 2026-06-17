@@ -19,6 +19,9 @@ import * as publicRoot from '../../../src/index.ts';
 import { isPlugin } from '../../../src/substrate/plugin.ts';
 import type { CodegenEmitContext, CodegenEmitDone } from '../../../src/contracts/codegenable.ts';
 import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
+import type { Identity } from '../../../src/substrate/identity.ts';
+
+const TEST_IDENTITY = { app: 'deepbook-test', stack: 'main', network: 'localnet' } as Identity;
 
 const TESTNET_PYTH = {
 	packageId: null,
@@ -121,7 +124,7 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			packageId: '0xpkg',
 			registryId: '0xreg',
-			chain: 'sui:testnet',
+			network: 'testnet',
 		});
 		expect(member.role).toBe('task');
 		expect(member.id).toMatch(/^deepbook\//);
@@ -145,9 +148,9 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { provide } = makeTestPluginCtx();
+		const { provide } = makeTestPluginCtx({ identity: TEST_IDENTITY });
 		const resolved = Effect.runSync(
-			provide(member.start([{ chain: 'sui:local' } as never])) as Effect.Effect<
+			provide(member.start([{ chainId: 'sui:localnet' } as never])) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
@@ -156,7 +159,7 @@ describe('deepbook(opts) — primary factory', () => {
 
 		expect(resolved).toMatchObject({
 			mode: 'known',
-			chain: 'sui:testnet',
+			network: 'testnet',
 			packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
 			registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
 			adminCapId: null,
@@ -169,46 +172,57 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { provide, captured } = makeTestPluginCtx();
+		const { provide, captured } = makeTestPluginCtx({ identity: TEST_IDENTITY });
 		Effect.runSync(
-			provide(member.start([{ chain: 'sui:local' } as never])) as Effect.Effect<
+			provide(member.start([{ chainId: 'sui:localnet' } as never])) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
 			>,
 		);
 		// Name-keyed sibling aggregate: emitter is `deepbook/<name>`
-		// (default name `deepbook`); the export key is the instance name.
+		// (default name `deepbook`); the LIVE value is folded through the
+		// `deepbook.ts` aggregate projection (rooted under the instance key),
+		// not a bare `exportConst` — the unified config-binding derivation
+		// routes the resolved value into `aggregate.project`.
 		const codegen = captured.codegen.find((cap) => cap.emitterName === 'deepbook/deepbook') as
 			| {
 					readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
+					readonly aggregate?: {
+						readonly project: (
+							exported: Readonly<Record<string, unknown>>,
+						) => Readonly<Record<string, unknown>> | null;
+					};
 			  }
 			| undefined;
 		expect(codegen).toBeDefined();
 
-		const emitted: {
-			deepbook?: {
-				readonly pyth: {
-					readonly packageId: string | null;
-					readonly stateId: string | null;
-					readonly wormholeStateId: string | null;
-					readonly feeds: ReadonlyArray<unknown>;
-				} | null;
-			};
-		} = {};
+		// Run the emit (drives the placeholder export) then read the LIVE
+		// projection — the resolved `deepbook` entry is keyed under its
+		// instance name in the `deepbook.ts` bucket.
+		const exports: Record<string, unknown> = {};
 		Effect.runSync(
 			codegen!.emit({
 				exportConst: (name, value) => {
-					// Export key == instance name (`deepbook`).
-					if (name === 'deepbook') {
-						emitted.deepbook = value as typeof emitted.deepbook;
-					}
+					exports[name] = value;
 				},
 				importStatement: () => {},
 				done: () => ({ _tag: 'CodegenEmitDone' }),
 			}),
 		);
-		expect(emitted.deepbook?.pyth).toEqual({
+		const projected = codegen!.aggregate?.project(exports) as
+			| {
+					readonly deepbook?: {
+						readonly pyth: {
+							readonly packageId: string | null;
+							readonly stateId: string | null;
+							readonly wormholeStateId: string | null;
+							readonly feeds: ReadonlyArray<unknown>;
+						} | null;
+					};
+			  }
+			| undefined;
+		expect(projected?.deepbook?.pyth).toEqual({
 			packageId: TESTNET_PYTH.packageId,
 			stateId: TESTNET_PYTH.stateId,
 			wormholeStateId: TESTNET_PYTH.wormholeStateId,
@@ -221,10 +235,10 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { provide, captured } = makeTestPluginCtx();
+		const { provide, captured } = makeTestPluginCtx({ identity: TEST_IDENTITY });
 		Effect.runSync(
 			provide(
-				member.start([{ chain: 'sui:testnet', sdk: { client: {} } } as never]),
+				member.start([{ chainId: 'sui:testnet', sdk: { client: {} } } as never]),
 			) as Effect.Effect<DeepbookResolved, unknown, never>,
 		);
 		const strategy = captured.provides.find(
@@ -244,7 +258,7 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			packageId: '0xpkg',
 			registryId: '0xreg',
-			chain: 'sui:testnet',
+			network: 'testnet',
 			name: 'arena',
 		});
 		expect(member.id).toBe('deepbook/arena');
@@ -253,7 +267,7 @@ describe('deepbook(opts) — primary factory', () => {
 
 describe('deepbookFor(network) — mode-narrowed namespace', () => {
 	it('exposes `.local`, `.override`, and `.known` on a local network', () => {
-		const network = { mode: 'local' as const, chain: 'sui:localnet' };
+		const network = { mode: 'local' as const, chainId: 'sui:localnet' };
 		const factories = deepbookFor(network);
 		expect(typeof factories.local).toBe('function');
 		expect(typeof factories.override).toBe('function');
@@ -261,7 +275,7 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 	});
 
 	it('exposes `.known` only on a live network', () => {
-		const network = { mode: 'live' as const, chain: 'sui:testnet' };
+		const network = { mode: 'live' as const, chainId: 'sui:testnet' };
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
 		expect((factories as { local?: unknown }).local).toBeUndefined();
@@ -271,7 +285,7 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 	it('exposes `.known` only on a fork network', () => {
 		const network = {
 			mode: 'fork' as const,
-			chain: 'sui:mainnet-fork',
+			chainId: 'sui:mainnet-fork',
 			upstream: 'mainnet' as const,
 		};
 		const factories = deepbookFor(network);

@@ -37,7 +37,7 @@ import { definePlugin } from '../../../../src/substrate/plugin.ts';
 const identity: Identity = {
 	app: appName('snapshot-restore-test-app'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 // A command handler standing in for the injected snapshot L3 handler.

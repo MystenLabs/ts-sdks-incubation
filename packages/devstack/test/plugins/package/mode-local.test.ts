@@ -49,7 +49,7 @@ const transientProbe = (
 									(cause): ChainProbeError => ({
 										_tag: 'ChainProbeError',
 										reason: 'decode-failed',
-										chain: 'sui:localnet',
+										chainId: 'sui:localnet',
 										detail: String(cause),
 									}),
 								),
@@ -102,7 +102,7 @@ describe('local package mode', () => {
 					Effect.fail({
 						_tag: 'ChainProbeError',
 						reason: 'decode-failed',
-						chain: 'sui:localnet',
+						chainId: 'sui:localnet',
 						detail: 'bad shape',
 					} satisfies ChainProbeError).pipe(
 						Effect.tapError(() =>

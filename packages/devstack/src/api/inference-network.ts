@@ -3,13 +3,16 @@ import { dirname, resolve } from 'node:path';
 
 import { Effect } from 'effect';
 
-import { DEFAULT_DISCOVERY_STACK } from '../build-integrations/runtime/resolve-discovery-env.ts';
-
-/** Canonical default stack name (`'main'`). Single source of truth lives
- *  in the discovery ladder's `DEFAULT_DISCOVERY_STACK`; re-exported here
- *  (and from the vitest env module) so all entry points agree on one
- *  literal. */
-export const DEFAULT_STACK_NAME = DEFAULT_DISCOVERY_STACK;
+/** Canonical default stack name (`'main'`). The literal's single source
+ *  of truth lives HERE: the discovery ladder
+ *  (`build-integrations/runtime/resolve-discovery-env.ts`) imports
+ *  `inferPackageNameFromCwd` from this module for its package-name
+ *  rung, so this module must not import the ladder's consts back — a
+ *  two-way top-level-const read would TDZ-crash under one import
+ *  order. The ladder re-exports this value as `DEFAULT_DISCOVERY_STACK`
+ *  (and the vitest env module as its own `DEFAULT_STACK_NAME`) so all
+ *  entry points still agree on one literal. */
+export const DEFAULT_STACK_NAME = 'main';
 
 export interface StackNameResolutionOptions {
 	readonly explicit?: string;
@@ -114,6 +117,14 @@ export type ForkDevstackNetworkName = (typeof FORK_DEVSTACK_NETWORK_NAMES)[numbe
 export type DevstackNetworkName = (typeof DEVSTACK_NETWORK_NAMES)[number];
 export type LiveDevstackNetworkName = 'testnet' | 'mainnet' | 'devnet';
 
+/** The network every local stack actually runs, and the active key in the
+ *  generated `config.ts` (`config.network`, `networks.<key>`, each package's
+ *  `byNetwork.<key>`). A fork runs on a local node too, so this is `localnet`
+ *  for every mode — the fork's upstream identity lives separately in the
+ *  network entry's `forkUpstream`. The sui and package codegen contributions
+ *  share this one literal so their active-network keys can never drift. */
+export const LOCAL_NETWORK_NAME = 'localnet' satisfies DevstackNetworkName;
+
 export type ParsedDevstackNetwork =
 	| {
 			readonly mode: 'local';
@@ -130,24 +141,19 @@ export type ParsedDevstackNetwork =
 			readonly upstream: LiveDevstackNetworkName;
 	  };
 
-const NETWORK_ALIASES: Readonly<Record<string, DevstackNetworkName>> = {
-	local: 'localnet',
-	localnet: 'localnet',
-	'sui:local': 'localnet',
-	'sui:localnet': 'localnet',
-	testnet: 'testnet',
-	'sui:testnet': 'testnet',
-	mainnet: 'mainnet',
-	'sui:mainnet': 'mainnet',
-	devnet: 'devnet',
-	'sui:devnet': 'devnet',
-	'testnet-fork': 'testnet-fork',
-	'sui:testnet-fork': 'testnet-fork',
-	'mainnet-fork': 'mainnet-fork',
-	'sui:mainnet-fork': 'mainnet-fork',
-	'devnet-fork': 'devnet-fork',
-	'sui:devnet-fork': 'devnet-fork',
-};
+/** Canonical network names accepted as input. There is no alias table:
+ *  a network has ONE spelling (`localnet`, `testnet`, …). The chain id is
+ *  that name with a `sui:` prefix (see {@link chainIdForNetwork}); the reverse
+ *  is stripping the prefix (see {@link networkNameFromChain}). */
+const NETWORK_NAME_SET: ReadonlySet<string> = new Set(DEVSTACK_NETWORK_NAMES);
+
+/** The sole network→chain mapping: prefix the canonical name with `sui:`.
+ *  `localnet` → `sui:localnet`, `testnet` → `sui:testnet`. No lookup table. */
+export const chainIdForNetwork = (name: DevstackNetworkName): string => `sui:${name}`;
+
+/** Inverse of {@link chainIdForNetwork}: strip the `sui:` prefix to recover the
+ *  network name. Returns the input unchanged if it carries no prefix. */
+export const networkNameFromChain = (chain: string): string => chain.replace(/^sui:/, '');
 
 export class DevstackNetworkParseError extends Error {
 	readonly _tag = 'DevstackNetworkParseError';
@@ -171,10 +177,11 @@ export const parseDevstackNetwork = (
 	source = 'DEVSTACK_NETWORK',
 ): ParsedDevstackNetwork => {
 	const raw = value?.trim();
-	const name = raw === undefined || raw.length === 0 ? 'localnet' : NETWORK_ALIASES[raw];
-	if (name === undefined) {
+	const candidate = raw === undefined || raw.length === 0 ? 'localnet' : raw;
+	if (!NETWORK_NAME_SET.has(candidate)) {
 		throw new DevstackNetworkParseError({ value: raw ?? '', source });
 	}
+	const name = candidate as DevstackNetworkName;
 	switch (name) {
 		case 'localnet':
 			return { mode: 'local', name };
@@ -219,22 +226,18 @@ export interface ResolveNetworkOptions {
 	readonly envSource?: string;
 }
 
-/** Default value when neither caller nor env provides one. Kept as a
- *  string (not a `ParsedDevstackNetwork`) because every call site folds
- *  it through `parseDevstackNetwork` first — keeping the default in the
- *  same lookup table the env value flows through avoids two source-of-
- *  truth shapes for "what is the default network?". */
-export const DEFAULT_DEVSTACK_NETWORK = 'sui:local' as const;
+/** Default network when neither caller nor env provides one — the canonical
+ *  name (not a chain id or a `ParsedDevstackNetwork`), because every call site
+ *  folds it through `parseDevstackNetwork` first, exactly like an env value. */
+export const DEFAULT_DEVSTACK_NETWORK = 'localnet' as const;
 
 /**
- * Result shape — both the typed parse AND the original input string the
- * resolver picked. Consumers that thread the value through chain-keyed
- * caches (the substrate folds chain id into cache namespaces) MUST keep
- * the raw form to preserve existing on-disk cache keys; consumers that
- * branch on mode (local/live/fork) read `parsed`.
+ * Result shape — the typed parse of the network the resolver picked.
+ * Consumers branch on `parsed.mode` (local/live/fork) or derive the chain id
+ * via `chainIdForNetwork(parsed.name)`; there is no second "raw spelling"
+ * field, because the chain id is canonical and never depends on input form.
  */
 export interface ResolvedDevstackNetwork {
-	readonly raw: string;
 	readonly parsed: ParsedDevstackNetwork;
 }
 
@@ -268,7 +271,7 @@ export const resolveNetwork = (
 	Effect.try({
 		try: (): ResolvedDevstackNetwork => {
 			const { value, source } = pickInput(options);
-			return { raw: value, parsed: parseDevstackNetwork(value, source) };
+			return { parsed: parseDevstackNetwork(value, source) };
 		},
 		catch: (cause) => cause as DevstackNetworkParseError,
 	});
@@ -283,7 +286,7 @@ export const resolveNetworkSync = (
 	options: ResolveNetworkOptions = {},
 ): ResolvedDevstackNetwork => {
 	const { value, source } = pickInput(options);
-	return { raw: value, parsed: parseDevstackNetwork(value, source) };
+	return { parsed: parseDevstackNetwork(value, source) };
 };
 
 // ---------------------------------------------------------------------------

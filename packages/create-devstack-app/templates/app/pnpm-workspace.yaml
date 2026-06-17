@@ -1,0 +1,11 @@
+# Approve the native build scripts these deps ship, so `pnpm install` /
+# `pnpm dev` don't fail with ERR_PNPM_IGNORED_BUILDS.
+#
+# pnpm 11+ reads this `allowBuilds` map from here (it no longer reads the
+# `pnpm` field in package.json). pnpm 10 reads the mirrored
+# `pnpm.onlyBuiltDependencies` list in package.json instead and ignores this
+# key. Keeping both means a clean install on either pnpm version.
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: true

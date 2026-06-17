@@ -122,7 +122,7 @@ const seedManifest = (runtimeRoot: string): void => {
 	writeFileSync(
 		join(stackRoot, 'manifest.json'),
 		JSON.stringify({
-			identity: { app: 'precedence-app', stack: 'main', chain: 'sui:local' },
+			identity: { app: 'precedence-app', stack: 'main', network: 'localnet' },
 			manifestVersion: 1,
 			endpoints: {},
 			extras: {},

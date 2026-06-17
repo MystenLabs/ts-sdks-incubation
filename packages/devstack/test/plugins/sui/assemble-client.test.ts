@@ -36,7 +36,7 @@ describe('assembleSuiClient empty-chain guard', () => {
 			const exit = yield* Effect.exit(
 				assembleSuiClient({
 					sdkClient: fakeSdkClient,
-					chain: '',
+					chainId: '',
 					rpcUrl: 'http://127.0.0.1:9000',
 					waitForTransactionsReady: fakeWaitForTransactionsReady,
 				}),
@@ -49,7 +49,7 @@ describe('assembleSuiClient empty-chain guard', () => {
 				expect(Option.isSome(failure)).toBe(true);
 				if (Option.isSome(failure)) {
 					expect(failure.value._tag).toBe('SuiConfigError');
-					expect(failure.value.field).toBe('chain');
+					expect(failure.value.field).toBe('chainId');
 				}
 				// ...and emphatically NOT a defect (the pre-fix behaviour).
 				expect(Cause.hasDies(exit.cause)).toBe(false);
@@ -61,11 +61,11 @@ describe('assembleSuiClient empty-chain guard', () => {
 		Effect.gen(function* () {
 			const { client, chainProbe } = yield* assembleSuiClient({
 				sdkClient: fakeSdkClient,
-				chain: 'sui:devnet-aabbcc',
+				chainId: 'sui:devnet-aabbcc',
 				rpcUrl: 'http://127.0.0.1:9000',
 				waitForTransactionsReady: fakeWaitForTransactionsReady,
 			});
-			expect(client.chain).toBe('sui:devnet-aabbcc');
+			expect(client.chainId).toBe('sui:devnet-aabbcc');
 			expect(client.rpcUrl).toBe('http://127.0.0.1:9000');
 			expect(client.fork).toBeNull();
 			// The probe is constructed and keyed off the branded chain.
@@ -88,7 +88,7 @@ describe('mode boot empty-chain pin reaches the typed channel end-to-end', () =>
 						mode: 'live',
 						network: 'custom',
 						rpcUrl: 'http://127.0.0.1:9000',
-						chain: '',
+						chainId: '',
 					}),
 				),
 			);
@@ -110,10 +110,10 @@ describe('mode boot empty-chain pin reaches the typed channel end-to-end', () =>
 					mode: 'live',
 					network: 'custom',
 					rpcUrl: 'http://127.0.0.1:9000',
-					chain: '',
+					chainId: '',
 				}),
 			).pipe(Effect.catchTag('SuiConfigError', (e) => Effect.succeed(e.field)));
-			expect(recovered).toBe('chain');
+			expect(recovered).toBe('chainId');
 		}),
 	);
 
@@ -123,13 +123,13 @@ describe('mode boot empty-chain pin reaches the typed channel end-to-end', () =>
 				bootLocalRpcMode({
 					mode: 'local-rpc',
 					rpcUrl: 'http://127.0.0.1:9000',
-					chain: '',
+					chainId: '',
 				}),
 			).pipe(
 				Effect.map(() => 'boot-unexpectedly-succeeded'),
 				Effect.catchTag('SuiConfigError', (e) => Effect.succeed(`config:${e.field}`)),
 			);
-			expect(recovered).toBe('config:chain');
+			expect(recovered).toBe('config:chainId');
 		}),
 	);
 });

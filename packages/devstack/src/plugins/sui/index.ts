@@ -55,13 +55,14 @@ import {
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
-import { makeCodegenable } from './codegen.ts';
+import { makeCodegenable, makeStaticCodegen } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
 import { suiPluginError, type SuiPluginError } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey, type FaucetStrategy } from '../faucet/index.ts';
+import { resolveNetworkOptions } from '../../orchestrators/network-options.ts';
 import { suiLocalStrategy } from './local-faucet-strategy.ts';
 import { suiForkFaucetStrategy } from './fork-faucet-strategy.ts';
 import { selectSufficientForkCoin } from './fork-transaction.ts';
@@ -122,8 +123,8 @@ const resolveFundingFaucetStrategy = (
 			faucetUrl: client.fundingFaucetUrl,
 			serialization: {
 				broker,
-				key: `sui-faucet:${client.chain}`,
-				owner: `sui-faucet:${client.chain}`,
+				key: `sui-faucet:${client.chainId}`,
+				owner: `sui-faucet:${client.chainId}`,
 			},
 		}),
 	);
@@ -153,8 +154,8 @@ const resolveForkFaucetStrategy = (
 			perRequestCapMist: resolved.perRequestCapMist,
 			serialization: {
 				broker,
-				key: `sui-fork-faucet:${client.chain}`,
-				owner: `sui-fork-faucet:${client.chain}`,
+				key: `sui-fork-faucet:${client.chainId}`,
+				owner: `sui-fork-faucet:${client.chainId}`,
 			},
 		});
 		return yield* selectSufficientForkCoin(
@@ -371,19 +372,38 @@ const bootAndEmit = (
 		} satisfies SuiResolvedRuntime;
 		// Emit the resolved contributions inline, top-to-bottom: the
 		// decls stamp REAL chain ids / rpc URLs / container names
+		// (the genesis-digest chain id, not the network name).
 		// (`value` is the just-resolved runtime; `identity` from
 		// `IdentityContext`, NOT re-fetched). The shared
 		// `emitContributions` routes each by `kind`. Faucet (conditional
 		// on a resolved strategy) and routables (mode-dependent) are the
 		// only optional members; order is load-bearing.
-		const realChain = value.chain;
+		const realChainId = value.chainId;
+		// Per-network faucet gate (per-network options: ON for every network
+		// EXCEPT live `mainnet`, where the funding faucet must NEVER run).
+		// `identity.network` is the resolved network name. The gate honours
+		// ONLY the POLICY DEFAULT, NOT any author per-network override: the
+		// override RECORD (`networkOptions`) is an orchestrator-level concern
+		// that the name-blind substrate does not forward into plugins, and
+		// this plugin only receives `IdentityContext`. So a per-network
+		// `{ <network>: { faucet: false } }` override is deliberately NOT
+		// applied here (unlike `devWallet`/`autoApproveSigning`, which the
+		// orchestrator resolves against the forwarded `networkOptions`); see
+		// `orchestrators/network-options.ts`. The policy default already
+		// carries the load-bearing mainnet hard-clamp, so a resolved strategy
+		// on `mainnet` (none of the live modes build one today, but a future
+		// faucet-bearing mainnet config could) is suppressed and the strategy
+		// registry never exposes `faucet:request:<mainnet-chain-id>`; account
+		// funding then surfaces the actionable "no faucet strategy" error
+		// rather than silently faucet-funding against a production network.
+		const faucetEnabled = resolveNetworkOptions(identity.network).faucet;
 		const faucetContribution: ReadonlyArray<StrategyContributorDecl> =
-			value.fundingFaucetStrategy === null
+			!faucetEnabled || value.fundingFaucetStrategy === null
 				? []
 				: [
 						{
 							kind: 'strategy-contributor',
-							capabilityKey: faucetCapabilityKey(realChain),
+							capabilityKey: faucetCapabilityKey(realChainId),
 							strategy: value.fundingFaucetStrategy,
 							autoMounted: true,
 						} satisfies StrategyContributorDecl<
@@ -409,10 +429,10 @@ const bootAndEmit = (
 			// `hasIndexer` (local only) folds the sui-owned indexer-db
 			// sidecar into the captured containers; `indexer !== undefined`
 			// is the same gate `bootAndEmit`'s caller resolved GraphQL on.
-			makeSnapshotable(opts.mode, identity.app, identity.stack, realChain, indexer !== undefined),
+			makeSnapshotable(opts.mode, identity.app, identity.stack, realChainId, indexer !== undefined),
 			makeCodegenable({
 				mode: opts.mode,
-				chain: realChain,
+				chainId: realChainId,
 				rpc: value.rpcUrl,
 				source: 'default',
 				...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
@@ -420,7 +440,7 @@ const bootAndEmit = (
 			}),
 			{
 				kind: 'strategy-contributor',
-				capabilityKey: chainProbeCapabilityKey(realChain),
+				capabilityKey: chainProbeCapabilityKey(realChainId),
 				strategy: value.chainProbe,
 				autoMounted: true,
 			} satisfies StrategyContributorDecl<`chain-probe:${string}`, ChainProbe<SuiProbeKey>>,
@@ -446,6 +466,14 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		role: 'service',
 		section: 'service',
 		inputIdentity: staticInputIdentity(suiInputIdentity(opts)),
+		// Stack-free codegen: the `codegen` verb derives the committed
+		// `config.ts`'s `network`/`networks` from this hook. Both are
+		// environment/live data (dynamic local rpc port; a real deployment
+		// names a different network), so the committed tree carries
+		// `resolveNetwork()`/`resolveNetworks()` raw expressions that resolve
+		// at app build/dev time via the injected `__DEVSTACK_IDS__` global —
+		// never literal values. No id-resolver input needed.
+		staticCodegen: makeStaticCodegen(),
 		// Zero-arg `start` (no `dependsOn`); the substrate supplies the
 		// container runtime + identity via the plugin runtime context.
 		start: () =>
@@ -493,7 +521,7 @@ export const sui = <const O extends SuiOptions = { mode: 'local' }>(
 /** Mode-narrowed factory namespace.
  *
  *  Usage:
- *      const network = { mode: 'local', chain: 'sui:localnet' } as const;
+ *      const network = { mode: 'local' } as const;
  *      suiFor(network).local({...})    // OK
  *      suiFor(network).fork({...})     // type error: 'fork' not in 'local' branch
  *
@@ -626,6 +654,7 @@ export {
 	hashMoveSources,
 	runMoveBuild,
 	scrubLocksHost,
+	withMoveBuildLock,
 	type BuildOutput,
 	type MoveBuildContainer,
 	type MoveBuildError,

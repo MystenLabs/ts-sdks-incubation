@@ -25,11 +25,12 @@ import type { SuiPluginMode } from './mode/spec.ts';
  *  by the mode-specific builder. */
 export interface ResolvedSuiNetwork {
 	readonly mode: SuiPluginMode;
-	/** Chain identity (plain string value) — assembled by the mode
-	 *  builders; downstream lookups (chain-probe / faucet capability
-	 *  keys) and the substrate's `NetworkConfig` projection key on it
-	 *  directly. */
-	readonly chain: string;
+	/** Genesis-digest chain identifier — the node's real chain id, fetched
+	 *  via `fetchChainId` by the mode builders. Downstream lookups
+	 *  (chain-probe / faucet capability keys) and the substrate's
+	 *  `NetworkConfig` projection fold it into per-network-unique keys. NOT
+	 *  the network name. */
+	readonly chainId: string;
 	readonly rpc: string;
 	readonly faucet?: string;
 	readonly graphql?: string;

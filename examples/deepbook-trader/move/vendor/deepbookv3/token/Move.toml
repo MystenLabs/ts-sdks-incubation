@@ -1,8 +1,0 @@
-[package]
-name = "token"
-edition = "2024.beta"
-
-[dependencies]
-
-[addresses]
-token = "0x0"

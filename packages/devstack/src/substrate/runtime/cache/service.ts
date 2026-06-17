@@ -3,7 +3,7 @@
 // Universal artifact cache, content-addressed by
 // `(namespace, chain, contentHash)`. Per-plugin namespace; `chain` is a
 // plain string key the substrate forwards verbatim (it does NOT fold its
-// own `identity.chain` in — that keeps warm-restart ids stable).
+// own `identity.network` in — that keeps warm-restart ids stable).
 //
 // Semantics:
 //
@@ -180,7 +180,7 @@ export const layerCache: Layer.Layer<
 		// `lookup`/`write` above. The (namespace, chain, contentHash) triple
 		// is the sole cache key; `spec.chain` (the plugin-supplied HEX
 		// on-chain id) is forwarded VERBATIM — the substrate does NOT fold
-		// `identity.chain` in, which is what keeps warm-restart ids stable.
+		// `identity.network` in, which is what keeps warm-restart ids stable.
 		const publish = <Produced, Verified>(
 			spec: ArtifactSpec<Produced, Verified>,
 		): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>

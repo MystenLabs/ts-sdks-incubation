@@ -31,7 +31,7 @@ import {
 import { CURRENT_MANIFEST_VERSION } from '../../../src/substrate/runtime/manifest/manifest.ts';
 
 const sampleEnvelope = (overrides?: { endpoints?: Record<string, unknown> }) => ({
-	identity: { app: 'sample-app', stack: 'main', chain: 'localnet' },
+	identity: { app: 'sample-app', stack: 'main', network: 'localnet' },
 	manifestVersion: CURRENT_MANIFEST_VERSION,
 	services: {},
 	endpoints: overrides?.endpoints ?? {
@@ -77,6 +77,20 @@ describe('discoverManifestPath', () => {
 	it('returns null when no manifest is reachable', () => {
 		const found = discoverManifestPath({ cwd: workdir, env: {} });
 		expect(found).toBeNull();
+	});
+
+	it('infers the stack from the nearest package.json name when DEVSTACK_STACK is unset', () => {
+		// Aligned with the CLI's `resolveStackName`: a bare app's stack is
+		// named after the package, so the playwright surface must discover
+		// it without env wiring.
+		writeFileSync(join(workdir, 'package.json'), JSON.stringify({ name: '@scope/smoke-app' }));
+		const stateDir = join(workdir, '.devstack');
+		mkdirSync(join(stateDir, 'stacks', 'smoke-app'), { recursive: true });
+		const path = join(stateDir, 'stacks', 'smoke-app', 'manifest.json');
+		writeFileSync(path, JSON.stringify(sampleEnvelope()));
+
+		const found = discoverManifestPath({ cwd: workdir, env: {} });
+		expect(found?.path).toBe(path);
 	});
 });
 

@@ -1,7 +1,7 @@
 // On-disk shape for one cache entry.
 //
-// One file per `(namespace, chain, contentHash)` triple, at
-// `<runtime-root>/stacks/<stack>/cache/<namespace>/<chain>/<contentHash>.json`.
+// One file per `(namespace, chainId, contentHash)` triple, at
+// `<runtime-root>/stacks/<stack>/cache/<namespace>/<chainId>/<contentHash>.json`.
 //
 // The entry envelope wraps the bytes (base64-encoded — JSON has no
 // binary literal) and the metadata renderer / verify needs. Cache

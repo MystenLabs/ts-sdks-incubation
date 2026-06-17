@@ -20,7 +20,7 @@ describe('seal public refs', () => {
 
 	it('mode-narrowed localKeygen keeps the direct signer ref shape', () => {
 		const signer = account('operator');
-		const plugin = sealFor({ mode: 'local', chain: 'sui:localnet' } as const).localKeygen({
+		const plugin = sealFor({ mode: 'local', chainId: 'sui:localnet' } as const).localKeygen({
 			name: 'private-content',
 			signer,
 		});

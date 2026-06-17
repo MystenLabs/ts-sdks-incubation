@@ -17,31 +17,16 @@
 //   4. Subscribing to `state.changes` BEFORE `start` observes the
 //      identity update emitted at boot.
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from '@effect/vitest';
-import {
-	Cause,
-	Context,
-	Deferred,
-	Effect,
-	Exit,
-	Fiber,
-	Option,
-	Stream,
-	SubscriptionRef,
-} from 'effect';
+import { Context, Deferred, Effect, Exit, Fiber, Option, Stream, SubscriptionRef } from 'effect';
 
 import { defineDevstack } from '../../src/api/define-devstack.ts';
 import { definePlugin } from '../../src/api/define-plugin.ts';
-import type { CodegenableDecl } from '../../src/contracts/codegenable.ts';
-import { CodegenRenderError } from '../../src/orchestrators/codegen/errors.ts';
 import type { EngineEvent } from '../../src/substrate/events.ts';
-import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
-import { SupervisorPostAcquireFailed } from '../../src/substrate/runtime/supervisor/index.ts';
 import { runStack } from '../../src/api/run-stack.ts';
 import {
 	discoverManifestPath,
@@ -60,63 +45,12 @@ const leaf = definePlugin({
 	start: () => Effect.succeed({ ok: true } as const),
 });
 
-const runtimeCodegenPlugin = definePlugin({
-	id: 'test/runtime-codegen',
-	role: 'service',
-	section: 'service',
-	start: () =>
-		Effect.gen(function* () {
-			const ctx = yield* PluginContext;
-			const resolved = { message: 'from-acquire' } as const;
-			ctx.codegen({
-				kind: 'codegenable',
-				emitterName: 'runtime-proof',
-				outputPath: 'runtime-proof.ts',
-				sensitive: false,
-				emit: (emit) =>
-					Effect.sync(() => {
-						emit.exportConst('runtimeProof', resolved);
-						return emit.done();
-					}),
-			} satisfies CodegenableDecl<'runtime-proof'>);
-			return resolved;
-		}),
-});
-
-const failingRuntimeCodegenPlugin = definePlugin({
-	id: 'test/failing-runtime-codegen',
-	role: 'service',
-	section: 'service',
-	start: () =>
-		Effect.gen(function* () {
-			const ctx = yield* PluginContext;
-			ctx.codegen({
-				kind: 'codegenable',
-				emitterName: 'runtime-failure-proof',
-				outputPath: 'runtime-failure-proof.ts',
-				sensitive: false,
-				emit: (emit) =>
-					Effect.sync(() => {
-						emit.exportConst('runtimeFailureProof', () => 'not serializable');
-						return emit.done();
-					}),
-			} satisfies CodegenableDecl<'runtime-failure-proof'>);
-			return { message: 'from-acquire' } as const;
-		}),
-});
-
 class RunStackCustomService extends Context.Service<
 	RunStackCustomService,
 	{ readonly value: string }
 >()('@devstack/test/RunStackCustomService') {}
 
 const makeRuntimeRoot = () => mkdtempSync(join(tmpdir(), 'run-stack-test-'));
-
-const expectSome = <A>(option: Option.Option<A>): A => {
-	expect(Option.isSome(option)).toBe(true);
-	if (Option.isSome(option)) return option.value;
-	throw new Error('expected Some');
-};
 
 describe('api/run-stack', () => {
 	it('start resolves once every plugin reaches ready, then stop tears down', async () => {
@@ -378,10 +312,15 @@ describe('api/run-stack', () => {
 		}
 	}, 30_000);
 
-	it('start runs codegen through the production post-acquire hook', async () => {
+	it('start writes the id-config through the production post-acquire hook', async () => {
 		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-app-'));
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-state-'));
-		const stack = defineDevstack({ members: [runtimeCodegenPlugin], stackName: 'main' });
+		// Boot no longer emits a codegen tree; it assembles + writes the
+		// id-config (the live on-chain ids the Vite plugin injects). The
+		// committed `src/generated` tree is the stack-free `devstack codegen`
+		// verb's job. Assert the boot wrote `devstack-ids.json` and emitted
+		// the `codegen.emitted` event pointing at it.
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			appRoot,
 			identity: { app: 'run-stack-codegen', stack: 'main', network: 'localnet' },
@@ -404,12 +343,19 @@ describe('api/run-stack', () => {
 			);
 			expect(Option.isSome(emitted)).toBe(true);
 
-			const generatedPath = join(appRoot, 'src', 'generated', 'runtime-proof.ts');
-			expect(existsSync(generatedPath)).toBe(true);
-			const mod = (await import(`${pathToFileURL(generatedPath).href}?t=${Date.now()}`)) as {
-				readonly runtimeProof: { readonly message: string };
+			const idsPath = join(runtimeRoot, 'stacks', 'main', 'devstack-ids.json');
+			expect(existsSync(idsPath)).toBe(true);
+			const idConfig = JSON.parse(readFileSync(idsPath, 'utf8')) as {
+				readonly network: string;
+				readonly networks: Record<string, unknown>;
+				readonly packages: Record<string, unknown>;
+				readonly mvrOverrides: Record<string, unknown>;
 			};
-			expect(mod.runtimeProof).toEqual({ message: 'from-acquire' });
+			expect(idConfig.network).toBe('localnet');
+			// A leaf-only stack contributes no codegen — the id-config is valid
+			// but empty.
+			expect(idConfig.packages).toEqual({});
+			expect(idConfig.mvrOverrides).toEqual({});
 		} finally {
 			await Effect.runPromise(handle.stop);
 			await Effect.runPromise(handle.awaitShutdown);
@@ -443,55 +389,12 @@ describe('api/run-stack', () => {
 			expect(ctx.identity).toEqual({
 				app: 'preview-install',
 				stack: 'main',
-				chain: 'localnet',
+				network: 'localnet',
 			});
 		} finally {
 			await Effect.runPromise(handle.stop);
 			await Effect.runPromise(handle.awaitShutdown);
 			rmSync(appRoot, { recursive: true, force: true });
-		}
-	}, 30_000);
-
-	it('start wraps production codegen hook failures and records error.reported', async () => {
-		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-fail-app-'));
-		const runtimeRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-fail-state-'));
-		const stack = defineDevstack({ members: [failingRuntimeCodegenPlugin], stackName: 'main' });
-		const handle = runStack(stack, {
-			appRoot,
-			identity: { app: 'run-stack-codegen-fail', stack: 'main', network: 'localnet' },
-			runtimeRoot,
-		});
-
-		try {
-			const exit = await Effect.runPromise(Effect.exit(handle.start));
-			expect(Exit.isFailure(exit)).toBe(true);
-
-			const bootError = expectSome(Exit.findErrorOption(exit));
-			expect(bootError._tag).toBe('BootError');
-
-			const supervisorFailure = expectSome(Cause.findErrorOption(bootError.cause));
-			expect(supervisorFailure).toBeInstanceOf(SupervisorPostAcquireFailed);
-			if (supervisorFailure instanceof SupervisorPostAcquireFailed) {
-				const codegenFailure = expectSome(Cause.findErrorOption(supervisorFailure.cause));
-				expect(codegenFailure).toBeInstanceOf(CodegenRenderError);
-				if (codegenFailure instanceof CodegenRenderError) {
-					expect(codegenFailure.emitterName).toBe('runtime-failure-proof');
-					expect(codegenFailure.outputPath).toBe('runtime-failure-proof.ts');
-				}
-			}
-
-			const snapshot = await Effect.runPromise(SubscriptionRef.get(handle.state));
-			const reported = snapshot.errors.at(-1);
-			expect(reported).toMatchObject({
-				pluginKey: null,
-				tag: 'CodegenRenderError',
-				severity: 'error',
-			});
-		} finally {
-			await Effect.runPromise(handle.stop);
-			await Effect.runPromise(handle.awaitShutdown);
-			rmSync(appRoot, { recursive: true, force: true });
-			rmSync(runtimeRoot, { recursive: true, force: true });
 		}
 	}, 30_000);
 

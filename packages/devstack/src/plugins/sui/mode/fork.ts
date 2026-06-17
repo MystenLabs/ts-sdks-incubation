@@ -205,12 +205,12 @@ export const bootForkMode = (
 		const status = yield* waitForForkReady(sdkClient, readyTimeout).pipe(
 			Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }),
 		);
-		const chain = yield* sharedFetchChainId(sdkClient);
+		const chainId = yield* sharedFetchChainId(sdkClient);
 
 		const fork = makeForkAdminSurface(sdkClient);
 		const assembled = yield* assembleSuiClient({
 			sdkClient,
-			chain,
+			chainId,
 			rpcUrl,
 			waitForTransactionsReady: noopWaitForTransactionsReady,
 			buildImage: image,
@@ -233,7 +233,7 @@ export const bootForkMode = (
 		return {
 			resolved: makeResolvedNetwork({
 				mode: 'fork',
-				chain,
+				chainId,
 				rpc: rpcUrl,
 				source: 'default',
 				checkpoint: status.forkedAtCheckpoint,

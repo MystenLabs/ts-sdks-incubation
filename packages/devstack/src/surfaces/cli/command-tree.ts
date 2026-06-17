@@ -83,12 +83,41 @@ const commands = [
 	},
 	{
 		name: 'apply',
-		summary: 'Reconcile through a live supervisor when present; otherwise run one-shot setup.',
+		summary: 'Re-emit the per-stack ids file and dev extras from a live or one-shot stack.',
 		usage: 'devstack apply [options]',
 		lifecycle: 'live-aware',
 		sideEffects: 'write',
 		requiresDocker: true,
 		options: configOptions,
+	},
+	{
+		name: 'codegen',
+		summary: 'Regenerate committed bindings from Move source (no stack boot).',
+		usage: 'devstack codegen [options]',
+		lifecycle: 'one-shot',
+		sideEffects: 'write',
+		requiresDocker: false,
+		description:
+			'Move-compiles local package sources and emits the committed src/generated tree (type bindings + sentinel-id config stubs) without booting a stack.',
+		options: configOptions,
+	},
+	{
+		name: 'dump-ids',
+		summary: 'Emit the stack id-config (devstack-ids.json) for a real-network deploy.',
+		usage: 'devstack dump-ids [options]',
+		lifecycle: 'live-aware',
+		sideEffects: 'write',
+		requiresDocker: true,
+		description:
+			'Emits the stack devstack-ids.json id-config to --out (or stdout). Reads the existing file when a supervisor is live; otherwise runs a one-shot boot to produce it, then tears down. The supported way to obtain a committed id-config file for a real-network deploy.',
+		options: [
+			...configOptions,
+			{
+				name: 'out',
+				value: 'path',
+				description: 'Write the id-config JSON to this file instead of stdout.',
+			},
+		],
 	},
 	{
 		name: 'status',

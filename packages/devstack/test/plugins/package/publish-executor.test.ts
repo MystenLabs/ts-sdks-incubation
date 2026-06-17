@@ -111,7 +111,7 @@ const makeGate = (): Gate => {
 };
 
 const makeAccountCtx = (sdk: SuiSdkShim): AccountAcquireContext => ({
-	sui: { mode: 'local', chain: 'sui:localnet', sdk },
+	sui: { mode: 'local', chainId: 'sui:localnet', sdk },
 	runtimeRoot: '/tmp/devstack-publish-executor-test',
 	app: 'test-app',
 	stack: 'test-stack',

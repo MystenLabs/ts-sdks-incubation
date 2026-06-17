@@ -19,6 +19,14 @@ export default defineConfig({
 		exclude: ['**/node_modules/**', '**/dist/**', ...(runE2E ? [] : ['test/e2e/**'])],
 		testTimeout: runE2E ? 300_000 : 30_000,
 		hookTimeout: runE2E ? 300_000 : 30_000,
+		// Lifecycle tests (e.g. run-stack-mid-run-defect) intentionally leave a
+		// dying supervisor fiber whose daemon handles release shortly after the
+		// file completes — a documented teardown leak (phase 22f). Vitest 4 stops
+		// a *passed* file's worker gracefully and logs a run-failing error if it
+		// hasn't exited within teardownTimeout. The default 10s trips under
+		// full-suite CPU contention even though the worker does exit; give it the
+		// same 30s headroom as the test/hook timeouts.
+		teardownTimeout: runE2E ? 300_000 : 30_000,
 		...(runE2E
 			? {
 					include: ['test/e2e/**/*.test.ts'],

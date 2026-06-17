@@ -32,7 +32,7 @@ describe('sui fork mode', () => {
 	it('constructs through the mode-narrowed fork factory', () => {
 		const fork: NetworkConfig<'fork'> = {
 			mode: 'fork',
-			chain: 'sui:mainnet-fork',
+			chainId: 'sui:mainnet-fork',
 		};
 
 		expect(() => suiFor(fork).mainnet()).not.toThrow();

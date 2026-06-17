@@ -154,7 +154,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		const ctx: WalletAcquireContext = {
 			app: 'app',
 			stack: 'main',
-			chain: 'chain',
+			network: 'localnet',
 			stateRoot: '/dev/null/fake-wallet-state',
 			allocatePort: () => Effect.die('empty wallet should fail before allocating a port'),
 			resolveAccounts: () => Effect.succeed([]),
@@ -184,7 +184,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			const ctx: WalletAcquireContext = {
 				app: 'app',
 				stack: 'main',
-				chain: 'chain',
+				network: 'localnet',
 				stateRoot,
 				allocatePort: (preferred, probeHost) => {
 					allocation = { preferred, probeHost };
@@ -215,7 +215,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			const ctx: WalletAcquireContext = {
 				app: 'app',
 				stack: 'main',
-				chain: 'chain',
+				network: 'localnet',
 				stateRoot,
 				allocatePort: () => Effect.succeed(0),
 				resolveAccounts: () => Effect.succeed([fakeAccount]),

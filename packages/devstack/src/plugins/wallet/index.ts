@@ -270,7 +270,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				const acquireCtx: WalletAcquireContext = {
 					app: identity.app,
 					stack: identity.stack,
-					chain: identity.chain,
+					network: identity.network,
 					stateRoot: paths.stackRoot,
 					allocatePort: (preferred, probeHost) =>
 						portBroker

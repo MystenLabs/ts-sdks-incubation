@@ -35,7 +35,7 @@ import {
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
-import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
+import { hashMoveSources, scrubLocksHost, withMoveBuildLock, type BuildOutput } from './build.ts';
 import { mvrNamedForm } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedLocalPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
@@ -317,43 +317,54 @@ export const acquireLocal = (
 			// PublishError is the plugin-internal phase taxonomy; we map
 			// it to `ArtifactPublishError` at the substrate boundary.
 			produce: Effect.gen(function* () {
-				// Produce 1/5 — scrub locks. Distilled doc §Move-specific
-				// concerns + Invariant 14: strip pinned sections from every
-				// `~/.move/git/**/Move.lock` (vendored dep caches) before
-				// invoking the build. The package's own Move.lock is scrubbed
-				// inside the container on a disposable copy, so the developer's
-				// checked-in source is left untouched host-side. Uses the
-				// unified `stripPinnedSections` (re-exported through `build.ts`
-				// → from `../sui/move-lock-scrub.ts`) — NO duplicate.
-				yield* scrubLocksHost(inputs.sourcePath, '~/.move');
+				// Produce 1/5 + 2/5 — scrub locks, then build. Both touch the
+				// shared `~/.move` git cache, so they run together under the
+				// process-wide Move-build permit (`withMoveBuildLock`): otherwise a
+				// concurrent build's host scrub (`gawk -i inplace`) races a sibling
+				// container's live `git clone` into the same cache dir and corrupts
+				// the in-flight fetch. Publish-tx (3/5 below) stays OUTSIDE the lock
+				// so on-chain work of different packages still overlaps.
+				const buildOutput: BuildOutput = yield* withMoveBuildLock(
+					Effect.gen(function* () {
+						// Produce 1/5 — scrub locks. Distilled doc §Move-specific
+						// concerns + Invariant 14: strip pinned sections from every
+						// `~/.move/git/**/Move.lock` (vendored dep caches) before
+						// invoking the build. The package's own Move.lock is scrubbed
+						// inside the container on a disposable copy, so the developer's
+						// checked-in source is left untouched host-side. Uses the
+						// unified `stripPinnedSections` (re-exported through `build.ts`
+						// → from `../sui/move-lock-scrub.ts`) — NO duplicate.
+						yield* scrubLocksHost(inputs.sourcePath, '~/.move');
 
-				// Produce 2/5 — build. Executor dispatches between (a)
-				// per-app build container, (b) `docker run --rm`, (c) host
-				// `sui` CLI.
-				const buildOutput: BuildOutput = yield* inputs.executor
-					.build({
-						sourcePath: inputs.sourcePath,
-						packageName: inputs.packageName,
-						chainId: inputs.chainId,
-					})
-					.pipe(
-						Effect.catchTag(
-							'PublishError',
-							(err): Effect.Effect<BuildOutput, PublishError> =>
-								// Re-stamp sourcePath/packageName if the underlying
-								// caller omitted them (every throw site MUST surface
-								// the context — see distilled doc §Opportunities).
-								Effect.fail(
-									err.sourcePath
-										? err
-										: {
-												...err,
-												sourcePath: inputs.sourcePath,
-												packageName: inputs.packageName,
-											},
+						// Produce 2/5 — build. Executor dispatches between (a)
+						// per-app build container, (b) `docker run --rm`, (c) host
+						// `sui` CLI.
+						return yield* inputs.executor
+							.build({
+								sourcePath: inputs.sourcePath,
+								packageName: inputs.packageName,
+								chainId: inputs.chainId,
+							})
+							.pipe(
+								Effect.catchTag(
+									'PublishError',
+									(err): Effect.Effect<BuildOutput, PublishError> =>
+										// Re-stamp sourcePath/packageName if the underlying
+										// caller omitted them (every throw site MUST surface
+										// the context — see distilled doc §Opportunities).
+										Effect.fail(
+											err.sourcePath
+												? err
+												: {
+														...err,
+														sourcePath: inputs.sourcePath,
+														packageName: inputs.packageName,
+													},
+										),
 								),
-						),
-					);
+							);
+					}),
+				);
 
 				// Produce 3/5 — publish-tx. Construct `Transaction.publish`,
 				// sign + execute via the publisher's account signer, decode

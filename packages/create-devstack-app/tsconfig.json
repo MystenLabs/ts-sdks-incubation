@@ -3,10 +3,9 @@
 	"compilerOptions": {
 		"outDir": "./dist",
 		"declaration": true,
-		"jsx": "react-jsx",
 		"types": ["node"],
 		"noEmit": true
 	},
 	"include": ["src/**/*", "test/**/*"],
-	"exclude": ["dist", "node_modules", "template"]
+	"exclude": ["dist", "node_modules", "template", "templates"]
 }

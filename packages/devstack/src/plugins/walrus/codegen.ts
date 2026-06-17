@@ -1,32 +1,33 @@
-// Walrus plugin — Codegenable contribution.
+// Walrus plugin — Codegenable contribution, via the UNIFIED config-binding
+// declaration.
 //
-// Architecture §6: plugins emit typed `CodegenableDecl`s; the codegen
-// orchestrator stages files into the user's source tree WITHOUT
-// naming the plugin. Walrus's contribution is the SDK-ready
-// `packageConfig` shape that the `@mysten/walrus` SDK consumes —
-// `{systemObjectId, stakingPoolId, exchangeIds}` — plus the proxy /
-// aggregator / publisher URLs for HTTP consumers.
+// Walrus's contribution is the SDK-ready `packageConfig` shape that the
+// `@mysten/walrus` SDK consumes — `{systemObjectId, stakingPoolId,
+// exchangeIds}` — plus the proxy / aggregator / publisher URLs for HTTP
+// consumers. Walrus is single-instance per stack, so it exports `walrus`
+// directly (a FLAT bucket, not name-keyed like coin/seal).
 //
-// The bindings are surfaced here as a typed `WalrusBindings` shape so
-// downstream code can `import { walrus }` from the codegen-staged file
-// and get a fully-typed handle.
+// ONE declaration, TWO derivations (see `contracts/config-bindings.ts`):
+//   - LIVE (boot): bakes the resolved ids / URLs into the ephemeral tree AND
+//     feeds the generic id-config `values` channel.
+//   - STATIC (committed tree): emits `resolveValue('walrus', '<key>')` so the
+//     committed `walrus.ts` carries NO baked object id / endpoint URL.
 //
-// Mode-asymmetric emission:
-//   - Local: emits `{packageConfig, proxyUrl, aggregatorUrl,
-//     publisherUrl, nodes}` — full shape (all three URLs resolved).
-//   - Known: emits the same shape; each of `proxyUrl /
-//     aggregatorUrl / publisherUrl` is `string | null` and surfaces
-//     INDEPENDENTLY — a field is null only when THAT specific URL is
-//     unresolved. A missing publisher URL does not suppress an
-//     available proxy/aggregator URL.
-
-import { Effect } from 'effect';
+// STRUCTURAL fields (`mode`, `network`) stay literals; the on-chain ids,
+// coin type, endpoint URLs, and the storage-node committee are RUNTIME
+// (loaded config data). The composite `packageConfig` / `nodes` values are
+// resolved as whole-value blobs (the array/optional shapes don't split into
+// the flat config-path model).
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+import {
+	configCodegenable,
+	type ConfigBinding,
+	type ConfigBindingSet,
+} from '../../contracts/config-bindings.ts';
+import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
 
-/** Per-node descriptor — matches the storage-nodes module's shape
- *  for the local-cluster path, and is empty (or whatever the user
- *  provides) for known. */
+/** Per-node descriptor. */
 export interface WalrusNodeBinding {
 	readonly nodeIndex: number;
 	readonly publicHostname: string;
@@ -36,38 +37,25 @@ export interface WalrusNodeBinding {
 /** The typed shape the emitted file exports. */
 export interface WalrusBindings {
 	readonly mode: 'local' | 'known';
-	readonly chain: string;
+	readonly network: string;
 	readonly walrusPackageId: string | null;
 	readonly walPackageId: string | null;
 	readonly walCoinType: string | null;
-	/** SDK-ready `packageConfig` — structurally compatible with
-	 *  `@mysten/walrus`'s `WalrusPackageConfig`. */
 	readonly packageConfig: {
 		readonly systemObjectId: string;
 		readonly stakingPoolId: string;
 		readonly exchangeIds?: ReadonlyArray<string>;
 	};
-	/** HTTP URLs — each is `null` only when that specific URL is
-	 *  unresolved (local resolves all three; known surfaces each
-	 *  independently — distilled-doc invariant 15). */
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
-	/** Storage-node committee — local publishes N descriptors; known
-	 *  publishes user-supplied nodes (testnet/mainnet's 100+ nodes
-	 *  are fetched dynamically by the SDK, not pinned here —
-	 *  distilled-doc invariant 16). */
 	readonly nodes: ReadonlyArray<WalrusNodeBinding>;
 }
 
-/** Inputs to the codegen contribution — supplied at acquire-time.
- *  The codegen orchestrator's resolve-once memo picks up the real
- *  values via the dynamic capability factory (same shape used by
- *  Sui + Account: the factory stamps placeholders at compose-time
- *  and the post-acquire factory restamps with resolved fields). */
+/** Inputs to the LIVE codegen contribution — supplied at acquire-time. */
 export interface MakeCodegenableInputs {
 	readonly mode: 'local' | 'known';
-	readonly chain: string;
+	readonly network: string;
 	readonly walrusPackageId: string | null;
 	readonly walPackageId: string | null;
 	readonly walCoinType: string | null;
@@ -80,34 +68,133 @@ export interface MakeCodegenableInputs {
 	readonly nodes: ReadonlyArray<WalrusNodeBinding>;
 }
 
-/** Construct the Codegenable contribution. Emit is byte-deterministic
- *  on unchanged input (architecture: no mtime churn on no-op
- *  cycles). */
-export const makeCodegenable = (
-	inputs: MakeCodegenableInputs,
-): CodegenableDecl<'walrus-network'> => ({
-	kind: 'codegenable',
-	emitterName: 'walrus-network',
-	outputPath: 'walrus.ts',
-	emit: (ctx) =>
-		Effect.sync(() => {
-			const bindings: WalrusBindings = {
-				mode: inputs.mode,
-				chain: inputs.chain,
-				walrusPackageId: inputs.walrusPackageId,
-				walPackageId: inputs.walPackageId,
-				walCoinType: inputs.walCoinType,
-				packageConfig: {
-					systemObjectId: inputs.systemObjectId,
-					stakingPoolId: inputs.stakingPoolId,
-					exchangeIds: inputs.exchangeIds.length > 0 ? inputs.exchangeIds : undefined,
-				},
-				proxyUrl: inputs.proxyUrl,
-				aggregatorUrl: inputs.aggregatorUrl,
-				publisherUrl: inputs.publisherUrl,
-				nodes: inputs.nodes,
-			};
-			ctx.exportConst('walrus', bindings);
-			return ctx.done();
-		}),
-});
+/** User-declared known-deployment ids / URLs, available at factory time. A
+ *  KNOWN deployment's values are DECLARED config (not loaded-at-runtime data),
+ *  so the committed `walrus.ts` bakes them as LITERALS. Absent for a `local`
+ *  (dev-deployed) cluster whose ids/URLs are dynamic. */
+export interface WalrusKnownConfig {
+	readonly walrusPackageId: string | null;
+	readonly walPackageId: string | null;
+	readonly walCoinType: string | null;
+	readonly packageConfig: WalrusBindings['packageConfig'];
+	readonly proxyUrl: string | null;
+	readonly aggregatorUrl: string | null;
+	readonly publisherUrl: string | null;
+	readonly nodes: ReadonlyArray<WalrusNodeBinding>;
+}
+
+/** Static-config shape — what walrus knows BEFORE acquire. When `known` is
+ *  present (known mode), its declared ids/URLs are baked as literals;
+ *  otherwise (local mode) every id/URL resolves at app build/dev time. */
+export interface WalrusStaticConfig {
+	readonly mode: 'local' | 'known';
+	readonly network: string;
+	readonly known?: WalrusKnownConfig;
+}
+
+const NAMESPACE = 'walrus';
+
+/** TS source-type strings for the resolved walrus fields — keeps the committed
+ *  `walrus.ts` typed as `WalrusBindings` declares (the generic `resolveValue`
+ *  channel would otherwise return `unknown`). Composite blobs inline their
+ *  structural literal types so no emitted type-import is needed. */
+const PACKAGE_CONFIG_TS_TYPE =
+	'{ readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> }';
+const NODES_TS_TYPE =
+	'ReadonlyArray<{ readonly nodeIndex: number; readonly publicHostname: string; readonly rpcUrl: string }>';
+
+/** The walrus config bindings, declared ONCE. `mode` / `network` are
+ *  structural literals; every id / coin type / URL / committee value is a
+ *  RESOLVED binding on the generic `resolveValue('walrus', '<key>')` channel.
+ *  Both the live boot decl and the static committed-tree decl derive from it. */
+const walrusConfigBindings = (
+	structural: WalrusStaticConfig,
+): ConfigBindingSet<MakeCodegenableInputs> => {
+	const known = structural.known;
+	// A known deployment's declared ids/URLs are config (literal); a local
+	// cluster's are dynamically deployed (resolved at app build/dev time).
+	const field = (
+		key:
+			| 'walrusPackageId'
+			| 'walPackageId'
+			| 'walCoinType'
+			| 'proxyUrl'
+			| 'aggregatorUrl'
+			| 'publisherUrl',
+		live: (i: MakeCodegenableInputs) => JsonValue,
+	): ConfigBinding<MakeCodegenableInputs> =>
+		known !== undefined
+			? { variant: 'literal', configPath: [key], value: known[key] }
+			: {
+					variant: 'resolved',
+					configPath: [key],
+					namespace: NAMESPACE,
+					key,
+					tsType: 'string | null',
+					live,
+				};
+	const packageConfigBinding: ConfigBinding<MakeCodegenableInputs> =
+		known !== undefined
+			? {
+					variant: 'literal',
+					configPath: ['packageConfig'],
+					value: known.packageConfig as JsonValue,
+				}
+			: {
+					variant: 'resolved',
+					configPath: ['packageConfig'],
+					namespace: NAMESPACE,
+					key: 'packageConfig',
+					tsType: PACKAGE_CONFIG_TS_TYPE,
+					live: (i) =>
+						({
+							systemObjectId: i.systemObjectId,
+							stakingPoolId: i.stakingPoolId,
+							...(i.exchangeIds.length > 0 ? { exchangeIds: [...i.exchangeIds] } : {}),
+						}) as JsonValue,
+				};
+	const nodesBinding: ConfigBinding<MakeCodegenableInputs> =
+		known !== undefined
+			? { variant: 'literal', configPath: ['nodes'], value: known.nodes as unknown as JsonValue }
+			: {
+					variant: 'resolved',
+					configPath: ['nodes'],
+					namespace: NAMESPACE,
+					key: 'nodes',
+					tsType: NODES_TS_TYPE,
+					live: (i) => i.nodes as unknown as JsonValue,
+				};
+	const bindings: ReadonlyArray<ConfigBinding<MakeCodegenableInputs>> = [
+		{ variant: 'literal', configPath: ['mode'], value: structural.mode },
+		{ variant: 'literal', configPath: ['network'], value: structural.network },
+		field('walrusPackageId', (i) => i.walrusPackageId),
+		field('walPackageId', (i) => i.walPackageId),
+		field('walCoinType', (i) => i.walCoinType),
+		packageConfigBinding,
+		field('proxyUrl', (i) => i.proxyUrl),
+		field('aggregatorUrl', (i) => i.aggregatorUrl),
+		field('publisherUrl', (i) => i.publisherUrl),
+		nodesBinding,
+	];
+	return {
+		bucket: 'walrus.ts',
+		kind: 'walrus',
+		emitterName: 'walrus-network',
+		bindings,
+	};
+};
+
+/** Construct the LIVE Codegenable contribution. Bakes the resolved ids /
+ *  URLs into the ephemeral tree + feeds the generic id-config `values`
+ *  channel. */
+export const makeCodegenable = (inputs: MakeCodegenableInputs): CodegenableDecl =>
+	configCodegenable(walrusConfigBindings({ mode: inputs.mode, network: inputs.network }), {
+		mode: 'live',
+		state: inputs,
+	});
+
+/** Construct the STATIC (stack-free) Codegenable contribution. Emits
+ *  `resolveValue('walrus', '<key>')` for the runtime fields; the committed
+ *  `walrus.ts` carries no baked object id / endpoint URL. */
+export const makeWalrusStaticCodegen = (config: WalrusStaticConfig): CodegenableDecl =>
+	configCodegenable(walrusConfigBindings(config), 'static');

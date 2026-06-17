@@ -24,17 +24,14 @@ export type {
 	DevstackPlaywrightEndpointOptions,
 	DevstackPlaywrightProjectsOptions,
 	DevstackPlaywrightUseOptions,
-	DevstackPlaywrightWebServerOptions,
 	PlaywrightBaseConfigShape,
 	PlaywrightProjectShape,
 	PlaywrightUseConfigShape,
-	PlaywrightWebServerConfigShape,
 } from './config.ts';
 export {
 	devstackPlaywrightBaseConfig,
 	devstackPlaywrightProjects,
 	devstackPlaywrightUse,
-	devstackPlaywrightWebServer,
 	resolveDevstackPlaywrightBaseURL,
 } from './config.ts';
 

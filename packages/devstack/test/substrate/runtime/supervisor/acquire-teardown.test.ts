@@ -31,7 +31,7 @@ import { definePlugin } from '../../../../src/substrate/plugin.ts';
 const identity: Identity = {
 	app: appName('acquire-teardown-test-app'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 describe('supervisor acquire pipeline', () => {

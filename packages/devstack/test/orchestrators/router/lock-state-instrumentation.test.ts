@@ -309,7 +309,7 @@ const makeTmpDir = (): string => {
 const behaviorIdentity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: 'sui:localnet',
+	network: 'localnet',
 };
 
 const behaviorUpstreams = Layer.succeed(UpstreamResolverService)({

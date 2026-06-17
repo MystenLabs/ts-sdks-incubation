@@ -73,9 +73,9 @@ export interface WriteManifestInput {
 	readonly identity: ManifestEnvelope['identity'];
 	readonly endpoints?: ReadonlyArray<EndpointEntry>;
 	readonly extras?: ManifestExtras;
-	/** Per-stack codegen metadata (the resolved absolute `generatedDir`).
-	 *  Optional + additive — omitting it produces an envelope without the
-	 *  `codegen` key, identical to a pre-field manifest. */
+	/** Per-stack codegen metadata (the dev-only `extrasDir` + live
+	 *  `idsFile`). Optional + additive — omitting it produces an envelope
+	 *  without the `codegen` key, identical to a pre-field manifest. */
 	readonly codegen?: ManifestCodegen;
 }
 

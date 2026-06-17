@@ -3,22 +3,18 @@ import {
 	devstackPlaywrightBaseConfig,
 	devstackPlaywrightProjects,
 	devstackPlaywrightUse,
-	devstackPlaywrightWebServer,
 } from '@mysten-incubation/devstack/playwright';
 
-const baseURL = 'http://dev.token-studio.token-studio.localhost:5175';
-const env = {
-	// Single devstack-wide switch the Vite plugin reads to auto-approve
-	// dev-wallet signing requests (replaces per-app VITE_*_AUTO_APPROVE).
-	DEVSTACK_AUTO_APPROVE: '1',
-};
+// Browser tests run against a dedicated `e2e` stack (parallel-safe with a
+// developer's `pnpm dev` on the `token-studio` stack). The stack is booted
+// programmatically by the devstack `globalSetup` — `DEVSTACK_STACK=e2e` from
+// the `test:e2e` script — and torn down after the run; `use.baseURL` resolves
+// to the conventional router host for this stack
+// (dev.e2e.token-studio.localhost:5175).
+const stack = 'e2e' as const;
 
 export default defineConfig({
 	...devstackPlaywrightBaseConfig(),
-	use: devstackPlaywrightUse({ baseURL }),
+	use: devstackPlaywrightUse({ stack }),
 	projects: devstackPlaywrightProjects(),
-	webServer: devstackPlaywrightWebServer({
-		baseURL,
-		env,
-	}),
 });

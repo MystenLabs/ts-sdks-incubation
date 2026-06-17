@@ -101,7 +101,7 @@ const deps = (root: string, events: string[]): LocalKeygenDeps => ({
 	chainProbe: {
 		get: () => Effect.succeed(null),
 	},
-	chain: 'sui:local',
+	chainId: 'sui:localnet',
 	servicePath: join(root, 'seal', 'seal'),
 	containerName: 'devstack-app-main-seal-seal-key-server',
 	labels: { app: 'app', stack: 'main', plugin: 'seal', role: 'key-server' },

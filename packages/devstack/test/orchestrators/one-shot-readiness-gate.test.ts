@@ -42,7 +42,7 @@ const makeRuntimeRoot = () => mkdtempSync(join(tmpdir(), 'one-shot-gate-test-'))
 const identity: Identity = {
 	app: appName('one-shot-gate'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 describe('orchestrators/boot one-shot readiness gate', () => {

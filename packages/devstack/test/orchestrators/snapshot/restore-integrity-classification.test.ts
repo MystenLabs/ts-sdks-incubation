@@ -33,7 +33,7 @@ import { withTempRoot } from '../../helpers/with-temp-root.ts';
 const runtimeIdentity: SnapshotRuntimeIdentity = {
 	app: 'restore-app',
 	stack: 'main',
-	network: 'sui:local',
+	network: 'sui:localnet',
 };
 
 const TEST_IDENTITY = { chain: runtimeIdentity.network } as const;

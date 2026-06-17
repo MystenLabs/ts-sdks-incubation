@@ -18,6 +18,7 @@
 // reads happen at module import time; readers fetch on demand so
 // tests can stub `process.env` per-case.
 
+import { inferPackageNameFromCwd } from '../../api/inference-network.ts';
 import { DEFAULT_DISCOVERY_STACK } from '../runtime/resolve-discovery-env.ts';
 
 // -----------------------------------------------------------------------------
@@ -76,14 +77,32 @@ export interface ResolvedVitestEnv {
 	readonly stackWasExplicit: boolean;
 }
 
+export interface ResolveVitestEnvOptions {
+	/** Walk-up start for the package-name rung of the stack ladder,
+	 *  mirroring `resolveDiscoveryEnv` / the CLI's `resolveStackName`:
+	 *  when `DEVSTACK_STACK` is unset, the stack falls back to the
+	 *  nearest package.json `name` above `cwd` before `'main'`. Opt-in —
+	 *  omit it and the resolver stays fs-free with the bare
+	 *  env > `'main'` ladder. The setup hook threads it so the advisory
+	 *  names the stack `loadStackContext` will actually read. */
+	readonly cwd?: string;
+}
+
 /** Resolve the vitest env contract from an arbitrary env bag.
- *  Side-effect free — tests pass a fixture; production code passes
- *  `process.env`. */
+ *  Side-effect free when `options.cwd` is omitted — tests pass a
+ *  fixture; production code passes `process.env`. With `cwd`, the only
+ *  fs access is the lazy package.json walk-up on the stack rung, and
+ *  only when `DEVSTACK_STACK` is unset. */
 export const resolveVitestEnv = (
 	env: Readonly<Record<string, string | undefined>>,
+	options: ResolveVitestEnvOptions = {},
 ): ResolvedVitestEnv => {
 	const stackRaw = env[VITEST_ENV_VARS.STACK];
-	const stack = stackRaw !== undefined && stackRaw !== '' ? stackRaw : DEFAULT_STACK_NAME;
+	const stackWasExplicit = stackRaw !== undefined && stackRaw !== '';
+	const stack = stackWasExplicit
+		? stackRaw
+		: ((options.cwd !== undefined ? inferPackageNameFromCwd(options.cwd) : undefined) ??
+			DEFAULT_STACK_NAME);
 	const runtimeRoot =
 		env[VITEST_ENV_VARS.RUNTIME_ROOT] ??
 		env[VITEST_ENV_VARS.RUNTIME_ROOT_LEGACY] ??
@@ -96,6 +115,6 @@ export const resolveVitestEnv = (
 			manifestPathOverride !== undefined && manifestPathOverride !== ''
 				? manifestPathOverride
 				: undefined,
-		stackWasExplicit: stackRaw !== undefined && stackRaw !== '',
+		stackWasExplicit,
 	};
 };

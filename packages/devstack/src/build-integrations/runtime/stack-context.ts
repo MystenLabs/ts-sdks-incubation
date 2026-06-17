@@ -29,7 +29,7 @@ import type { EndpointRegistry } from './endpoint-registry.ts';
 export interface StackIdentity {
 	readonly app: string;
 	readonly stack: string;
-	readonly chain: string;
+	readonly network: string;
 }
 
 /** Flat endpoint entry exposed to consumers. Mirrors the substrate's
@@ -52,7 +52,7 @@ export interface ResolvedEndpoint {
  *  schema decoded": discovery surfaces add the resolved `manifestPath`
  *  and the typed `endpoints` registry that wraps the flat map. */
 export interface StackContext {
-	/** Stack identity — name / app / chain. */
+	/** Stack identity — name / app / network. */
 	readonly identity: StackIdentity;
 	/** Absolute path to the on-disk manifest the projection derives
 	 *  from. Used by error messages and by callers that want to watch

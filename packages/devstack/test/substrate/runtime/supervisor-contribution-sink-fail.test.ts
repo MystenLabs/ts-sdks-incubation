@@ -29,7 +29,7 @@ import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 const identity: Identity = {
 	app: appName('contribution-sink-fail-test-app'),
 	stack: stackName('main'),
-	chain: 'test:local',
+	network: 'local',
 };
 
 const codegenDecl: CodegenableDecl<'failing-emitter'> = {

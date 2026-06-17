@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Layer } from 'effect';
-import { chmodSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // Subpath imports — the barrel re-exports `NodeRedis` which transitively
@@ -33,7 +33,11 @@ import {
 	CodegenPathConflict,
 } from '../../../src/orchestrators/codegen/errors.ts';
 import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/codegen/paths.ts';
-import { runEmitCycle } from '../../../src/orchestrators/codegen/service.ts';
+import {
+	CodegenOrchestratorService,
+	layerCodegenOrchestrator,
+	runEmitCycle,
+} from '../../../src/orchestrators/codegen/service.ts';
 
 // Helper — synthesise a Codegenable for tests.
 const writeExports = (
@@ -309,7 +313,7 @@ describe('codegen.runEmitCycle', () => {
 					fakeDecl({
 						emitterName: 'sui-network',
 						outputPath: 'sui/network.ts',
-						exports: { suiNetwork: { chain: 'sui:local', rpcUrl: 'http://x' } },
+						exports: { suiNetwork: { chain: 'sui:localnet', rpcUrl: 'http://x' } },
 						aggregate: {
 							bucket: 'services.ts',
 							project: (e) => {
@@ -418,12 +422,12 @@ describe('codegen.runEmitCycle', () => {
 										const n = e['__suiNetworkEntry'] as {
 											readonly rpc: string;
 										};
-										return { network: 'local', networks: { local: n } };
+										return { network: 'localnet', networks: { localnet: n } };
 									},
 								},
 								exports: {
 									__suiNetworkEntry: {
-										chain: 'sui:local',
+										chain: 'sui:localnet',
 										mode: 'local',
 										rpc: 'http://127.0.0.1:9000',
 										faucet: 'http://127.0.0.1:9123',
@@ -445,7 +449,7 @@ describe('codegen.runEmitCycle', () => {
 											readonly mvrPlaceholder: string;
 										};
 										return {
-											packages: { [b.name]: { ...b, byNetwork: { local: '0x1' } } },
+											packages: { [b.name]: { ...b, byNetwork: { localnet: '0x1' } } },
 											// Mirror the real `projectPackageConfig`: each package
 											// folds its active-network id into the shared
 											// `mvrOverrides` map keyed by its `mvr` placeholder.
@@ -482,12 +486,12 @@ describe('codegen.runEmitCycle', () => {
 								readonly config: {
 									readonly network: string;
 									readonly networks: {
-										readonly local: { readonly rpc: string };
+										readonly localnet: { readonly rpc: string };
 									};
 									readonly packages: {
 										readonly mock_usdc: {
 											readonly packageId: string;
-											readonly byNetwork: { readonly local: string };
+											readonly byNetwork: { readonly localnet: string };
 										};
 									};
 									readonly mvrOverrides: Readonly<Record<string, string>>;
@@ -508,12 +512,12 @@ describe('codegen.runEmitCycle', () => {
 								readonly accounts: { readonly alice: { readonly address: string } };
 							}>,
 					);
-					// sui's `networks.local` and the package's `packages.*`
+					// sui's `networks.localnet` and the package's `packages.*`
 					// coexist in ONE config.ts (deep-merge, not last-write-wins).
-					expect(configModule.config.network).toBe('local');
-					expect(configModule.config.networks.local.rpc).toBe('http://127.0.0.1:9000');
+					expect(configModule.config.network).toBe('localnet');
+					expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
 					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
-					expect(configModule.config.packages.mock_usdc.byNetwork.local).toBe('0x1');
+					expect(configModule.config.packages.mock_usdc.byNetwork.localnet).toBe('0x1');
 					// Top-level `mvrOverrides` is the active-network name→id map
 					// (what the old per-app `mvrOverrides()` helper computed):
 					// keyed by the package's `mvr` placeholder, valued by
@@ -521,7 +525,7 @@ describe('codegen.runEmitCycle', () => {
 					// dapp-kit's `mvr.overrides.packages`.
 					expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
 					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
-						configModule.config.packages.mock_usdc.byNetwork.local,
+						configModule.config.packages.mock_usdc.byNetwork.localnet,
 					);
 					expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
 					expect(accountsModule.accounts.alice.address).toBe('0xabc');
@@ -821,4 +825,154 @@ describe('codegen orchestrator source — plugin-name blindness', () => {
 			expect(source, `service.ts must not mention ${needle}`).not.toContain(needle);
 		}
 	});
+});
+
+describe('codegen.emitExtras', () => {
+	it.effect('flushes ONLY the generated-extras decls, leaving the runtime tree untouched', () =>
+		withTempRoot('codegen-extras-test', (root) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const codegen = yield* CodegenOrchestratorService;
+					// A dev-wallet-shaped decl routed to generated-extras (sensitive,
+					// like the real one) plus an account-shaped aggregate into
+					// `accounts.ts` (also generated-extras).
+					yield* codegen.registerContribution(
+						'wallet',
+						fakeDecl({
+							emitterName: 'dapp-kit-config',
+							outputPath: 'dev-wallet.ts',
+							outputLocation: 'generated-extras',
+							sensitive: true,
+							exports: { devWallet: { url: 'http://127.0.0.1:9999' } },
+						}),
+					);
+					yield* codegen.registerContribution(
+						'account',
+						fakeDecl({
+							emitterName: 'account/alice',
+							outputPath: 'accounts/alice.ts',
+							outputLocation: 'generated-extras',
+							aggregateOnly: true,
+							aggregate: {
+								kind: 'account',
+								bucket: 'accounts.ts',
+								outputLocation: 'generated-extras',
+								project: (exported) => exported,
+							},
+							exports: { alice: { address: '0xa11ce' } },
+						}),
+					);
+					// A `generated`-located decl that emitExtras MUST skip — it
+					// belongs to the committed `src/generated` tree written only by
+					// the stack-free `codegen` verb.
+					yield* codegen.registerContribution(
+						'sui',
+						fakeDecl({
+							emitterName: 'config',
+							outputPath: 'config.ts',
+							outputLocation: 'generated',
+							exports: { network: 'localnet' },
+						}),
+					);
+
+					const result = yield* codegen.emitExtras();
+
+					// dev-wallet.ts + accounts.ts land in the extras tree...
+					const extras = extrasOf(root);
+					const walletPath = `${extras}/dev-wallet.ts`;
+					const accountsPath = `${extras}/accounts.ts`;
+					expect(result.filesWritten).toContain(walletPath);
+					expect(result.filesWritten).toContain(accountsPath);
+					const walletSource = yield* Effect.promise(() => readFile(walletPath, 'utf8'));
+					expect(walletSource).toContain('devWallet');
+					// ...the sensitive wallet file is 0o600.
+					expect(statSync(walletPath).mode & 0o777).toBe(0o600);
+					const accountsSource = yield* Effect.promise(() => readFile(accountsPath, 'utf8'));
+					expect(accountsSource).toContain('0xa11ce');
+
+					// The `generated` decl is NEVER written by emitExtras.
+					expect(existsSync(`${root}/config.ts`)).toBe(false);
+					expect(result.filesWritten.some((p) => p === `${root}/config.ts`)).toBe(false);
+				}),
+			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+		),
+	);
+
+	it.effect('is a no-op (empty result) when nothing is routed to generated-extras', () =>
+		withTempRoot('codegen-extras-empty', (root) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const codegen = yield* CodegenOrchestratorService;
+					yield* codegen.registerContribution(
+						'sui',
+						fakeDecl({
+							emitterName: 'config',
+							outputPath: 'config.ts',
+							outputLocation: 'generated',
+							exports: { network: 'localnet' },
+						}),
+					);
+					const result = yield* codegen.emitExtras();
+					expect(result.filesWritten).toEqual([]);
+					expect(result.filesChmod).toEqual([]);
+					expect(existsSync(extrasOf(root))).toBe(false);
+				}),
+			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+		),
+	);
+});
+
+describe('codegen.assembleIdConfig — active-network agreement', () => {
+	// A sui-like config.ts contribution: the binding emits `network: 'localnet'`
+	// and a `networks` map keyed by 'localnet' for EVERY identity mode (mirrors
+	// plugins/sui/codegen.ts hard-coding LOCAL_NETWORK_NAME). The id-config's
+	// active `network` field MUST be a key present in `networks` — the committed
+	// runtime resolver does `resolveNetworks()[network]`.
+	const suiLikeDecl = (): CodegenableDecl<string> =>
+		fakeDecl({
+			emitterName: 'sui-network',
+			outputPath: 'config.ts',
+			outputLocation: 'generated',
+			aggregateOnly: true,
+			aggregate: {
+				kind: 'sui-network',
+				bucket: 'config.ts',
+				outputLocation: 'generated',
+				// Project the emitted `network` + `networks` straight into the
+				// config.ts bucket (what the real sui projection does).
+				project: (exported) => ({
+					network: exported.network,
+					networks: exported.networks,
+				}),
+			},
+			// Bound by the binding to LOCAL_NETWORK_NAME regardless of mode.
+			exports: {
+				network: 'localnet',
+				networks: { localnet: { rpc: 'http://127.0.0.1:9000', chainId: 'abc' } },
+			},
+		});
+
+	it.effect(
+		'a NON-localnet identity yields a network field that EXISTS in networks (no divergence)',
+		() =>
+			withTempRoot('codegen-idconfig-net', (root) =>
+				Effect.scoped(
+					Effect.gen(function* () {
+						const codegen = yield* CodegenOrchestratorService;
+						yield* codegen.registerContribution('sui', suiLikeDecl());
+						// Boot for a fork: identity network = 'testnet-fork', but the
+						// sui binding still keys `networks` by 'localnet'. Old behavior
+						// stamped network: 'testnet-fork' (absent from networks) →
+						// `resolveNetworks()['testnet-fork']` is undefined → throws +
+						// dev-wallet injection reads undefined.rpc. The fix derives the
+						// active network from the bucket so they AGREE.
+						const idConfig = yield* codegen.assembleIdConfig('testnet-fork');
+						// The active network MUST be a key present in `networks`.
+						expect(Object.keys(idConfig.networks)).toContain(idConfig.network);
+						// And it is the key the binding emitted ('localnet').
+						expect(idConfig.network).toBe('localnet');
+					}),
+				).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+			),
+	);
 });

@@ -139,17 +139,27 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 			const outputDir = root.stackSubdir
 				? path.join(root.outputDir, root.stackSubdir)
 				: root.outputDir;
-			// Sibling of `outputDir` (NOT inside it) so the stage-and-swap
-			// rename never sees the lock file as part of the output tree.
-			// Captured once at boot — `withRoot` re-roots the rest of the
-			// bundle but preserves the original lock path so the rebased
-			// view names the real cross-process lock (the lock is acquired
-			// ONCE outside the staging build).
-			const codegenLockFile = `${outputDir}.codegen.lock`;
 			// Captured once at boot. Preserved verbatim through `withRoot`
 			// (the extras tree is OUTSIDE the staging swap of `outputDir`,
 			// so the rebased view must keep naming the real extras dir).
 			const extrasDir = root.extrasDir;
+			// Lock the codegen subsystem on a sibling of `extrasDir`, NOT of
+			// `outputDir`. At BOOT nothing is ever emitted into the live
+			// `outputDir` (`generated`) tree — boot's only codegen write is
+			// `emitExtras`, which lands in `extrasDir` — so deriving the lock
+			// from `extrasDir` keeps the live `generated` basename entirely
+			// out of the boot footprint (no phantom `…/generated.codegen.lock`
+			// next to a directory that is never created). The `codegen` verb
+			// (the one path that DOES stage into `<outputDir>.staging.<id>`)
+			// still gets a stable sibling lock — `<extrasDir>.codegen.lock` —
+			// outside both its `outputDir` swap and the `extrasDir` tree.
+			// Sibling-NOT-inside is what matters for the stage-and-swap rename
+			// of `outputDir`, and an `extrasDir` sibling satisfies that.
+			// Captured once at boot — `withRoot` re-roots the rest of the
+			// bundle but preserves this lock path verbatim so the rebased
+			// staging view names the real cross-process lock (the lock is
+			// acquired ONCE outside the staging build).
+			const codegenLockFile = `${extrasDir}.codegen.lock`;
 			const resolveExtras = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
 				Effect.gen(function* () {
 					yield* assertRelativeCodegenOutputPath(outputPath);

@@ -41,7 +41,7 @@ export const restoreSnapshotOffline = async (params: {
 	const identity: Identity = {
 		app: appName(params.app),
 		stack: stackName(params.stack),
-		chain: params.network,
+		network: params.network,
 	};
 	const program = Effect.gen(function* () {
 		const snapshot = yield* SnapshotOrchestratorService;

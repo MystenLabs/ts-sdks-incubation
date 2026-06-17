@@ -108,7 +108,7 @@ const stubSuiSdk = (): SuiSdkShim => ({
 });
 
 const ctx: AccountAcquireContext = {
-	sui: { mode: 'local', chain: 'sui:localnet', sdk: stubSuiSdk() },
+	sui: { mode: 'local', chainId: 'sui:localnet', sdk: stubSuiSdk() },
 	runtimeRoot: '/tmp/devstack-rewrite-test',
 	app: 'test-app',
 	stack: 'test-stack',

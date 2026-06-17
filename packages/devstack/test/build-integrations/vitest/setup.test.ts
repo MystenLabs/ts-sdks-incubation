@@ -27,7 +27,7 @@ import { VitestManifestNotFoundError } from '../../../src/build-integrations/vit
 import { withTempRootSync } from '../../helpers/with-temp-root.ts';
 
 const minimalManifest = () => ({
-	identity: { app: 'demo', stack: 'test', chain: 'devnet-local' },
+	identity: { app: 'demo', stack: 'test', network: 'devnet-local' },
 	manifestVersion: 1,
 	services: {},
 	endpoints: {},
@@ -124,6 +124,30 @@ describe('runDevstackBeforeAll', () => {
 					requireDevstack: true,
 				}),
 			).toThrow(VitestManifestNotFoundError);
+		}));
+
+	it('finds a bare app stack named after package.json when DEVSTACK_STACK is unset', () =>
+		withTempRootSync('devstack-vitest-inferred', (root) => {
+			// `devstack up` with no stackName and no env names the stack after
+			// the package (CLI `resolveStackName`); `pnpm test` must find that
+			// manifest without DEVSTACK_STACK being exported.
+			writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@scope/smoke-app' }));
+			const dir = join(root, '.devstack', 'stacks', 'smoke-app');
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(
+				join(dir, 'manifest.json'),
+				JSON.stringify({
+					identity: { app: 'smoke-app', stack: 'smoke-app', network: 'devnet-local' },
+					manifestVersion: 1,
+					services: {},
+					endpoints: {},
+					extras: {},
+				}),
+			);
+			// requireDevstack so a discovery miss fails loudly here instead of
+			// silently capturing `undefined`.
+			runDevstackBeforeAll({ cwd: root, env: {}, silent: true, requireDevstack: true });
+			expect(getStackContext()?.identity.stack).toBe('smoke-app');
 		}));
 
 	it('prints a stack-name advisory when DEVSTACK_STACK is unset', () =>

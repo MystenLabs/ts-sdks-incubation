@@ -28,6 +28,7 @@ import { describe, expect, it } from 'vitest';
 // the framework preset).
 const README_OMITTED_SUBPATHS: ReadonlyArray<string> = [
 	'./vitest/setup',
+	'./vitest/global-setup',
 	'./playwright/global-setup',
 ];
 

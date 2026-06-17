@@ -23,6 +23,12 @@ export {
 } from './config.ts';
 
 export {
+	devstackVitestGlobalSetup,
+	type DevstackVitestGlobalSetup,
+	type DevstackVitestGlobalSetupOptions,
+} from './global-setup.ts';
+
+export {
 	getStackContext,
 	runDevstackBeforeAll,
 	runDevstackAfterAll,
@@ -44,6 +50,7 @@ export {
 	resolveVitestEnv,
 	VITEST_ENV_VARS,
 	type ResolvedVitestEnv,
+	type ResolveVitestEnvOptions,
 	type VitestEnvVarName,
 } from './env.ts';
 

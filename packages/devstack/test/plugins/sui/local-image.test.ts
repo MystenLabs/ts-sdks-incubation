@@ -10,7 +10,7 @@ import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.t
 const TEST_IDENTITY: Identity = {
 	app: appName('test-app'),
 	stack: stackName('test-stack'),
-	chain: 'test-chain',
+	network: 'localnet',
 };
 
 // Per-arch sui-tools pin (the tag is not a multi-arch manifest list).

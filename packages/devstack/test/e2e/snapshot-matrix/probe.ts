@@ -169,7 +169,7 @@ export const runMatrix = async (params: {
 		runtimeRoot,
 		app: params.app,
 		stack: params.stack,
-		network: 'sui:local',
+		network: 'localnet',
 		snapshotId: params.snapshotId,
 	});
 	console.log(

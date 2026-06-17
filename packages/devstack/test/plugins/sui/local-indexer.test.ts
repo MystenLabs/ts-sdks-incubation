@@ -30,7 +30,7 @@ import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.t
 const identity: Identity = {
 	app: appName('app'),
 	stack: stackName('stack'),
-	chain: 'sui:localnet',
+	network: 'localnet',
 };
 
 // Stand-in resolved validator image the barrel would hand `provisionLocal-

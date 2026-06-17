@@ -38,7 +38,7 @@ export interface Cache {
 	 *  facade in: identical signature to `ArtifactPublisher['publish']`, so the
 	 *  cache structurally satisfies that contract. Forwards the plugin-supplied
 	 *  HEX `spec.chain` VERBATIM into the cache key — never folds
-	 *  `identity.chain` — preserving warm-restart id stability. */
+	 *  `identity.network` — preserving warm-restart id stability. */
 	readonly publish: <Produced, Verified>(
 		spec: ArtifactSpec<Produced, Verified>,
 	) => Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;

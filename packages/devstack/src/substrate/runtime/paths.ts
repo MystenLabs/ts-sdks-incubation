@@ -9,7 +9,7 @@
 // The resolver is a typed bundle: given an `Identity` and the
 // `RuntimeRoot`, it returns the closed set of paths the substrate
 // understands. Subsystems that need a sub-path inside one of those
-// (e.g. cache namespace + chain + content-hash) compose ON TOP of the
+// (e.g. cache namespace + chainId + content-hash) compose ON TOP of the
 // bundle's `cacheDir`, but they NEVER reach for
 // `path.join(root, 'stacks', stack)` themselves.
 
@@ -105,12 +105,12 @@ export interface StackPaths {
 	 */
 	readonly cacheEntry: (
 		namespace: string,
-		chain: string,
+		chainId: string,
 		contentHash: string,
 	) => { readonly dir: string; readonly file: string };
 	/** Helper that returns the cache namespace directory for a given
-	 *  namespace + chain — for `readDirectory` enumeration. */
-	readonly cacheChainDir: (namespace: string, chain: string) => string;
+	 *  namespace + chainId — for `readDirectory` enumeration. */
+	readonly cacheChainDir: (namespace: string, chainId: string) => string;
 	/** Helper that returns the cache namespace directory (across all
 	 *  chains) — for namespace-scoped enumeration. */
 	readonly cacheNamespaceDir: (namespace: string) => string;
@@ -145,14 +145,14 @@ export const layerStackPaths: Layer.Layer<
 		const stackRoot = stackSubpath(path.join, root, identity.stack);
 		const cacheDir = path.join(stackRoot, 'cache');
 		const cacheNamespaceDir = (namespace: string): string => path.join(cacheDir, namespace);
-		const cacheChainDir = (namespace: string, chain: string): string =>
-			path.join(cacheNamespaceDir(namespace), chain);
+		const cacheChainDir = (namespace: string, chainId: string): string =>
+			path.join(cacheNamespaceDir(namespace), chainId);
 		const cacheEntry = (
 			namespace: string,
-			chain: string,
+			chainId: string,
 			contentHash: string,
 		): { readonly dir: string; readonly file: string } => {
-			const dir = cacheChainDir(namespace, chain);
+			const dir = cacheChainDir(namespace, chainId);
 			return { dir, file: path.join(dir, `${contentHash}.json`) };
 		};
 		return StackPathsService.of({

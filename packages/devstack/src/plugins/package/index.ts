@@ -49,8 +49,16 @@ import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
-import { makeKnownCodegenable, makeLocalCodegenable, type PackageNetworks } from './codegen.ts';
+import {
+	makeKnownCodegenable,
+	makeKnownStaticCodegen,
+	makeLocalCodegenable,
+	makeLocalStaticCodegen,
+	type PackageNetworks,
+} from './codegen.ts';
 import { hashMoveSources } from './build.ts';
+import type { PublishError } from './errors.ts';
+import { materializeGitSource, type GitSource } from './git-source.ts';
 import { makePublishExecutor } from './publish-executor.ts';
 import { bootPackageService, type PackageMode } from './service.ts';
 import {
@@ -150,7 +158,14 @@ export interface LocalPackageOptions<
 	Publisher extends PublisherAccountMember = PublisherAccountMember,
 	Capture extends PackageCapture | undefined = undefined,
 > {
-	readonly sourcePath: string;
+	/** Local on-disk path to the Move package. Provide EXACTLY ONE of
+	 *  `sourcePath` or `git`. */
+	readonly sourcePath?: string;
+	/** Remote git source — clone a repo and build a sub-path of it instead of
+	 *  vendoring the Move tree. Cloned once into a host cache keyed by
+	 *  `url + rev` (see `git-source.ts`); pin `rev` to a commit SHA or tag for
+	 *  reproducibility. Mutually exclusive with `sourcePath`. */
+	readonly git?: GitSource;
 	readonly mvrPlaceholder?: string;
 	readonly excludeFromCodegen?: boolean;
 	/** Capture created objects from the publish output. The record
@@ -159,7 +174,7 @@ export interface LocalPackageOptions<
 	readonly capture?: Capture;
 	/** Per-network declared package ids (+ optional object ids) for
 	 *  prod-targeting. Pure literals, no resolution: codegen merges the
-	 *  resolved-local id into `config.packages.<name>.byNetwork.local`
+	 *  resolved-local id into `config.packages.<name>.byNetwork.localnet`
 	 *  and these literals into `byNetwork.testnet` / `byNetwork.mainnet`.
 	 *  A consumer flips `config.network` (env) to select active ids. */
 	readonly networks?: PackageNetworks;
@@ -254,43 +269,98 @@ const buildLocalPlugin = <
 	);
 	const capture = normalizeCapture(name, opts.capture);
 
+	// Exactly one source is required. Validated at config-evaluation time (like
+	// `normalizeCapture`) so a typo surfaces immediately, not mid-boot.
+	if (opts.sourcePath === undefined && opts.git === undefined) {
+		throw new Error(`localPackage('${name}'): provide either 'sourcePath' or 'git'.`);
+	}
+	if (opts.sourcePath !== undefined && opts.git !== undefined) {
+		throw new Error(`localPackage('${name}'): 'sourcePath' and 'git' are mutually exclusive.`);
+	}
+
+	// Resolve the on-disk path to build from: a local `sourcePath` is used
+	// verbatim; a `git` source is cloned into the host cache (idempotent —
+	// see `materializeGitSource`) and the cached path returned. Called from
+	// both `inputIdentity` and `start`; the second call is a cache hit.
+	const resolveSourcePath = (): Effect.Effect<string, PublishError> =>
+		opts.git !== undefined
+			? materializeGitSource(opts.git, name)
+			: Effect.succeed(opts.sourcePath as string);
+
 	return definePlugin({
 		id: packageRef.id,
 		dependsOn: { sui: suiResource, publisher: opts.publisher },
 		role: 'task',
 		section: 'package',
 		inputIdentity: computedInputIdentity(() =>
-			hashMoveSources(opts.sourcePath).pipe(
-				Effect.map((sourceHash) => ({
-					plugin: 'package',
-					kind: 'local',
-					name,
-					sourcePath: opts.sourcePath,
-					sourceHash,
-					publisher: opts.publisher.id,
-					mvrPlaceholder: opts.mvrPlaceholder ?? null,
-					excludeFromCodegen: opts.excludeFromCodegen === true,
-					capture: opts.capture ?? null,
-					networks: opts.networks ?? null,
-				})),
+			resolveSourcePath().pipe(
+				Effect.flatMap((sourcePath) =>
+					hashMoveSources(sourcePath).pipe(
+						Effect.map((sourceHash) => ({
+							plugin: 'package',
+							kind: 'local',
+							name,
+							// The MATERIALIZED path: for a git source this is the
+							// cache dir, so the hash + identity reflect what is built.
+							sourcePath,
+							sourceHash,
+							publisher: opts.publisher.id,
+							mvrPlaceholder: opts.mvrPlaceholder ?? null,
+							excludeFromCodegen: opts.excludeFromCodegen === true,
+							capture: opts.capture ?? null,
+							networks: opts.networks ?? null,
+							// url+rev change → new identity → re-clone + rebuild.
+							git: opts.git ?? null,
+						})),
+					),
+				),
 				Effect.orDie,
 			),
 		),
 		watch: {
 			// File-watcher contribution — restart on Move source edits.
 			// Distilled doc §Outputs: literal-path Packages contribute
-			// watch roots. Effect-resolved paths do NOT auto-attach.
-			paths: [
-				`${opts.sourcePath}/**/*.move`,
-				`${opts.sourcePath}/Move.toml`,
-				`${opts.sourcePath}/Move.lock`,
-			],
+			// watch roots. Effect-resolved paths do NOT auto-attach. A git
+			// source lives in the read-only host cache, not the dev tree, so
+			// it contributes no watch roots (nothing local to edit).
+			paths:
+				opts.sourcePath !== undefined
+					? [
+							`${opts.sourcePath}/**/*.move`,
+							`${opts.sourcePath}/Move.toml`,
+							`${opts.sourcePath}/Move.lock`,
+						]
+					: [],
 			cascade: true,
 		},
+		// Stack-free codegen: the `codegen` verb derives this package's
+		// committed-projection decls from config alone, drawing the
+		// `packageId` from the projection resolver (sentinel / pinned). The
+		// bindings emitter compiles a local `sourcePath` verbatim; a git
+		// source's tree is only materialized at acquire, so it contributes no
+		// stub bindings until the source is on disk (the live `.devstack`
+		// overlay carries them when a stack is running).
+		staticCodegen: makeLocalStaticCodegen({
+			name,
+			sourcePath: opts.sourcePath ?? null,
+			mvrPlaceholder: opts.mvrPlaceholder,
+			excluded: opts.excludeFromCodegen ?? false,
+			networks: opts.networks,
+			// Capture KEYS (config-known) so the committed stub carries
+			// `resolveValue('package:<name>:objects', '<key>')` references —
+			// no live-only `objects` field, no baked object id.
+			...(opts.capture !== undefined ? { objectKeys: Object.keys(opts.capture) } : {}),
+		}),
 		// `deps` auto-infers the resolved `{ sui, publisher }` dependency
 		// object; `ctx` arrives via the `PluginContext` service.
 		start: ({ sui, publisher: publisherAccount }) =>
 			Effect.gen(function* () {
+				// Resolve the build path first: clone a git source into the host
+				// cache (cache hit after `inputIdentity` already materialized it),
+				// or use the local `sourcePath` verbatim. Everything below — and
+				// the contributions derived from `resolved.sourcePath` — then sees
+				// a plain local directory.
+				const sourcePath = yield* resolveSourcePath();
 				const ctx = yield* PluginContext;
 				// Substrate-context primitives: ArtifactPublisher
 				// is provided by the supervisor's pluginContext;
@@ -304,7 +374,7 @@ const buildLocalPlugin = <
 				// stay consistent and warm-restart verify can use the
 				// previous packageId as a hint.
 				const publisher = yield* CacheService;
-				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chainId);
 				const registry = yield* PackageRegistryService;
 				// The per-stack CoinRegistry — same instance every plugin in
 				// the stack yields via `CoinRegistryService` (the boot wiring
@@ -337,8 +407,8 @@ const buildLocalPlugin = <
 				const mode = {
 					mode: 'local',
 					packageName: name,
-					sourcePath: opts.sourcePath,
-					chainId: sui.chain,
+					sourcePath,
+					chainId: sui.chainId,
 					publisherAddress: publisherAccount.address,
 					mvrOverride: opts.mvrPlaceholder,
 					...(capture !== undefined ? { capture } : {}),
@@ -391,11 +461,21 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 			mvrPlaceholder: opts.mvrPlaceholder ?? null,
 			networks: opts.networks ?? null,
 		}),
+		// Stack-free codegen: a known package's `packageId` is already a
+		// config literal, so the committed stub emits it verbatim (no chain
+		// contact, no sentinel substitution).
+		staticCodegen: makeKnownStaticCodegen({
+			name,
+			packageId: opts.packageId,
+			mvrPlaceholder: opts.mvrPlaceholder,
+			...(opts.upgradeCapId !== undefined ? { upgradeCapId: opts.upgradeCapId } : {}),
+			networks: opts.networks,
+		}),
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
 				const publisher = yield* CacheService;
-				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
+				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chainId);
 				const registry = yield* PackageRegistryService;
 				const mode = {
 					mode: 'known',

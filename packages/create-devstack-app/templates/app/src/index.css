@@ -1,0 +1,91 @@
+:root {
+	color-scheme: dark;
+	font-family:
+		ui-sans-serif,
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
+}
+
+body {
+	margin: 0;
+	min-height: 100vh;
+	background: #0f1115;
+	color: #e6e8eb;
+}
+
+.shell {
+	max-width: 640px;
+	margin: 0 auto;
+	padding: 2rem 1.5rem;
+}
+
+.topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 1.5rem;
+}
+
+h1 {
+	margin: 0;
+	font-size: 1.25rem;
+}
+
+.panel {
+	display: grid;
+	gap: 0.75rem;
+	padding: 1.25rem;
+	background: #161a20;
+	border: 1px solid #262b33;
+	border-radius: 10px;
+}
+
+.row {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+button {
+	justify-self: start;
+	padding: 0.5rem 0.9rem;
+	font: inherit;
+	color: inherit;
+	background: #232936;
+	border: 1px solid #323a47;
+	border-radius: 8px;
+	cursor: pointer;
+}
+
+button:hover:enabled {
+	background: #2b3342;
+}
+
+button:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.muted {
+	margin: 0;
+	font-size: 0.8rem;
+	color: #8b93a1;
+}
+
+.mono {
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	word-break: break-all;
+}
+
+.value {
+	font-size: 1.4rem;
+}
+
+.error {
+	margin: 0;
+	font-size: 0.8rem;
+	color: #ff7a85;
+}

@@ -25,7 +25,7 @@ const makeManifestAt = (path: string, body: object): void => {
 // No `services` slot. Omitting it exercises the optional-decode +
 // `ctx.services ?? {}` default path.
 const validEnvelope = (overrides: Partial<Record<string, unknown>> = {}): object => ({
-	identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
+	identity: { app: 'demo', stack: 'main', network: 'localnet' },
 	manifestVersion: CONSUMER_MANIFEST_VERSION,
 	endpoints: {
 		'sui#0:rpc': {
@@ -47,7 +47,7 @@ describe('readStackContext (sync)', () => {
 			const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
 			makeManifestAt(manifestPath, validEnvelope());
 			const ctx = readStackContext({ manifestPath });
-			expect(ctx.identity).toEqual({ app: 'demo', stack: 'main', chain: 'sui:local' });
+			expect(ctx.identity).toEqual({ app: 'demo', stack: 'main', network: 'localnet' });
 			expect(ctx.manifestPath).toBe(manifestPath);
 			expect(ctx.manifestVersion).toBe(CONSUMER_MANIFEST_VERSION);
 			// Manifest omits `services`; the reader defaults it to `{}` so the
@@ -72,7 +72,7 @@ describe('readStackContext (sync)', () => {
 					},
 				};
 				const envelope = yield* buildEnvelope({
-					identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
+					identity: { app: 'demo', stack: 'main', network: 'localnet' },
 					extras,
 				});
 				yield* writeManifest(envelope, manifestPath);

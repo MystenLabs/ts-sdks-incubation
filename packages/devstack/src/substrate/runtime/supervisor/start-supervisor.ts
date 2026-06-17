@@ -185,7 +185,7 @@ export const startSupervisor = (
 			fields: {
 				app: identity.app,
 				stack: identity.stack,
-				network: identity.chain,
+				network: identity.network,
 				memberCount: stack.members.length,
 			},
 		});
@@ -200,7 +200,7 @@ export const startSupervisor = (
 					...setIdentity(s, {
 						app: identity.app,
 						stack: identity.stack,
-						network: identity.chain,
+						network: identity.network,
 					}),
 					cycle: {
 						...s.cycle,

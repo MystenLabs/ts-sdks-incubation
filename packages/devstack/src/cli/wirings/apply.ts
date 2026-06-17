@@ -173,6 +173,7 @@ export const runApplyLive = (
 				state,
 				{
 					extras: stack.options.extras,
+					networkOptions: stack.options.networkOptions,
 					lifetime: 'one-shot',
 				},
 			);

@@ -5,7 +5,7 @@ import type { SubscribableState } from '../../../../src/substrate/projection.ts'
 import { applyEvent } from '../../../../src/substrate/runtime/projection/update.ts';
 
 const makeState = (): SubscribableState => ({
-	identity: { app: 'arena', stack: 'arena', network: 'sui:local' },
+	identity: { app: 'arena', stack: 'arena', network: 'sui:localnet' },
 	cycle: { id: 0, startedAt: 0, phase: 'running' },
 	rows: [
 		{

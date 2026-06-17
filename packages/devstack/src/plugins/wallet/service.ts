@@ -126,7 +126,7 @@ const directUrlHostForBindAddress = (bindAddress: string): string =>
 export interface WalletAcquireContext {
 	readonly app: string;
 	readonly stack: string;
-	readonly chain: string;
+	readonly network: string;
 	/** State root where `wallet/token` lives. Convention:
 	 *  `<appDir>/.devstack/stacks/<stack>/runtime`. */
 	readonly stateRoot: string;
@@ -251,7 +251,7 @@ export const acquireWallet = (
 		const bindings: DevWalletConfig = {
 			walletUrl,
 			pairUrl,
-			chain: ctx.chain,
+			network: ctx.network,
 			protocolPaths: {
 				health: WalletHttpPath.HEALTH,
 				accounts: WalletHttpPath.ACCOUNTS,

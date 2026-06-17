@@ -180,10 +180,11 @@ const resolveIdentity = (
 		cwd,
 	});
 	// Parse + validate up-front so a malformed value fails here rather
-	// than downstream when a plugin probes the chain id. We keep the
-	// raw input string (`'sui:local'`, `'sui:testnet'`, …) for the
-	// chain-id brand so existing on-disk cache namespaces and plugin
-	// equality checks (`chain === 'sui:testnet'`) remain stable.
+	// than downstream when a plugin probes the network. The identity's
+	// network is the canonical name (`localnet`, `testnet`, …) — never the
+	// `sui:`-prefixed wallet-standard form, which devstack does not use
+	// internally — so plugin checks and on-disk cache namespaces key on one
+	// stable name regardless of how it was spelled on the CLI.
 	const resolved = resolveNetworkSync({
 		explicit: opts?.network,
 		env: process.env.DEVSTACK_NETWORK,
@@ -192,7 +193,7 @@ const resolveIdentity = (
 	return {
 		app: appName(app),
 		stack: stackName(stackNameStr),
-		chain: resolved.raw,
+		network: resolved.parsed.name,
 	};
 };
 
@@ -354,20 +355,19 @@ export const runStackWithBoot = (
 		midRunCauseRef,
 	} = makeRunHandleSlots();
 
-	// Resolve the per-stack codegen output location through the ONE shared
-	// boot seam: primary run (effective stack === config `stackName`) →
-	// `src/generated/`; a secondary embedding →
-	// `.devstack/stacks/<stack>/generated/`. An explicit `opts.codegen`
-	// (or the stack's own `codegen`) is honored verbatim by the resolver.
-	// Both the primary stack (`engineStack.options.stackName`) and the
-	// effective stack (the resolved `identity.stack`) are in scope here,
-	// exactly as in the CLI's `buildVerbLayers` seam — both now route
-	// through `resolveProductionCodegenOptions`.
+	// Resolve the per-stack LIVE codegen output location through the ONE
+	// shared boot seam: EVERY live run emits into
+	// `.devstack/stacks/<stack>/generated/` (gitignored), so the id-bearing
+	// tree never lands in committed source. The committed `src/generated`
+	// tree is owned solely by the stack-free `codegen` verb. An explicit
+	// `opts.codegen` (or the stack's own `codegen`) is honored verbatim by
+	// the resolver. The effective stack (the resolved `identity.stack`) is
+	// in scope here, exactly as in the CLI's `buildVerbLayers` seam — both
+	// route through `resolveProductionCodegenOptions`.
 	const substrate = layerProductionOrchestrators({
 		codegen: resolveProductionCodegenOptions({
 			appRoot,
 			effectiveStack: String(identity.stack),
-			primaryStack: engineStack.options.stackName,
 			codegen,
 		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
@@ -412,6 +412,7 @@ export const runStackWithBoot = (
 		// chained after the built-in, and the composed boot hooks below.
 		yield* superviseStackWithProductionBoot(supervisedStack, identity, state, {
 			extras: stack.options.extras,
+			networkOptions: stack.options.networkOptions,
 			...(opts.boot?.devstackVersion === undefined
 				? {}
 				: { devstackVersion: opts.boot.devstackVersion }),

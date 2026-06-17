@@ -362,7 +362,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 				const acquireCtx: AccountAcquireContext = {
 					sui: {
 						mode: sui.mode,
-						chain: sui.chain,
+						chainId: sui.chainId,
 						sdk: sui.sdk,
 						fork: sui.fork,
 					},

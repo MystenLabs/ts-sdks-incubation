@@ -16,9 +16,33 @@ export interface DevstackOptions {
 	readonly network?: unknown;
 	readonly stateDir?: string;
 	readonly codegen?: {
-		readonly outputDir?: string;
-		readonly stackSubdir?: string | null;
+		/** Forwarded verbatim to `@mysten/codegen`'s
+		 *  `generateFromPackageSummary({ includePhantomTypeParameters })`.
+		 *  Default `false` — `@mysten/codegen`'s own default.
+		 *
+		 *  Off, a struct whose type parameters are ALL phantom renders as a
+		 *  plain `const X = new MoveStruct({ name: '...::X<phantom T>' })` —
+		 *  the phantom placeholder is baked into `.name`, so the instance is
+		 *  unusable as a concrete type tag. On, such structs render as
+		 *  factory functions
+		 *  (`export function X<T extends BcsType<any>>(...typeParameters: [T])`)
+		 *  whose returned MoveStruct's `.name` interpolates the arguments'
+		 *  names — phantom parameters become REQUIRED, and the instance's
+		 *  `.name` is a fully-qualified, composable type tag
+		 *  (`Pool(DBTC, DUSDC).name`).
+		 *
+		 *  NOTE: flipping this reshapes the generated code for phantom-only
+		 *  structs from consts to factories, so call sites consuming those
+		 *  bindings change. */
+		readonly includePhantomTypeParameters?: boolean;
 	};
 	readonly renderer?: 'tui' | 'plain' | 'silent';
 	readonly extras?: ManifestExtrasInput;
+	/** Per-network options, keyed by the resolved network name. The
+	 *  name-blind substrate forwards this verbatim — it never reads the
+	 *  shape. The authoring surface (`api/define-devstack-with.ts`) narrows
+	 *  it to typed per-network toggles, and the plugin-aware orchestrator
+	 *  interprets it (`orchestrators/network-options.ts`
+	 *  `resolveNetworkOptions`). Mirrors the opaque `network` field. */
+	readonly networkOptions?: Readonly<Record<string, unknown>>;
 }

@@ -32,11 +32,11 @@ export type _NoUsdcMarginDefaultsOnDeepbookBarrel = DPV['USDC_MARGIN_DEFAULTS'];
 // @ts-expect-error — margin defaults are not exported without margin behavior
 export type _NoDefaultPoolRiskConfigOnDeepbookBarrel = DPV['DEFAULT_POOL_RISK_CONFIG'];
 
-const localNet: NetworkConfig<'local'> = { mode: 'local', chain: 'sui:localnet' };
-const liveNet: NetworkConfig<'live'> = { mode: 'live', chain: 'sui:testnet' };
+const localNet: NetworkConfig<'local'> = { mode: 'local', chainId: 'sui:localnet' };
+const liveNet: NetworkConfig<'live'> = { mode: 'live', chainId: 'sui:testnet' };
 const forkNet: NetworkConfig<'fork'> = {
 	mode: 'fork',
-	chain: 'sui:mainnet-fork',
+	chainId: 'sui:mainnet-fork',
 	checkpoint: '1',
 };
 

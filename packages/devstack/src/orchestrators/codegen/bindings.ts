@@ -111,6 +111,23 @@ export interface PackageBindings {
 	readonly excluded: boolean;
 }
 
+/**
+ * Consumer-side shape guard: does an aggregated value look like a
+ * Move-bindings contribution that `emitBindings` knows how to consume?
+ * This is structural validation of the orchestrator's own input
+ * contract, NOT a plugin-name match — any plugin whose
+ * `aggregate.project` returns objects with this shape is forwarded to
+ * the Move bindings emitter. The single definition of the seam; both
+ * the codegen orchestrator service and the Package plugin reference it.
+ */
+export const isPackageBindings = (v: unknown): v is PackageBindings =>
+	typeof v === 'object' &&
+	v !== null &&
+	'name' in v &&
+	'packageId' in v &&
+	'mvrPlaceholder' in v &&
+	'sourcePath' in v;
+
 export interface EmitBindingsInput {
 	readonly bindingsDir: string;
 	readonly packages: ReadonlyArray<PackageBindings>;
@@ -294,62 +311,78 @@ export const stubMoveCodegen = (
 // per "Orchestrator boundaries — never names a service", any plugin
 // that can produce `MoveSummary` JSON may contribute a runner Layer.
 
-export const layerMystenMoveCodegen: Layer.Layer<MoveCodegenService> = Layer.succeed(
-	MoveCodegenService,
-	MoveCodegenService.of({
-		generate: (input) =>
-			Effect.tryPromise({
-				try: async () => {
-					const tmp = await mkdtemp(join(tmpdir(), 'devstack-move-codegen-'));
-					try {
-						// `sui move summary` keys each `package_summaries/<dir>`
-						// subdirectory by the package's NAMED ADDRESS, not its
-						// `[package].name`. These legitimately differ (the canonical
-						// example is MoveStdlib, whose package name is "MoveStdlib"
-						// but whose named address is "std"). `@mysten/codegen`'s
-						// resolver matches the summary subdir by either (1) a single
-						// `[addresses]` label or (2) the `packageName` — but it reads
-						// the Move.toml at the path WE pass it (the summary scratch
-						// dir), which has NO `[addresses]` table, so its label-based
-						// path (1) is defeated and it falls back to (2). We pass the
-						// symbolic localPackage() NAME as `packageName`, which is the
-						// `[package].name`, NOT the named address — so codegen throws
-						// "Could not identify main package directory" whenever the two
-						// differ. Recover the correct subdir name here from the REAL
-						// source Move.toml's `[addresses]` table (which devstack still
-						// has at `input.sourcePath`), falling back to the name when the
-						// source is unreadable or ambiguous (a no-op for the common
-						// case where name == address).
-						const packageName =
-							(await resolveSummaryDirName(input.sourcePath)) ?? input.packageName;
-						await generateFromPackageSummary({
-							package: {
-								path: input.summary.summaryPath ?? input.sourcePath,
-								package: input.mvrPlaceholder,
-								packageName,
-							},
-							prune: true,
-							outputDir: tmp,
-							importExtension: input.importExtension,
-						});
-						return await collectGeneratedFiles(tmp);
-					} finally {
-						await rm(tmp, { recursive: true, force: true });
-						if (input.summary.cleanupPath !== undefined) {
-							await rm(input.summary.cleanupPath, { recursive: true, force: true });
+export const layerMystenMoveCodegen = (
+	options: {
+		/** Forwarded verbatim to `@mysten/codegen`'s
+		 *  `generateFromPackageSummary({ includePhantomTypeParameters })`.
+		 *  Default `false` (`@mysten/codegen`'s own default): phantom-only
+		 *  structs render as plain consts with the `<phantom T>` placeholder
+		 *  baked into `.name`. `true` renders them as factory functions whose
+		 *  phantom type parameters are REQUIRED arguments, so the returned
+		 *  instance's `.name` is a fully-qualified, composable type tag
+		 *  (`Pool(DBTC, DUSDC).name`). Static per stack — threaded from
+		 *  `DevstackOptions['codegen']` through
+		 *  `resolveProductionCodegenOptions`, never per-cycle. */
+		readonly includePhantomTypeParameters?: boolean;
+	} = {},
+): Layer.Layer<MoveCodegenService> =>
+	Layer.succeed(
+		MoveCodegenService,
+		MoveCodegenService.of({
+			generate: (input) =>
+				Effect.tryPromise({
+					try: async () => {
+						const tmp = await mkdtemp(join(tmpdir(), 'devstack-move-codegen-'));
+						try {
+							// `sui move summary` keys each `package_summaries/<dir>`
+							// subdirectory by the package's NAMED ADDRESS, not its
+							// `[package].name`. These legitimately differ (the canonical
+							// example is MoveStdlib, whose package name is "MoveStdlib"
+							// but whose named address is "std"). `@mysten/codegen`'s
+							// resolver matches the summary subdir by either (1) a single
+							// `[addresses]` label or (2) the `packageName` — but it reads
+							// the Move.toml at the path WE pass it (the summary scratch
+							// dir), which has NO `[addresses]` table, so its label-based
+							// path (1) is defeated and it falls back to (2). We pass the
+							// symbolic localPackage() NAME as `packageName`, which is the
+							// `[package].name`, NOT the named address — so codegen throws
+							// "Could not identify main package directory" whenever the two
+							// differ. Recover the correct subdir name here from the REAL
+							// source Move.toml's `[addresses]` table (which devstack still
+							// has at `input.sourcePath`), falling back to the name when the
+							// source is unreadable or ambiguous (a no-op for the common
+							// case where name == address).
+							const packageName =
+								(await resolveSummaryDirName(input.sourcePath)) ?? input.packageName;
+							await generateFromPackageSummary({
+								package: {
+									path: input.summary.summaryPath ?? input.sourcePath,
+									package: input.mvrPlaceholder,
+									packageName,
+								},
+								prune: true,
+								outputDir: tmp,
+								importExtension: input.importExtension,
+								includePhantomTypeParameters: options.includePhantomTypeParameters,
+							});
+							return await collectGeneratedFiles(tmp);
+						} finally {
+							await rm(tmp, { recursive: true, force: true });
+							if (input.summary.cleanupPath !== undefined) {
+								await rm(input.summary.cleanupPath, { recursive: true, force: true });
+							}
 						}
-					}
-				},
-				catch: (cause) =>
-					new CodegenBindingsFailed({
-						package: input.packageName,
-						sourcePath: input.sourcePath,
-						reason: 'render-failed',
-						cause,
-					}),
-			}),
-	}),
-);
+					},
+					catch: (cause) =>
+						new CodegenBindingsFailed({
+							package: input.packageName,
+							sourcePath: input.sourcePath,
+							reason: 'render-failed',
+							cause,
+						}),
+				}),
+		}),
+	);
 
 // -----------------------------------------------------------------------------
 // Local helpers — keep the module dep-free of Path.Path so the

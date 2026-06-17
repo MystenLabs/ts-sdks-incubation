@@ -7,7 +7,7 @@
 //   - HTTP error responses (non-2xx) → typed error with status code
 //   - `signTransaction` posts JSON to `/sign-transaction`
 
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -50,7 +50,7 @@ const writeWalletManifest = (walletUrl: string): string => {
 
 const manifestJson = (walletUrl: string, stack: string): string =>
 	JSON.stringify({
-		identity: { app: 'sample-app', stack, chain: 'localnet' },
+		identity: { app: 'sample-app', stack, network: 'localnet' },
 		manifestVersion: CURRENT_MANIFEST_VERSION,
 		services: {},
 		endpoints: {
@@ -65,35 +65,6 @@ const manifestJson = (walletUrl: string, stack: string): string =>
 		},
 		extras: {},
 	});
-
-const appendEngineEvent = (stateDir: string, seq: number, event: Record<string, unknown>) => {
-	appendFileSync(
-		join(stateDir, 'events.ndjson'),
-		JSON.stringify({
-			protocol: 1,
-			seq,
-			at: Date.now(),
-			kind: 'engine',
-			event: { ...event, at: Date.now() },
-		}) + '\n',
-	);
-};
-
-const writeCodegenEvent = (stateDir: string, seq = 1) => {
-	appendEngineEvent(stateDir, seq, { tag: 'codegen.emitted', files: [] });
-};
-
-const writeDevEndpointEvent = (stateDir: string, seq: number) => {
-	appendEngineEvent(stateDir, seq, {
-		tag: 'endpoint.registered',
-		endpoint: {
-			name: 'dev',
-			url: 'http://dev.sample-app.localhost:5175',
-			displayUrl: 'http://dev.sample-app.localhost:5175',
-			wireProtocol: 'http',
-		},
-	});
-};
 
 describe('createWalletAdapter', () => {
 	beforeEach(() => setFixture(null));
@@ -148,7 +119,7 @@ describe('createWalletAdapter', () => {
 				cwd: root,
 				env: {},
 				requireEndpoints: ['wallet'],
-				waitForCodegen: false,
+				reuse: true,
 			})();
 			const fixture = readStashedFixture();
 			expect(fixture?.walletEndpoint).toBe('http://wallet.sample-app.localhost:6173');
@@ -170,8 +141,6 @@ describe('createWalletAdapter', () => {
 		// emits a one-line stderr advisory when it overwrites a populated
 		// slot.
 		const root = writeWalletManifest('http://wallet.sample-app.localhost:6173');
-		const stateDir = join(root, '.devstack', 'stacks', 'main');
-		writeCodegenEvent(stateDir);
 		const originalWrite = process.stderr.write.bind(process.stderr);
 		const captured: Array<string> = [];
 		const stub = ((line: string | Uint8Array) => {
@@ -180,64 +149,15 @@ describe('createWalletAdapter', () => {
 		}) as typeof process.stderr.write;
 		process.stderr.write = stub;
 		try {
-			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'] })();
+			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'], reuse: true })();
 			const first = readStashedFixture();
 			expect(first?.generation).toBeGreaterThan(0);
-			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'] })();
+			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'], reuse: true })();
 			const second = readStashedFixture();
 			expect(second?.generation).toBeGreaterThan(first?.generation ?? 0);
 			expect(captured.some((line) => line.includes('global-setup re-ran'))).toBe(true);
 		} finally {
 			process.stderr.write = originalWrite;
-			setFixture(null);
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it('global setup waits for the post-acquire codegen event', async () => {
-		const root = writeWalletManifest('http://wallet.sample-app.localhost:6173');
-		const stateDir = join(root, '.devstack', 'stacks', 'main');
-		try {
-			const setup = buildGlobalSetup({
-				cwd: root,
-				env: {},
-				requireEndpoints: ['wallet'],
-				readyTimeoutMs: 1_000,
-				readyPollIntervalMs: 10,
-			})();
-			setTimeout(() => writeCodegenEvent(stateDir), 25);
-
-			await setup;
-
-			const fixture = readStashedFixture();
-			expect(fixture?.walletEndpoint).toBe('http://wallet.sample-app.localhost:6173');
-		} finally {
-			setFixture(null);
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it('global setup ignores stale codegen emitted before the current dev endpoint', async () => {
-		const root = writeWalletManifest('http://wallet.sample-app.localhost:6173');
-		const stateDir = join(root, '.devstack', 'stacks', 'main');
-		try {
-			writeCodegenEvent(stateDir, 58);
-			writeDevEndpointEvent(stateDir, 54);
-
-			const setup = buildGlobalSetup({
-				cwd: root,
-				env: {},
-				requireEndpoints: ['wallet'],
-				readyTimeoutMs: 1_000,
-				readyPollIntervalMs: 10,
-			})();
-			setTimeout(() => writeCodegenEvent(stateDir, 58), 25);
-
-			await setup;
-
-			const fixture = readStashedFixture();
-			expect(fixture?.walletEndpoint).toBe('http://wallet.sample-app.localhost:6173');
-		} finally {
 			setFixture(null);
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -251,9 +171,8 @@ describe('createWalletAdapter', () => {
 			join(stateDir, 'manifest.json'),
 			manifestJson('http://wallet.sample-app.localhost:6173', 'token-studio'),
 		);
-		writeCodegenEvent(stateDir);
 		try {
-			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'] })();
+			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'], reuse: true })();
 
 			const fixture = readStashedFixture();
 			expect(fixture?.stack).toBe('token-studio');
