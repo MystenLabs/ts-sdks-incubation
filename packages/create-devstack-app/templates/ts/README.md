@@ -8,19 +8,24 @@ generated bindings.
 
 ```bash
 pnpm dev       # boots the `dev` localnet (+ any services), publishes move/counter,
-               # regenerates src/generated/, and prints the dashboard URL
+               # injects the live stack's ids, and prints the dashboard URL
+               # (run `pnpm codegen` to regenerate the committed src/generated/ tree)
 pnpm test      # unit tests (src/**/*.test.ts) — fast, boots nothing
 pnpm test:e2e  # full-stack tests (src/**/*.e2e.test.ts) — boots a throwaway `test`
                # stack, runs them against it, then tears it down
 ```
 
 `pnpm test:e2e` is self-contained: it does **not** need `pnpm dev` running, and because it
-boots a separate `test` stack it runs in parallel with `pnpm dev` without contending or
-clobbering `src/generated`. To run the e2e suite against an already-running stack instead of
-booting a fresh one, set `DEVSTACK_TEST_REUSE=1` (and point `DEVSTACK_STACK` at that stack).
+boots a separate `test` stack — with its own per-stack ids file and runtime state — it runs in
+parallel with `pnpm dev` without contending. The committed `src/generated` tree is shared and
+stack-invariant, so neither stack rewrites it. To run the e2e suite against an already-running
+stack instead of booting a fresh one, set `DEVSTACK_TEST_REUSE=1` (and point `DEVSTACK_STACK` at
+that stack).
 
-Prefer a one-shot boot without the watch loop? `pnpm apply`. Day-2: `devstack status` (what's
-running + endpoints), `devstack doctor` (diagnose), `devstack wipe` (reset state).
+Prefer a one-shot boot without the watch loop? `pnpm apply` (re-emits the live ids file + dev
+extras; it does not rewrite the committed `src/generated`). To regenerate the committed tree after
+a Move source change, run `devstack codegen`. Day-2: `devstack status` (what's running +
+endpoints), `devstack doctor` (diagnose), `devstack wipe` (reset state).
 
 ## Standalone scripts
 

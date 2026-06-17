@@ -135,6 +135,9 @@ const makeHarness = (
 		codegen: {
 			run: () => Effect.sync(() => ({ exitCode: 0 })),
 		},
+		dumpIds: {
+			run: () => Effect.sync(() => ({ exitCode: 0 })),
+		},
 		status: {
 			reader: { readState: () => Effect.succeed(null) },
 		},
@@ -723,6 +726,7 @@ describe('dispatch', () => {
 			'up',
 			'apply',
 			'codegen',
+			'dump-ids',
 			'status',
 			'doctor',
 			'config',

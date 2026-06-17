@@ -24,10 +24,7 @@
 
 import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import {
-	configCodegenable,
-	type ConfigBindingSet,
-} from '../../contracts/config-bindings.ts';
+import { configCodegenable, type ConfigBindingSet } from '../../contracts/config-bindings.ts';
 import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 
@@ -65,8 +62,6 @@ const suiConfigBindings = (): ConfigBindingSet<ResolvedSuiNetwork> => {
 		bucket: 'config.ts',
 		kind: 'sui-network',
 		emitterName: 'sui-network',
-		// Dead output path: `aggregateOnly` skips the standalone file.
-		outputPath: 'config.ts',
 		bindings: [
 			{
 				variant: 'resolved',
@@ -98,6 +93,6 @@ export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl =
  *  Emits `resolveNetwork()` / `resolveNetworks()` raw expressions — the
  *  committed `config.ts` carries no network name and no literal rpc URL. No
  *  id-resolver input needed (the values are injected, not config-derived). */
-export const makeStaticCodegen =
-	(): (() => ReadonlyArray<CodegenableDecl>) => () =>
-		[configCodegenable(suiConfigBindings(), 'static')];
+export const makeStaticCodegen = (): (() => ReadonlyArray<CodegenableDecl>) => () => [
+	configCodegenable(suiConfigBindings(), 'static'),
+];

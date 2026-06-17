@@ -79,12 +79,7 @@ import {
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
-import type {
-	IdConfig,
-	IdConfigNetwork,
-	IdConfigPackage,
-	IdConfigValues,
-} from './id-config.ts';
+import type { IdConfig, IdConfigNetwork, IdConfigPackage, IdConfigValues } from './id-config.ts';
 import { CodegenPathsService, type CodegenPaths } from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
@@ -353,9 +348,7 @@ const runEmitCycleInner = (
 	FileSystem.FileSystem | MoveSummaryRunnerService | MoveCodegenService
 > =>
 	Effect.gen(function* () {
-		yield* Effect.logInfo(
-			`codegen: emitting projection (trackTree=${input.trackTree === true}).`,
-		);
+		yield* Effect.logInfo(`codegen: emitting projection (trackTree=${input.trackTree === true}).`);
 		const fileEmitters: Array<Codegenable> = [...input.contributions];
 
 		const filesWritten: Array<string> = [];
@@ -626,6 +619,18 @@ interface CodegenEmission {
 
 const runEmitter = (decl: Codegenable): Effect.Effect<CodegenEmission, CodegenEmitFailed> =>
 	Effect.gen(function* () {
+		// Annotate the emit span with the contributor's plugin-supplied
+		// `kind` tag (declared on the decl's `aggregate`). The orchestrator
+		// stays name-blind — it never reads the tag's VALUE or branches on it
+		// (per the `AggregateContribution` contract); wiring it here makes the
+		// otherwise-dead field observable so a trace attributes each emit to
+		// the plugin family that produced it. `annotateCurrentSpan` only lands
+		// inside an enclosing `withSpan` — the `codegen.emit` span this body is
+		// wrapped in below.
+		const kind = decl.aggregate?.kind;
+		if (kind !== undefined) {
+			yield* Effect.annotateCurrentSpan('codegen.kind', kind);
+		}
 		const exports: Record<string, unknown> = {};
 		const imports: Array<string> = [];
 		const done: CodegenEmitDone = { _tag: 'CodegenEmitDone' };
@@ -649,7 +654,7 @@ const runEmitter = (decl: Codegenable): Effect.Effect<CodegenEmission, CodegenEm
 			),
 		);
 		return { exports, imports };
-	});
+	}).pipe(Effect.withSpan('codegen.emit', { attributes: { 'codegen.emitter': decl.emitterName } }));
 
 /**
  * Uniqueness check: emitter name (literal) must be unique unless
@@ -871,9 +876,9 @@ const collectResolversInValue = (value: unknown, found: Set<ConfigRuntimeResolve
 
 /** The ordered set of config-runtime resolvers an aggregate's exports use
  *  (empty when none — the aggregate needs no resolver import). */
-const resolversUsedBy = (
-	exports: { readonly [key: string]: unknown },
-): ReadonlyArray<ConfigRuntimeResolver> => {
+const resolversUsedBy = (exports: {
+	readonly [key: string]: unknown;
+}): ReadonlyArray<ConfigRuntimeResolver> => {
 	const found = new Set<ConfigRuntimeResolver>();
 	for (const v of Object.values(exports)) collectResolversInValue(v, found);
 	return CONFIG_RUNTIME_RESOLVERS.filter((name) => found.has(name));
@@ -949,8 +954,7 @@ const idConfigFromBucket = (
 	network: string,
 	values: IdConfigValues,
 ): IdConfig => {
-	const asRecord = (v: unknown): Record<string, unknown> =>
-		isPlainObject(v) ? v : {};
+	const asRecord = (v: unknown): Record<string, unknown> => (isPlainObject(v) ? v : {});
 	const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
 	const networks: Record<string, IdConfigNetwork> = {};

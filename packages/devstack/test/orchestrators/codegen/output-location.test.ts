@@ -8,14 +8,11 @@
 // Pure: no `process.env`, no I/O — so these are plain
 // assertions over its return shape, no temp dir / env harness needed.
 //
-// Rules under test (see src/orchestrators/codegen/output-location.ts):
-//   1. Explicit `outputDir` honored verbatim (relative → resolved
-//      against appRoot; absolute → passthrough). Explicit `stackSubdir`
-//      rides along.
-//   2. Default → `<appRoot>/.devstack/stacks/<stack>/generated`,
-//      stackSubdir null — for EVERY live stack. The committed
-//      `src/generated` tree is owned by the stack-free `codegen` verb,
-//      never by this resolver.
+// Rule under test (see src/orchestrators/codegen/output-location.ts):
+//   A single fixed per-stack rule, no override → every live stack maps to
+//   `<appRoot>/.devstack/stacks/<stack>/generated`, stackSubdir null. The
+//   committed `src/generated` tree is owned by the stack-free `codegen`
+//   verb, never by this resolver.
 
 import { resolve } from 'node:path';
 
@@ -44,57 +41,13 @@ describe('resolveCodegenOutput', () => {
 		expect(out.stackSubdir).toBeNull();
 	});
 
-	it('explicit relative outputDir is resolved against appRoot', () => {
-		const out = resolveCodegenOutput({
-			appRoot: APP_ROOT,
-			effectiveStack: 'e2e',
-			explicitOutputDir: 'custom/gen',
-		});
-		// Explicit override wins over the default rule entirely.
-		expect(out.outputDir).toBe(resolve(APP_ROOT, 'custom/gen'));
-	});
-
-	it('explicit absolute outputDir is passed through verbatim', () => {
+	it('records the per-stack generated-extras sibling as extrasDir', () => {
 		const out = resolveCodegenOutput({
 			appRoot: APP_ROOT,
 			effectiveStack: 'main',
-			explicitOutputDir: '/abs/pinned/generated',
 		});
-		expect(out.outputDir).toBe('/abs/pinned/generated');
-	});
-
-	it('explicit stackSubdir is honored (rides the explicit-outputDir branch)', () => {
-		const out = resolveCodegenOutput({
-			appRoot: APP_ROOT,
-			effectiveStack: 'demo',
-			explicitOutputDir: '/abs/pinned/generated',
-			explicitStackSubdir: 'demo',
-		});
-		expect(out.outputDir).toBe('/abs/pinned/generated');
-		expect(out.stackSubdir).toBe('demo');
-	});
-
-	it('explicit stackSubdir null/undefined collapses to null', () => {
-		const out = resolveCodegenOutput({
-			appRoot: APP_ROOT,
-			effectiveStack: 'demo',
-			explicitOutputDir: '/abs/pinned/generated',
-			explicitStackSubdir: null,
-		});
-		expect(out.stackSubdir).toBeNull();
-	});
-
-	it('default rule never populates stackSubdir even when one is supplied without outputDir', () => {
-		// Belt-and-braces: only the explicit-outputDir branch threads a
-		// subdir; the `.devstack/stacks/<stack>` path already isolates per
-		// stack, so the default rule leaves stackSubdir null even when an
-		// explicit stackSubdir is supplied WITHOUT an explicit outputDir.
-		const out = resolveCodegenOutput({
-			appRoot: APP_ROOT,
-			effectiveStack: 'e2e',
-			explicitStackSubdir: 'ignored-without-outputDir',
-		});
-		expect(out.outputDir).toBe(resolve(APP_ROOT, '.devstack', 'stacks', 'e2e', 'generated'));
-		expect(out.stackSubdir).toBeNull();
+		expect(out.extrasDir).toBe(
+			resolve(APP_ROOT, '.devstack', 'stacks', 'main', 'generated-extras'),
+		);
 	});
 });

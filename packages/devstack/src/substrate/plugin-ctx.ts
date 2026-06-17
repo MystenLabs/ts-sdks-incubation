@@ -131,9 +131,18 @@ export const emitContributions = (ctx: PluginCtx, decls: ReadonlyArray<Contribut
  * EXACTLY 5 keys (INV-5 — see file header). Do not add a 6th.
  */
 export interface PluginCtx {
-	/** Buffered: contribute a generated-file emitter to the codegen
+	/** Buffered: contribute the plugin's LIVE codegen decl to the codegen
 	 *  orchestrator. Replayed in the supervisor frame after a successful
-	 *  `start`. Returns void (the orchestrator owns rendering). */
+	 *  `start` (it carries post-acquire runtime state — resolved ids, rpc —
+	 *  so it cannot be a static spec field; that is exactly why it is a
+	 *  buffered verb). Since codegen was decoupled from boot this is the
+	 *  LIVE half ONLY: at boot the orchestrator projects the decl into the
+	 *  loadable id-config (`assembleIdConfig`) and, for dev-only decls,
+	 *  writes the `generated-extras` tree (`emitExtras`) — it does NOT write
+	 *  the committed `src/generated` tree. That committed, stack-free tree is
+	 *  emitted separately by the `devstack codegen` verb from the plugin
+	 *  spec's `staticCodegen` hook, derived from the SAME `ConfigBindingSet`.
+	 *  Returns void (the orchestrator owns rendering). */
 	readonly codegen: <E extends string>(decl: CodegenableDecl<E>) => void;
 	/** Buffered: declare a routable endpoint for the router orchestrator.
 	 *  Replayed in the supervisor frame after a successful `start`.

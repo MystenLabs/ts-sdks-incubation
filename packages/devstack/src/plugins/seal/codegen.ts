@@ -18,6 +18,7 @@
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import {
+	keyedBucketSpec,
 	liveBucketCodegen,
 	staticBucketCodegen,
 	type BucketField,
@@ -82,7 +83,12 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 					{ key: 'name', variant: 'literal', value: structural.name },
 					{ key: 'mode', variant: 'literal', value: structural.mode },
 					{ key: 'objectId', variant: 'resolved', tsType: 'string', live: (s) => s.objectId },
-					{ key: 'keyServerUrl', variant: 'resolved', tsType: 'string', live: (s) => s.keyServerUrl },
+					{
+						key: 'keyServerUrl',
+						variant: 'resolved',
+						tsType: 'string',
+						live: (s) => s.keyServerUrl,
+					},
 					{
 						key: 'serverConfigs',
 						variant: 'resolved',
@@ -93,16 +99,7 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 						live: (s) => s.serverConfigs as unknown as JsonValue,
 					},
 				];
-	return {
-		bucket: 'seal.ts',
-		kind: 'seal',
-		emitterName: `seal/${structural.name}`,
-		outputPath: `seal/${structural.name}.ts`,
-		instanceKey: structural.name,
-		namespace: `seal:${structural.name}`,
-		allowEmitterNameRepetition: true,
-		fields,
-	};
+	return keyedBucketSpec({ bucket: 'seal.ts', kind: 'seal', key: structural.name, fields });
 };
 
 /** Build the LIVE Codegenable contribution for a seal instance. Bakes the

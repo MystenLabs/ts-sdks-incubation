@@ -115,9 +115,11 @@ export interface ConfigBindingSet<State = unknown> {
 	readonly kind: string;
 	/** The emitter name the derived `CodegenableDecl` carries. */
 	readonly emitterName: string;
-	/** A non-empty placeholder output path (the decl is `aggregateOnly`,
-	 *  so the file is never written — but path-resolution must not see ''). */
-	readonly outputPath: string;
+	/** Optional standalone output path. The derived decl is `aggregateOnly`,
+	 *  so no per-decl file is written; path-resolution only needs a non-empty,
+	 *  per-bucket-unique string, which defaults to `bucket` when omitted. Set
+	 *  it only when a standalone path would be genuinely meaningful. */
+	readonly outputPath?: string;
 	/** When `true`, the derived decl sets `allowEmitterNameRepetition`
 	 *  (one decl per item, e.g. one `package` per published package). */
 	readonly allowEmitterNameRepetition?: boolean;
@@ -250,7 +252,10 @@ export const configCodegenable = <State, Emitter extends string = string>(
 	return {
 		kind: 'codegenable',
 		emitterName: set.emitterName as Emitter,
-		outputPath: set.outputPath,
+		// `aggregateOnly` never writes a standalone file; default the
+		// path-resolution placeholder to the bucket name so plugins don't
+		// invent dead paths.
+		outputPath: set.outputPath ?? set.bucket,
 		aggregateOnly: true,
 		...(set.allowEmitterNameRepetition === true ? { allowEmitterNameRepetition: true } : {}),
 		aggregate: {
@@ -322,8 +327,9 @@ export interface SiblingBucketSpec<State> {
 	/** The emitter name the derived decl carries (literal, e.g.
 	 *  `coin/<symbol>`). */
 	readonly emitterName: string;
-	/** A non-empty dead output path (the decl is `aggregateOnly`). */
-	readonly outputPath: string;
+	/** Optional standalone output path. Defaults to `bucket` (the decl is
+	 *  `aggregateOnly`, so no per-decl file is written). */
+	readonly outputPath?: string;
 	/** The instance key the entry lives under in the bucket object
 	 *  (e.g. the coin symbol, the deepbook instance name). */
 	readonly instanceKey: string;
@@ -336,6 +342,28 @@ export interface SiblingBucketSpec<State> {
 	 *  (sibling instances share an emitter-name prefix). */
 	readonly allowEmitterNameRepetition?: boolean;
 }
+
+/** Convenience constructor for the keyed-bucket shape the service plugins
+ *  share (coin/deepbook/seal): every sibling instance keys under `<key>` in
+ *  `<bucket>`, with `emitterName = `<kind>/<key>``, `namespace = `<kind>:<key>``,
+ *  `instanceKey = <key>`, and `allowEmitterNameRepetition` (instances share the
+ *  `<kind>/` emitter prefix). Only `bucket`/`kind`/`key`/`fields` vary across
+ *  those plugins, so this keeps the `<kind>/<key>` + `<kind>:<key>` naming
+ *  convention in ONE place instead of re-spelling it per plugin. */
+export const keyedBucketSpec = <State>(input: {
+	readonly bucket: string;
+	readonly kind: string;
+	readonly key: string;
+	readonly fields: ReadonlyArray<BucketField<State>>;
+}): SiblingBucketSpec<State> => ({
+	bucket: input.bucket,
+	kind: input.kind,
+	emitterName: `${input.kind}/${input.key}`,
+	instanceKey: input.key,
+	namespace: `${input.kind}:${input.key}`,
+	allowEmitterNameRepetition: true,
+	fields: input.fields,
+});
 
 /** Build the `ConfigBindingSet` for a sibling-keyed bucket instance. The
  *  `configPath` of every binding is rooted at the instance key, so distinct
@@ -364,7 +392,7 @@ export const siblingBucketBindings = <State>(
 		bucket: spec.bucket,
 		kind: spec.kind,
 		emitterName: spec.emitterName,
-		outputPath: spec.outputPath,
+		...(spec.outputPath !== undefined ? { outputPath: spec.outputPath } : {}),
 		...(spec.allowEmitterNameRepetition === true ? { allowEmitterNameRepetition: true } : {}),
 		bindings,
 	};
@@ -375,12 +403,10 @@ export const siblingBucketBindings = <State>(
 export const liveBucketCodegen = <State>(
 	spec: SiblingBucketSpec<State>,
 	state: State,
-): CodegenableDecl =>
-	configCodegenable(siblingBucketBindings(spec), { mode: 'live', state });
+): CodegenableDecl => configCodegenable(siblingBucketBindings(spec), { mode: 'live', state });
 
 /** Derive the STATIC (stack-free) bucket decl — emits
  *  `resolveValue(namespace, key)` for resolved fields, literals for the
  *  rest. The committed `<bucket>.ts` carries no baked runtime value. */
-export const staticBucketCodegen = <State>(
-	spec: SiblingBucketSpec<State>,
-): CodegenableDecl => configCodegenable(siblingBucketBindings(spec), 'static');
+export const staticBucketCodegen = <State>(spec: SiblingBucketSpec<State>): CodegenableDecl =>
+	configCodegenable(siblingBucketBindings(spec), 'static');

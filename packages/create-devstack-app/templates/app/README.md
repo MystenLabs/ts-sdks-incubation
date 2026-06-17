@@ -8,8 +8,9 @@ pnpm dev
 ```
 
 `pnpm dev` boots a Sui localnet (plus any services in `devstack.config.ts`) in Docker, funds the dev
-account, publishes `move/counter`, generates typed bindings + runtime config into `src/generated/`,
-serves the app with a browser dev wallet injected, and prints the dashboard URL.
+account, publishes `move/counter`, serves the app with a browser dev wallet injected, and prints the
+dashboard URL. It injects the live stack's ids into the build automatically; it does not rewrite the
+committed `src/generated/` tree (run `pnpm codegen` for that).
 
 ## Day-2 commands
 
@@ -17,7 +18,7 @@ serves the app with a browser dev wallet injected, and prints the dashboard URL.
 | ----------------- | ---------------------------------------------------------------------------- |
 | `pnpm dev`        | Boot (or reuse) the `dev` stack and serve the app with the dev wallet; injects live ids automatically. |
 | `pnpm codegen`    | Regenerate `src/generated` bindings after a Move source change — deterministic, stack-free. |
-| `pnpm apply`      | Bring the stack up to date (publish + codegen) without serving the app.      |
+| `pnpm apply`      | Bring the stack up to date and re-emit the live ids file + dev extras, without serving the app. Does not rewrite the committed `src/generated`. |
 | `pnpm typecheck`  | `tsc -b --noEmit` — stack-free.                                             |
 | `pnpm test`       | Unit tests (`src/**/*.test.ts`) — fast, boots nothing.                       |
 | `pnpm test:e2e`   | Full-stack tests (`src/**/*.e2e.test.ts`) — auto-boots a throwaway `test` stack (parallel-safe with `pnpm dev`), then tears it down. |
@@ -33,13 +34,13 @@ from values injected at build time. `pnpm dev` injects the live stack's ids auto
 ## Deploy to a real network
 
 A production build needs a known deployment's id-config file — the same `devstack-ids.json`
-schema the local stack writes. Either point the stack at the target network once and copy the
-file it emits, or hand-author one:
+schema the local stack writes. The supported way to obtain one is `devstack dump-ids`, or
+hand-author one:
 
 ```bash
-# Option A: boot against the target network, then copy the emitted id-config
+# Option A: boot against the target network, then dump its ids to a committed file
 devstack up --network testnet
-cp .devstack/stacks/dev/devstack-ids.json config/testnet.ids.json
+devstack dump-ids --network testnet --out config/testnet.ids.json
 ```
 
 For the full id-config schema (Option B, hand-authoring) see the canonical

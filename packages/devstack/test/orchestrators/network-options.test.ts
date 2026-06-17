@@ -58,6 +58,36 @@ describe('network-scoped options', () => {
 			});
 		});
 
+		it('HARD-CLAMPS faucet + autoApproveSigning OFF on mainnet even with explicit opt-ins', () => {
+			// Mirrors the devWallet clamp: no dev convenience may be silently
+			// enabled on a real-funds mainnet. An explicit
+			// `{ mainnet: { faucet: true, autoApproveSigning: true } }` MUST NOT
+			// expose a funding faucet or auto-approve a real-funds signature.
+			expect(
+				resolveNetworkOptions('mainnet', {
+					mainnet: { faucet: true, autoApproveSigning: true },
+				}),
+			).toEqual({
+				devWallet: false,
+				faucet: false,
+				autoApproveSigning: false,
+			});
+		});
+
+		it('honors faucet + autoApproveSigning overrides on a non-mainnet network', () => {
+			// Off-by-override on a dev network: the clamp is mainnet-only, so a
+			// non-mainnet network can opt each convenience out individually.
+			expect(
+				resolveNetworkOptions('testnet', {
+					testnet: { faucet: false, autoApproveSigning: false },
+				}),
+			).toEqual({
+				devWallet: true,
+				faucet: false,
+				autoApproveSigning: false,
+			});
+		});
+
 		it('ignores overrides keyed to a different network', () => {
 			expect(resolveNetworkOptions('localnet', { mainnet: { devWallet: false } })).toEqual(
 				defaultNetworkOptions('localnet'),

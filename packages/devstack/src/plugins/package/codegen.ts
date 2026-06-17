@@ -34,7 +34,7 @@ import {
 } from '../../contracts/config-bindings.ts';
 import type { PackageBindings } from '../../orchestrators/codegen/bindings.ts';
 import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
-import { mvrNamedForm, mvrNamedFormFrom, mvrSlugify } from './dep-resolution.ts';
+import { mvrNamedForm, mvrNamedFormFrom } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
 
 /** Per-network declared ids — pure literals the user supplies for
@@ -113,7 +113,11 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 	const bindings: Array<ConfigBinding<PackageLiveState>> = [];
 
 	// `packages.<name>.mvr` — pure literal in both paths.
-	bindings.push({ variant: 'literal', configPath: ['packages', name, 'mvr'], value: mvrPlaceholder });
+	bindings.push({
+		variant: 'literal',
+		configPath: ['packages', name, 'mvr'],
+		value: mvrPlaceholder,
+	});
 
 	// The active-network id binding. Two cases:
 	//   - no pinned id (LOCAL, or KNOWN-shaped local stub) → RESOLVED (sugar
@@ -186,11 +190,6 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 		bucket: 'config.ts',
 		kind: 'package',
 		emitterName: 'package',
-		// Dead output path — `aggregateOnly` skips the standalone file. The
-		// distinct per-name value keeps path-resolution well-formed. Uses the
-		// BARE slug (not the `@local/<slug>` named `mvrPlaceholder`) so the
-		// path has no embedded `/`/`@`.
-		outputPath: `package/${mvrSlugify(name)}.ts`,
 		// One Package contribution per published package — shared `'package'`
 		// emitter name is by-design (the orchestrator skips its uniqueness
 		// check for this flag).
@@ -212,7 +211,9 @@ const packageDecl = (
 	bindings: PackageBindings,
 	how: 'static' | { readonly mode: 'live'; readonly state: PackageLiveState },
 ): CodegenableDecl<'package'> =>
-	configCodegenable<PackageLiveState, 'package'>(set, how, { extraExports: { packageBindings: bindings } });
+	configCodegenable<PackageLiveState, 'package'>(set, how, {
+		extraExports: { packageBindings: bindings },
+	});
 
 /** Build the Codegenable contribution for a local package (LIVE path).
  *  Bakes the resolved active-network id + captured objects. */

@@ -28,6 +28,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
+import { resolveNetworkOptions } from '../../orchestrators/network-options.ts';
+import { decodeIdConfig } from '../../orchestrators/codegen/id-config.ts';
 
 /** Default import-alias prefix. Customizable via `options.alias` (some
  *  apps prefer `@gen`, `~generated`, …). The app MUST use the SAME
@@ -67,9 +69,25 @@ export interface DevstackVitePluginOptions {
 	readonly injectDevWallet?: boolean;
 	/** Auto-approve all dev-wallet signing requests (headless Playwright /
 	 *  in-app "Open/Join as" buttons). Defaults to the `DEVSTACK_AUTO_APPROVE`
-	 *  env (`'1'`/`'true'`). A single switch, replacing per-app
-	 *  `VITE_*_AUTO_APPROVE`. */
+	 *  env (`'1'`/`'true'`), then to the active network's `autoApproveSigning`
+	 *  per-network policy (ON for every network except live `mainnet`). A
+	 *  single switch, replacing per-app `VITE_*_AUTO_APPROVE`.
+	 *
+	 *  HARD-CLAMP: on live `mainnet` the per-network policy forces
+	 *  auto-approve OFF — a real-funds signature is NEVER granted without a
+	 *  human in the loop. An explicit `autoApprove: true` here, or
+	 *  `DEVSTACK_AUTO_APPROVE`, still take precedence (the author opted in
+	 *  deliberately), but the policy default never silently auto-approves on
+	 *  mainnet. */
 	readonly autoApprove?: boolean;
+	/** Per-network overrides for the dev-convenience policy (the same
+	 *  `networkOptions` shape `defineDevstack` takes, forwarded verbatim).
+	 *  Only the `autoApproveSigning` field is read here, to resolve the
+	 *  auto-approve default for the active network. Omitted ⇒ the built-in
+	 *  policy (ON except live `mainnet`) applies. The override RECORD is not
+	 *  otherwise on disk, so an app that customizes per-network signing must
+	 *  thread it here explicitly; the mainnet hard-clamp holds regardless. */
+	readonly networkOptions?: Readonly<Record<string, unknown>>;
 	/** Production id-config FILE — the known deployment's `devstack-ids.json`
 	 *  (same schema the dev stack writes), committed at e.g.
 	 *  `config/<network>.ids.json`. Used only for `command === 'build'` to
@@ -155,28 +173,33 @@ export interface DevstackVitePlugin {
 		| undefined;
 }
 
-/** Best-effort, SYNC read of a string-valued `codegen.<field>` from the
- *  active stack's manifest. Returns the value, or `null` on any miss. We
- *  read + `JSON.parse` directly (rather than the schema-decoding
+/** Best-effort, SYNC read of a string-valued field at `dottedPath` (e.g.
+ *  `'codegen.idsFile'`, `'identity.network'`) from the active stack's
+ *  manifest. Walks each path segment as a nested object, returning the leaf
+ *  value, or `null` on ANY miss (absent / partially-written / version-
+ *  mismatched manifest, a non-object hop, a missing or non-string/empty
+ *  leaf). We read + `JSON.parse` directly (rather than the schema-decoding
  *  `readStackContext`, which drops the `codegen` field in its projection
- *  and throws on a version mismatch) so an out-of-date or partially-
- *  written manifest degrades gracefully instead of crashing the dev
- *  server. Never throws. */
-const readCodegenField = (
+ *  and throws on a version mismatch) so an out-of-date or partially-written
+ *  manifest degrades gracefully instead of crashing the dev server. Never
+ *  throws — the single discover→parse→guard→degrade-to-null reader every
+ *  manifest field above (`codegen.idsFile`, `codegen.extrasDir`,
+ *  `identity.network`) routes through. */
+const readManifestField = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-	field: 'idsFile' | 'extrasDir',
+	dottedPath: string,
 ): string | null => {
 	try {
 		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
 		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
 		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
-		const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-		if (typeof parsed !== 'object' || parsed === null) return null;
-		const codegen = (parsed as { readonly codegen?: unknown }).codegen;
-		if (typeof codegen !== 'object' || codegen === null) return null;
-		const value = (codegen as Record<string, unknown>)[field];
-		return typeof value === 'string' && value.length > 0 ? value : null;
+		let node: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+		for (const segment of dottedPath.split('.')) {
+			if (typeof node !== 'object' || node === null) return null;
+			node = (node as Record<string, unknown>)[segment];
+		}
+		return typeof node === 'string' && node.length > 0 ? node : null;
 	} catch {
 		return null;
 	}
@@ -187,18 +210,18 @@ const readCodegenField = (
 const readIdsFileFromManifest = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-): string | null => readCodegenField(env, cwd, 'idsFile');
+): string | null => readManifestField(env, cwd, 'codegen.idsFile');
 
-/** Best-effort, SYNC read+parse of an id-config FILE. Any miss (absent
- *  path, missing file, bad JSON) collapses to `null` rather than failing
- *  the Vite config load. */
+/** SYNC read + schema-decode of an id-config FILE. The MISSING-file case
+ *  (absent path, no file on disk) collapses to `null` so the Vite config
+ *  load degrades gracefully when no stack has booted / no committed file is
+ *  wired. A PRESENT-but-malformed file is NOT swallowed: it flows through
+ *  the shared {@link decodeIdConfig}, which THROWS on bad JSON or a shape
+ *  that violates `IdConfigSchema` — surfacing a genuinely broken committed
+ *  id-config at config-load instead of silently injecting `null`. */
 const readIdConfigFile = (idsFile: string | null): unknown => {
 	if (idsFile === null || !existsSync(idsFile)) return null;
-	try {
-		return JSON.parse(readFileSync(idsFile, 'utf8')) as unknown;
-	} catch {
-		return null;
-	}
+	return decodeIdConfig(readFileSync(idsFile, 'utf8'));
 };
 
 /** Resolve the on-chain ids to inject as the `__DEVSTACK_IDS__` global —
@@ -231,7 +254,7 @@ const resolveInjectedIds = (
 const readExtrasDirFromManifest = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-): string | null => readCodegenField(env, cwd, 'extrasDir');
+): string | null => readManifestField(env, cwd, 'codegen.extrasDir');
 
 /**
  * Build the devstack Vite plugin that aliases `options.alias`
@@ -405,7 +428,20 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 				return 'export {};';
 			}
 			const env = process.env as Readonly<Record<string, string | undefined>>;
-			const autoApprove = options.autoApprove ?? autoApproveFromEnv(env);
+			// Auto-approve resolution (highest precedence first): explicit
+			// `options.autoApprove`, then the `DEVSTACK_AUTO_APPROVE` env, then
+			// the active network's `autoApproveSigning` per-network policy. The
+			// policy is ON for every network EXCEPT live `mainnet`, so a stack
+			// booted against real mainnet never silently auto-approves a
+			// real-funds signature. The active network comes from the manifest
+			// boot wrote (`identity.network`); absent that we conservatively
+			// resolve as `mainnet` (auto-approve OFF) rather than assuming a
+			// dev network. The override RECORD isn't on disk — `networkOptions`
+			// is read from the plugin option when the app threads it.
+			const network = readManifestField(env, resolvedRoot, 'identity.network') ?? 'mainnet';
+			const netOpts = resolveNetworkOptions(network, options.networkOptions);
+			const autoApprove =
+				options.autoApprove ?? (autoApproveFromEnv(env) || netOpts.autoApproveSigning);
 			// Re-export the generated config through the `@devstack-dev`
 			// alias (already wired in `config`), parse the token, and
 			// register the page wallet on load. Kept as source the dev

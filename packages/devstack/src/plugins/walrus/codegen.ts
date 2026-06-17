@@ -125,10 +125,21 @@ const walrusConfigBindings = (
 	): ConfigBinding<MakeCodegenableInputs> =>
 		known !== undefined
 			? { variant: 'literal', configPath: [key], value: known[key] }
-			: { variant: 'resolved', configPath: [key], namespace: NAMESPACE, key, tsType: 'string | null', live };
+			: {
+					variant: 'resolved',
+					configPath: [key],
+					namespace: NAMESPACE,
+					key,
+					tsType: 'string | null',
+					live,
+				};
 	const packageConfigBinding: ConfigBinding<MakeCodegenableInputs> =
 		known !== undefined
-			? { variant: 'literal', configPath: ['packageConfig'], value: known.packageConfig as JsonValue }
+			? {
+					variant: 'literal',
+					configPath: ['packageConfig'],
+					value: known.packageConfig as JsonValue,
+				}
 			: {
 					variant: 'resolved',
 					configPath: ['packageConfig'],
@@ -169,7 +180,6 @@ const walrusConfigBindings = (
 		bucket: 'walrus.ts',
 		kind: 'walrus',
 		emitterName: 'walrus-network',
-		outputPath: 'walrus.ts',
 		bindings,
 	};
 };

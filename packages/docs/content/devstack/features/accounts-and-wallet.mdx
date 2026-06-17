@@ -69,6 +69,6 @@ export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 
 `wallet({ accounts: 'all' })` expands to every account member in the final `defineDevstack(...)`
 call. The wallet binds to `127.0.0.1` by default, stores its pairing token under the stack runtime
-root, emits generated config at `src/generated/dapp-kit/config.ts`, and automatically allows the
-stack-scoped dev-server route such as `http://dev.<app>.localhost:5175`. Add `allowedOrigins` only
-for nonstandard browser origins.
+root, emits its dapp-kit handles into the generated `src/generated/config.ts` bucket, and
+automatically allows the stack-scoped dev-server route such as `http://dev.<app>.localhost:5175`.
+Add `allowedOrigins` only for nonstandard browser origins.

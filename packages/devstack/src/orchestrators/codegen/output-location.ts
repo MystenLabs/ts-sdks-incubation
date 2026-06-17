@@ -14,10 +14,11 @@
 //     — a sibling of that stack's manifest at
 //     `.devstack/stacks/<stack>/manifest.json`, already gitignored +
 //     tsconfig-excluded. Two stacks of the same app therefore never clobber
-//     each other's package-id / wallet-pair-token literals.
-//   - An app that sets `codegen.outputDir` / `codegen.stackSubdir`
-//     explicitly (`defineDevstack({ codegen })`) owns that output path;
-//     per-stack isolation is then the app's responsibility.
+//     each other's package-id / wallet-pair-token literals. There is NO
+//     output-dir override: `defineDevstack({ codegen })` exposes no public
+//     surface for the live tree (boot writes only the per-stack
+//     `generated-extras` overlay + the id-config file), so the location is a
+//     single fixed per-stack rule.
 //
 // The resolved absolute `extrasDir` is recorded in the per-stack manifest
 // (`codegen.extrasDir`) so the reader (the Vite plugin's `@devstack-dev`
@@ -26,7 +27,7 @@
 // always resolves to it directly. Pure + unit-testable; no `process.env`,
 // no I/O.
 
-import { isAbsolute, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { stackSubpath } from '../../substrate/runtime/paths.ts';
 
@@ -46,12 +47,6 @@ export interface ResolveCodegenOutputInput {
 	 *  identity's stack: explicit `--stack`/`$DEVSTACK_STACK` >
 	 *  `config.stackName` > inferred). */
 	readonly effectiveStack: string;
-	/** Explicit `defineDevstack({ codegen: { outputDir } })` value, if
-	 *  the app pinned one. Relative paths resolve against `appRoot`. */
-	readonly explicitOutputDir?: string | undefined;
-	/** Explicit `defineDevstack({ codegen: { stackSubdir } })` value, if
-	 *  the app pinned one. Passed through unchanged. */
-	readonly explicitStackSubdir?: string | null | undefined;
 }
 
 export interface ResolvedCodegenOutput {
@@ -68,10 +63,10 @@ export interface ResolvedCodegenOutput {
 	 *  Vite alias. */
 	readonly extrasDir: string;
 	/** Per-stack subdirectory under `outputDir`, threaded through to
-	 *  `CodegenRoot.stackSubdir` unchanged. `null` for the default rule
-	 *  (the `.devstack/stacks/<stack>` location already isolates per
-	 *  stack, so no extra subdir is needed); only an explicit
-	 *  `defineDevstack({ codegen.stackSubdir })` populates it. */
+	 *  `CodegenRoot.stackSubdir`. Always `null` for the live path — the
+	 *  `.devstack/stacks/<stack>` location already isolates per stack, so no
+	 *  extra subdir is needed. (The field exists because `CodegenRoot`
+	 *  carries it; the stack-free `codegen` verb sets it directly.) */
 	readonly stackSubdir: string | null;
 }
 
@@ -90,39 +85,13 @@ const extrasDirFor = (appRoot: string, stack: string): string =>
 
 /**
  * Resolve the LIVE codegen output location for a stack. See the module
- * header for the rule. Pure — same inputs always yield the same
- * absolute paths.
- *
- * Precedence:
- *   1. Explicit `defineDevstack({ codegen.outputDir })` → honored
- *      verbatim (relative → resolved against `appRoot`). The explicit
- *      `stackSubdir` rides along.
- *   2. Default → `<appRoot>/.devstack/stacks/<effectiveStack>/generated`,
- *      `stackSubdir: null`.
+ * header for the rule. Pure — same inputs always yield the same absolute
+ * paths. A single fixed per-stack rule (no override): every live stack
+ * emits under `<appRoot>/.devstack/stacks/<effectiveStack>/`, with
+ * `stackSubdir: null` (the per-stack path already isolates).
  */
 export const resolveCodegenOutput = (input: ResolveCodegenOutputInput): ResolvedCodegenOutput => {
 	const { appRoot, effectiveStack } = input;
-	const explicitStackSubdir = input.explicitStackSubdir ?? null;
-
-	// (1) Explicit override wins. Per-stack isolation is the app's
-	// responsibility once it pins `outputDir`.
-	if (input.explicitOutputDir !== undefined) {
-		const target = input.explicitOutputDir;
-		return {
-			outputDir: isAbsolute(target) ? target : resolve(appRoot, target),
-			// Dev-extras are ALWAYS under `.devstack` per stack, even when
-			// the app pins an explicit `outputDir` — they are gitignored
-			// dev-only artifacts that must not land in the app's chosen
-			// runtime tree.
-			extrasDir: extrasDirFor(appRoot, effectiveStack),
-			stackSubdir: explicitStackSubdir,
-		};
-	}
-
-	// (2) Default → per-stack `.devstack/stacks/<stack>/generated`. The
-	// `.devstack` path already isolates per stack, so `stackSubdir` is
-	// unused (an explicit `stackSubdir` only rides the explicit-outputDir
-	// branch above).
 	return {
 		outputDir: liveOutputDir(appRoot, effectiveStack),
 		extrasDir: extrasDirFor(appRoot, effectiveStack),

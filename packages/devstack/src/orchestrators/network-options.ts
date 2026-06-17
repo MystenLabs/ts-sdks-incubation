@@ -8,12 +8,19 @@
  * Per-network dev-convenience toggles. All optional — an unset field
  * defers to the default policy (on for every network EXCEPT live
  * `mainnet`). A CONSISTENT mechanism: declare these once per network in
- * the config instead of scattering one-off flags. `devWallet` is the
- * load-bearing consumer today (gates the dev-wallet `generated-extras`
- * flush at boot, which the Vite plugin injects). `faucet` /
- * `autoApproveSigning` are RESERVED — part of the declared set + default
- * policy, but not yet enforced by a consumer (§8 follow-up in
- * notes/codegen-decoupling-backlog.md).
+ * the config instead of scattering one-off flags. All three fields are
+ * enforced:
+ *
+ *   - `devWallet` gates the dev-wallet `generated-extras` flush at boot
+ *     (`orchestrators/boot.ts`), which the Vite plugin injects.
+ *   - `faucet` gates the funding-faucet strategy contribution in the sui
+ *     plugin (`plugins/sui/index.ts`) — a non-faucet network never
+ *     registers `faucet:request:<chainId>`, so on `mainnet` the faucet
+ *     never runs.
+ *   - `autoApproveSigning` gates the dev-wallet auto-approve policy the
+ *     Vite plugin emits into the injected dev-wallet
+ *     (`build-integrations/vite/index.ts`) — on `mainnet` signing is
+ *     never silently auto-approved.
  */
 export interface NetworkScopedOptions {
 	/** ENFORCED. Mount the test-only dev wallet and flush its
@@ -21,12 +28,21 @@ export interface NetworkScopedOptions {
 	 *  the Vite plugin's `@devstack-dev` injection has files to load. Off →
 	 *  no flush, and the Vite `load` hook gracefully no-ops. */
 	readonly devWallet?: boolean;
-	/** RESERVED (not yet enforced): run a funding faucet for this network.
-	 *  Faucet provisioning is currently decided by the sui plugin's mode
-	 *  (local container / fork whale / live endpoint), not this flag. */
+	/** ENFORCED. Register this network's funding-faucet strategy
+	 *  (`faucet:request:<chainId>`) in the sui plugin so account funding can
+	 *  dispatch through it. Off → the strategy is suppressed and account
+	 *  funding surfaces the actionable "no faucet strategy" error instead of
+	 *  faucet-funding. Hard-clamped off on live `mainnet`. The sui mode still
+	 *  decides HOW a faucet is provisioned (local container / fork whale /
+	 *  live endpoint); this flag decides WHETHER the resolved strategy is
+	 *  exposed at all. */
 	readonly faucet?: boolean;
-	/** RESERVED (not yet enforced): auto-approve dev-wallet signing
-	 *  requests (browser-test ergonomics). */
+	/** ENFORCED. Default the injected dev-wallet's auto-approve policy for
+	 *  this network (`build-integrations/vite/index.ts`). On → dev-wallet
+	 *  signing requests auto-approve (headless Playwright / in-app "Open as"
+	 *  ergonomics) unless an explicit `autoApprove` / `DEVSTACK_AUTO_APPROVE`
+	 *  overrides. Hard-clamped off on live `mainnet`, so a real-funds
+	 *  signature is never granted without a human in the loop. */
 	readonly autoApproveSigning?: boolean;
 }
 
@@ -61,13 +77,22 @@ export const resolveNetworkOptions = (
 	const raw = overrides?.[network];
 	if (raw === null || typeof raw !== 'object') return base;
 	const o = raw as Record<string, unknown>;
+	// HARD-CLAMP: every dev convenience is forced OFF on real `mainnet`,
+	// regardless of an explicit `{ mainnet: { … : true } }` override. The
+	// default policy is already off for `mainnet`; the clamp ALSO blocks a
+	// silent explicit opt-in. Each clamp guards a distinct production-safety
+	// failure mode:
+	//   - `devWallet` — flushing the secret `generated-extras` tree and
+	//     injecting a test-only signer into a production build.
+	//   - `faucet` — exposing a funding-faucet strategy against a real
+	//     network (there is no mainnet faucet to begin with).
+	//   - `autoApproveSigning` — auto-approving a real-funds signature with
+	//     no human in the loop.
+	if (network === 'mainnet') {
+		return { devWallet: false, faucet: false, autoApproveSigning: false };
+	}
 	return {
-		// HARD-CLAMP: the dev wallet is NEVER mounted on real `mainnet`,
-		// regardless of an explicit `{ mainnet: { devWallet: true } }` override.
-		// Honoring it would flush the secret `generated-extras` tree and inject
-		// a test-only signer into a production build. The default is already
-		// off for `mainnet`; this also blocks a silent explicit opt-in.
-		devWallet: network === 'mainnet' ? false : (asBool(o['devWallet']) ?? base.devWallet),
+		devWallet: asBool(o['devWallet']) ?? base.devWallet,
 		faucet: asBool(o['faucet']) ?? base.faucet,
 		autoApproveSigning: asBool(o['autoApproveSigning']) ?? base.autoApproveSigning,
 	};

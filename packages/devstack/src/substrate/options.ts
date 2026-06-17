@@ -16,8 +16,6 @@ export interface DevstackOptions {
 	readonly network?: unknown;
 	readonly stateDir?: string;
 	readonly codegen?: {
-		readonly outputDir?: string;
-		readonly stackSubdir?: string | null;
 		/** Forwarded verbatim to `@mysten/codegen`'s
 		 *  `generateFromPackageSummary({ includePhantomTypeParameters })`.
 		 *  Default `false` — `@mysten/codegen`'s own default.

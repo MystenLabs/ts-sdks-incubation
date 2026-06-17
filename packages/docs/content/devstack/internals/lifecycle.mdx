@@ -10,7 +10,9 @@ Runtime surfaces:
 
 - `devstack up` starts a supervisor and stays attached.
 - `devstack apply` publishes `apply.requested` to the live supervisor when this stack is already
-  attached; otherwise it starts the same supervisor path in one-shot mode.
+  attached; otherwise it starts the same supervisor path in one-shot mode. It re-emits the per-stack
+  ids file and dev `generated-extras` — never the committed `src/generated` tree (that is
+  `devstack codegen`).
 - `runStack(stack, opts)` embeds the supervisor in another TypeScript program.
 
 ```ts
@@ -41,6 +43,8 @@ expanded after the full member list is known, so it depends on every account mem
 stack.
 
 The supervisor claims `roster.json` while attached, publishes typed events, maintains a live
-projection, writes the manifest, emits generated files, and serves commands from the attached TUI
-and filesystem command channel. Shutdown is attached to the running process: quit the TUI or
-interrupt `devstack up`, then scope finalizers run and the roster claim is released.
+projection, writes the manifest, emits the per-stack ids file and dev `generated-extras`, and serves
+commands from the attached TUI and filesystem command channel. It does not write the committed
+`src/generated` tree — that is `devstack codegen`'s job. Shutdown is attached to the running
+process: quit the TUI or interrupt `devstack up`, then scope finalizers run and the roster claim is
+released.

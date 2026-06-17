@@ -315,6 +315,12 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
 export interface ProductionCodegenOptions {
 	readonly appRoot?: string;
 	readonly outputDir?: string;
+	/** Per-stack subdirectory under `outputDir`. Always `null` for live
+	 *  runs — the per-stack `.devstack/stacks/<stack>` layout already
+	 *  isolates each stack, and there is no public override (the
+	 *  `resolveCodegenOutput` explicit branch is internal/test-only). Kept
+	 *  on the contract because `CodegenRoot` still consumes it (and the
+	 *  snapshot-direct path passes `null`). */
 	readonly stackSubdir?: string | null;
 	/** Resolved absolute path to the dev-only + secret `generated-extras`
 	 *  tree for this stack, threaded into `CodegenRoot.extrasDir` and
@@ -354,17 +360,20 @@ export const resolveProductionCodegenOptions = (input: {
 	readonly effectiveStack: string;
 	readonly codegen?:
 		| {
-				readonly outputDir?: string;
-				readonly stackSubdir?: string | null;
 				readonly includePhantomTypeParameters?: boolean;
 		  }
 		| undefined;
 }): ProductionCodegenOptions => {
+	// Every live run resolves to `<appRoot>/.devstack/stacks/<stack>/...`
+	// (the default rule). The app can no longer pin a live `outputDir` /
+	// `stackSubdir` — nothing is ever emitted into the live `generated`
+	// tree at boot (boot writes only the per-stack `generated-extras`
+	// overlay + `devstack-ids.json`), so the override exposed only an
+	// unwritten directory. The committed `src/generated` tree is owned
+	// solely by the stack-free `codegen` verb (wired separately).
 	const resolved = resolveCodegenOutput({
 		appRoot: input.appRoot,
 		effectiveStack: input.effectiveStack,
-		explicitOutputDir: input.codegen?.outputDir,
-		explicitStackSubdir: input.codegen?.stackSubdir ?? null,
 	});
 	return {
 		appRoot: input.appRoot,
@@ -430,6 +439,13 @@ export const layerManifestEndpointRegistry: Layer.Layer<ManifestEndpointRegistry
 export const productionRouterProfile = (options: DefaultRouterProfileOptions = {}): RouterProfile =>
 	makeDefaultRouterProfile(options);
 
+/** `outputDir` for the `CodegenRoot` of a `layerProductionOrchestrators`
+ *  composition. LIVE runs (`run-stack`, the verb wirings) always pass a
+ *  resolved absolute value from `resolveProductionCodegenOptions`; the
+ *  `?? 'src/generated'` default only feeds the cold-start / no-config
+ *  `buildDirectSnapshotLayers` path (snapshot restore/delete/wipe), which
+ *  never runs a codegen emit cycle — the value just needs to wire a valid,
+ *  non-crashing `CodegenRoot`. */
 const productionCodegenOutputDir = (appRoot: string, outputDir: string | undefined): string => {
 	const target = outputDir ?? 'src/generated';
 	return isAbsolute(target) ? target : resolve(appRoot, target);
@@ -791,12 +807,14 @@ export const buildProductionPostAcquireHook = (
 				const netOpts = resolveNetworkOptions(ctx.identity.network, options.networkOptions);
 				const extrasFiles: string[] = [];
 				if (netOpts.devWallet) {
-					const extras = yield* codegen.emitExtras().pipe(
-						Effect.provideService(FileSystem.FileSystem, fs),
-						Effect.provideService(CodegenPathsService, paths),
-						Effect.provideService(MoveSummaryRunnerService, moveRunner),
-						Effect.provideService(MoveCodegenService, moveCodegen),
-					);
+					const extras = yield* codegen
+						.emitExtras()
+						.pipe(
+							Effect.provideService(FileSystem.FileSystem, fs),
+							Effect.provideService(CodegenPathsService, paths),
+							Effect.provideService(MoveSummaryRunnerService, moveRunner),
+							Effect.provideService(MoveCodegenService, moveCodegen),
+						);
 					extrasFiles.push(...extras.filesWritten, ...extras.filesChmod);
 				}
 				yield* postAcquireTasks.runAll;

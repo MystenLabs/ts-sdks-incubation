@@ -18,17 +18,32 @@ Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app
 
 ### `devstack apply [options]`
 
-Reconcile through a live supervisor when present; otherwise run one-shot setup.
+Re-emit the per-stack ids file and dev extras from a live or one-shot stack. The ids file is
+`devstack-ids.json`; dev extras are the `generated-extras` tree. Reconciles through a live
+supervisor when present; otherwise boots once, emits, and exits. Never writes the committed
+`src/generated` tree — that is `devstack codegen`'s job.
 
 Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
 
 ### `devstack codegen [options]`
 
-Regenerate committed bindings from Move source (no stack boot).
+Regenerate committed bindings from Move source (no stack boot). The committed tree is
+`src/generated`. Deterministic and stack-free: no Docker, no on-chain ids. Writes the committed tree
+only — never the ids file.
 
 Lifecycle: one-shot. Side effects: write. Docker: no. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
+
+### `devstack dump-ids [options]`
+
+Emit the stack id-config (devstack-ids.json) for a real-network deploy. Writes the current (or
+booted) stack's `devstack-ids.json` to `--out` or stdout — use it to obtain a committed id-config
+for the deploy (see [Codegen](/devstack/features/codegen)).
+
+Lifecycle: live-aware. Side effects: write (or stdout). Docker: yes (boots one-shot if no live
+supervisor). Options: `--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`,
+`--config <path>`, `--network <name>`, `--out <path>`.
 
 ### `devstack status [options]`
 
@@ -122,7 +137,8 @@ devstack apply
 `up` boots the stack and stays attached until you quit the TUI or interrupt the process. `apply`
 checks the selected stack first: if `devstack up` is live, it asks that supervisor to reconcile and
 waits for completion; if no supervisor is live, it boots the stack in one-shot mode, reconciles,
-emits generated files, and exits.
+re-emits the per-stack ids file and dev extras, and exits. `apply` does not touch the committed
+`src/generated` tree — run `devstack codegen` for that.
 
 Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
 `--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`,

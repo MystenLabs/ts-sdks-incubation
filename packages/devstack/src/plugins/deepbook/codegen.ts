@@ -20,6 +20,7 @@
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import {
+	keyedBucketSpec,
 	liveBucketCodegen,
 	staticBucketCodegen,
 	type BucketField,
@@ -98,8 +99,7 @@ const POOL_TS_TYPE =
 	'ReadonlyArray<{ readonly name: string; readonly poolId: string; readonly base: string; readonly quote: string; readonly baseCoinType: string; readonly quoteCoinType: string }>';
 const PYTH_TS_TYPE =
 	'{ readonly packageId: string | null; readonly stateId: string | null; readonly wormholeStateId: string | null; readonly feeds: ReadonlyArray<{ readonly symbol: string; readonly feedId: string; readonly priceInfoObjectId: string; readonly price: string; readonly expo: number }> } | null';
-const MARGIN_TS_TYPE =
-	'{ readonly packageId: string; readonly registryId: string } | null';
+const MARGIN_TS_TYPE = '{ readonly packageId: string; readonly registryId: string } | null';
 
 /** Build the deepbook instance's config-binding spec for `name`. `name` /
  *  `network` are structural literals; the deployment ids + composite values
@@ -166,16 +166,7 @@ const deepbookBucketSpec = (
 		{ key: 'serverUrl', variant: 'resolved', tsType: 'string | null', live: (s) => s.serverUrl },
 		{ key: 'indexerUrl', variant: 'resolved', tsType: 'string | null', live: (s) => s.indexerUrl },
 	];
-	return {
-		bucket: 'deepbook.ts',
-		kind: 'deepbook',
-		emitterName: `deepbook/${structural.name}`,
-		outputPath: `deepbook/${structural.name}.ts`,
-		instanceKey: structural.name,
-		namespace: `deepbook:${structural.name}`,
-		allowEmitterNameRepetition: true,
-		fields,
-	};
+	return keyedBucketSpec({ bucket: 'deepbook.ts', kind: 'deepbook', key: structural.name, fields });
 };
 
 /** Build the LIVE Codegenable contribution for a deepbook instance. Bakes

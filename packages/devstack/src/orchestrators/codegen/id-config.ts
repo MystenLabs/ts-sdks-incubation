@@ -25,6 +25,11 @@
 import { Effect, FileSystem, Schema } from 'effect';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
+import {
+	decodeJsonText,
+	decodeJsonTextSync,
+	type RuntimeDecodeIssue,
+} from '../../substrate/runtime/runtime-decode.ts';
 
 // -----------------------------------------------------------------------------
 // Sentinel — the all-zero id that marks an UNRESOLVED on-chain id.
@@ -34,8 +39,7 @@ import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
  *  (stack-free) id. A committed `config.ts` resolver treats this value —
  *  and a missing id — identically: it THROWS `DevstackConfigMissingError`
  *  at access time (see `config-runtime.ts`). Apps never transact with it. */
-export const UNRESOLVED_ID =
-	'0x0000000000000000000000000000000000000000000000000000000000000000';
+export const UNRESOLVED_ID = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 /** True when `id` is absent or the all-zero sentinel — i.e. not a real
  *  resolved on-chain id. */
@@ -82,7 +86,11 @@ export const IdConfigPackageSchema = Schema.Struct({
 /** A JSON-serialisable value carried in the generic `values` channel.
  *  The whole id-config round-trips through `JSON.stringify` into the
  *  vite `define` global, so the value space is exactly JSON. */
-export const IdConfigJsonSchema: Schema.Schema<JsonValue> = Schema.suspend(() =>
+// Typed as `Schema.Codec<JsonValue>` (NOT `Schema.Schema<JsonValue>`): the
+// type-only `Schema<T>` widens `DecodingServices` to `unknown`, which would
+// poison every decoder of `IdConfigSchema`; `Codec<T>` defaults the decode/
+// encode services to `never`, matching the real (service-free) recursion.
+export const IdConfigJsonSchema: Schema.Codec<JsonValue> = Schema.suspend(() =>
 	Schema.Union([
 		Schema.Null,
 		Schema.String,
@@ -91,7 +99,7 @@ export const IdConfigJsonSchema: Schema.Schema<JsonValue> = Schema.suspend(() =>
 		Schema.Array(IdConfigJsonSchema),
 		Schema.Record(Schema.String, IdConfigJsonSchema),
 	]),
-) as Schema.Schema<JsonValue>;
+) as Schema.Codec<JsonValue>;
 
 /** The generic resolver channel: a two-level namespaced map of arbitrary
  *  JSON values a plugin contributes at boot and the committed `config.ts`
@@ -108,15 +116,28 @@ export const IdConfigValuesSchema = Schema.Record(
  *  functions, no devstack imports — so it round-trips through JSON and a
  *  `JSON.stringify` into a vite `define` global. */
 export const IdConfigSchema = Schema.Struct({
-	/** Active network name (the `networks.<name>` key the app reads). */
+	/** Active network name (the `networks.<name>` key the app reads).
+	 *  Load-bearing — an id-config MUST name its network + connection. */
 	network: Schema.String,
 	networks: Schema.Record(Schema.String, IdConfigNetworkSchema),
-	packages: Schema.Record(Schema.String, IdConfigPackageSchema),
-	accounts: Schema.Record(Schema.String, Schema.String),
+	/** Resolved package ids (+ object captures). Optional, default `{}`: an
+	 *  id-config may have zero packages (a network-only stack, or a
+	 *  hand-authored deploy file), and the boot writer always emits the key
+	 *  anyway — defaulting keeps the injected blob well-formed so the app's
+	 *  resolvers throw `DevstackConfigMissingError` rather than a raw
+	 *  TypeError on a missing section. */
+	packages: Schema.Record(Schema.String, IdConfigPackageSchema).pipe(
+		Schema.withDecodingDefaultKey(Effect.succeed({})),
+	),
+	accounts: Schema.Record(Schema.String, Schema.String).pipe(
+		Schema.withDecodingDefaultKey(Effect.succeed({})),
+	),
 	/** MVR placeholder (`@local/<slug>`) → resolved id, for the active
 	 *  network. An app feeds this straight into dapp-kit's
-	 *  `mvr.overrides.packages`. */
-	mvrOverrides: Schema.Record(Schema.String, Schema.String),
+	 *  `mvr.overrides.packages`. Optional, default `{}` (see `packages`). */
+	mvrOverrides: Schema.Record(Schema.String, Schema.String).pipe(
+		Schema.withDecodingDefaultKey(Effect.succeed({})),
+	),
 	/** Generic resolver channel — `values[namespace][key]` carries
 	 *  arbitrary live plugin JSON the typed fields above can't. Optional
 	 *  so older id-config files (no `values`) still decode. */
@@ -168,3 +189,45 @@ export const writeIdConfig = (
 		);
 	});
 
+/** Project a runtime-decode issue into the typed `IdConfigError`. */
+const mkIdConfigError = (issue: RuntimeDecodeIssue): IdConfigError =>
+	new IdConfigError({
+		source: issue.source,
+		message: issue.message,
+		...(issue.cause === undefined ? {} : { cause: issue.cause }),
+	});
+
+/** Decode + validate an id-config from already-read JSON text. The single
+ *  schema-decode seam every reader shares (the Vite plugin, the `dump-ids`
+ *  verb, the codegen verb) so the parse-and-validate decision lives in ONE
+ *  place rather than each caller hand-rolling `JSON.parse`. Throws
+ *  `IdConfigError` on malformed JSON or a shape that violates
+ *  `IdConfigSchema`. */
+export const decodeIdConfig = (text: string): IdConfig =>
+	decodeJsonTextSync(IdConfigSchema, text, {
+		source: ID_CONFIG_FILENAME,
+		mkError: mkIdConfigError,
+	});
+
+/** Read + decode the id-config at `path`. Resolves to `null` when the file
+ *  is absent (no stack booted / no committed id-config); fails with
+ *  `IdConfigError` on a read error or a malformed/invalid file. The Effect
+ *  reader for Effect callers (`dump-ids`, the codegen verb); the Vite plugin
+ *  is sync and uses {@link decodeIdConfig} over its own `readFileSync`. */
+export const readIdConfig = (
+	path: string,
+): Effect.Effect<IdConfig | null, IdConfigError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const exists = yield* fs.exists(path).pipe(Effect.orElseSucceed(() => false));
+		if (!exists) return null;
+		const text = yield* fs
+			.readFileString(path)
+			.pipe(
+				Effect.mapError(
+					(cause) =>
+						new IdConfigError({ source: path, message: 'failed to read id-config', cause }),
+				),
+			);
+		return yield* decodeJsonText(IdConfigSchema, text, { source: path, mkError: mkIdConfigError });
+	});

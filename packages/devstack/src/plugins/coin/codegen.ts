@@ -23,6 +23,7 @@
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import {
+	keyedBucketSpec,
 	liveBucketCodegen,
 	staticBucketCodegen,
 	type BucketField,
@@ -91,9 +92,11 @@ const coinBucketSpec = (
 		{ key: 'symbol', variant: 'literal', value: structural.symbol },
 		{ key: 'source', variant: 'literal', value: structural.source },
 	];
-	const constants = structural.constants ?? (live !== null && builtin
-		? { fullCoinType: live.fullCoinType, decimals: live.decimals }
-		: undefined);
+	const constants =
+		structural.constants ??
+		(live !== null && builtin
+			? { fullCoinType: live.fullCoinType, decimals: live.decimals }
+			: undefined);
 	if (builtin && constants !== undefined) {
 		// A builtin coin (SUI) is protocol-defined: bake its constants as
 		// literals in BOTH paths (no `resolveValue` to throw at module load).
@@ -116,7 +119,12 @@ const coinBucketSpec = (
 				live: (s) => s.fullCoinType,
 			});
 		}
-		fields.push({ key: 'decimals', variant: 'resolved', tsType: 'number', live: (s) => s.decimals });
+		fields.push({
+			key: 'decimals',
+			variant: 'resolved',
+			tsType: 'number',
+			live: (s) => s.decimals,
+		});
 		fields.push({
 			key: 'packageId',
 			variant: 'resolved',
@@ -144,16 +152,7 @@ const coinBucketSpec = (
 			}
 		}
 	}
-	return {
-		bucket: 'coins.ts',
-		kind: 'coin',
-		emitterName: `coin/${key}`,
-		outputPath: `coins/${key}.ts`,
-		instanceKey: key,
-		namespace: `coin:${key}`,
-		allowEmitterNameRepetition: true,
-		fields,
-	};
+	return keyedBucketSpec({ bucket: 'coins.ts', kind: 'coin', key, fields });
 };
 
 /** Construct the LIVE Codegenable contribution for one coin instance.
