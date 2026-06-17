@@ -66,8 +66,8 @@ if (ctx.identity.app !== 'installed-consumer-smoke') {
 if (ctx.identity.stack !== 'main') {
 \tthrow new Error(\`expected stack main, got \${ctx.identity.stack}\`);
 }
-if (ctx.identity.chain !== 'localnet') {
-\tthrow new Error(\`expected chain localnet, got \${ctx.identity.chain}\`);
+if (ctx.identity.network !== 'localnet') {
+\tthrow new Error(\`expected network localnet, got \${ctx.identity.network}\`);
 }
 `.trim();
 

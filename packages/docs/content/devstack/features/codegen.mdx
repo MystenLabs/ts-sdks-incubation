@@ -112,8 +112,8 @@ ids — each id is a `resolveId(...)` call into the generated `config-runtime.ts
 build-time-injected `__DEVSTACK_IDS__` global. This keeps the three commands cleanly decoupled:
 
 - `pnpm dev` / `devstack up` — boots the stack and writes a gitignored
-  `.devstack/stacks/<stack>/devstack-ids.json`; the [Vite plugin](#importing-generated-code)
-  injects those live ids automatically in dev.
+  `.devstack/stacks/<stack>/devstack-ids.json`; the [Vite plugin](#importing-generated-code) injects
+  those live ids automatically in dev.
 - `pnpm codegen` / `devstack codegen` — regenerates the `src/generated` tree when Move source
   changes. Deterministic, stack-free, no Docker.
 - `pnpm build` (`tsc -b && vite build`) — stack-free and sub-second; works on a clean clone.
@@ -124,8 +124,8 @@ actionable, never a silent all-zero id.
 ## Deploy to a real network
 
 Production ids come from a **committed id-config file** for the known deployment — the same
-`devstack-ids.json` schema the boot writes, selected at build time. Obtain one by booting the
-stack against the target network once and copying the file it emits, or hand-author it:
+`devstack-ids.json` schema the boot writes, selected at build time. Obtain one by booting the stack
+against the target network once and copying the file it emits, or hand-author it:
 
 ```bash
 # Option A: boot against the target network, then copy the emitted id-config
@@ -136,17 +136,17 @@ cp .devstack/stacks/<stack>/devstack-ids.json config/testnet.ids.json
 ```jsonc
 // Option B: hand-author config/testnet.ids.json (the devstack-ids.json schema)
 {
-  "network": "testnet",
-  "networks": { "testnet": { "rpc": "https://fullnode.testnet.sui.io:443" } },
-  "packages": { "<name>": { "id": "0x…", "objects": { "<key>": "0x…" } } },
-  "accounts": { "<name>": "0x…" },
-  "mvrOverrides": { "<mvr-placeholder>": "0x…" },
-  "values": { "<namespace>": { "<key>": "…" } } // optional: pool ids, coin types, walrus/seal endpoints
+	"network": "testnet",
+	"networks": { "testnet": { "rpc": "https://fullnode.testnet.sui.io:443" } },
+	"packages": { "<name>": { "id": "0x…", "objects": { "<key>": "0x…" } } },
+	"accounts": { "<name>": "0x…" },
+	"mvrOverrides": { "<mvr-placeholder>": "0x…" },
+	"values": { "<namespace>": { "<key>": "…" } }, // optional: pool ids, coin types, walrus/seal endpoints
 }
 ```
 
-Commit the file, then point the build at it — via the Vite plugin `ids` option (relative to the
-Vite root) or the `DEVSTACK_IDS_FILE` env path pointer (**not** a JSON env blob):
+Commit the file, then point the build at it — via the Vite plugin `ids` option (relative to the Vite
+root) or the `DEVSTACK_IDS_FILE` env path pointer (**not** a JSON env blob):
 
 ```ts title="vite.config.ts"
 import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
