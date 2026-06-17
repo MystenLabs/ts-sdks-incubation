@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Layer } from 'effect';
-import { chmodSync, existsSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // Subpath imports — the barrel re-exports `NodeRedis` which transitively
@@ -922,6 +922,69 @@ describe('codegen.emitExtras', () => {
 	);
 });
 
+describe('codegen.emitBindings', () => {
+	// The dev-`up` invariant: `emitBindings` regenerates the committed tree from
+	// the caller's STATIC (id-free) contributions and IGNORES the live
+	// registered ref — otherwise it bakes resolved on-chain ids into the
+	// committed `config.ts`, breaking a fresh clone (and any other stack reading
+	// the tree). A regression that reverts to reading `contributionsRef` would
+	// pass every other test; this one fails it.
+	it.effect('emits from the PASSED static contributions, never the live registered ref', () =>
+		withTempRoot('codegen-emitbindings', (root) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const codegen = yield* CodegenOrchestratorService;
+
+					// A LIVE `config.ts` contribution registered into the ref — shaped
+					// like a boot-time package config that BAKES a real on-chain id.
+					yield* codegen.registerContribution(
+						'package',
+						fakeDecl({
+							emitterName: 'config',
+							outputPath: 'config.ts',
+							outputLocation: 'generated',
+							exports: { liveBakedId: '0xliveBAKEDid' },
+						}),
+					);
+
+					// `emitBindings` is handed the STATIC (id-free) decls — the same
+					// the stack-free `codegen` verb derives. config.ts must come from
+					// THESE, not the registered live ref above.
+					const result = yield* codegen.emitBindings([
+						fakeDecl({
+							emitterName: 'config',
+							outputPath: 'config.ts',
+							outputLocation: 'generated',
+							exports: { idFreeResolver: 'RESOLVE_ID_PLACEHOLDER' },
+						}),
+					]);
+
+					const configPath = `${root}/config.ts`;
+					expect(result.filesWritten).toContain(configPath);
+					const source = yield* Effect.promise(() => readFile(configPath, 'utf8'));
+					// The id-free static value is emitted...
+					expect(source).toContain('RESOLVE_ID_PLACEHOLDER');
+					// ...and the live baked id NEVER leaks into the committed tree.
+					expect(source).not.toContain('0xliveBAKEDid');
+				}),
+			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+		),
+	);
+
+	it.effect('is a no-op (empty result) when handed no contributions', () =>
+		withTempRoot('codegen-emitbindings-empty', (root) =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const codegen = yield* CodegenOrchestratorService;
+					const result = yield* codegen.emitBindings([]);
+					expect(result.filesWritten).toEqual([]);
+					expect(existsSync(`${root}/config.ts`)).toBe(false);
+				}),
+			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
+		),
+	);
+});
+
 describe('codegen.assembleIdConfig — active-network agreement', () => {
 	// A sui-like config.ts contribution: the binding emits `network: 'localnet'`
 	// and a `networks` map keyed by 'localnet' for EVERY identity mode (mirrors
@@ -974,5 +1037,51 @@ describe('codegen.assembleIdConfig — active-network agreement', () => {
 					}),
 				).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
 			),
+	);
+});
+
+// Regression: an extras-only emit (boot's `emitExtras`) writes solely into
+// `extrasDir` (under the already-gitignored `.devstack/` root), so it must NOT
+// write a managed `.gitignore` at the committed `<outputDir>/.gitignore`. At
+// boot `outputDir` is only a stand-in — clobbering its tracked `.gitignore`
+// with the ignore-all policy on every `devstack up` would break `tsc`/`vite
+// build` on a fresh clone (the committed bindings would become untracked).
+describe('codegen extras emit — committed .gitignore is never clobbered', () => {
+	it.effect('an extras-only emit leaves the committed tree’s TRACKED .gitignore untouched', () =>
+		withTempRoot('codegen-extras-gitignore', (root) =>
+			Effect.gen(function* () {
+				const committedIgnore = `${root}/.gitignore`;
+
+				// 1. A committed emit lays down the TRACKED policy at
+				//    `<outputDir>/.gitignore`, as the stack-free `codegen` verb does.
+				yield* runEmitCycle({
+					contributions: [
+						fakeDecl({ emitterName: 'pkg', outputPath: 'bindings/pkg.ts', exports: { ID: '0x1' } }),
+					],
+					trackTree: true,
+				});
+				expect(existsSync(committedIgnore)).toBe(true);
+				const tracked = readFileSync(committedIgnore, 'utf8');
+				expect(tracked).toContain('track the whole committed projection tree');
+
+				// 2. An extras-only emit (only `generated-extras` decls) must NOT
+				//    touch the committed `.gitignore` — extras need no managed
+				//    ignore (they live under the gitignored `.devstack/` root).
+				yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'account/alice',
+							outputPath: 'accounts/alice.ts',
+							outputLocation: 'generated-extras',
+							exports: { alice: { name: 'alice', address: '0xabc' } },
+						}),
+					],
+					trackTree: false,
+				});
+
+				// committed tree's .gitignore is byte-for-byte unchanged (still TRACK).
+				expect(readFileSync(committedIgnore, 'utf8')).toBe(tracked);
+			}).pipe(Effect.provide(baseLayer(root))),
+		),
 	);
 });

@@ -29,11 +29,13 @@ Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--a
 ### `devstack codegen [options]`
 
 Regenerate committed bindings from Move source (no stack boot). The committed tree is
-`src/generated`. Deterministic and stack-free: no Docker, no on-chain ids. Writes the committed tree
-only — never the ids file.
+`src/generated`. Deterministic and stack-free: no Docker, no on-chain ids. Requires the `sui` CLI on
+`PATH` (the `sui move summary` step has no Docker fallback). Writes the committed tree only — never
+the ids file.
 
-Lifecycle: one-shot. Side effects: write. Docker: no. Options: `--json`, `--app <name>`,
-`--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
+Lifecycle: one-shot. Side effects: write. Docker: no. Requires: host `sui` CLI. Options: `--json`,
+`--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
+`--network <name>`.
 
 ### `devstack dump-ids [options]`
 

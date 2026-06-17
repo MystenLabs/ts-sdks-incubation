@@ -58,6 +58,13 @@ export type {
 } from './supervisor/index.ts';
 
 // ---------------------------------------------------------------------
+// L0 file watcher — dev-only, generic over every plugin's declared
+// `watch` paths; drives the supervisor's `notifyWatchFire`
+// (→ selective restart → re-produce). Consumer: the `up` verb wiring.
+// ---------------------------------------------------------------------
+export { startFileWatcher } from './lifecycle/file-watcher.ts';
+
+// ---------------------------------------------------------------------
 // Contribution dispatch — the closed post-start dispatch seam the
 // supervisor replays each plugin's ctx buffer through.
 // Consumers: supervisor tests, router integration tests, run-stack API

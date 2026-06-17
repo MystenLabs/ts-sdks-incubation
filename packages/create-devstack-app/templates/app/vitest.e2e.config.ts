@@ -5,7 +5,7 @@ import {
 } from '@mysten-incubation/devstack/vitest';
 import { defineConfig } from 'vitest/config';
 
-// E2E (full-stack) tests — `*.e2e.test.ts`. `autoBoot: true` boots a
+// E2E (full-stack) tests — `tests/e2e/**`. `autoBoot: true` boots a
 // dedicated `test` stack before the run (codegen included) and tears it
 // down after, so this is self-contained and runs in parallel with a
 // `pnpm dev` stack. The Vite plugin resolves `@generated` to the active

@@ -47,8 +47,9 @@ import { controlPlaneDomainFromContext } from '../control-plane/domain.ts';
 import { RuntimeRoot } from '../paths.ts';
 import { declareAccount, setIdentity } from '../projection/update.ts';
 import {
+	attribute,
 	buildWatchIndex,
-	exactPrefixMatch,
+	globMatch,
 	installSignalHandler,
 	resolveGraph,
 	type PluginRegistry,
@@ -421,15 +422,10 @@ export const startSupervisor = (
 
 		const notifyWatchFire = (path: string): Effect.Effect<void> =>
 			Effect.gen(function* () {
-				const matched = new Set<PluginKey>();
-				for (const entry of watchIndex) {
-					for (const pat of entry.paths) {
-						if (exactPrefixMatch(pat, path)) {
-							matched.add(entry.pluginKey);
-							break;
-						}
-					}
-				}
+				// Glob-aware attribution: the declared paths are globs
+				// (`<src>/**/*.move`), so a literal prefix test would never
+				// match a fired file path. `globMatch` honors `**`/`*`/`?`.
+				const matched = attribute(watchIndex, path, globMatch);
 				if (matched.size === 0) return;
 				// One `selective-restart.requested` per matched plugin, in
 				// match order. (Previously the head was offered separately

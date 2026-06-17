@@ -579,27 +579,39 @@ const runEmitCycleInner = (
 		// would rely solely on the blanket `*` rule — and a user `!<file>`
 		// override in the preserved user block would then start tracking
 		// the secret. Include them so each gets an explicit re-ignore line.
-		const sensitivePaths = [
-			...fileEmitters
-				.filter(
-					(d) =>
-						d.sensitive === true && d.aggregateOnly !== true && declLocation(d) === 'generated',
-				)
-				.map((d) => d.outputPath),
-			...aggregateFiles
-				.filter((a) => a.sensitive && a.location === 'generated')
-				.map((a) => a.outputPath),
-		];
-		// A committed projection (written by the stack-free `codegen` verb
-		// into `src/generated`) is TRACKED: the stubs are committed so
-		// `tsc`/`vite build` work on a fresh clone. Any ephemeral tree keeps
-		// the blanket ignore.
-		yield* writeGitignore({
-			path: paths.gitignoreFile,
-			sensitivePaths,
-			parentMode: parentModeFor(paths.gitignoreFile),
-			trackTree: input.trackTree === true,
-		});
+		// The managed `.gitignore` belongs to the committed/live `generated`
+		// tree at `<outputDir>/.gitignore` — and only that tree. We write it
+		// ONLY when this emit actually produces `generated` output. An
+		// EXTRAS-ONLY emit (boot's `emitExtras`) writes solely into `extrasDir`,
+		// which lives under the already-gitignored `.devstack/` root, so it
+		// needs no `.gitignore` of its own. Skipping it here is also the fix
+		// for a real bug: at BOOT `outputDir` is only a STAND-IN (boot emits
+		// nothing there — see `paths.ts`), so writing `paths.gitignoreFile` for
+		// an extras-only emit would clobber the committed tree's TRACKED policy
+		// with the blanket ignore-all on every `devstack up`, breaking
+		// `tsc`/`vite build` on a fresh clone.
+		const hasGeneratedOutput =
+			fileEmitters.some((d) => d.aggregateOnly !== true && declLocation(d) === 'generated') ||
+			aggregateFiles.some((a) => a.location === 'generated');
+		if (hasGeneratedOutput) {
+			const sensitivePaths = [
+				...fileEmitters
+					.filter(
+						(d) =>
+							d.sensitive === true && d.aggregateOnly !== true && declLocation(d) === 'generated',
+					)
+					.map((d) => d.outputPath),
+				...aggregateFiles
+					.filter((a) => a.sensitive && a.location === 'generated')
+					.map((a) => a.outputPath),
+			];
+			yield* writeGitignore({
+				path: paths.gitignoreFile,
+				sensitivePaths,
+				parentMode: parentModeFor(paths.gitignoreFile),
+				trackTree: input.trackTree === true,
+			});
+		}
 
 		return {
 			filesWritten,
@@ -939,6 +951,28 @@ export interface CodegenOrchestrator {
 		CodegenError,
 		FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
 	>;
+
+	/** Emit the COMMITTED `src/generated` tree (config.ts + Move bindings +
+	 *  coins/deepbook/… ) from the caller-supplied STATIC contributions — the
+	 *  SAME id-free decls the stack-free `codegen` verb derives via each
+	 *  member's `staticCodegen()` hook, NOT the live registered ones. This is
+	 *  load-bearing: the live decls bake the resolved on-chain ids into
+	 *  `config.ts`, but the committed tree MUST stay id-free (ids resolve at
+	 *  app build time via `__DEVSTACK_IDS__`) — baking a live id breaks a fresh
+	 *  clone and any OTHER stack reading the tree. Runs the canonical
+	 *  {@link runEmitCycle} (per-process lock + content-addressed
+	 *  stage-and-swap), so config.ts re-emits to its unchanged id-free form
+	 *  (no-touch) while an edited package's Move bindings refresh. Dev-`up`
+	 *  only: the post-acquire hook calls this when a Move-source edit
+	 *  (re)acquires the package. `apply` / `runStack` never call it (the
+	 *  committed tree is the build's input there, not its output). */
+	readonly emitBindings: (
+		contributions: ReadonlyArray<CodegenableDecl>,
+	) => Effect.Effect<
+		RunEmitCycleResult,
+		CodegenError,
+		FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
+	>;
 }
 
 export class CodegenOrchestratorService extends Context.Service<
@@ -1156,10 +1190,25 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				);
 			});
 
+		const emitBindings: CodegenOrchestrator['emitBindings'] = (contributions) =>
+			Effect.gen(function* () {
+				// Emit from the caller's STATIC (id-free) contributions, NOT the
+				// live registered ones — the latter bake real on-chain ids into
+				// `config.ts`, breaking the committed tree's id-free invariant.
+				// `runEmitCycle` owns the lock + content-addressed stage-and-swap,
+				// so config.ts re-emits to its unchanged id-free form (no-touch)
+				// while an edited package's Move bindings refresh (HMR stays quiet).
+				if (contributions.length === 0) {
+					return { filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null };
+				}
+				return yield* runEmitCycle({ contributions, trackTree: true });
+			});
+
 		return CodegenOrchestratorService.of({
 			registerContribution,
 			assembleIdConfig,
 			emitExtras,
+			emitBindings,
 		});
 	}),
 );

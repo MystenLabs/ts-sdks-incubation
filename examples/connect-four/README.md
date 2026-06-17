@@ -9,7 +9,7 @@ signing for two players (alice + bob).
 connect-four/
 ├── devstack.config.ts    # sui-localnet + connect_four package + openLobby action + wallet + vite
 ├── move/connect_four/    # Move package: game, lobby, and move logic
-├── e2e/                  # Playwright: two-account match
+├── tests/browser/        # Playwright: two-account match
 └── src/                  # React UI: lobby + game board
 ```
 
@@ -20,7 +20,7 @@ pnpm dev          # devstack up (the `connect-four` dev stack); injects live ids
 pnpm codegen      # regenerate src/generated bindings after a Move source change (stack-free)
 pnpm build        # tsc -b && vite build — stack-free, no Docker; works on a clean clone
 pnpm test         # unit tests — fast, boots nothing
-pnpm test:e2e     # Playwright on an isolated `e2e` stack (parallel-safe with `pnpm dev`)
+pnpm test:browser # Playwright on an isolated `e2e` stack (parallel-safe with `pnpm dev`)
 ```
 
 `pnpm dev` injects live on-chain ids; the committed `src/generated/config.ts` resolves them

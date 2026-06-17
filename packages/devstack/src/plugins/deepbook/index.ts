@@ -102,8 +102,10 @@ const makeDeepbookResource = <Name extends string>(name: Name) =>
 /** The deepbook resolved value. Mode-asymmetric:
  *
  *   - `adminCapId` is `null` for known-deployment mode.
- *   - `margin` / `serverUrl` / `indexerUrl` / `marketMakerRunning`
- *     are `null` when the corresponding sub-feature is not enabled. */
+ *   - `margin` / `serverUrl` / `indexerUrl` are `null` when the
+ *     corresponding sub-feature is not enabled.
+ *   - `hasSeedLiquidity` is `true` when one or more pools placed seed
+ *     orders at boot (it is NOT a market-maker process state). */
 export interface DeepbookResolved {
 	readonly mode: 'local' | 'override' | 'known';
 	readonly network: string;
@@ -119,7 +121,9 @@ export interface DeepbookResolved {
 	} | null;
 	readonly serverUrl: string | null;
 	readonly indexerUrl: string | null;
-	readonly marketMakerRunning: boolean;
+	/** `true` when one or more pools placed seed orders at boot. This reflects
+	 *  "a pool was seeded with liquidity", NOT a running market-maker process. */
+	readonly hasSeedLiquidity: boolean;
 	readonly deepFundingStrategy: DeepbookDeepFundingStrategy | null;
 }
 
@@ -476,7 +480,7 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 					margin: null,
 					serverUrl: null,
 					indexerUrl: null,
-					marketMakerRunning: false,
+					hasSeedLiquidity: false,
 					deepFundingStrategy: null,
 				};
 				// Emit contributions inline: snapshot -> codegen. `resolved` is
@@ -711,7 +715,7 @@ const buildLocalPlugin = <
 					margin: null,
 					serverUrl: null,
 					indexerUrl: null,
-					marketMakerRunning: seedResults.length > 0,
+					hasSeedLiquidity: seedResults.length > 0,
 					deepFundingStrategy: null,
 				};
 				// Emit contributions inline: snapshot -> codegen. `resolved` is
@@ -864,7 +868,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 					margin: null,
 					serverUrl: null,
 					indexerUrl: null,
-					marketMakerRunning: false,
+					hasSeedLiquidity: false,
 					// DEEP funding is a testnet-deepbook concern — gate on the
 					// network name alone. (The old `&& String(chain) === 'sui:testnet'`
 					// conjunct compared a genesis-digest chainId against a network

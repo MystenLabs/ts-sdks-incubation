@@ -33,6 +33,10 @@ export interface ScaffoldOptions {
 	services: ReadonlyArray<ServiceId>;
 	/** Skip `pnpm install` after copy. Default false. */
 	skipInstall?: boolean;
+	/** Skip the best-effort post-install `pnpm codegen` step. Codegen is also
+	 *  implicitly skipped when install is skipped (no devstack binary) or when
+	 *  no host `sui` CLI is found. Default false. */
+	skipCodegen?: boolean;
 	/** Skip `git init` + initial commit. Default false. */
 	skipGit?: boolean;
 	/** Where to log progress. Defaults to stdout. */
@@ -44,6 +48,11 @@ export interface ScaffoldResult {
 	appDir: string;
 	/** Whether `pnpm install` actually ran (vs skipped). */
 	installed: boolean;
+	/** Whether the post-install `pnpm codegen` step actually ran to completion.
+	 *  False when skipped (no install, --no-codegen, or no host `sui` CLI) or
+	 *  when it failed (non-fatal). The next-steps text uses this to decide
+	 *  whether to tell the user to run `pnpm codegen`. */
+	codegenRan: boolean;
 	/** Whether `git init` actually ran (vs skipped). */
 	gitInitialized: boolean;
 	/** Whether the docker daemon answered the preflight probe. Only affects
@@ -125,6 +134,29 @@ export async function scaffold(opts: ScaffoldOptions): Promise<ScaffoldResult> {
 		installed = true;
 	}
 
+	// Best-effort codegen so plugins selected at creation time (deepbook, pyth,
+	// walrus, seal) get their config.ts id-resolver entries + local bindings
+	// without the user manually running `pnpm codegen`. Requires install (no
+	// devstack binary otherwise) and a host `sui` CLI — `devstack codegen` now
+	// fails fast without one. Always non-fatal: never aborts the scaffold, and
+	// runs before git init so generated files land in the initial commit.
+	let codegenRan = false;
+	if (installed && opts.skipCodegen !== true) {
+		if (hasHostSui()) {
+			try {
+				log('running pnpm codegen…');
+				await run('pnpm', ['codegen'], appDir);
+				codegenRan = true;
+			} catch (e) {
+				log(
+					`codegen failed (${(e as Error).message}). Run \`pnpm codegen\` once your Move sources build, or just \`pnpm dev\`.`,
+				);
+			}
+		} else {
+			log('codegen skipped — no `sui` CLI on PATH. Install sui, then run `pnpm codegen`.');
+		}
+	}
+
 	let gitInitialized = false;
 	if (opts.skipGit !== true) {
 		try {
@@ -142,7 +174,7 @@ export async function scaffold(opts: ScaffoldOptions): Promise<ScaffoldResult> {
 		}
 	}
 
-	return { appDir, installed, gitInitialized, dockerOk };
+	return { appDir, installed, codegenRan, gitInitialized, dockerOk };
 }
 
 function copyTemplate(src: string, dst: string): void {
@@ -236,6 +268,22 @@ function dockerPreflight(): boolean {
 			encoding: 'utf8',
 		});
 		return probe.status === 0 && (probe.stdout ?? '').trim().length > 0;
+	} catch {
+		return false;
+	}
+}
+
+/** Fast, non-fatal probe for a host `sui` CLI on PATH. `devstack codegen`
+ *  requires one (no Docker fallback) and fails fast without it, so we skip the
+ *  post-install codegen step rather than have it error. */
+function hasHostSui(): boolean {
+	try {
+		const probe = spawnSync('sui', ['--version'], {
+			timeout: 3_000,
+			stdio: ['ignore', 'pipe', 'ignore'],
+			encoding: 'utf8',
+		});
+		return probe.status === 0;
 	} catch {
 		return false;
 	}

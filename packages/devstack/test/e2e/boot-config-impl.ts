@@ -135,6 +135,15 @@ export interface BootScopeContext {
 	readonly strategyRegistry: import('../../src/contracts/strategy-contributor.ts').StrategyRegistry;
 	readonly identity: Identity;
 	readonly snapshot: BootSnapshotFacade;
+	/** Submit a supervisor command (e.g. `selective-restart.requested`) and
+	 *  await its completion — lets a probe drive a live lifecycle transition
+	 *  (the watcher's selective restart) without the real fs watcher. */
+	readonly runCommand: (
+		command: import('../../src/substrate/events.ts').EngineCommand,
+	) => Effect.Effect<void, unknown>;
+	/** Re-read a plugin's CURRENT resolved value by ready key — picks up the
+	 *  fresh value after a restart (e.g. a package's new id post-republish). */
+	readonly readResolved: (key: string) => unknown;
 }
 
 interface BootStackConfig {
@@ -564,6 +573,9 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 							strategyRegistry: registry,
 							identity,
 							snapshot: snapshotFacade,
+							runCommand: handle.runCommand,
+							readResolved: (key: string) =>
+								readResolvedSync(handle.registry, key as Parameters<typeof readResolvedSync>[1]),
 						})
 						.pipe(Effect.orDie);
 				}

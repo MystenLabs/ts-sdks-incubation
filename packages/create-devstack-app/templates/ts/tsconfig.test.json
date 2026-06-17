@@ -1,0 +1,9 @@
+{
+	// Tests live under `tests/` (not `src/`), so they're checked by their
+	// own config and never enter the app's `tsc`/codegen surface. Inherits
+	// the base options (noEmit, `@generated/*` paths, `.ts` import
+	// extensions) and just widens `include` to the test tree + the source
+	// it imports.
+	"extends": "./tsconfig.json",
+	"include": ["tests/**/*", "src/**/*"]
+}

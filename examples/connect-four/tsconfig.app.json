@@ -11,5 +11,5 @@
 		}
 	},
 	"include": ["src/**/*", ".devstack/stacks/connect-four/generated-extras/**/*"],
-	"exclude": ["dist", "node_modules", "**/*.test.ts", "**/*.test.tsx"]
+	"exclude": ["dist", "node_modules", "tests"]
 }

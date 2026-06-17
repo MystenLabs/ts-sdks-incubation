@@ -11,5 +11,5 @@
 		}
 	},
 	"include": ["src/**/*", ".devstack/stacks/token-studio/generated-extras/**/*"],
-	"exclude": ["dist", "node_modules", "e2e", "**/*.test.ts", "**/*.test.tsx"]
+	"exclude": ["dist", "node_modules", "tests"]
 }

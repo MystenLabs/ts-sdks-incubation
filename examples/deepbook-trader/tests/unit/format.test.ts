@@ -7,7 +7,7 @@ import {
 	formatPercent,
 	parseCoinAmount,
 	shortId,
-} from './format.ts';
+} from '../../src/lib/format.ts';
 
 describe('decimalsFromScalar', () => {
 	it('returns the base-10 exponent for valid power-of-10 scalars', () => {

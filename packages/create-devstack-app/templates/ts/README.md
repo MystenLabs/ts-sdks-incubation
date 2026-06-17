@@ -10,8 +10,8 @@ generated bindings.
 pnpm dev       # boots the `dev` localnet (+ any services), publishes move/counter,
                # injects the live stack's ids, and prints the dashboard URL
                # (run `pnpm codegen` to regenerate the committed src/generated/ tree)
-pnpm test      # unit tests (src/**/*.test.ts) — fast, boots nothing
-pnpm test:e2e  # full-stack tests (src/**/*.e2e.test.ts) — boots a throwaway `test`
+pnpm test      # unit tests (tests/unit/**) — fast, boots nothing
+pnpm test:e2e  # full-stack tests (tests/e2e/**) — boots a throwaway `test`
                # stack, runs them against it, then tears it down
 ```
 
@@ -21,6 +21,12 @@ separate `test` stack — with its own per-stack ids file and runtime state — 
 neither stack rewrites it. To run the e2e suite against an already-running stack instead of booting
 a fresh one, set `DEVSTACK_TEST_REUSE=1` (and point `DEVSTACK_STACK` at that stack).
 
+The scaffolder runs `pnpm codegen` for you after install when a host `sui` CLI is on your PATH, so
+the committed `src/generated/` tree already covers the services you selected. If `sui` wasn't found
+(or you scaffolded with `--no-codegen` / `--no-install`), run `pnpm codegen` once — it needs the
+`sui` CLI. Git-sourced services (deepbook/pyth) clone their Move tree at stack boot, so their local
+bindings finish materializing on first `pnpm dev`.
+
 Prefer a one-shot boot without the watch loop? `pnpm apply` (re-emits the live ids file + dev
 extras; it does not rewrite the committed `src/generated`). To regenerate the committed tree after a
 Move source change, run `devstack codegen`. Day-2: `devstack status` (what's running + endpoints),
@@ -29,8 +35,8 @@ Move source change, run `devstack codegen`. Day-2: `devstack status` (what's run
 ## Standalone scripts
 
 Node 24 runs TypeScript natively — paste this into `src/main.ts` and run
-`node src/main.ts <counterId>` (see `src/counter.e2e.test.ts` for the full create → increment → read
-flow, including faucet funding):
+`node src/main.ts <counterId>` (see `tests/e2e/counter.test.ts` for the full create → increment →
+read flow, including faucet funding):
 
 ```ts
 import { SuiGrpcClient } from '@mysten/sui/grpc';

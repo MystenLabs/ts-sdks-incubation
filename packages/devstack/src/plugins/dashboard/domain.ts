@@ -53,6 +53,16 @@ export interface DashboardDeepbookPool {
 	readonly quoteCoinType: string;
 }
 
+/** One Pyth price feed seeded inside DeepBook at boot. `price`/`expo` are the
+ *  FIXED boot-time mock values (static, not a live quote); `price` is carried
+ *  as a string so large signed values survive the wire without precision loss. */
+export interface DashboardPythFeed {
+	readonly symbol: string;
+	readonly priceInfoObjectId: string;
+	readonly price: string;
+	readonly expo: number;
+}
+
 export interface DashboardDeepbookInfo {
 	readonly pluginKey: string;
 	readonly name: string;
@@ -63,7 +73,12 @@ export interface DashboardDeepbookInfo {
 	readonly adminCapId: string | null;
 	readonly deepTreasuryId: string | null;
 	readonly pools: ReadonlyArray<DashboardDeepbookPool>;
-	readonly marketMakerRunning: boolean;
+	/** Pyth price feeds seeded inside this DeepBook deployment (boot-time mock
+	 *  prices). Empty when no Pyth feeds were configured. */
+	readonly pythFeeds: ReadonlyArray<DashboardPythFeed>;
+	/** `true` when one or more pools placed seed orders at boot (NOT a
+	 *  market-maker process state). */
+	readonly hasSeedLiquidity: boolean;
 	readonly serverUrl: string | null;
 	readonly indexerUrl: string | null;
 	/** Non-null when one or more required fields failed to narrow off the
@@ -217,7 +232,16 @@ interface DeepbookShape {
 		readonly baseCoinType?: unknown;
 		readonly quoteCoinType?: unknown;
 	}>;
-	readonly marketMakerRunning?: unknown;
+	/** Resolved Pyth handle (`PythHandle | null`); we read only `feeds`. */
+	readonly pyth?: {
+		readonly feeds?: ReadonlyArray<{
+			readonly symbol?: unknown;
+			readonly priceInfoObjectId?: unknown;
+			readonly price?: unknown;
+			readonly expo?: unknown;
+		}>;
+	} | null;
+	readonly hasSeedLiquidity?: unknown;
 	readonly serverUrl?: unknown;
 	readonly indexerUrl?: unknown;
 }
@@ -403,6 +427,18 @@ const narrowEnum = <T extends string>(
 	return fallback;
 };
 
+/** Required string-or-numeric coerced to a string. Pyth feed prices arrive as a
+ *  `bigint` on the resolved value (string in the cached/known shape); accept any
+ *  of string/number/bigint and record a fault otherwise. Returns '0' on
+ *  mismatch so the panel still renders a (degraded) cell. */
+const reqNumericStr = (v: unknown, field: string, faults: FaultSink): string => {
+	if (typeof v === 'string') return v;
+	if (typeof v === 'bigint') return v.toString();
+	if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+	faults.push(typeFault(field, 'string|number|bigint', v));
+	return '0';
+};
+
 // Genuinely-optional readers — silent by design (absent is a valid state).
 const optStr = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const optNum = (v: unknown): number | null =>
@@ -482,7 +518,19 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 							baseCoinType: reqStr(p.baseCoinType, `deepbook.pools[${i}].baseCoinType`, faults),
 							quoteCoinType: reqStr(p.quoteCoinType, `deepbook.pools[${i}].quoteCoinType`, faults),
 						})),
-						marketMakerRunning: bool(v.marketMakerRunning),
+						// Pyth feeds are seeded inside DeepBook (`pyth.feeds`); absent
+						// when no Pyth feeds were configured (`pyth` is null/empty).
+						pythFeeds: (v.pyth?.feeds ?? []).map((f, i) => ({
+							symbol: reqStr(f.symbol, `deepbook.pyth.feeds[${i}].symbol`, faults),
+							priceInfoObjectId: reqStr(
+								f.priceInfoObjectId,
+								`deepbook.pyth.feeds[${i}].priceInfoObjectId`,
+								faults,
+							),
+							price: reqNumericStr(f.price, `deepbook.pyth.feeds[${i}].price`, faults),
+							expo: reqNum(f.expo, `deepbook.pyth.feeds[${i}].expo`, faults),
+						})),
+						hasSeedLiquidity: bool(v.hasSeedLiquidity),
 						serverUrl: optStr(v.serverUrl),
 						indexerUrl: optStr(v.indexerUrl),
 						narrowingFault: faultDetail(faults),

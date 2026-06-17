@@ -174,8 +174,8 @@ builder.queryType({
 			type: [SnapshotEntry],
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.snapshots),
 		}),
-		/** DeepBook deployments: registry/admin/pool ids + market-maker
-		 *  state. (Pool prices / order books are chain-direct.) */
+		/** DeepBook deployments: registry/admin/pool ids + seed-liquidity
+		 *  state + Pyth feeds. (Pool prices / order books are chain-direct.) */
 		deepbookInfo: t.field({
 			type: [DeepbookInfo],
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.deepbook),

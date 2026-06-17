@@ -70,6 +70,8 @@ describe('scaffold', () => {
 		const appDir = join(targetDir, 'my-app');
 		expect(result.appDir).toBe(appDir);
 		expect(result.installed).toBe(false);
+		// Codegen is gated on a real install — never attempted when skipped.
+		expect(result.codegenRan).toBe(false);
 		expect(result.gitInitialized).toBe(false);
 
 		for (const file of [
@@ -79,6 +81,8 @@ describe('scaffold', () => {
 			'move/counter/Move.toml',
 			'src/counter.ts',
 			'vitest.config.ts',
+			'tests/unit/tx.test.ts',
+			'tests/e2e/counter.test.ts',
 		]) {
 			expect(existsSync(join(appDir, file)), `${file} should exist`).toBe(true);
 		}
@@ -159,6 +163,17 @@ describe('scaffold', () => {
 		await expect(run({ name: 'My_App', template: 'ts', services: [] })).rejects.toThrow(
 			/invalid app name/,
 		);
+	});
+
+	it('never runs codegen when install is skipped, even with git-sourced services', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// Codegen is gated on a real install (no devstack binary otherwise), so
+		// the test harness — which always skips install — must never report a
+		// codegen run, regardless of selected services. (The harness never
+		// invokes `devstack codegen`, so no stack is booted.)
+		const { result } = await run({ template: 'ts', services: ['deepbook'] });
+		expect(result.installed).toBe(false);
+		expect(result.codegenRan).toBe(false);
 	});
 });
 

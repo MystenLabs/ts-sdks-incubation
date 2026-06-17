@@ -7,7 +7,7 @@
 		"codegen": "devstack codegen",
 		"dev": "devstack up",
 		"apply": "devstack apply",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
 		"test": "vitest run",
 		"test:e2e": "vitest run --config vitest.e2e.config.ts",
 		"clean": "rm -rf dist .turbo node_modules/.tmp"

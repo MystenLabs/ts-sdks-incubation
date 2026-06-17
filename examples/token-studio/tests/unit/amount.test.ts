@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatStudio, parseStudioAmount, shortAddress } from './amount.ts';
+import { formatStudio, parseStudioAmount, shortAddress } from '../../src/lib/amount.ts';
 
 // STUDIO has 6 decimals, so 1 STUDIO == 1_000_000 raw units.
 const ONE = 1_000_000n;

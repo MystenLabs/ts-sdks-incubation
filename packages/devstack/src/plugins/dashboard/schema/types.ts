@@ -34,6 +34,7 @@ import type {
 	DashboardDeepbookInfo,
 	DashboardDeepbookPool,
 	DashboardFundableCoin,
+	DashboardPythFeed,
 	DashboardSealInfo,
 	DashboardSealKeyServer,
 } from '../domain.ts';
@@ -352,8 +353,23 @@ export const DeepbookPool = builder.objectRef<DashboardDeepbookPool>('DeepbookPo
 	}),
 });
 
+export const PythPriceFeed = builder.objectRef<DashboardPythFeed>('PythPriceFeed').implement({
+	description:
+		'A Pyth price feed seeded inside DeepBook at boot. `price`/`expo` are FIXED ' +
+		'boot-time mock values (static, not a live quote).',
+	fields: (t) => ({
+		symbol: t.exposeString('symbol'),
+		priceInfoObjectId: t.exposeString('priceInfoObjectId'),
+		// String (not Int/Float): the boot-time mock price is a signed integer in
+		// feed-native scale carried as a string to survive the wire intact.
+		price: t.exposeString('price'),
+		expo: t.exposeInt('expo'),
+	}),
+});
+
 export const DeepbookInfo = builder.objectRef<DashboardDeepbookInfo>('DeepbookInfo').implement({
-	description: 'A DeepBook deployment: registry/admin/pool ids + market-maker state.',
+	description:
+		'A DeepBook deployment: registry/admin/pool ids + seed-liquidity state + Pyth feeds.',
 	fields: (t) => ({
 		pluginKey: t.exposeString('pluginKey'),
 		name: t.exposeString('name'),
@@ -364,7 +380,11 @@ export const DeepbookInfo = builder.objectRef<DashboardDeepbookInfo>('DeepbookIn
 		adminCapId: t.exposeString('adminCapId', { nullable: true }),
 		deepTreasuryId: t.exposeString('deepTreasuryId', { nullable: true }),
 		pools: t.field({ type: [DeepbookPool], resolve: (d) => d.pools }),
-		marketMakerRunning: t.exposeBoolean('marketMakerRunning'),
+		// Pyth price feeds seeded inside this DeepBook deployment (boot-time mocks).
+		pythFeeds: t.field({ type: [PythPriceFeed], resolve: (d) => d.pythFeeds }),
+		// `true` when one or more pools placed seed orders at boot (NOT a running
+		// market-maker process).
+		hasSeedLiquidity: t.exposeBoolean('hasSeedLiquidity'),
 		serverUrl: t.exposeString('serverUrl', { nullable: true }),
 		indexerUrl: t.exposeString('indexerUrl', { nullable: true }),
 		// Fail-loud: non-null when a required field failed to narrow off the

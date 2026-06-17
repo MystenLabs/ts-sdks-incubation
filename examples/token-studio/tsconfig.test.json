@@ -1,0 +1,12 @@
+{
+	"extends": "@mysten-incubation/tsconfig/react.json",
+	"compilerOptions": {
+		"types": ["vite/client", "node"],
+		"paths": {
+			"@/*": ["./src/*"],
+			"@generated/*": ["./src/generated/*"],
+			"@devstack-dev/*": ["./.devstack/stacks/token-studio/generated-extras/*"]
+		}
+	},
+	"include": ["tests/**/*", "src/**/*"]
+}

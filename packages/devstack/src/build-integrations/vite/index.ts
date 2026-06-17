@@ -129,6 +129,19 @@ interface ViteConfigEnvLike {
 	readonly command?: 'build' | 'serve';
 }
 
+/** The structural subset of Vite's `ViteDevServer` the `configureServer`
+ *  hook uses: the chokidar `watcher` (to track the ids file) and the HMR
+ *  channel (to push a full reload). `ws` is Vite's long-stable channel;
+ *  `hot` is the newer alias — we use whichever the running Vite exposes. */
+interface ViteDevServerLike {
+	readonly watcher: {
+		add: (paths: string | ReadonlyArray<string>) => void;
+		on: (event: 'change' | 'add', listener: (path: string) => void) => void;
+	};
+	readonly ws?: { send: (payload: { type: 'full-reload' }) => void };
+	readonly hot?: { send: (payload: { type: 'full-reload' }) => void };
+}
+
 export interface DevstackVitePlugin {
 	readonly name: string;
 	readonly config: (
@@ -141,33 +154,44 @@ export interface DevstackVitePlugin {
 			// and `DepOptimizationConfig.include` are both `string[] | undefined`,
 			// and a `readonly string[]` return makes the whole `config` hook
 			// unassignable to Vite's `Plugin` type in a consuming app's
-			// `vite.config.ts`/`vitest.config.ts`. The values we return
-			// (`[...LIT_DEDUPE]`, a freshly built array) are already mutable.
+			// `vite.config.ts`/`vitest.config.ts`. The value we return
+			// (`resolvableLitDedupe(root)`, a freshly built array) is already
+			// mutable.
 			readonly dedupe?: string[];
 		};
 		readonly optimizeDeps?: { readonly include: string[] };
-		/** Build-time `define` injecting the on-chain ids as the
-		 *  `__DEVSTACK_IDS__` global (the generated resolver reads it). */
+		/** `define` injecting the on-chain ids as `__DEVSTACK_IDS__`. In a
+		 *  prod `build` this is the static id literal; in dev `serve` it is a
+		 *  reference to the `globalThis.__DEVSTACK_IDS_LIVE__` runtime global
+		 *  the `transformIndexHtml` hook sets fresh per page load, so a
+		 *  republished id reaches the app on reload (`define` is fixed for the
+		 *  dev server's lifetime and could never hot-update). */
 		readonly define: Record<string, string>;
 	};
 	/** Capture the resolved command so injection is DEV-only. */
 	readonly configResolved: (config: ViteUserConfigLike) => void;
+	/** Dev-only: watch the live `devstack-ids.json` and full-reload the page
+	 *  when it changes, so a republished package id (rewritten by the
+	 *  supervisor's post-acquire hook) reaches the running app. */
+	readonly configureServer: (server: ViteDevServerLike) => void;
 	/** Resolve the dev-wallet virtual module. */
 	readonly resolveId: (id: string) => string | undefined;
 	/** Emit the dev-wallet register module (or a no-op when not applicable). */
 	readonly load: (id: string) => string | undefined;
-	/** Inject a `<script type="module">` importing the virtual module into
-	 *  the dev page's HTML. DEV-only. The return shape mirrors a structural
-	 *  subset of Vite's `IndexHtmlTransformResult` (mutable `tags`,
-	 *  `injectTo` as the literal `'head'`) so the plugin stays assignable to
-	 *  Vite's `Plugin` without devstack importing `vite`. */
+	/** Inject the dev-only HTML tags: the `__DEVSTACK_IDS_LIVE__` global
+	 *  (read fresh from the ids file per request) and, when the app carries
+	 *  the dev wallet, the `<script type="module">` importing the virtual
+	 *  module. The return shape mirrors a structural subset of Vite's
+	 *  `IndexHtmlTransformResult` so the plugin stays assignable to Vite's
+	 *  `Plugin` without devstack importing `vite`. */
 	readonly transformIndexHtml: (html: string) =>
 		| {
 				html: string;
 				tags: Array<{
 					tag: string;
-					attrs: Record<string, string | boolean>;
-					injectTo: 'head';
+					attrs?: Record<string, string | boolean>;
+					children?: string;
+					injectTo: 'head' | 'head-prepend';
 				}>;
 		  }
 		| undefined;
@@ -316,6 +340,21 @@ const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): 
  *  and leaves the app in an unusable connection state. */
 const LIT_DEDUPE = ['lit', 'lit-html', 'lit-element', '@lit/reactive-element'] as const;
 
+/** Filter {@link LIT_DEDUPE} to the packages actually installed at the app
+ *  root (`<root>/node_modules/<pkg>`). `resolve.dedupe` forces Vite to
+ *  resolve each listed package from the ROOT copy — but under pnpm's strict
+ *  layout a package is only surfaced at the root when the app declares it as
+ *  a direct dependency. Listing a package that is merely a phantom
+ *  (transitive-only, reachable solely under `@mysten/dapp-kit-core`'s nested
+ *  store dir) makes Vite's resolver look for a root copy that does not exist
+ *  and FAIL the production build with `Rollup failed to resolve import
+ *  "lit"`. So we dedupe only what the app truly hoists: the `app` template
+ *  declares `lit` (all dapp-kit-core Lit usage routes through the `lit`
+ *  meta-package, so one `lit` ⇒ one nested `@lit/reactive-element`); the
+ *  sub-packages stay phantom and are correctly dropped here. */
+const resolvableLitDedupe = (root: string): string[] =>
+	LIT_DEDUPE.filter((pkg) => existsSync(resolve(root, 'node_modules', ...pkg.split('/'))));
+
 /** The dev-wallet entry points the injected virtual module imports. They are
  *  reached only through the `<script>` this plugin adds in `transformIndexHtml`,
  *  so Vite's initial dep scan never sees them and re-optimizes mid-session the
@@ -380,12 +419,34 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// never re-optimizes them mid-session into a second Lit realm
 			// (see the constants above).
 			const includeDevWallet = injectDevWallet && devWalletInstalled(root);
-			// Inject the on-chain ids as a build-time global. The generated
-			// `config-runtime.ts` resolver reads `__DEVSTACK_IDS__`
-			// synchronously and throws `DevstackConfigMissingError` when an id
-			// is unresolved. `define` substitutes it identically in the dev
-			// server and the prod build.
+			// Inject the on-chain ids the generated `config-runtime.ts` resolver
+			// reads as `__DEVSTACK_IDS__`.
+			//   - PROD build: bake the static literal.
+			//   - DEV server (`vite dev`): point the identifier at the
+			//     `__DEVSTACK_IDS_LIVE__` runtime global the `transformIndexHtml`
+			//     hook sets fresh per page load — `define` is fixed for the dev
+			//     server's lifetime, so baking the value would pin the FIRST id
+			//     forever and a republish would never reach the app. A distinct
+			//     global name avoids a single-pass `define` token collision with
+			//     `__DEVSTACK_IDS__`.
+			//   - VITEST: vitest ALSO reports `command === 'serve'`, but it runs
+			//     no `transformIndexHtml` (no HTML), so the live global is never
+			//     set — and esbuild's stricter `define` rejects an operator
+			//     expression anyway. Bake a literal instead: the Vite config loads
+			//     BEFORE the test stack boots, so `injectedIds` is null and the
+			//     resolver falls back to the `DEVSTACK_IDS_FILE` env the vitest
+			//     globalSetup points at the freshly-booted stack (see
+			//     vitest/global-setup.ts).
+			// The define VALUE must be esbuild-valid (a JSON literal or a
+			// member-access chain) — note the bare `globalThis.…`, NOT a
+			// parenthesised `(… ?? null)`; `config-runtime.ts` already guards the
+			// `typeof … === 'undefined'` case.
 			const injectedIds = resolveInjectedIds(env, root, command, options.ids);
+			const isVitest = env['VITEST'] !== undefined;
+			const idsDefine =
+				command === 'serve' && !isVitest
+					? 'globalThis.__DEVSTACK_IDS_LIVE__'
+					: JSON.stringify(injectedIds ?? null);
 			return {
 				resolve: {
 					// A bare-prefix alias (no trailing `/`) matches both
@@ -395,10 +456,10 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 						[alias]: generatedDir,
 						[devExtrasAlias]: extrasDir,
 					},
-					dedupe: [...LIT_DEDUPE],
+					dedupe: resolvableLitDedupe(root),
 				},
 				define: {
-					__DEVSTACK_IDS__: JSON.stringify(injectedIds ?? null),
+					__DEVSTACK_IDS__: idsDefine,
 				},
 				...(includeDevWallet
 					? { optimizeDeps: { include: [...DEV_WALLET_OPTIMIZE_ENTRIES] } }
@@ -469,18 +530,61 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			].join('\n');
 		},
 
-		transformIndexHtml: (html: string) => {
-			if (!injectDevWallet || !isServe) return undefined;
-			return {
-				html,
-				tags: [
-					{
-						tag: 'script',
-						attrs: { type: 'module', src: VIRTUAL_DEV_WALLET_SCRIPT_SRC },
-						injectTo: 'head',
-					},
-				],
+		configureServer: (server: ViteDevServerLike) => {
+			if (!isServe) return;
+			const env = process.env as Readonly<Record<string, string | undefined>>;
+			const idsFile = readIdsFileFromManifest(env, resolvedRoot);
+			if (idsFile === null) return;
+			// Watch the live id-config and full-reload on change. The supervisor's
+			// post-acquire hook rewrites this file whenever a package (re)publishes
+			// (e.g. after a Move-source edit fires the file watcher → selective
+			// restart); a reload re-runs `transformIndexHtml`, which re-reads the
+			// file into `__DEVSTACK_IDS_LIVE__`, so the app picks up the new id.
+			server.watcher.add(idsFile);
+			const reloadOnIdsChange = (changed: string): void => {
+				// Chokidar fires absolute paths for an absolute `watcher.add`, so
+				// `resolve(changed)` is normally a no-op; resolve against the Vite
+				// root anyway so a relative event path can't silently miss.
+				if (resolve(resolvedRoot, changed) !== resolve(idsFile)) return;
+				const channel = server.hot ?? server.ws;
+				channel?.send({ type: 'full-reload' });
 			};
+			server.watcher.on('change', reloadOnIdsChange);
+			server.watcher.on('add', reloadOnIdsChange);
+		},
+
+		transformIndexHtml: (html: string) => {
+			if (!isServe) return undefined;
+			const env = process.env as Readonly<Record<string, string | undefined>>;
+			// Read the live ids FRESH per request so a full-reload after a
+			// republish injects the new id. Set on a distinct global
+			// (`__DEVSTACK_IDS_LIVE__`) the `config` hook's `define` points
+			// `__DEVSTACK_IDS__` at; `head-prepend` runs it before any app module.
+			const liveIds = resolveInjectedIds(env, resolvedRoot, 'serve', options.ids);
+			const tags: Array<{
+				tag: string;
+				attrs?: Record<string, string | boolean>;
+				children?: string;
+				injectTo: 'head' | 'head-prepend';
+			}> = [
+				{
+					tag: 'script',
+					children: `globalThis.__DEVSTACK_IDS_LIVE__ = ${JSON.stringify(liveIds ?? null)};`,
+					injectTo: 'head-prepend',
+				},
+			];
+			// Gate the script tag on the app actually carrying the wallet (same
+			// condition as the `config` hook's `optimizeDeps` include), so a
+			// headless app emits zero dev-wallet plumbing rather than a tag that
+			// resolves to the no-op virtual module.
+			if (injectDevWallet && devWalletInstalled(resolvedRoot)) {
+				tags.push({
+					tag: 'script',
+					attrs: { type: 'module', src: VIRTUAL_DEV_WALLET_SCRIPT_SRC },
+					injectTo: 'head',
+				});
+			}
+			return { html, tags };
 		},
 	};
 };

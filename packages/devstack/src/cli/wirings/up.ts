@@ -23,6 +23,7 @@ import {
 	claim,
 	heartbeatFiber,
 	release,
+	startFileWatcher,
 	type SupervisedStack,
 	type SupervisorCommandHandler,
 } from '../../substrate/runtime/index.ts';
@@ -69,6 +70,7 @@ import {
 } from './identity.ts';
 import { installCommandChannelBridge } from './up-ipc.ts';
 import { provideFileSystem } from './provide-file-system.ts';
+import { deriveContributions } from './codegen.ts';
 import { readDevstackVersion } from './read-devstack-version.ts';
 
 const rosterPathsFor = (stackRoot: string) => ({
@@ -419,6 +421,15 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 						),
 					),
 				);
+				// L0 file watcher — dev-only. Drives the supervisor's
+				// `notifyWatchFire` on edits to any plugin's declared `watch`
+				// paths (today: the package plugin's Move sources), which
+				// issues a selective restart → re-produce. Forked into the
+				// supervised scope so it tears down on shutdown.
+				yield* startFileWatcher({
+					watchIndex: h.supervisor.watchIndex,
+					notifyWatchFire: h.supervisor.notifyWatchFire,
+				});
 			}),
 		withinScope: (h) =>
 			Effect.gen(function* () {
@@ -597,6 +608,13 @@ export const runUpLive = (
 			appRoot,
 			runtimeRoot: effectiveIdentity.runtimeRoot,
 			codegen: stack.options.codegen,
+			// Dev loop: a Move-source edit fires the watcher → reacquires the
+			// package (new id) → this regenerates the committed bindings so the
+			// app sees the new shapes. Pass the STATIC (id-free) contributions —
+			// the same the stack-free `codegen` verb uses — so the regen NEVER
+			// bakes the live on-chain id into the committed `config.ts`. `apply` /
+			// `runStack` leave it off.
+			emitBindings: deriveContributions(stack.members),
 			commandHandler,
 			boot,
 		});

@@ -5,7 +5,11 @@ description: Current generated-file behavior.
 
 `devstack codegen` writes the committed `src/generated` tree. It is deterministic and stack-free: no
 stack boots, no Docker, no on-chain ids — running it twice on the same Move source produces the same
-files. The committed tree lives at a single, fixed location, shared across every stack:
+files. It does require the
+[Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install) (`sui`) on your `PATH` —
+the `sui move summary` step has no Docker fallback, and codegen fails fast with an actionable error
+if `sui` is missing. The committed tree lives at a single, fixed location, shared across every
+stack:
 
 ```txt
 src/generated/
@@ -94,7 +98,8 @@ ids — each id is a `resolveId(...)` call (see [Resolver API](#resolver-api)) i
 commands cleanly decoupled:
 
 - `pnpm codegen` / `devstack codegen` — regenerates the committed `src/generated` tree from Move
-  source. Deterministic, stack-free, no Docker. Writes the committed tree only — never the ids file.
+  source. Deterministic, stack-free, no Docker (requires the `sui` CLI on `PATH`). Writes the
+  committed tree only — never the ids file.
 - `pnpm dev` / `devstack up` — boots the stack and writes a gitignored, per-stack
   `.devstack/stacks/<stack>/devstack-ids.json`; the [Vite plugin](#importing-generated-code) injects
   those live ids automatically in dev. It does **not** rewrite the committed tree.

@@ -31,9 +31,9 @@ images; subsequent runs should reuse Docker cache.
 
 Each app exposes two test commands:
 
-- `pnpm test` — fast unit tests (`vitest run`): pure domain logic (formatting,
-  parsing, game rules, …), no devstack, no Docker.
-- `pnpm test:e2e` — full-stack Playwright run, backed by
+- `pnpm test` — fast unit tests (`vitest run`, `tests/unit/**`): pure domain logic
+  (formatting, parsing, game rules, …), no devstack, no Docker.
+- `pnpm test:browser` — full-stack Playwright run (`tests/browser/**`), backed by
   `@mysten-incubation/devstack/playwright`, for the apps with a browser UI
   (`connect-four`, `deepbook-trader`, `private-content`, `token-studio`). It boots a
   dedicated, isolated `e2e` stack (`DEVSTACK_STACK=e2e`, which overrides the config's

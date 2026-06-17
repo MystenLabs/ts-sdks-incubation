@@ -45,6 +45,7 @@ import type { Identity } from '../../src/substrate/identity.ts';
 import { supervise, type ContributionDispatchContext } from '../../src/substrate/runtime/index.ts';
 import type { StrategyRegistry } from '../../src/contracts/strategy-contributor.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
+import type { Codegenable } from '../../src/orchestrators/codegen/service.ts';
 import { makeProjectionRef } from '../../src/substrate/runtime/projection/state-ref.ts';
 import { updateRef } from '../../src/substrate/runtime/projection/update.ts';
 
@@ -158,6 +159,8 @@ const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 			mvrOverrides: {},
 		}),
 	emitExtras: () =>
+		Effect.succeed({ filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null }),
+	emitBindings: () =>
 		Effect.succeed({ filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null }),
 } satisfies CodegenOrchestrator);
 
@@ -620,8 +623,10 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 	/** A codegen layer whose `emitExtras` records each call and returns a
 	 *  known non-empty result, so the post-acquire hook's `codegen.emitted`
 	 *  files can be asserted. Returns the call-count holder + the layer. */
+	const BINDINGS_FILE = '/generated/counter/counter.ts';
+
 	const recordingCodegen = () => {
-		const calls = { emitExtras: 0 };
+		const calls = { emitExtras: 0, emitBindings: 0 };
 		const layer = Layer.succeed(CodegenOrchestratorService)({
 			registerContribution: () => Effect.void,
 			assembleIdConfig: (network) =>
@@ -642,6 +647,16 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 						bindings: null,
 					};
 				}),
+			emitBindings: () =>
+				Effect.sync(() => {
+					calls.emitBindings += 1;
+					return {
+						filesWritten: [BINDINGS_FILE],
+						filesUnchanged: [],
+						filesChmod: [],
+						bindings: null,
+					};
+				}),
 		} satisfies CodegenOrchestrator);
 		return { calls, layer };
 	};
@@ -652,6 +667,7 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 	const runHook = (
 		network: string,
 		networkOptions: Readonly<Record<string, unknown>> | undefined,
+		emitBindings?: ReadonlyArray<Codegenable>,
 	) =>
 		Effect.gen(function* () {
 			const runtimeRoot = mkdtempSync(join(tmpdir(), 'extras-flush-gate-'));
@@ -681,9 +697,10 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 			try {
 				const events = yield* Effect.scoped(
 					Effect.gen(function* () {
-						const hook = yield* buildProductionPostAcquireHook(
-							networkOptions === undefined ? {} : { networkOptions },
-						);
+						const hook = yield* buildProductionPostAcquireHook({
+							...(networkOptions === undefined ? {} : { networkOptions }),
+							...(emitBindings === undefined ? {} : { emitBindings }),
+						});
 						// Empty graph → no routable/operational endpoints and no
 						// extras-context lookups; isolates the flush gate.
 						const ctx: SupervisorPostAcquireContext = {
@@ -704,7 +721,11 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 				if (emitted?.tag !== 'codegen.emitted') {
 					return yield* Effect.die('expected a codegen.emitted event');
 				}
-				return { emitExtrasCalls: calls.emitExtras, files: emitted.files };
+				return {
+					emitExtrasCalls: calls.emitExtras,
+					emitBindingsCalls: calls.emitBindings,
+					files: emitted.files,
+				};
 			} finally {
 				rmSync(runtimeRoot, { recursive: true, force: true });
 			}
@@ -740,6 +761,27 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 			expect(emitExtrasCalls).toBe(0);
 			expect(files).not.toContain(EXTRAS_FILE);
 			expect(files).toHaveLength(1);
+		}),
+	);
+
+	it.effect('emitBindings off (default) → committed bindings NOT regenerated', () =>
+		Effect.gen(function* () {
+			const { emitBindingsCalls, files } = yield* runHook('localnet', undefined);
+			expect(emitBindingsCalls).toBe(0);
+			expect(files).not.toContain(BINDINGS_FILE);
+		}),
+	);
+
+	it.effect('emitBindings on (dev `up`) → committed bindings regenerated + listed', () =>
+		Effect.gen(function* () {
+			// A non-empty contributions array represents a real dev-`up` reacquire
+			// (vs. the empty no-op the real impl short-circuits). The mocked
+			// orchestrator ignores the contents and just records that it was called.
+			const { emitBindingsCalls, files } = yield* runHook('localnet', undefined, [
+				{} as unknown as Codegenable,
+			]);
+			expect(emitBindingsCalls).toBe(1);
+			expect(files).toContain(BINDINGS_FILE);
 		}),
 	);
 });

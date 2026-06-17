@@ -17,7 +17,7 @@ import {
 	slotClass,
 	type Board,
 	type ChainGame,
-} from './game.js';
+} from '../../src/game.js';
 
 // Helper: build the on-chain column-major board (7 columns × 6 rows, bottom-up)
 // from a list of (column, piece) drops, mirroring how the Move package stacks

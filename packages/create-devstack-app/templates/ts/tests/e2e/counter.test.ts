@@ -20,8 +20,8 @@ import { describe, expect, it } from 'vitest';
 
 import { config } from '@generated/config.ts';
 import { resolveActiveNetwork } from '@generated/config-runtime.ts';
-import { createCounterTx, incrementTx, readCounter } from './counter.ts';
-import { executedTx } from './tx.ts';
+import { createCounterTx, incrementTx, readCounter } from '../../src/counter.ts';
+import { executedTx } from '../../src/tx.ts';
 
 // `resolveActiveNetwork` returns the active (test) stack's connection entry
 // with a non-undefined type and a loud throw — no `config.networks[...]`

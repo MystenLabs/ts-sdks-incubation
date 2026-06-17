@@ -6,7 +6,7 @@ import {
 	hexToBytes,
 	shortAddress,
 	stringToBytes,
-} from './format.ts';
+} from '../../src/lib/format.ts';
 
 describe('stringToBytes / bytesToString', () => {
 	it('round-trips ASCII', () => {

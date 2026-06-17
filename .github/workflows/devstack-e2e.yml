@@ -190,16 +190,28 @@ jobs:
       # the network); the runner already has network + git available here
       # since the `apply` step below boots the same stack, so no example is
       # scoped out.
+      # `devstack codegen` requires a host `sui` CLI (the `sui move summary`
+      # step has no Docker fallback). Install it with `suiup`, pinned to the
+      # `mainnet` release channel — the same version contributors install
+      # locally (`suiup install sui@mainnet`), so the drift-guard's canonical
+      # bindings and a developer's `pnpm codegen` agree.
+      - name: Install suiup (host runner for codegen)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/MystenLabs/suiup/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install pinned Sui CLI
+        run: |
+          # `--yes` accepts the "set as default" prompt so the `sui` symlink
+          # lands on PATH (CI is non-interactive; without it suiup keeps no
+          # default and `sui` is not found).
+          suiup install sui@mainnet --yes
+          sui --version
+
       - name: Codegen drift-guard (committed src/generated is fresh)
         working-directory: examples/${{ matrix.example }}
-        # CI never installs a host `sui` CLI, so force the Docker Move-summary
-        # runner: `devstack codegen` then runs `sui move summary` inside the
-        # pinned Sui CLI image (the same runner `up`/`apply` use). It produces
-        # byte-identical bindings to the host runner, so the drift-guard `git
-        # diff` is meaningful regardless of which runner emitted the committed
-        # tree. Docker is available on hosted ubuntu runners.
-        env:
-          DEVSTACK_CODEGEN_RUNNER: docker
+        # `devstack codegen` runs `sui move summary` against the host `sui`
+        # installed above (no Docker), then we fail if the regenerated tree
+        # differs from what's committed.
         run: |
           DEVSTACK_APP=${{ matrix.example }} node ../../packages/devstack/dist/cli/main.mjs codegen
           if ! git diff --exit-code -- src/generated; then

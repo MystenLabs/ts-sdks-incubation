@@ -10,9 +10,9 @@
 		"dev": "DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs up",
 		"build": "tsc -b && vite build",
 		"preview": "vite preview",
-		"typecheck": "tsc -b --noEmit",
+		"typecheck": "tsc -b --noEmit && tsc --noEmit -p tsconfig.test.json",
 		"test": "vitest run",
-		"test:e2e": "DEVSTACK_APP=private-content DEVSTACK_STACK=e2e DEVSTACK_AUTO_APPROVE=1 playwright test",
+		"test:browser": "DEVSTACK_APP=private-content DEVSTACK_STACK=e2e DEVSTACK_AUTO_APPROVE=1 playwright test",
 		"clean": "rm -rf dist .turbo node_modules/.tmp"
 	},
 	"dependencies": {

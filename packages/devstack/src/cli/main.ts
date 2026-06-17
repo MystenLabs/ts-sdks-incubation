@@ -214,7 +214,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 			run: (flags) => runApplyLive(flags.configPath, identity),
 		},
 		codegen: {
-			run: (flags) => runCodegen(flags.configPath, identity),
+			run: (flags) => runCodegen(flags.configPath),
 		},
 		dumpIds: {
 			run: (flags) =>

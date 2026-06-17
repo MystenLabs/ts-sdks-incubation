@@ -7,12 +7,16 @@
 		"codegen": "DEVSTACK_APP=dashboard-demo node ../../packages/devstack/dist/cli/main.mjs codegen",
 		"dev": "DEVSTACK_APP=dashboard-demo node ../../packages/devstack/dist/cli/main.mjs up",
 		"apply": "DEVSTACK_APP=dashboard-demo node ../../packages/devstack/dist/cli/main.mjs apply",
-		"test": "vitest run"
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit -p tsconfig.test.json"
 	},
 	"dependencies": {
 		"@mysten-incubation/devstack": "workspace:*"
 	},
 	"devDependencies": {
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@types/node": "catalog:",
+		"typescript": "catalog:",
 		"vitest": "catalog:"
 	}
 }

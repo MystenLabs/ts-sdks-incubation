@@ -629,12 +629,18 @@ const DeepbookInfoDoc = graphql(`
 			deepTreasuryId
 			indexerUrl
 			serverUrl
-			marketMakerRunning
+			hasSeedLiquidity
 			pools {
 				poolId
 				name
 				baseCoinType
 				quoteCoinType
+			}
+			pythFeeds {
+				symbol
+				priceInfoObjectId
+				price
+				expo
 			}
 		}
 	}

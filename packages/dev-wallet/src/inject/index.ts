@@ -20,10 +20,10 @@
 // `registerDAppKitForTesting(dAppKit)` (DEV-only) — it needs the app's dApp
 // Kit instance, which the wallet has no reference to.
 
+import type { SignerAdapter } from '../types.js';
 import type { AutoApprovePolicy, DevWallet } from '../wallet/dev-wallet.js';
 import { mountAndRegisterDevWallet } from '../wallet/mount-and-register.js';
 import { DevstackSignerAdapter } from '../adapters/devstack-adapter.js';
-import { WebCryptoSignerAdapter } from '../adapters/webcrypto-adapter.js';
 
 /** Shape of a single entry in the generated `accounts` map
  *  (`generated-extras/accounts.ts`). Only `address` is consumed here. */
@@ -140,16 +140,33 @@ async function registerDevstackDevWalletImpl(
 	const networks: Record<string, string> = { [activeNetwork]: rpcUrl };
 
 	// Delegate the construct → init-adapter → mount-UI → register → dispose
-	// sequence to the shared dev-wallet core helper. Two adapters: the
-	// `DevstackSignerAdapter` brings the stack's server-resolved accounts
-	// (alice/bob/carol — headless HTTP signing), and a `WebCryptoSignerAdapter`
+	// sequence to the shared dev-wallet core helper. The `DevstackSignerAdapter`
+	// brings the stack's server-resolved accounts (alice/bob/carol — headless
+	// HTTP signing) and is always present. The optional `WebCryptoSignerAdapter`
 	// lets the user create their OWN accounts in the wallet UI, persisted in
-	// IndexedDB across reloads (non-extractable WebCrypto keys, NOT in-memory).
-	// `createInitialAccount` stays off — the devstack adapter already supplies
-	// accounts, so we never fabricate a throwaway key; the WebCrypto adapter
-	// starts empty until the user adds one.
+	// IndexedDB across reloads (non-extractable WebCrypto keys, NOT in-memory) —
+	// but it depends on the OPTIONAL `@mysten/signers` peer. Load it dynamically
+	// and gate on its presence: an app that doesn't install `@mysten/signers`
+	// still gets a working dev wallet (just without create-your-own-account)
+	// instead of a hard inject crash on the unresolved peer. `createInitialAccount`
+	// stays off — the devstack adapter already supplies accounts, so we never
+	// fabricate a throwaway key; the WebCrypto adapter starts empty until the
+	// user adds one.
+	const adapters: SignerAdapter[] = [adapter];
+	try {
+		const { WebCryptoSignerAdapter } = await import('../adapters/webcrypto-adapter.js');
+		adapters.push(new WebCryptoSignerAdapter());
+	} catch (error) {
+		console.info(
+			'[dev-wallet] @mysten/signers is not installed — WebCrypto account creation is ' +
+				'disabled. Install @mysten/signers to enable creating your own accounts in the ' +
+				'dev wallet.',
+			error,
+		);
+	}
+
 	const { wallet, dispose: disposeWallet } = await mountAndRegisterDevWallet({
-		adapters: [adapter, new WebCryptoSignerAdapter()],
+		adapters,
 		name: config.name ?? 'Devstack',
 		autoApprove,
 		// Auto-approve `standard:connect` whenever signing is auto-approved — both

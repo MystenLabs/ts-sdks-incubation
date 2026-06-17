@@ -1,7 +1,8 @@
 // Config helpers for the vitest integration.
 //
 // Architecture invariants verified:
-//   - Default include covers `src/**` + `test/**`; e2e/dist/node_modules
+//   - Default (unit) include covers `tests/unit/**`; the autoBoot (e2e)
+//     config scopes to `tests/e2e/**`; tests/browser/dist/node_modules
 //     excluded.
 //   - `passWithNoTests: true` (codegen-derived stacks without unit
 //     tests yet shouldn't fail CI).
@@ -27,11 +28,17 @@ describe('devstackVitestTestConfig', () => {
 	it('produces canonical defaults', () => {
 		const test = devstackVitestTestConfig();
 		expect(test.passWithNoTests).toBe(true);
-		expect(test.include).toEqual(['src/**/*.{test,spec}.ts?(x)', 'test/**/*.{test,spec}.ts?(x)']);
-		expect(test.exclude).toContain('e2e/**');
+		expect(test.include).toEqual(['tests/unit/**/*.{test,spec}.ts?(x)']);
+		expect(test.exclude).toContain('tests/browser/**');
 		expect(test.exclude).toContain('node_modules');
 		expect(test.exclude).toContain('dist');
 		expect(test.exclude).toContain('**/.devstack/**');
+	});
+
+	it('autoBoot (e2e) config scopes the run to tests/e2e and wires globalSetup', () => {
+		const test = devstackVitestTestConfig({ autoBoot: true });
+		expect(test.include).toEqual(['tests/e2e/**/*.{test,spec}.ts?(x)']);
+		expect(test.globalSetup).toEqual([_internal.DEVSTACK_GLOBAL_SETUP_MODULE]);
 	});
 
 	it('does NOT wire setupFiles by default', () => {
