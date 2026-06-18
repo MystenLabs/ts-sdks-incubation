@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/create-devstack-app",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Scaffold a new devstack-backed Sui app. Run via `pnpm create @mysten-incubation/devstack-app <name>`.",
 	"keywords": [
 		"sui",
