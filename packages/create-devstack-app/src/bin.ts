@@ -19,6 +19,7 @@ import {
 } from '@clack/prompts';
 import pc from 'picocolors';
 
+import { buildNextSteps } from './next-steps.js';
 import { TEMPLATE_IDS, type TemplateId } from './render-config.js';
 import { NAME_RE, scaffold } from './scaffold.js';
 import { parseServiceList, SERVICE_IDS, SERVICES, type ServiceId } from './services.js';
@@ -38,7 +39,8 @@ Options:
   --minimal           No optional services (sui localnet only).
   --yes               Non-interactive: accept defaults (app template, no services).
   --target-dir <dir>  Where to create the app directory. Default: current working directory.
-  --no-install        Skip pnpm install.
+  --no-install        Skip pnpm install (also skips codegen).
+  --no-codegen        Skip the post-install pnpm codegen step.
   --no-git            Skip git init + initial commit.
   -h, --help          Show this help.
 `;
@@ -80,6 +82,7 @@ async function main(): Promise<number> {
 	let minimal = false;
 	let yes = false;
 	let skipInstall = false;
+	let skipCodegen = false;
 	let skipGit = false;
 
 	for (let i = 0; i < argv.length; i++) {
@@ -107,6 +110,8 @@ async function main(): Promise<number> {
 			yes = true;
 		} else if (arg === '--no-install') {
 			skipInstall = true;
+		} else if (arg === '--no-codegen') {
+			skipCodegen = true;
 		} else if (arg === '--no-git') {
 			skipGit = true;
 		} else if (arg.startsWith('--')) {
@@ -208,6 +213,7 @@ async function main(): Promise<number> {
 			template,
 			services,
 			skipInstall,
+			skipCodegen,
 			skipGit,
 			log: (m) => log.step(m),
 		});
@@ -216,21 +222,7 @@ async function main(): Promise<number> {
 		return 1;
 	}
 
-	const devExplainer =
-		template === 'app'
-			? 'boots localnet + services, publishes move/counter, generates src/generated/, starts vite'
-			: 'boots localnet + services, publishes move/counter, generates src/generated/, prints the dashboard URL';
-	const steps = [
-		`cd ${name}`,
-		...(result.installed ? [] : ['pnpm install']),
-		`pnpm dev  ${pc.dim(`# ${devExplainer}`)}`,
-		'',
-		pc.dim('First boot pulls docker images — give it a few minutes.'),
-		...(result.dockerOk
-			? []
-			: [pc.yellow(`Docker doesn't appear to be running — start Docker Desktop before pnpm dev.`)]),
-	];
-	note(steps.join('\n'), 'Next steps');
+	note(buildNextSteps({ name, template, result }).join('\n'), 'Next steps');
 	outro(`${name} is ready at ${result.appDir}`);
 	return 0;
 }

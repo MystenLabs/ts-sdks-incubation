@@ -714,6 +714,13 @@ export const buildProductionPostAcquireHook = (
 	options: {
 		readonly extras?: ManifestExtrasInput;
 		readonly networkOptions?: Readonly<Record<string, unknown>>;
+		/** Dev-`up` only: the STATIC (id-free) codegen contributions to re-emit
+		 *  the committed `src/generated` tree from when a Move-source edit
+		 *  reacquires a package — the same decls the stack-free `codegen` verb
+		 *  derives (`deriveContributions(stack.members)`), NOT the live ones
+		 *  (which would bake on-chain ids into `config.ts`). Omitted for
+		 *  `apply` / `runStack`, where the committed tree is an input. */
+		readonly emitBindings?: ReadonlyArray<Codegenable>;
 	} = {},
 ): Effect.Effect<
 	SupervisorPostAcquireHook,
@@ -806,6 +813,24 @@ export const buildProductionPostAcquireHook = (
 						);
 					extrasFiles.push(...extras.filesWritten, ...extras.filesChmod);
 				}
+				// Dev-`up` only: regenerate the committed `src/generated` tree from
+				// the STATIC (id-free) contributions so an edited Move package's new
+				// struct/function shapes reach the app (Vite HMRs the changed TS)
+				// WITHOUT baking the live on-chain id into `config.ts`.
+				// `runEmitCycle` is content-addressed, so the initial boot and any
+				// no-op reacquire leave the tree (and its mtimes) untouched.
+				const bindingFiles: string[] = [];
+				if (options.emitBindings !== undefined) {
+					const emitted = yield* codegen
+						.emitBindings(options.emitBindings)
+						.pipe(
+							Effect.provideService(FileSystem.FileSystem, fs),
+							Effect.provideService(CodegenPathsService, paths),
+							Effect.provideService(MoveSummaryRunnerService, moveRunner),
+							Effect.provideService(MoveCodegenService, moveCodegen),
+						);
+					bindingFiles.push(...emitted.filesWritten, ...emitted.filesChmod);
+				}
 				yield* postAcquireTasks.runAll;
 				return [
 					{
@@ -815,7 +840,7 @@ export const buildProductionPostAcquireHook = (
 					},
 					{
 						tag: 'codegen.emitted' as const,
-						files: [idsFile, ...extrasFiles],
+						files: [idsFile, ...extrasFiles, ...bindingFiles],
 						at: Date.now(),
 					},
 				];
@@ -885,6 +910,12 @@ export interface ProductionBootOptions<HookR = Scope.Scope, HookE = never, Exten
 	 *  decide whether to flush the dev-only `generated-extras` tree. All
 	 *  three callers pass `stack.options.networkOptions`. */
 	readonly networkOptions?: Readonly<Record<string, unknown>>;
+	/** Dev-`up` only: the STATIC (id-free) codegen contributions used to
+	 *  regenerate the committed `src/generated` tree in the post-acquire hook
+	 *  when a Move-source edit reacquires a package. Threaded from the `up`
+	 *  seam (`deriveContributions(stack.members)`); `apply` / `snapshot` leave
+	 *  it off so they never rewrite the committed tree. */
+	readonly emitBindings?: ReadonlyArray<Codegenable>;
 	/** The resolved supervisor command handler (run-stack's snapshot bridge).
 	 *  One-shot verbs run no command loop, so they pass nothing. */
 	readonly commandHandler?: SupervisorCommandHandler;
@@ -935,6 +966,7 @@ export const superviseStackWithProductionBoot = <
 		const postAcquireHook = yield* buildProductionPostAcquireHook({
 			...(opts.extras === undefined ? {} : { extras: opts.extras }),
 			...(opts.networkOptions === undefined ? {} : { networkOptions: opts.networkOptions }),
+			...(opts.emitBindings === undefined ? {} : { emitBindings: opts.emitBindings }),
 		});
 		yield* superviseStackEffect(stack, identity, state, {
 			contributionDispatcher,

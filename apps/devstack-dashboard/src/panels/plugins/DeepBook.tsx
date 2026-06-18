@@ -1,11 +1,16 @@
 // DeepBook plugin view. Header bar (Restart + "Logs & events"), KPIs, a pools
-// table backed by on-chain pool-object reads, a Pyth-feeds card, a read-only
-// market-maker card, and an addresses card.
+// table backed by on-chain pool-object reads, a Pyth-feeds card (boot-time mock
+// prices seeded inside DeepBook), a read-only seed-liquidity card, and an
+// addresses card.
 //
 // Data sources & honesty:
 //   - Backend `fetchDeepbookInfo(endpoint)` is the source of truth for the
 //     deployment: registry/admin-cap/package/treasury ids, the pool id+pair
-//     list, the indexer/server URLs, and the live `marketMakerRunning` flag.
+//     list, the indexer/server URLs, the `hasSeedLiquidity` flag, and the
+//     seeded `pythFeeds` (boot-time mock prices).
+//   - The `pythFeeds` are FIXED boot-time mock prices created on-chain when the
+//     deployment booted (static, timestamp 0) — NOT live Pyth quotes. The card
+//     labels them as such rather than implying a streaming oracle.
 //   - Per-pool `tick / lot / min` are read ON-CHAIN from each pool object via
 //     `useObject(chain, poolId)` — DeepBook's `Pool` Move struct carries
 //     `tick_size / lot_size / min_size` in its JSON fields.
@@ -13,10 +18,10 @@
 //     require the DeepBook *indexer* (an off-chain service). When no indexer URL
 //     is published we do NOT fabricate them: price/depth/trend render an honest
 //     "indexer unavailable" empty state and volume/trades render "—".
-//   - The market-maker card REFLECTS `marketMakerRunning`; there is no
-//     control-plane mutation to start/stop it or set a spread, so the toggle and
-//     the spread slider are read-only/disabled with an inline note. "Seed
-//     liquidity" is likewise disabled (no browser-safe mutation exists).
+//   - `hasSeedLiquidity` reflects whether a pool placed seed orders at boot — it
+//     is NOT a market-maker process state, so the card reads "Seed liquidity:
+//     yes/no", not "Running/Stopped". There is no control-plane mutation to
+//     change it, so the controls are read-only/disabled with an inline note.
 
 import { type ReactNode } from 'react';
 import { restartPlugin } from '../../lib/api.ts';
@@ -33,7 +38,6 @@ import {
 	Kpi,
 	Panel,
 	SectionHead,
-	Slider,
 	Switch,
 	Tooltip,
 } from '../../ui/index.ts';
@@ -211,7 +215,8 @@ export const DeepBookView = ({ row, endpoint, chain }: PluginViewProps) => {
 		pair: pairLabel(p),
 	}));
 	const hasIndexer = Boolean(info0.indexerUrl);
-	const mmRunning = info0.marketMakerRunning;
+	const hasSeedLiquidity = info0.hasSeedLiquidity;
+	const pythFeeds = info0.pythFeeds;
 
 	return header(
 		<>
@@ -238,9 +243,10 @@ export const DeepBookView = ({ row, endpoint, chain }: PluginViewProps) => {
 					icon="coins"
 				/>
 				<Kpi
-					label="Market maker"
-					value={mmRunning ? 'Running' : 'Stopped'}
-					token={mmRunning ? 'green' : 'white'}
+					label="Seed liquidity"
+					value={hasSeedLiquidity ? 'Yes' : 'No'}
+					sub={hasSeedLiquidity ? 'pools seeded' : 'empty book'}
+					token={hasSeedLiquidity ? 'green' : 'white'}
 					icon="zap"
 				/>
 			</div>
@@ -312,43 +318,78 @@ export const DeepBookView = ({ row, endpoint, chain }: PluginViewProps) => {
 			<div
 				style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 18, alignItems: 'start' }}
 			>
-				{/* Pyth feeds — not surfaced by the control plane for this deployment. */}
-				<Panel header={<SectionHead title="Pyth price feeds" />}>
-					<EmptyState
-						icon="activity"
-						title="No Pyth feeds reported"
-						hint="Pyth lives inside DeepBook by default; the control plane exposes no feed snapshot for the dashboard, so none are shown rather than fabricated."
-					/>
+				{/* Pyth feeds — boot-time mock prices seeded inside DeepBook. */}
+				<Panel header={<SectionHead title="Pyth price feeds" count={pythFeeds.length} />}>
+					{pythFeeds.length === 0 ? (
+						<EmptyState
+							icon="activity"
+							title="No Pyth feeds"
+							hint="This DeepBook deployment seeded no Pyth feeds. When configured, feeds are created on-chain at boot with fixed mock prices."
+						/>
+					) : (
+						<>
+							<table className="tbl">
+								<thead>
+									<tr>
+										<th>Symbol</th>
+										<th>Price</th>
+										<th>Expo</th>
+										<th>Price info object</th>
+									</tr>
+								</thead>
+								<tbody>
+									{pythFeeds.map((feed) => (
+										<tr key={feed.priceInfoObjectId}>
+											<td>
+												<span style={{ fontWeight: 550 }}>{feed.symbol}</span>
+											</td>
+											<td className="mono tnum">{groupDigits(feed.price)}</td>
+											<td className="mono tnum" style={{ color: 'var(--tx-lo)' }}>
+												{feed.expo}
+											</td>
+											<td>
+												<CopyChip
+													text={feed.priceInfoObjectId}
+													display={truncateMiddle(feed.priceInfoObjectId, 5, 3)}
+												/>
+											</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+							<div style={{ fontSize: 11.5, color: 'var(--tx-dim)', paddingTop: 8 }}>
+								Fixed boot-time mock prices (created on-chain at deploy, timestamp 0) — not live
+								Pyth quotes. `price` is a signed integer in feed-native scale; the real value is
+								`price × 10^expo`.
+							</div>
+						</>
+					)}
 				</Panel>
 
 				<div className="col" style={{ gap: 18 }}>
-					{/* Market maker — read-only reflection of the backend MM flag. */}
+					{/* Seed liquidity — read-only reflection of the backend boot-seed flag. */}
 					<Panel pad>
-						<SectionHead title="Market maker" />
-						<Field label="Status">
+						<SectionHead title="Seed liquidity" />
+						<Field label="Seeded at boot">
 							<span className="row" style={{ gap: 9, justifyContent: 'flex-end' }}>
 								<span
-									style={{ fontSize: 12.5, color: mmRunning ? 'var(--c-green)' : 'var(--tx-lo)' }}
+									style={{
+										fontSize: 12.5,
+										color: hasSeedLiquidity ? 'var(--c-green)' : 'var(--tx-lo)',
+									}}
 								>
-									{mmRunning ? 'running' : 'stopped'}
+									{hasSeedLiquidity ? 'yes' : 'no'}
 								</span>
-								<Tooltip label="Read-only — no control-plane mutation to start/stop the market maker.">
+								<Tooltip label="Read-only — reflects whether a pool placed seed orders at boot. No control-plane mutation re-seeds liquidity.">
 									<span style={{ opacity: 0.6, pointerEvents: 'none' }}>
-										<Switch checked={mmRunning} />
+										<Switch checked={hasSeedLiquidity} />
 									</span>
 								</Tooltip>
 							</span>
 						</Field>
-						<Field label="Spread">
-							<Tooltip label="Read-only — the spread isn't exposed or mutable via the control plane.">
-								<span style={{ opacity: 0.6 }}>
-									<Slider value={0} min={0} max={50} suffix="bps" width={120} />
-								</span>
-							</Tooltip>
-						</Field>
 						<div style={{ fontSize: 11.5, color: 'var(--tx-dim)', paddingTop: 8 }}>
-							Reflects the live deployment state. Controls are disabled until the control plane
-							exposes a market-maker mutation.
+							Reflects whether one or more pools placed seed orders at boot — not a running
+							market-maker process. An empty book is a normal state, not a failure.
 						</div>
 					</Panel>
 

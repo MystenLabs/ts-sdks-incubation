@@ -92,7 +92,9 @@ const readCodegenPackageId = (outputDir: string): string => {
 // does not roll it back — boot 2's id-config write must regenerate it.
 const corruptCodegenPackageId = (outputDir: string): void => {
 	const p = join(outputDir, ID_CONFIG_FILE);
-	const parsed = JSON.parse(readFileSync(p, 'utf8')) as { packages: Record<string, { id: string }> };
+	const parsed = JSON.parse(readFileSync(p, 'utf8')) as {
+		packages: Record<string, { id: string }>;
+	};
 	for (const entry of Object.values(parsed.packages)) entry.id = '0xdead0000dead0000';
 	writeFileSync(p, `${JSON.stringify(parsed, null, 2)}\n`);
 };

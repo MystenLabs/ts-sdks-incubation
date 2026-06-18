@@ -49,8 +49,7 @@ const idsBlob = {
 	values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
 };
 
-const UNRESOLVED =
-	'0x0000000000000000000000000000000000000000000000000000000000000000';
+const UNRESOLVED = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 describe('CONFIG_RUNTIME_SOURCE shape', () => {
 	it('exports the two additive DX helpers', () => {

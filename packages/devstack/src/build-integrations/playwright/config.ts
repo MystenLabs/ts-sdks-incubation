@@ -71,7 +71,8 @@ export interface PlaywrightProjectShape {
 // -----------------------------------------------------------------------------
 
 export interface DevstackPlaywrightBaseConfigOptions {
-	/** Test directory. Default: `'./e2e'` (architecture invariant). */
+	/** Test directory. Default: `'./tests/browser'` (browser specs live
+	 *  under `tests/browser/`, beside `tests/unit/` and `tests/e2e/`). */
 	readonly testDir?: string;
 
 	/** Path to a global-setup module. Default: the devstack setup that
@@ -106,7 +107,7 @@ export interface DevstackPlaywrightUseOptions extends DevstackPlaywrightEndpoint
 // Defaults
 // -----------------------------------------------------------------------------
 
-const DEFAULT_TEST_DIR = './e2e';
+const DEFAULT_TEST_DIR = './tests/browser';
 const DEFAULT_ENDPOINT_NAME = BUILT_IN_ENDPOINT_ALIASES.app;
 
 // -----------------------------------------------------------------------------

@@ -75,6 +75,24 @@
 			],
 			"cache": false
 		},
+		"test:browser": {
+			"dependsOn": ["^build", "build"],
+			"inputs": [
+				"src/**",
+				"tests/**",
+				"move/*/Move.toml",
+				"move/*/sources/**",
+				"move/vendor/*/*/Move.toml",
+				"move/vendor/*/*/sources/**",
+				"!src/generated/**",
+				"*.ts",
+				"*.tsx",
+				"devstack.config.*",
+				"playwright.config.*",
+				"tsconfig.json"
+			],
+			"cache": false
+		},
 		"dev": {
 			"dependsOn": ["^build"],
 			"cache": false,

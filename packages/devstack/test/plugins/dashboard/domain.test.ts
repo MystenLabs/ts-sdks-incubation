@@ -186,7 +186,7 @@ describe('dashboard narrowing fail-loud (E2)', () => {
 					packageId: '0xpkg',
 					registryId: '0xreg',
 					pools: [],
-					marketMakerRunning: false,
+					hasSeedLiquidity: false,
 				},
 			},
 		]);
@@ -252,12 +252,42 @@ describe('dashboard narrowing fail-loud (E2)', () => {
 					packageId: '0xpkg',
 					registryId: '0xreg',
 					pools: [],
-					marketMakerRunning: false,
+					hasSeedLiquidity: false,
 				},
 			},
 		]);
 		const [info] = await Effect.runPromise(domain.deepbook);
 		expect(info!.mode).toBe('known');
+		expect(info!.narrowingFault).toBeNull();
+	});
+
+	it('surfaces seeded Pyth feeds + hasSeedLiquidity off the resolved value', async () => {
+		const domain = makeNarrowDomain([
+			{
+				pluginKey: 'deepbook:demo',
+				id: 'deepbook/demo',
+				value: {
+					mode: 'local',
+					network: 'localnet',
+					packageId: '0xpkg',
+					registryId: '0xreg',
+					pools: [],
+					hasSeedLiquidity: true,
+					pyth: {
+						packageId: '0xpyth',
+						stateId: null,
+						wormholeStateId: null,
+						// `price` arrives as a bigint on the resolved value — coerced to string.
+						feeds: [{ symbol: 'SUI', priceInfoObjectId: '0xfeed', price: 123n, expo: -8 }],
+					},
+				},
+			},
+		]);
+		const [info] = await Effect.runPromise(domain.deepbook);
+		expect(info!.hasSeedLiquidity).toBe(true);
+		expect(info!.pythFeeds).toEqual([
+			{ symbol: 'SUI', priceInfoObjectId: '0xfeed', price: '123', expo: -8 },
+		]);
 		expect(info!.narrowingFault).toBeNull();
 	});
 });

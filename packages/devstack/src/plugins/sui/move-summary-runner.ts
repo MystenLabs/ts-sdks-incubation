@@ -20,7 +20,7 @@
 //     binary directly via `ChildProcessSpawner`. Useful for
 //     embedders that already have a Sui CLI on PATH.
 
-import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -60,6 +60,27 @@ export const layerSuiMoveSummaryRunnerDocker: Layer.Layer<
 // Host-binary variant — invoke a `sui` CLI on PATH directly.
 // -----------------------------------------------------------------------------
 
+/** A minimal, DISPOSABLE sui client config. `sui move summary` initialises a
+ *  client config on first use and PROMPTS ("No sui config found, create one
+ *  [Y/n]?") when none exists — which blocks forever on a non-interactive stdin
+ *  (e.g. CI), hanging codegen. Pointing `SUI_CONFIG_DIR` at a pre-seeded config
+ *  inside the per-run scratch dir sidesteps the prompt without touching the
+ *  developer's real `~/.sui`. The summary is an OFFLINE build (framework deps
+ *  are embedded in the CLI), so we write the SMALLEST config the CLI parser
+ *  accepts: a keystore path and an EMPTY env list. No network env at all — the
+ *  `keystore` + `envs` fields are required by the parser, but no `rpc` is ever
+ *  contacted. */
+const disposableSuiClientConfig = (configDir: string): string =>
+	[
+		'---',
+		'keystore:',
+		`  File: ${join(configDir, 'sui.keystore')}`,
+		'envs: []',
+		'active_env: ~',
+		'active_address: ~',
+		'',
+	].join('\n');
+
 export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 	MoveSummaryRunnerService,
 	never,
@@ -86,6 +107,9 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 					// Run summary inside a disposable copy of the package, never the
 					// developer's real source — `sui move summary` rewrites Move.lock.
 					const stagedPkg = join(scratchDir, 'src');
+					// Disposable sui config dir so the CLI never prompts to create one
+					// (see `disposableSuiClientConfig`). Passed via `SUI_CONFIG_DIR`.
+					const suiConfigDir = join(scratchDir, 'sui-config');
 					const cleanupScratch = Effect.promise(() =>
 						rm(scratchDir, { recursive: true, force: true }),
 					).pipe(Effect.ignore);
@@ -106,6 +130,13 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 								// just keeps the prior fallback.
 								await cp(join(sourcePath, 'Move.toml'), join(summaryPath, 'Move.toml')).catch(
 									() => {},
+								);
+								// Pre-seed the disposable sui config so the CLI never prompts.
+								await mkdir(suiConfigDir, { recursive: true });
+								await writeFile(join(suiConfigDir, 'sui.keystore'), '[]');
+								await writeFile(
+									join(suiConfigDir, 'client.yaml'),
+									disposableSuiClientConfig(suiConfigDir),
 								);
 							},
 							catch: (cause) =>
@@ -129,7 +160,7 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 								'--output-directory',
 								join(summaryPath, 'package_summaries'),
 							],
-							{ cwd: stagedPkg },
+							{ cwd: stagedPkg, env: { SUI_CONFIG_DIR: suiConfigDir }, extendEnv: true },
 						);
 						return yield* capture(spawner, cmd, {
 							op: `sui move summary (${sourcePath})`,

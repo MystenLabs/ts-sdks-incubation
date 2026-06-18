@@ -1,9 +1,14 @@
 // `devstack codegen` verb wiring.
 //
 // Deterministic, STACK-FREE codegen: `(Move source) → generated`. It
-// boots NO stack — no supervisor, no acquire, no Docker. It loads the
-// config, derives each plugin's codegen contributions from config ALONE
-// (via the plugin spec's `staticCodegen` hook), and runs ONE
+// boots NO stack and uses NO Docker — the `sui move summary` step runs
+// against a host `sui` CLI on PATH, which is REQUIRED: codegen fails fast
+// with an actionable error when `sui` is absent (rather than silently
+// pulling a Docker image). The detected `sui --version` is logged so the
+// build that produced the committed tree is visible; CI installs a pinned
+// `sui` and the drift-guard catches any version-skew in the output. It
+// loads the config, derives each plugin's codegen contributions from config
+// ALONE (via the plugin spec's `staticCodegen` hook), and runs ONE
 // `runEmitCycle` that writes the committed `src/generated` tree.
 //
 // On-chain ids are LOADED CONFIG DATA, not generated output. The
@@ -35,28 +40,25 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { AnyPlugin } from '../../substrate/plugin.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 import { layerMystenMoveCodegen } from '../../orchestrators/codegen/bindings.ts';
-import {
-	layerSuiMoveSummaryRunnerDocker,
-	layerSuiMoveSummaryRunnerHost,
-} from '../../plugins/sui/move-summary-runner.ts';
-import { buildSubstrateLayers } from '../../orchestrators/boot.ts';
+import { layerSuiMoveSummaryRunnerHost } from '../../plugins/sui/move-summary-runner.ts';
 import { layerCodegenPaths, layerCodegenRoot } from '../../orchestrators/codegen/paths.ts';
 import { runEmitCycle } from '../../orchestrators/codegen/service.ts';
-import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
+import { type CliError, CliInternalError, CliUnavailableError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
 
 import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeConfigLoader } from './config-loader.ts';
-import { identityValueFor, type ResolvedIdentity } from './identity.ts';
 
 /** Walk the stack members, calling each plugin spec's `staticCodegen`
  *  hook (skipping plugins that lack one) to derive the committed-tree
  *  contributions from config alone. KNOWN package ids come from the
  *  declared `networks` literals; LOCAL ids stay the all-zero sentinel
  *  (resolved at app build/dev time through `__DEVSTACK_IDS__`). */
-const deriveContributions = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<CodegenableDecl> => {
+export const deriveContributions = (
+	members: ReadonlyArray<AnyPlugin>,
+): ReadonlyArray<CodegenableDecl> => {
 	const decls: Array<CodegenableDecl> = [];
 	for (const member of members) {
 		if (member.staticCodegen === undefined) continue;
@@ -65,36 +67,20 @@ const deriveContributions = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<C
 	return decls;
 };
 
-/** Which Move-summary runner the stack-free codegen verb uses.
- *
- *   - `host`   — invoke a local `sui` CLI on PATH directly (fast, no Docker).
- *   - `docker` — run `sui move summary` inside the pinned Sui CLI image
- *     (the same runner `boot.ts` wires for `up`/`apply`). Needs Docker but
- *     NO host `sui`, which is what CI has.
- *
- * Selection follows `DEVSTACK_CODEGEN_RUNNER` (`docker`/`host`); when unset,
- * auto-detect: use `host` if a `sui` binary is on PATH, else fall back to
- * `docker`. CI never installs `sui`, so it lands on `docker` automatically;
- * a workflow can still force it with `DEVSTACK_CODEGEN_RUNNER=docker`. */
-type CodegenRunner = 'host' | 'docker';
-
-/** True if a `sui` binary is resolvable on PATH (cheap `--version` probe). */
-const hostSuiAvailable = (): boolean => {
+/** Probe the host `sui` CLI with a cheap `--version` call. Returns the
+ *  trimmed version line on success (e.g. `sui 1.39.0-abcdef0`), or `null`
+ *  when no `sui` is resolvable on PATH (missing binary, non-zero exit, or
+ *  spawn failure). The version is surfaced in codegen output so the build
+ *  that produced the committed tree is visible. */
+const probeHostSui = (): string | null => {
 	try {
-		const probe = spawnSync('sui', ['--version'], {
-			timeout: 5_000,
-			stdio: ['ignore', 'ignore', 'ignore'],
-		});
-		return probe.status === 0;
+		const probe = spawnSync('sui', ['--version'], { timeout: 5_000, encoding: 'utf8' });
+		if (probe.status !== 0) return null;
+		const line = (probe.stdout ?? '').trim() || (probe.stderr ?? '').trim();
+		return line.length > 0 ? line : 'sui (version unknown)';
 	} catch {
-		return false;
+		return null;
 	}
-};
-
-const selectCodegenRunner = (): CodegenRunner => {
-	const requested = process.env['DEVSTACK_CODEGEN_RUNNER']?.trim().toLowerCase();
-	if (requested === 'docker' || requested === 'host') return requested;
-	return hostSuiAvailable() ? 'host' : 'docker';
 };
 
 /**
@@ -105,15 +91,11 @@ const selectCodegenRunner = (): CodegenRunner => {
  * the services, with `Logger` supplied as a separate outer layer over the
  * program (`consolePretty` needs no FileSystem).
  *
- * The Move-summary runner is selected per `selectCodegenRunner`. The
- * `host` runner only needs a child-process spawner; the `docker` runner
- * needs the full Docker `ContainerRuntimeService`, so it provides the
- * substrate layer stack (`buildSubstrateLayers`) UNDER it. The Docker
- * runner produces byte-identical bindings to the host runner — it runs the
- * SAME `sui move summary` argv, just inside the pinned CLI image — so the
- * committed `src/generated` tree is independent of which runner emitted it.
+ * The Move-summary runner is the HOST runner — it invokes the `sui` CLI on
+ * PATH and only needs a child-process spawner (no Docker, no substrate
+ * layer stack). The caller guarantees `sui` is present (see `runCodegen`).
  */
-const buildCodegenLayer = (appRoot: string, runner: CodegenRunner, identity: ResolvedIdentity) => {
+const buildCodegenLayer = (appRoot: string) => {
 	const generatedDir = resolvePath(appRoot, 'src', 'generated');
 	const platform = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 	const codegenPaths = layerCodegenPaths.pipe(
@@ -128,18 +110,9 @@ const buildCodegenLayer = (appRoot: string, runner: CodegenRunner, identity: Res
 			}),
 		),
 	);
-	const moveRunner =
-		runner === 'docker'
-			? layerSuiMoveSummaryRunnerDocker.pipe(
-					// The Docker runner only needs `ContainerRuntimeService`; the
-					// substrate layer stack provides it (along with the rest of L0).
-					// No stack containers are created — only one-shot `sui move
-					// summary` runs against the pinned CLI image.
-					Layer.provideMerge(
-						buildSubstrateLayers(identityValueFor(identity), identity.runtimeRoot),
-					),
-				)
-			: layerSuiMoveSummaryRunnerHost.pipe(Layer.provideMerge(NodeChildProcessSpawner.layer));
+	const moveRunner = layerSuiMoveSummaryRunnerHost.pipe(
+		Layer.provideMerge(NodeChildProcessSpawner.layer),
+	);
 	return Layer.mergeAll(codegenPaths, moveRunner, layerMystenMoveCodegen()).pipe(
 		Layer.provideMerge(platform),
 	);
@@ -152,10 +125,24 @@ const buildCodegenLayer = (appRoot: string, runner: CodegenRunner, identity: Res
  */
 export const runCodegen = (
 	configPath: string | undefined,
-	identity: ResolvedIdentity,
 ): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
+		// Host `sui` is REQUIRED — the `sui move summary` step has no Docker
+		// fallback. Fail fast with an actionable hint when it is missing,
+		// rather than emitting an empty/partial tree.
+		const suiVersion = probeHostSui();
+		if (suiVersion === null) {
+			return yield* Effect.fail(
+				new CliUnavailableError({
+					service: 'sui',
+					message:
+						'the Sui CLI (`sui`) is required for `devstack codegen` but was not found on PATH',
+					hint: 'Install it — https://docs.sui.io/guides/developer/getting-started/sui-install — then re-run `devstack codegen`.',
+				}),
+			);
+		}
+
 		const loadExit = yield* Effect.exit(loader.load(configPath));
 		if (Exit.isFailure(loadExit)) {
 			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
@@ -165,11 +152,13 @@ export const runCodegen = (
 		const appRoot = dirname(loaded.resolvedConfigPath);
 
 		const contributions = deriveContributions(stack.members);
-		const runner = selectCodegenRunner();
 
 		const exit = yield* Effect.exit(
-			runEmitCycle({ contributions, trackTree: true }).pipe(
-				Effect.provide(buildCodegenLayer(appRoot, runner, identity)),
+			Effect.gen(function* () {
+				yield* Effect.logInfo(`codegen: using host ${suiVersion}`);
+				return yield* runEmitCycle({ contributions, trackTree: true });
+			}).pipe(
+				Effect.provide(buildCodegenLayer(appRoot)),
 				Effect.provide(Logger.layer([Logger.consolePretty()])),
 			),
 		);

@@ -9,7 +9,7 @@ runs entirely client-side via `SessionKey` + the
 private-content/
 ├── devstack.config.ts       # sui-localnet + walrus cluster + seal keygen + vault publish + wallet-app + vite
 ├── move/vault/              # Move package: Vault + Cap with seal_approve policy
-├── e2e/seal-flow.spec.ts    # alice encrypts+uploads, grants Cap to bob, bob decrypts
+├── tests/browser/seal-flow.spec.ts  # alice encrypts+uploads, grants Cap to bob, bob decrypts
 └── src/                     # React UI: upload, grant, fetch+decrypt
 ```
 
@@ -31,7 +31,7 @@ pnpm dev          # devstack up: localnet + walrus + seal + publish + wallet-app
 pnpm codegen      # regenerate src/generated bindings after a Move source change (stack-free)
 pnpm build        # tsc -b && vite build — stack-free, no Docker; works on a clean clone
 pnpm test         # Vitest unit tests only — fast, boots nothing (no devstack, no Docker)
-pnpm test:e2e     # full Playwright Seal flow on an isolated `e2e` stack
+pnpm test:browser # full Playwright Seal flow on an isolated `e2e` stack
                   # (parallel-safe with `pnpm dev`; expect a long first cycle)
 ```
 
@@ -41,7 +41,7 @@ url + object id, and the local Walrus node/package config all resolve at runtime
 baked in. `pnpm build` is deterministic and stack-free (no Docker) — a build with no injected
 ids throws `DevstackConfigMissingError` at runtime rather than silently shipping zeros.
 
-The `e2e/seal-flow.spec.ts` spec drives the full
+The `tests/browser/seal-flow.spec.ts` spec drives the full
 `SealClient.encrypt → upload → grant → SessionKey → seal_approve →
 fetchKeys → decrypt` round trip with no mocks.
 

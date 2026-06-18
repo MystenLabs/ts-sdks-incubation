@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import stack from '../devstack.config.ts';
+import stack from '../../devstack.config.ts';
 
 describe('dashboard-demo config', () => {
 	it('composes a stack named dashboard-demo', () => {

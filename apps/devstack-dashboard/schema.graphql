@@ -78,13 +78,13 @@ type Cycle {
 }
 
 """
-A DeepBook deployment: registry/admin/pool ids + market-maker state.
+A DeepBook deployment: registry/admin/pool ids + seed-liquidity state + Pyth feeds.
 """
 type DeepbookInfo {
 	adminCapId: String
 	deepTreasuryId: String
+	hasSeedLiquidity: Boolean!
 	indexerUrl: String
-	marketMakerRunning: Boolean!
 	mode: DeepbookMode!
 	name: String!
 	narrowingFault: String
@@ -92,6 +92,7 @@ type DeepbookInfo {
 	packageId: String!
 	pluginKey: String!
 	pools: [DeepbookPool!]!
+	pythFeeds: [PythPriceFeed!]!
 	registryId: String!
 	serverUrl: String
 }
@@ -345,6 +346,16 @@ type PageInfo {
 enum PluginRole {
 	service
 	task
+}
+
+"""
+A Pyth price feed seeded inside DeepBook at boot. `price`/`expo` are FIXED boot-time mock values (static, not a live quote).
+"""
+type PythPriceFeed {
+	expo: Int!
+	price: String!
+	priceInfoObjectId: String!
+	symbol: String!
 }
 
 type Query {

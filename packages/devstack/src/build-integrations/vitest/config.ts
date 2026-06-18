@@ -2,8 +2,9 @@
 //
 // Architecture (distilled/23-build-integrations.md § Per-integration
 // requirements → Vitest, § Outputs / capabilities, § Invariants):
-//   - Canonical include/exclude: src globs in, e2e/dist/node_modules
-//     out (`e2e/**` runs through the Playwright integration).
+//   - Canonical include/exclude by DIRECTORY: `tests/unit/**` for the
+//     unit config, `tests/e2e/**` for the autoBoot (full-stack) config;
+//     `tests/browser/**` (Playwright specs) and dist/node_modules out.
 //   - `passWithNoTests: true` so codegen-derived stacks without unit
 //     tests yet don't fail CI.
 //   - `@effect/vitest` is declared as an optional peer — the preset
@@ -156,27 +157,27 @@ export const devstackVitestTestConfig = (
 	const typecheckOverride = options.typecheck === true ? { typecheck: { enabled: true } } : {};
 
 	// `autoBoot` marks the E2E (full-stack) config: it both wires the boot
-	// `globalSetup` AND scopes the run to `*.e2e.{test,spec}` files. A plain
-	// `devstackVitestTestConfig()` is the UNIT config — it runs the other
-	// suites and EXCLUDES the `*.e2e` ones (which need a booted stack). So
-	// `pnpm test` (unit) never boots Docker, and `pnpm test:e2e` runs only
-	// the stack-requiring suites against a freshly-booted stack.
+	// `globalSetup` AND scopes the run to the `tests/e2e/` directory. A plain
+	// `devstackVitestTestConfig()` is the UNIT config — it scopes the run to
+	// `tests/unit/`. Directory layout (not a filename infix) separates the two
+	// suites: `tests/unit/` (fast, no Docker), `tests/e2e/` (boots a stack),
+	// and `tests/browser/` (Playwright browser specs, run by the Playwright
+	// integration — never by vitest). So `pnpm test` never touches Docker, and
+	// `pnpm test:e2e` boots an isolated stack for the `tests/e2e/` suites only.
 	const isE2e = Boolean(options.autoBoot);
 	const autoBootOverride = isE2e ? { globalSetup: [DEVSTACK_GLOBAL_SETUP_MODULE] } : {};
 
 	const include = isE2e
-		? ['src/**/*.e2e.{test,spec}.ts?(x)', 'test/**/*.e2e.{test,spec}.ts?(x)']
-		: ['src/**/*.{test,spec}.ts?(x)', 'test/**/*.{test,spec}.ts?(x)'];
+		? ['tests/e2e/**/*.{test,spec}.ts?(x)']
+		: ['tests/unit/**/*.{test,spec}.ts?(x)'];
 	const exclude = [
-		// `e2e/**` keeps Playwright's browser specs out of the vitest run.
-		'e2e/**',
+		// `tests/browser/**` are Playwright browser specs — run by the
+		// Playwright integration, never the vitest run.
+		'tests/browser/**',
 		'node_modules',
 		'dist',
 		'.turbo',
 		'**/.devstack/**',
-		// Unit runs skip the full-stack `*.e2e` vitest suites (they boot a
-		// stack); the autoBoot config opts INTO them via `include` above.
-		...(isE2e ? [] : ['**/*.e2e.{test,spec}.ts?(x)']),
 	];
 
 	return {

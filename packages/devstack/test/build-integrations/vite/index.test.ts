@@ -41,6 +41,9 @@ const ENV_KEYS = [
 	'DEVSTACK_STATE_DIR',
 	'DEVSTACK_RUNTIME_ROOT',
 	'DEVSTACK_MANIFEST_PATH',
+	// Cleared per-test so the plugin's vitest-vs-dev-server `define` branch is
+	// deterministic (these tests run UNDER vitest, which sets `VITEST`).
+	'VITEST',
 ] as const;
 const saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
@@ -105,6 +108,25 @@ describe('devstackVitePlugin', () => {
 			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(resolve(tmp, 'src/generated'));
 		}));
 
+	it('resolve.dedupe is filtered to the Lit packages actually installed at the root', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			// Only `lit` is hoisted at the root (the `app` template declares it);
+			// `lit-html` / `lit-element` / `@lit/reactive-element` are phantom
+			// (transitive-only under dapp-kit-core). `dedupe` forces resolution
+			// from the root, so listing a phantom package fails the production
+			// build with `Rollup failed to resolve import "lit-html"`. The plugin
+			// must dedupe ONLY what is genuinely present at the root.
+			mkdirSync(join(tmp, 'node_modules', 'lit'), { recursive: true });
+			const patch = devstackVitePlugin().config({ root: tmp });
+			expect(patch.resolve.dedupe).toEqual(['lit']);
+		}));
+
+	it('resolve.dedupe is empty when no Lit package is hoisted at the root', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const patch = devstackVitePlugin().config({ root: tmp });
+			expect(patch.resolve.dedupe).toEqual([]);
+		}));
+
 	it('options.generatedDir escape hatch wins (absolute passthrough)', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
 			const explicit = join(tmp, 'hand', 'picked', 'generated');
@@ -166,7 +188,7 @@ describe('devstackVitePlugin', () => {
 	// --- command-defaulting: only an EXPLICIT `serve` takes the live-id path.
 	// A programmatic `vite.build()` that omits the env arg must NOT bake live
 	// local-stack ids into the bundle (build-safe default).
-	it('explicit { command: "serve" } injects the live local-stack ids', () =>
+	it('explicit { command: "serve" } injects the live local-stack ids via the runtime global', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
 			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
 			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
@@ -180,7 +202,36 @@ describe('devstackVitePlugin', () => {
 
 			const plugin = devstackVitePlugin();
 			const patch = plugin.config({ root: tmp }, { command: 'serve' });
-			expect(patch.define.__DEVSTACK_IDS__).toContain('localnet');
+			// Dev serve does NOT bake the id into `define` (that would pin it
+			// for the server's lifetime); it points the identifier at the
+			// runtime global the HTML injection sets fresh per load.
+			expect(patch.define.__DEVSTACK_IDS__).toContain('__DEVSTACK_IDS_LIVE__');
+			expect(patch.define.__DEVSTACK_IDS__).not.toContain('localnet');
+
+			// The live ids flow through `transformIndexHtml` (re-read per
+			// request → a reload picks up a republished id).
+			plugin.configResolved({ command: 'serve' });
+			const result = plugin.transformIndexHtml('<html></html>');
+			const idsScript = result?.tags.find((t) => t.children?.includes('__DEVSTACK_IDS_LIVE__'));
+			expect(idsScript?.injectTo).toBe('head-prepend');
+			expect(idsScript?.children).toContain('localnet');
+		}));
+
+	it('under vitest (command "serve" + VITEST set) bakes an esbuild-valid literal, not the runtime global', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			// Vitest reports `command: 'serve'` too, but runs no `transformIndexHtml`,
+			// so the `__DEVSTACK_IDS_LIVE__` global is never set — and esbuild rejects
+			// the operator-expression `define`. The plugin must bake a literal so the
+			// resolver falls back to `DEVSTACK_IDS_FILE` (set by the vitest globalSetup).
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+			process.env.VITEST = 'true';
+
+			const patch = devstackVitePlugin().config({ root: tmp }, { command: 'serve' });
+			// The Vite config loads before the test stack boots, so no live ids are
+			// read → a plain `null` literal (esbuild-valid; triggers the env fallback).
+			expect(patch.define.__DEVSTACK_IDS__).toBe('null');
+			expect(patch.define.__DEVSTACK_IDS__).not.toContain('__DEVSTACK_IDS_LIVE__');
 		}));
 
 	it('unknown command (no env arg) is build-safe: does NOT inject the live ids', () =>
@@ -200,5 +251,70 @@ describe('devstackVitePlugin', () => {
 			// so no live local-stack ids are read (define resolves to `null`).
 			const patch = plugin.config({ root: tmp });
 			expect(patch.define.__DEVSTACK_IDS__).toBe('null');
+		}));
+
+	it('injects the live ids even when the dev wallet is off', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
+			writeFileSync(
+				idsFile,
+				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
+			);
+			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin({ injectDevWallet: false });
+			plugin.config({ root: tmp }, { command: 'serve' });
+			plugin.configResolved({ command: 'serve' });
+			const result = plugin.transformIndexHtml('<html></html>');
+			// ids script present; dev-wallet module script absent.
+			expect(result?.tags.some((t) => t.children?.includes('localnet'))).toBe(true);
+			expect(result?.tags.some((t) => t.attrs?.src !== undefined)).toBe(false);
+		}));
+
+	it('configureServer full-reloads the page when the ids file changes', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
+			writeFileSync(idsFile, JSON.stringify({ network: 'localnet', networks: {} }));
+			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin();
+			plugin.config({ root: tmp }, { command: 'serve' });
+			plugin.configResolved({ command: 'serve' });
+
+			const watched: string[] = [];
+			const onChange: Array<(path: string) => void> = [];
+			const onAdd: Array<(path: string) => void> = [];
+			const sent: Array<{ type: string }> = [];
+			plugin.configureServer({
+				watcher: {
+					add: (p) => watched.push(String(p)),
+					on: (event, listener) => {
+						if (event === 'change') onChange.push(listener);
+						if (event === 'add') onAdd.push(listener);
+					},
+				},
+				hot: { send: (payload) => sent.push(payload) },
+			});
+
+			// The ids file is watched, on both 'change' and 'add' (the file may
+			// be (re)created after the server starts).
+			expect(watched).toContain(idsFile);
+			expect(onChange).toHaveLength(1);
+			expect(onAdd).toHaveLength(1);
+			// A change to an UNRELATED file does not reload.
+			for (const l of onChange) l(join(tmp, 'src', 'main.ts'));
+			expect(sent).toHaveLength(0);
+			// A change to the ids file triggers a single full reload.
+			for (const l of onChange) l(idsFile);
+			expect(sent).toEqual([{ type: 'full-reload' }]);
+			// An 'add' of the ids file reloads too (file created post-boot).
+			for (const l of onAdd) l(idsFile);
+			expect(sent).toEqual([{ type: 'full-reload' }, { type: 'full-reload' }]);
 		}));
 });

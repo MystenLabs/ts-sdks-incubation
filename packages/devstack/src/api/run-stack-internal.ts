@@ -59,6 +59,7 @@ import {
 	resolveProductionCodegenOptions,
 	superviseStackWithProductionBoot,
 } from '../orchestrators/boot.ts';
+import type { Codegenable } from '../orchestrators/codegen/service.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
 import {
@@ -160,6 +161,13 @@ export type CommandHandlerFactory = Effect.Effect<
 export interface RunStackOptionsWithBoot extends RunStackOptions {
 	readonly commandHandler?: CommandHandlerFactory;
 	readonly boot?: RunStackBootBag;
+	/** Dev-`up` only: the STATIC (id-free) codegen contributions used to
+	 *  regenerate the committed `src/generated` tree on every (re)acquire so a
+	 *  Move-source edit refreshes the bindings WITHOUT baking live on-chain ids
+	 *  into `config.ts`. The `up` verb sets it (`deriveContributions(...)`); the
+	 *  public `runStack` facade never does (committed bindings are an input
+	 *  there, not an output). */
+	readonly emitBindings?: ReadonlyArray<Codegenable>;
 }
 
 // -----------------------------------------------------------------------------
@@ -413,6 +421,7 @@ export const runStackWithBoot = (
 		yield* superviseStackWithProductionBoot(supervisedStack, identity, state, {
 			extras: stack.options.extras,
 			networkOptions: stack.options.networkOptions,
+			...(opts.emitBindings === undefined ? {} : { emitBindings: opts.emitBindings }),
 			...(opts.boot?.devstackVersion === undefined
 				? {}
 				: { devstackVersion: opts.boot.devstackVersion }),

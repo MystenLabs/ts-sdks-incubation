@@ -11,5 +11,6 @@ export * from './graph-input-id.ts';
 export * from './plugin-registry.ts';
 export * from './ready-gate.ts';
 export * from './watch-attribution.ts';
+export * from './file-watcher.ts';
 export * from './selective-restart.ts';
 export * from './signals.ts';

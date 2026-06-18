@@ -84,7 +84,12 @@ export const dockerProbe: Probe = {
 		}),
 };
 
-/** Probe: required CLIs on PATH (just sui-cli for fork-aware flows). */
+/** Probe: the `sui` CLI on PATH. Needed for `devstack codegen` (the
+ *  `sui move summary` step has no Docker fallback) and for live/fork
+ *  modes. Kept a non-required WARN, not a hard failure: a stack-free
+ *  `pnpm build` works without `sui` via the committed (pre-baked)
+ *  `src/generated` tree, so a missing `sui` shouldn't fail `doctor`
+ *  outright — it only blocks codegen + live/fork. */
 export const suiCliProbe: Probe = {
 	name: 'sui-cli',
 	description: '`sui` CLI on PATH',
@@ -96,7 +101,7 @@ export const suiCliProbe: Probe = {
 				? okOutcome(result.out)
 				: {
 						status: 'warn',
-						detail: 'sui CLI not on PATH (only needed for live/fork modes)',
+						detail: 'sui CLI not on PATH (needed for `devstack codegen` and live/fork modes)',
 					};
 		}),
 };

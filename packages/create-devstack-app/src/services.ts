@@ -56,9 +56,7 @@ export const SERVICES: Readonly<Record<ServiceId, ServiceSpec>> = {
  *  pulls in `deepbook`. Returns a new canonical-order set. Call this wherever a
  *  user-chosen service set is finalized (render + package.json pruning) so the
  *  two stay consistent. */
-export function normalizeServices(
-	selected: ReadonlySet<ServiceId>,
-): ReadonlySet<ServiceId> {
+export function normalizeServices(selected: ReadonlySet<ServiceId>): ReadonlySet<ServiceId> {
 	if (!selected.has('pyth') || selected.has('deepbook')) return selected;
 	return new Set<ServiceId>([...selected, 'deepbook']);
 }

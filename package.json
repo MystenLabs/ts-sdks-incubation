@@ -5,6 +5,7 @@
 	"scripts": {
 		"test": "turbo run test --filter \"./packages/*\" --filter \"./apps/*\" --concurrency=1",
 		"test:e2e": "turbo run test:e2e --concurrency=1",
+		"test:browser": "turbo run test:browser --concurrency=1",
 		"changeset-version": "pnpm changeset version",
 		"setup:repos": "bash scripts/setup-repos.sh",
 		"prettier:check": "prettier -c --ignore-unknown .",
@@ -20,6 +21,7 @@
 	},
 	"packageManager": "pnpm@10.17.0",
 	"engines": {
+		"node": ">=24",
 		"pnpm": ">=10.17.0"
 	},
 	"manypkg": {

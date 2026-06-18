@@ -12,6 +12,12 @@ account, publishes `move/counter`, serves the app with a browser dev wallet inje
 dashboard URL. It injects the live stack's ids into the build automatically; it does not rewrite the
 committed `src/generated/` tree (run `pnpm codegen` for that).
 
+The scaffolder runs `pnpm codegen` for you after install when a host `sui` CLI is on your PATH, so
+the committed `src/generated/` tree already covers the services you selected. If `sui` wasn't found
+(or you scaffolded with `--no-codegen` / `--no-install`), run `pnpm codegen` once — it needs the
+`sui` CLI. Git-sourced services (deepbook/pyth) clone their Move tree at stack boot, so their local
+bindings finish materializing on first `pnpm dev`.
+
 ## Day-2 commands
 
 | Command           | What it does                                                                                                                                    |
@@ -20,8 +26,8 @@ committed `src/generated/` tree (run `pnpm codegen` for that).
 | `pnpm codegen`    | Regenerate `src/generated` bindings after a Move source change — deterministic, stack-free.                                                     |
 | `pnpm apply`      | Bring the stack up to date and re-emit the live ids file + dev extras, without serving the app. Does not rewrite the committed `src/generated`. |
 | `pnpm typecheck`  | `tsc -b --noEmit` — stack-free.                                                                                                                 |
-| `pnpm test`       | Unit tests (`src/**/*.test.ts`) — fast, boots nothing.                                                                                          |
-| `pnpm test:e2e`   | Full-stack tests (`src/**/*.e2e.test.ts`) — auto-boots a throwaway `test` stack (parallel-safe with `pnpm dev`), then tears it down.            |
+| `pnpm test`       | Unit tests (`tests/unit/**`) — fast, boots nothing.                                                                                             |
+| `pnpm test:e2e`   | Full-stack tests (`tests/e2e/**`) — auto-boots a throwaway `test` stack (parallel-safe with `pnpm dev`), then tears it down.                    |
 | `pnpm build`      | `tsc -b && vite build` — stack-free, no Docker; produces `dist/`. Works on a clean clone.                                                       |
 | `devstack doctor` | Diagnose Docker / stack health.                                                                                                                 |
 | `devstack wipe`   | Tear down the stack's containers and reset its on-disk state.                                                                                   |

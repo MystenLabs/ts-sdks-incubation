@@ -8,7 +8,7 @@ mint and transfer flows gated by the cap.
 token-studio/
 ├── devstack.config.ts    # sui-localnet + managed-coin publish + wallet + vite
 ├── move/                 # Move package: coin module + TreasuryCap-gated entry fns
-├── e2e/                  # Playwright: mint, transfer flow
+├── tests/                # unit (tests/unit) + Playwright browser specs (tests/browser)
 └── src/                  # React UI: cap-gated mint/transfer
 ```
 
@@ -19,7 +19,7 @@ pnpm dev          # devstack up (the `token-studio` dev stack); injects live ids
 pnpm codegen      # regenerate src/generated bindings after a Move source change (stack-free)
 pnpm build        # tsc -b && vite build — stack-free, no Docker; works on a clean clone
 pnpm test         # unit tests — fast, boots nothing
-pnpm test:e2e     # Playwright mint → transfer on an isolated `e2e` stack (parallel-safe with `pnpm dev`)
+pnpm test:browser # Playwright mint → transfer on an isolated `e2e` stack (parallel-safe with `pnpm dev`)
 ```
 
 `pnpm dev` injects live on-chain ids; the committed `src/generated/config.ts` resolves them

@@ -3,7 +3,7 @@
 import type { SuiClientTypes } from '@mysten/sui/client';
 import { describe, expect, it } from 'vitest';
 
-import { executedTx } from './tx.js';
+import { executedTx } from '../../src/tx.ts';
 
 type Result = SuiClientTypes.TransactionResult<{ effects: true }>;
 

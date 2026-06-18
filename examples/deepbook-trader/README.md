@@ -17,7 +17,7 @@ the demo.
 deepbook-trader/
 ├── devstack.config.ts        # sui-localnet + deepbook publish (git sources) + pool seeding + wallet + vite
 ├── move/demo_coins/          # local app-authored demo coins (DBTC/DETH)
-├── e2e/market-console.spec.ts # Playwright: connect wallet, swap, assert pool moved
+├── tests/browser/market-console.spec.ts # Playwright: connect wallet, swap, assert pool moved
 └── src/                      # React UI: live pool depth + swap form
 ```
 
@@ -28,7 +28,7 @@ pnpm dev          # devstack up (the `deepbook-trader` dev stack); injects live 
 pnpm codegen      # regenerate src/generated bindings after a Move source change (stack-free)
 pnpm build        # tsc -b && vite build — stack-free, no Docker; works on a clean clone
 pnpm test         # unit tests — fast, boots nothing
-pnpm test:e2e     # Playwright swap flow on an isolated `e2e` stack (parallel-safe with `pnpm dev`)
+pnpm test:browser # Playwright swap flow on an isolated `e2e` stack (parallel-safe with `pnpm dev`)
 ```
 
 `pnpm dev` injects live on-chain ids; the committed `src/generated/config.ts` resolves them
