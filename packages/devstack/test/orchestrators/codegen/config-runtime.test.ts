@@ -21,6 +21,29 @@ interface Resolver {
 	resolveValue: <T = unknown>(namespace: string, key: string) => T;
 	resolveValueOptional: <T = unknown>(namespace: string, key: string) => T | undefined;
 	DevstackConfigMissingError: new (detail: string) => Error;
+	// Deployment API (the typed, multi-network surface).
+	loadDeployment: () => LoadedDeploymentLike;
+	loadDeploymentOptional: () => LoadedDeploymentLike | null;
+	requireId: (deployment: NetworkDeploymentLike, mvrPlaceholder: string) => string;
+	requireValue: <T = unknown>(deployment: NetworkDeploymentLike, namespace: string, key: string) => T;
+	optionalValue: <T = unknown>(
+		deployment: NetworkDeploymentLike,
+		namespace: string,
+		key: string,
+	) => T | undefined;
+}
+
+interface NetworkDeploymentLike {
+	readonly network: string;
+	readonly rpc: string;
+	readonly packages: Record<string, { id: string }>;
+	readonly mvrOverrides: Record<string, string>;
+	readonly values?: Record<string, Record<string, unknown>>;
+}
+interface LoadedDeploymentLike {
+	readonly defaultNetwork: string;
+	readonly networkNames: readonly string[];
+	readonly forNetwork: (network: string) => NetworkDeploymentLike;
 }
 
 /** Transpile the emitted source to CJS and evaluate it with the given
@@ -106,5 +129,56 @@ describe('resolveValueOptional', () => {
 	it('returns undefined when no ids were injected (no throw)', () => {
 		const r = loadResolver(null);
 		expect(r.resolveValueOptional('coin:managed_coin', 'treasuryCapId')).toBeUndefined();
+	});
+});
+
+describe('deployment API', () => {
+	it('loadDeployment adapts the injected blob into a one-network envelope', () => {
+		const r = loadResolver(idsBlob);
+		const dep = r.loadDeployment();
+		expect(dep.defaultNetwork).toBe('localnet');
+		expect(dep.networkNames).toEqual(['localnet']);
+		const net = dep.forNetwork('localnet');
+		expect(net.rpc).toBe('http://127.0.0.1:9000');
+		expect(net.mvrOverrides['@local/demo']).toBe('0xabc');
+	});
+
+	it('loadDeployment throws when no ids were injected', () => {
+		const r = loadResolver(null);
+		expect(() => r.loadDeployment()).toThrow(r.DevstackConfigMissingError);
+	});
+
+	it('loadDeploymentOptional returns null when no ids were injected', () => {
+		const r = loadResolver(null);
+		expect(r.loadDeploymentOptional()).toBeNull();
+	});
+
+	it('forNetwork throws for a network with no deployment', () => {
+		const r = loadResolver(idsBlob);
+		expect(() => r.loadDeployment().forNetwork('mainnet')).toThrow(r.DevstackConfigMissingError);
+	});
+
+	it('requireId resolves an mvr placeholder and throws on missing', () => {
+		const r = loadResolver(idsBlob);
+		const net = r.loadDeployment().forNetwork('localnet');
+		expect(r.requireId(net, '@local/demo')).toBe('0xabc');
+		expect(() => r.requireId(net, '@local/missing')).toThrow(r.DevstackConfigMissingError);
+	});
+
+	it('requireId throws on the all-zero sentinel', () => {
+		const r = loadResolver({ ...idsBlob, mvrOverrides: { '@local/demo': UNRESOLVED } });
+		const net = r.loadDeployment().forNetwork('localnet');
+		expect(() => r.requireId(net, '@local/demo')).toThrow(r.DevstackConfigMissingError);
+	});
+
+	it('requireValue / optionalValue read the values channel off a deployment', () => {
+		const r = loadResolver(idsBlob);
+		const net = r.loadDeployment().forNetwork('localnet');
+		expect(r.requireValue(net, 'coin:managed_coin', 'treasuryCapId')).toBe('0xcap');
+		expect(r.optionalValue(net, 'coin:managed_coin', 'treasuryCapId')).toBe('0xcap');
+		expect(r.optionalValue(net, 'coin:managed_coin', 'metadataId')).toBeUndefined();
+		expect(() => r.requireValue(net, 'coin:managed_coin', 'metadataId')).toThrow(
+			r.DevstackConfigMissingError,
+		);
 	});
 });

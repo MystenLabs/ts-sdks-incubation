@@ -219,4 +219,130 @@ export const resolveValueOptional = <T = unknown>(
 	}
 	return value as T;
 };
+
+// ── Deployment API (the typed, multi-network surface) ───────────────────────
+// The resolved per-network runtime config is a DEPLOYMENT — it carries the
+// network's rpc/chainId/faucet/graphql endpoints, accounts, mvrOverrides and a
+// generic values channel, not just ids. The app reads typed fields off a
+// loaded deployment instead of calling per-id resolvers, and dapp-kit builds a
+// client per network so runtime network-switching works. The resolve*()
+// functions above are retained during the migration and will be removed once
+// every generated bucket reads through loadDeployment().
+
+/** One network's full resolved deployment — connection fields plus the
+ *  on-chain ids/values for that network. The per-network unit of the
+ *  multi-network envelope; hand-writable for production. */
+export interface NetworkDeployment {
+	readonly network: string;
+	readonly rpc: string;
+	readonly chainId?: string;
+	readonly faucet?: string | null;
+	readonly graphql?: string | null;
+	readonly packages: {
+		readonly [name: string]: { readonly id: string; readonly objects?: { readonly [k: string]: string } };
+	};
+	readonly accounts: { readonly [name: string]: string };
+	readonly mvrOverrides: { readonly [mvrPlaceholder: string]: string };
+	readonly values?: { readonly [namespace: string]: { readonly [key: string]: unknown } };
+}
+
+/** The injected multi-network envelope: every network this build supports,
+ *  keyed by name, plus the default the app opens on. */
+export interface DevstackDeployment {
+	readonly defaultNetwork: string;
+	readonly networks: { readonly [name: string]: NetworkDeployment };
+}
+
+/** Accessor returned by \`loadDeployment()\` — the default network, the set of
+ *  available network names (for dapp-kit's network list), and a loud-failing
+ *  per-network lookup. */
+export interface LoadedDeployment {
+	readonly defaultNetwork: string;
+	readonly networkNames: readonly string[];
+	readonly forNetwork: (network: string) => NetworkDeployment;
+}
+
+// Adapt the (currently single-network) injected ids blob into one
+// \`NetworkDeployment\`. Bridges the migration: today the Vite plugin injects a
+// single active network, so this presents it as that network's deployment.
+// Multi-network injection lands later; \`forNetwork\` of any other network
+// throws until then.
+const networkDeploymentFromIds = (blob: DevstackIds, network: string): NetworkDeployment => {
+	const entry = blob.networks[network];
+	if (entry === undefined) {
+		throw new DevstackConfigMissingError(\`network "\${network}" has no deployment\`);
+	}
+	return {
+		network,
+		rpc: entry.rpc,
+		chainId: entry.chainId,
+		faucet: entry.faucet,
+		graphql: entry.graphql,
+		packages: blob.packages,
+		accounts: blob.accounts,
+		mvrOverrides: blob.mvrOverrides,
+		values: blob.values,
+	};
+};
+
+/** Load the injected deployment envelope. Loud-fails ONCE here when nothing
+ *  was injected; the app then reads typed fields off \`forNetwork(net)\`. */
+export const loadDeployment = (): LoadedDeployment => {
+	const blob = ids();
+	return {
+		defaultNetwork: blob.network,
+		networkNames: Object.keys(blob.networks),
+		forNetwork: (network) => networkDeploymentFromIds(blob, network),
+	};
+};
+
+/** Non-throwing sibling of \`loadDeployment\` — returns \`null\` instead of
+ *  throwing when nothing was injected. For dev-only consumers (e.g. the dev
+ *  wallet) that must no-op gracefully when no stack is running. */
+export const loadDeploymentOptional = (): LoadedDeployment | null => {
+	const blob = injectedIds();
+	if (blob === null || blob === undefined) return null;
+	return {
+		defaultNetwork: blob.network,
+		networkNames: Object.keys(blob.networks),
+		forNetwork: (network) => networkDeploymentFromIds(blob, network),
+	};
+};
+
+/** Resolve a package id for an MVR placeholder off a loaded deployment.
+ *  Throws on missing / all-zero sentinel — never a silent zero. */
+export const requireId = (deployment: NetworkDeployment, mvrPlaceholder: string): string => {
+	const id = deployment.mvrOverrides[mvrPlaceholder];
+	if (id === undefined || id === UNRESOLVED_ID) {
+		throw new DevstackConfigMissingError(\`id for "\${mvrPlaceholder}" is unresolved\`);
+	}
+	return id;
+};
+
+/** Resolve a generic plugin value (\`values[namespace][key]\`) off a loaded
+ *  deployment. Throws on missing / all-zero sentinel. */
+export const requireValue = <T = unknown>(
+	deployment: NetworkDeployment,
+	namespace: string,
+	key: string,
+): T => {
+	const namespaceValues = deployment.values?.[namespace];
+	const value = namespaceValues === undefined ? undefined : namespaceValues[key];
+	if (value === undefined || value === UNRESOLVED_ID) {
+		throw new DevstackConfigMissingError(\`value "\${namespace}.\${key}" is unresolved\`);
+	}
+	return value as T;
+};
+
+/** Non-throwing sibling of \`requireValue\` for discovery-only fields the app
+ *  gates on (returns \`undefined\` on missing / all-zero / absent). */
+export const optionalValue = <T = unknown>(
+	deployment: NetworkDeployment,
+	namespace: string,
+	key: string,
+): T | undefined => {
+	const namespaceValues = deployment.values?.[namespace];
+	const value = namespaceValues === undefined ? undefined : namespaceValues[key];
+	return value === undefined || value === UNRESOLVED_ID ? undefined : (value as T);
+};
 `;
