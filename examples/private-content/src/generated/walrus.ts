@@ -3,17 +3,20 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveValue } from './config-runtime.js';
+import { loadDeployment, requireValue } from './config-runtime.js';
+
+const __deployment = loadDeployment();
+const dep = __deployment.forNetwork(__deployment.defaultNetwork);
 
 export const walrus = {
-	aggregatorUrl: resolveValue("walrus", "aggregatorUrl") as string | null,
+	aggregatorUrl: requireValue<string | null>(dep, "walrus", "aggregatorUrl"),
 	mode: "local",
 	network: "localnet",
-	nodes: resolveValue("walrus", "nodes") as ReadonlyArray<{ readonly nodeIndex: number; readonly publicHostname: string; readonly rpcUrl: string }>,
-	packageConfig: resolveValue("walrus", "packageConfig") as { readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> },
-	proxyUrl: resolveValue("walrus", "proxyUrl") as string | null,
-	publisherUrl: resolveValue("walrus", "publisherUrl") as string | null,
-	walCoinType: resolveValue("walrus", "walCoinType") as string | null,
-	walPackageId: resolveValue("walrus", "walPackageId") as string | null,
-	walrusPackageId: resolveValue("walrus", "walrusPackageId") as string | null,
+	nodes: requireValue<ReadonlyArray<{ readonly nodeIndex: number; readonly publicHostname: string; readonly rpcUrl: string }>>(dep, "walrus", "nodes"),
+	packageConfig: requireValue<{ readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> }>(dep, "walrus", "packageConfig"),
+	proxyUrl: requireValue<string | null>(dep, "walrus", "proxyUrl"),
+	publisherUrl: requireValue<string | null>(dep, "walrus", "publisherUrl"),
+	walCoinType: requireValue<string | null>(dep, "walrus", "walCoinType"),
+	walPackageId: requireValue<string | null>(dep, "walrus", "walPackageId"),
+	walrusPackageId: requireValue<string | null>(dep, "walrus", "walrusPackageId"),
 } as const;

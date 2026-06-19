@@ -3,21 +3,28 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveId, resolveNetwork, resolveNetworks } from './config-runtime.js';
+import { loadDeployment, requireId } from './config-runtime.js';
+
+const __deployment = loadDeployment();
+const dep = __deployment.forNetwork(__deployment.defaultNetwork);
 
 export const config = {
+	activeNetwork: dep,
+	defaultNetwork: __deployment.defaultNetwork,
+	forNetwork: __deployment.forNetwork,
 	mvrOverrides: {
-		"@local/counter": resolveId("@local/counter"),
+		"@local/counter": requireId(dep, "@local/counter"),
 	},
-	network: resolveNetwork(),
-	networks: resolveNetworks(),
+	network: dep.network,
+	networkNames: __deployment.networkNames,
+	networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)])),
 	packages: {
 		counter: {
 			byNetwork: {
-				localnet: resolveId("@local/counter"),
+				localnet: requireId(dep, "@local/counter"),
 			},
 			mvr: "@local/counter",
-			packageId: resolveId("@local/counter"),
+			packageId: requireId(dep, "@local/counter"),
 		},
 	},
 } as const;
