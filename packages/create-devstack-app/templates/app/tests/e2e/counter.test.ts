@@ -17,14 +17,14 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { describe, expect, it } from 'vitest';
 
 import { config } from '@generated/config.js';
-import { resolveActiveNetwork } from '@generated/config-runtime.js';
 import { createCounterTx, incrementTx, readCounter } from '../../src/counter.js';
 import { executedTx } from '../../src/tx.js';
 
-// `resolveActiveNetwork` returns the active (test) stack's connection entry
-// with a non-undefined type and a loud throw — no `config.networks[...]`
-// index-signature footgun (which would type `net` as possibly-undefined).
-const net = resolveActiveNetwork();
+// `config.forNetwork(config.defaultNetwork)` returns the active (test) stack's
+// connection entry with a non-undefined type and a loud throw — no
+// `config.networks[...]` index-signature footgun (which would type `net` as
+// possibly-undefined).
+const net = config.forNetwork(config.defaultNetwork);
 
 describe('counter (local devstack)', () => {
 	it('creates a shared Counter and increments it', async () => {

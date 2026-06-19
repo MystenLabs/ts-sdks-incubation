@@ -14,12 +14,6 @@ import * as ts from 'typescript';
 import { CONFIG_RUNTIME_SOURCE } from '../../../src/orchestrators/codegen/config-runtime.ts';
 
 interface Resolver {
-	resolveId: (mvrPlaceholder: string) => string;
-	resolveNetwork: () => string;
-	resolveNetworks: () => Record<string, { rpc: string }>;
-	resolveActiveNetwork: () => { rpc: string };
-	resolveValue: <T = unknown>(namespace: string, key: string) => T;
-	resolveValueOptional: <T = unknown>(namespace: string, key: string) => T | undefined;
 	resolveAccounts: () => Record<string, string>;
 	DevstackConfigMissingError: new (detail: string) => Error;
 	// Deployment API (the typed, multi-network surface).
@@ -129,12 +123,29 @@ const multiBlob = {
 const UNRESOLVED = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 describe('CONFIG_RUNTIME_SOURCE shape', () => {
-	it('exports the two additive DX helpers', () => {
-		expect(CONFIG_RUNTIME_SOURCE).toContain('export const resolveActiveNetwork');
-		expect(CONFIG_RUNTIME_SOURCE).toContain('export const resolveValueOptional');
-		// The original resolvers stay intact (additive sugar, not a rename).
-		for (const name of ['resolveId', 'resolveNetwork', 'resolveNetworks', 'resolveValue']) {
+	it('exports the deployment API surface', () => {
+		for (const name of [
+			'loadDeployment',
+			'loadDeploymentOptional',
+			'requireId',
+			'requireValue',
+			'optionalValue',
+			'resolveAccounts',
+		]) {
 			expect(CONFIG_RUNTIME_SOURCE).toContain(`export const ${name}`);
+		}
+	});
+
+	it('no longer exports the legacy resolve*() shims', () => {
+		for (const name of [
+			'resolveId',
+			'resolveNetwork',
+			'resolveNetworks',
+			'resolveActiveNetwork',
+			'resolveValue',
+			'resolveValueOptional',
+		]) {
+			expect(CONFIG_RUNTIME_SOURCE).not.toContain(`export const ${name}`);
 		}
 	});
 
@@ -165,63 +176,6 @@ describe('resolveAccounts (envelope-level dev accounts)', () => {
 	it('returns {} when the envelope carries no accounts (prod build)', () => {
 		const r = loadResolver(envelope(localUnit));
 		expect(r.resolveAccounts()).toEqual({});
-	});
-});
-
-describe('resolveActiveNetwork', () => {
-	it('returns the default network entry', () => {
-		const r = loadResolver(idsBlob);
-		expect(r.resolveActiveNetwork().rpc).toBe('http://127.0.0.1:9000');
-	});
-
-	it('throws DevstackConfigMissingError when the default network has no entry', () => {
-		// An envelope whose `defaultNetwork` names a network absent from `networks`.
-		const r = loadResolver({ defaultNetwork: 'testnet', networks: {} });
-		expect(() => r.resolveActiveNetwork()).toThrow(r.DevstackConfigMissingError);
-	});
-
-	it('throws when no deployment was injected', () => {
-		const r = loadResolver(null);
-		expect(() => r.resolveActiveNetwork()).toThrow(r.DevstackConfigMissingError);
-	});
-
-	it('reads the DEFAULT network in a multi-network envelope', () => {
-		const r = loadResolver(multiBlob);
-		expect(r.resolveActiveNetwork().rpc).toBe('http://127.0.0.1:9000');
-		expect(r.resolveNetwork()).toBe('localnet');
-		expect(r.resolveId('@local/demo')).toBe('0xabc');
-	});
-});
-
-describe('resolveValueOptional', () => {
-	it('returns the resolved value when present (parity with resolveValue)', () => {
-		const r = loadResolver(idsBlob);
-		expect(r.resolveValueOptional('coin:managed_coin', 'treasuryCapId')).toBe('0xcap');
-		expect(r.resolveValue('coin:managed_coin', 'treasuryCapId')).toBe('0xcap');
-	});
-
-	it('returns undefined (NOT throws) when the value is absent', () => {
-		const r = loadResolver(idsBlob);
-		expect(r.resolveValueOptional('coin:managed_coin', 'metadataId')).toBeUndefined();
-		// The throwing variant stays loud for the same lookup.
-		expect(() => r.resolveValue('coin:managed_coin', 'metadataId')).toThrow(
-			r.DevstackConfigMissingError,
-		);
-	});
-
-	it('returns undefined for the all-zero sentinel', () => {
-		const r = loadResolver(
-			envelope({
-				...localUnit,
-				values: { 'coin:managed_coin': { treasuryCapId: UNRESOLVED } },
-			}),
-		);
-		expect(r.resolveValueOptional('coin:managed_coin', 'treasuryCapId')).toBeUndefined();
-	});
-
-	it('returns undefined when no deployment was injected (no throw)', () => {
-		const r = loadResolver(null);
-		expect(r.resolveValueOptional('coin:managed_coin', 'treasuryCapId')).toBeUndefined();
 	});
 });
 
