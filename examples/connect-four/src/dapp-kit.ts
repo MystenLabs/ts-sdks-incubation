@@ -12,11 +12,16 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
 
-const devstackNetwork = 'localnet' as const;
-
 export const dAppKit = createDAppKit({
-	networks: [devstackNetwork],
-	defaultNetwork: devstackNetwork,
+	// The full network set the app supports comes from the generated runtime
+	// config (`NETWORK_NAMES` — local plus any committed `deployments/*.ts`),
+	// so dApp Kit's `switchNetwork` / `defaultNetwork` are type-checked against
+	// the literal network union. Spread into a mutable copy: `networkNames` is
+	// the `as const` readonly tuple, and dApp Kit's `networks` wants a mutable
+	// array; the spread preserves the literal element union (no widening to
+	// `string`).
+	networks: [...config.networkNames],
+	defaultNetwork: config.defaultNetwork,
 	autoConnect: import.meta.env.DEV,
 	// `createClient` is called per network dApp Kit manages, with the network
 	// it is building a client for — so EVERYTHING flows through dApp Kit's
@@ -26,16 +31,16 @@ export const dAppKit = createDAppKit({
 	// `config.forNetwork(network)` returns that network's resolved entry — a
 	// non-undefined type that fails loudly if absent, no index-signature footgun.
 	createClient(network) {
-		const deployment = config.forNetwork(network);
+		const net = config.forNetwork(network);
 		return new SuiGrpcClient({
 			network,
-			baseUrl: deployment.rpc,
-			// `config.mvrOverrides` is the codegen-emitted active-network
-			// name→id map: each generated Move binding defaults its `package`
-			// to `@local/<name>` (e.g. `@local/connect-four`), and this map
-			// resolves that name to its deployed id. App code consumes the
-			// bindings' MVR defaults and never touches `config.packages.*`.
-			mvr: { overrides: { packages: config.mvrOverrides } },
+			baseUrl: net.rpc,
+			// `net.mvrOverrides` is THAT network's name→id map: each generated
+			// Move binding defaults its `package` to `@local/<name>` (e.g.
+			// `@local/connect-four`), and this map resolves that name to its
+			// deployed id. App code consumes the bindings' MVR defaults and
+			// never touches `config.packages.*`.
+			mvr: { overrides: { packages: net.mvrOverrides } },
 		});
 	},
 });
