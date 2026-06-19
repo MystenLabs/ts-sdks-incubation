@@ -100,3 +100,6 @@ packages/*/docs/
 # https://github.com/effect-ts/effect-smol/blob/main/scripts/worktree-setup.sh
 # and that repo's AGENTS.md.
 .repos/
+
+# sui test-publish metadata (never commit)
+Pub.*.toml
