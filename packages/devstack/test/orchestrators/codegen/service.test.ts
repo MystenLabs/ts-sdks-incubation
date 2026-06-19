@@ -449,7 +449,13 @@ describe('codegen.runEmitCycle', () => {
 											readonly mvrPlaceholder: string;
 										};
 										return {
-											packages: { [b.name]: { ...b, byNetwork: { localnet: '0x1' } } },
+											// Mirror the real package projection shape:
+											// `{ mvr, packageId }` (per-network ids now live in
+											// the injected deployment envelope, not a `byNetwork`
+											// sub-key).
+											packages: {
+												[b.name]: { mvr: b.mvrPlaceholder, packageId: '0x1' },
+											},
 											// Mirror the real `projectPackageConfig`: each package
 											// folds its active-network id into the shared
 											// `mvrOverrides` map keyed by its `mvr` placeholder.
@@ -523,7 +529,6 @@ describe('codegen.runEmitCycle', () => {
 									readonly packages: {
 										readonly mock_usdc: {
 											readonly packageId: string;
-											readonly byNetwork: { readonly localnet: string };
 										};
 									};
 									readonly mvrOverrides: Readonly<Record<string, string>>;
@@ -559,15 +564,17 @@ describe('codegen.runEmitCycle', () => {
 					expect(configModule.config.forNetwork('localnet').rpc).toBe('http://127.0.0.1:9000');
 					expect('activeNetwork' in configModule.config).toBe(false);
 					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
-					expect(configModule.config.packages.mock_usdc.byNetwork.localnet).toBe('0x1');
+					// The package entry no longer carries a `byNetwork` sub-key —
+					// per-network ids live in the injected deployment envelope.
+					expect('byNetwork' in configModule.config.packages.mock_usdc).toBe(false);
 					// Top-level `mvrOverrides` is the active-network name→id map
 					// (what the old per-app `mvrOverrides()` helper computed):
-					// keyed by the package's `mvr` placeholder, valued by
-					// `byNetwork[network]`. Apps feed it straight into
+					// keyed by the package's `mvr` placeholder, valued by the
+					// default-network resolved id. Apps feed it straight into
 					// dapp-kit's `mvr.overrides.packages`.
 					expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
 					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
-						configModule.config.packages.mock_usdc.byNetwork.localnet,
+						configModule.config.packages.mock_usdc.packageId,
 					);
 					expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
 					expect(accountsModule.accounts.alice.address).toBe('0xabc');

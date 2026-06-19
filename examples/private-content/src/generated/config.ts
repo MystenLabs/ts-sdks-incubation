@@ -19,9 +19,6 @@ export const config = {
 	networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)])),
 	packages: {
 		vault: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/vault"),
-			},
 			mvr: "@local/vault",
 			packageId: requireId(dep, "@local/vault"),
 		},

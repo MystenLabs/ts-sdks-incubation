@@ -54,7 +54,6 @@ import {
 	makeKnownStaticCodegen,
 	makeLocalCodegenable,
 	makeLocalStaticCodegen,
-	type PackageNetworks,
 } from './codegen.ts';
 import { hashMoveSources } from './build.ts';
 import type { PublishError } from './errors.ts';
@@ -106,7 +105,7 @@ export type {
 } from './publish-output.ts';
 export { pickCreatedByType } from './publish-output.ts';
 export type { PublishError } from './errors.ts';
-export type { PackageBindings, PackageNetworks, PackageNetworkEntry } from './codegen.ts';
+export type { PackageBindings } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
 
 /** Resolved value carried by the package resource. Local packages also
@@ -172,12 +171,6 @@ export interface LocalPackageOptions<
 	 *  form maps output keys to object-type suffixes, e.g.
 	 *  `{ boardId: '::board::Board' }`. */
 	readonly capture?: Capture;
-	/** Per-network declared package ids (+ optional object ids) for
-	 *  prod-targeting. Pure literals, no resolution: codegen merges the
-	 *  resolved-local id into `config.packages.<name>.byNetwork.localnet`
-	 *  and these literals into `byNetwork.testnet` / `byNetwork.mainnet`.
-	 *  A consumer flips `config.network` (env) to select active ids. */
-	readonly networks?: PackageNetworks;
 	/** Publisher account — the signer for the publish tx. Pass the
 	 *  result of `account('alice')` (the same plugin/resource ref used
 	 *  in the rest of the stack — NOT a duplicate factory call).
@@ -194,10 +187,6 @@ export interface KnownPackageOptions {
 	readonly packageId: string;
 	readonly upgradeCapId?: string;
 	readonly mvrPlaceholder?: string;
-	/** Per-network declared package ids (+ optional object ids) for
-	 *  prod-targeting — same as `LocalPackageOptions.networks`. Pure
-	 *  literals; codegen fills `config.packages.<name>.byNetwork`. */
-	readonly networks?: PackageNetworks;
 }
 
 interface PackageRegistryProjectionContribution {
@@ -308,7 +297,6 @@ const buildLocalPlugin = <
 							mvrPlaceholder: opts.mvrPlaceholder ?? null,
 							excludeFromCodegen: opts.excludeFromCodegen === true,
 							capture: opts.capture ?? null,
-							networks: opts.networks ?? null,
 							// url+rev change → new identity → re-clone + rebuild.
 							git: opts.git ?? null,
 						})),
@@ -345,7 +333,6 @@ const buildLocalPlugin = <
 			sourcePath: opts.sourcePath ?? null,
 			mvrPlaceholder: opts.mvrPlaceholder,
 			excluded: opts.excludeFromCodegen ?? false,
-			networks: opts.networks,
 			// Capture KEYS (config-known) so the committed stub carries
 			// `resolveValue('package:<name>:objects', '<key>')` references —
 			// no live-only `objects` field, no baked object id.
@@ -459,7 +446,6 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 			packageId: opts.packageId,
 			upgradeCapId: opts.upgradeCapId ?? null,
 			mvrPlaceholder: opts.mvrPlaceholder ?? null,
-			networks: opts.networks ?? null,
 		}),
 		// Stack-free codegen: a known package's `packageId` is already a
 		// config literal, so the committed stub emits it verbatim (no chain
@@ -469,7 +455,6 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 			packageId: opts.packageId,
 			mvrPlaceholder: opts.mvrPlaceholder,
 			...(opts.upgradeCapId !== undefined ? { upgradeCapId: opts.upgradeCapId } : {}),
-			networks: opts.networks,
 		}),
 		start: ({ sui }) =>
 			Effect.gen(function* () {
@@ -515,7 +500,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 
 const makeLocalCapabilities = (
 	name: string,
-	opts: { readonly excludeFromCodegen?: boolean; readonly networks?: PackageNetworks },
+	opts: { readonly excludeFromCodegen?: boolean },
 	resolved: LocalPackageResolved,
 ): ReadonlyArray<Contribution> => {
 	// Snapshot + codegen lift their typed fields off the resolved
@@ -537,7 +522,6 @@ const makeLocalCapabilities = (
 		},
 		{
 			excluded: opts.excludeFromCodegen ?? false,
-			...(opts.networks !== undefined ? { networks: opts.networks } : {}),
 		},
 	);
 	// The plugin contributes to the package-registry strategy under a
@@ -569,16 +553,13 @@ const makeKnownCapabilities = (
 	resolved: KnownPackageResolved,
 ): ReadonlyArray<Contribution> => {
 	const snap: SnapshotableDecl = makeSnapshotable(name, `known:${resolved.packageId}`);
-	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable(
-		{
-			kind: 'known',
-			name,
-			packageId: resolved.packageId,
-			upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
-			mvrPlaceholder: resolved.mvrPlaceholder,
-		},
-		opts.networks !== undefined ? { networks: opts.networks } : {},
-	);
+	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable({
+		kind: 'known',
+		name,
+		packageId: resolved.packageId,
+		upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
+		mvrPlaceholder: resolved.mvrPlaceholder,
+	});
 	const projection: PackageRegistryProjectionContribution = {
 		kind: 'known',
 		name,

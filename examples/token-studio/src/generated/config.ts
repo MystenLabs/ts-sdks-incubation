@@ -19,9 +19,6 @@ export const config = {
 	networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)])),
 	packages: {
 		managed_coin: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/managed-coin"),
-			},
 			mvr: "@local/managed-coin",
 			packageId: requireId(dep, "@local/managed-coin"),
 		},

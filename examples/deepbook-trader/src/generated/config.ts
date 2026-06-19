@@ -29,9 +29,6 @@ export const config = {
 	},
 	packages: {
 		deepbook: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/deepbook"),
-			},
 			mvr: "@local/deepbook",
 			objects: {
 				adminCapId: requireValue(dep, "package:deepbook:objects", "adminCapId"),
@@ -41,23 +38,14 @@ export const config = {
 			packageId: requireId(dep, "@local/deepbook"),
 		},
 		demo_coins: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/demo-coins"),
-			},
 			mvr: "@local/demo-coins",
 			packageId: requireId(dep, "@local/demo-coins"),
 		},
 		dusdc: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/dusdc"),
-			},
 			mvr: "@local/dusdc",
 			packageId: requireId(dep, "@local/dusdc"),
 		},
 		pyth: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/pyth"),
-			},
 			mvr: "@local/pyth",
 			packageId: requireId(dep, "@local/pyth"),
 		},

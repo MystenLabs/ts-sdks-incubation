@@ -24,9 +24,6 @@ export const config = {
 	},
 	packages: {
 		greeting: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/greeting"),
-			},
 			mvr: "@local/greeting",
 			objects: {
 				boardId: requireValue(dep, "package:greeting:objects", "boardId"),

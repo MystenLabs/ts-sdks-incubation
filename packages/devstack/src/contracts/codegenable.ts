@@ -16,7 +16,7 @@ import type { Effect } from 'effect';
  * A value the codegen renderer emits VERBATIM (not as a quoted literal).
  *
  * The one authorized use is id resolution in the emitted `config.ts`:
- * `byNetwork` / `mvrOverrides` / `packageId` entries hold a
+ * `mvrOverrides` / `packageId` entries hold a
  * `RawExpr('resolveId("@local/foo")')` so the COMMITTED config carries NO
  * on-chain id. The id resolves at app build/dev time through the injected
  * `__DEVSTACK_DEPLOYMENT__` global (see the emitted `config-runtime.ts`), which

@@ -118,11 +118,11 @@ export type DevstackNetworkName = (typeof DEVSTACK_NETWORK_NAMES)[number];
 export type LiveDevstackNetworkName = 'testnet' | 'mainnet' | 'devnet';
 
 /** The network every local stack actually runs, and the active key in the
- *  generated `config.ts` (`config.network`, `networks.<key>`, each package's
- *  `byNetwork.<key>`). A fork runs on a local node too, so this is `localnet`
- *  for every mode — the fork's upstream identity lives separately in the
- *  network entry's `forkUpstream`. The sui and package codegen contributions
- *  share this one literal so their active-network keys can never drift. */
+ *  generated `config.ts` (`config.network`, `networks.<key>`). A fork runs on
+ *  a local node too, so this is `localnet` for every mode — the fork's
+ *  upstream identity lives separately in the network entry's `forkUpstream`.
+ *  The sui and package codegen contributions share this one literal so their
+ *  active-network keys can never drift. */
 export const LOCAL_NETWORK_NAME = 'localnet' satisfies DevstackNetworkName;
 
 export type ParsedDevstackNetwork =

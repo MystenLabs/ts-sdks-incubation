@@ -19,9 +19,6 @@ export const config = {
 	networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)])),
 	packages: {
 		counter: {
-			byNetwork: {
-				localnet: requireId(dep, "@local/counter"),
-			},
 			mvr: "@local/counter",
 			packageId: requireId(dep, "@local/counter"),
 		},

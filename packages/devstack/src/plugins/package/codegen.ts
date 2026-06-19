@@ -25,7 +25,6 @@
 // orchestrator's `isPackageBindings` seam forwards it to the Move-bindings
 // emitter (bindings stay in `generated/bindings/`).
 
-import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import type { CodegenableDecl, StaticCodegenSource } from '../../contracts/codegenable.ts';
 import {
 	configCodegenable,
@@ -37,30 +36,23 @@ import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 import { mvrNamedForm, mvrNamedFormFrom } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
 
-/** Per-network declared ids — pure literals the user supplies for
- *  prod-targeting (`testnet`/`mainnet`). No resolution. */
-export interface PackageNetworkEntry {
-	readonly packageId: string;
-	readonly objects?: Readonly<Record<string, string>>;
-}
-
-export type PackageNetworks = Readonly<Record<string, PackageNetworkEntry>>;
-
 /** Codegenable shape — what each Package contributes to the codegen
  *  orchestrator. Defined once on the orchestrator's `emitBindings` consumer
  *  contract (`orchestrators/codegen/bindings.ts`); re-exported here as the
  *  package plugin's public surface. */
 export type { PackageBindings };
 
-/** The typed shape one `config.packages.<name>` entry exports. */
+/** The typed shape one `config.packages.<name>` entry exports. Per-network
+ *  package ids now live in the injected deployment envelope (live local +
+ *  committed `deployments/<net>.ts`), resolved via
+ *  `config.forNetwork(net).packages.<name>.id` — so this entry carries only
+ *  the MVR placeholder + the default-network convenience id. */
 export interface PackageConfigEntry {
 	readonly mvr: string;
-	/** Convenience = `byNetwork[config.network]` (the active network's
-	 *  id). */
+	/** The default (local) network's resolved id. */
 	readonly packageId: string;
-	readonly byNetwork: Readonly<Record<string, string>>;
-	/** Resolved (local) + declared (prod) object ids for the active
-	 *  network. Present only when at least one object is known. */
+	/** Resolved (local) object ids for the default network. Present only
+	 *  when at least one object is known. */
 	readonly objects?: Readonly<Record<string, string>>;
 }
 
@@ -93,8 +85,6 @@ interface PackageBindingInput {
 	 *  When omitted, falls back to the keys present in `captured` (live path).
 	 */
 	readonly objectKeys?: ReadonlyArray<string> | undefined;
-	/** Declared per-network literals (testnet/mainnet). */
-	readonly networks?: PackageNetworks | undefined;
 }
 
 /**
@@ -125,8 +115,8 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 	//     `state.packageId`).
 	//   - pinned literal (KNOWN with a declared id) → LITERAL (the id stands
 	//     identically in both paths).
-	// Reused for `packages.<name>.packageId`, `byNetwork.localnet`, and the
-	// `mvrOverrides` entry so all three agree.
+	// Reused for `packages.<name>.packageId` and the `mvrOverrides` entry so
+	// both agree.
 	const pinned = input.pinnedId;
 	const idBinding = (configPath: ReadonlyArray<string>): ConfigBinding<PackageLiveState> =>
 		pinned === undefined
@@ -141,16 +131,6 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 			: { variant: 'literal', configPath, value: pinned };
 
 	bindings.push(idBinding(['packages', name, 'packageId']));
-	bindings.push(idBinding(['packages', name, 'byNetwork', LOCAL_NETWORK_NAME]));
-
-	// Declared per-network literals (testnet/mainnet) — pure literals.
-	for (const [net, entry] of Object.entries(input.networks ?? {})) {
-		bindings.push({
-			variant: 'literal',
-			configPath: ['packages', name, 'byNetwork', net],
-			value: entry.packageId,
-		});
-	}
 
 	// Active-network objects — captured ids (local). The captured ids are
 	// LOADED CONFIG DATA, so each is a RESOLVED binding on the generic
@@ -221,7 +201,6 @@ export const makeLocalCodegenable = (
 	resolved: ResolvedLocalPackage,
 	options: {
 		readonly excluded: boolean;
-		readonly networks?: PackageNetworks;
 	},
 ): CodegenableDecl<'package'> => {
 	// Coerce the resolved placeholder into the current `@local/<slug>` named
@@ -236,7 +215,6 @@ export const makeLocalCodegenable = (
 		name: resolved.name,
 		mvrPlaceholder,
 		captured: resolved.captured,
-		...(options.networks !== undefined ? { networks: options.networks } : {}),
 	});
 	const bindings: PackageBindings = {
 		name: resolved.name,
@@ -257,7 +235,6 @@ export const makeLocalCodegenable = (
  *  live and static paths. */
 export const makeKnownCodegenable = (
 	resolved: ResolvedKnownPackage,
-	options: { readonly networks?: PackageNetworks } = {},
 ): CodegenableDecl<'package'> => {
 	// Defensive parity with the local emit seam: coerce to the current
 	// `@local/<slug>` named form (preserving an already-named override).
@@ -267,7 +244,6 @@ export const makeKnownCodegenable = (
 		mvrPlaceholder,
 		captured: {},
 		pinnedId: resolved.packageId,
-		...(options.networks !== undefined ? { networks: options.networks } : {}),
 	});
 	const bindings: PackageBindings = {
 		name: resolved.name,
@@ -301,7 +277,6 @@ export const makeLocalStaticCodegen = (config: {
 	readonly sourcePath: string | null;
 	readonly mvrPlaceholder?: string | undefined;
 	readonly excluded: boolean;
-	readonly networks?: PackageNetworks | undefined;
 	/** Capture KEYS declared by the user `capture` option (config-known).
 	 *  The static stub emits `resolveValue('package:<name>:objects', '<key>')`
 	 *  for each so the committed tree carries object-id references with NO
@@ -320,7 +295,6 @@ export const makeLocalStaticCodegen = (config: {
 			mvrPlaceholder,
 			captured: {},
 			...(config.objectKeys !== undefined ? { objectKeys: config.objectKeys } : {}),
-			...(config.networks !== undefined ? { networks: config.networks } : {}),
 			// No pinned id — the active id resolves at app build/dev time.
 		});
 		const bindings: PackageBindings = {
@@ -344,7 +318,6 @@ export const makeKnownStaticCodegen = (config: {
 	readonly packageId: string;
 	readonly upgradeCapId?: string | undefined;
 	readonly mvrPlaceholder?: string | undefined;
-	readonly networks?: PackageNetworks | undefined;
 }): StaticCodegenSource => {
 	const mvrPlaceholder = mvrNamedForm(config.mvrPlaceholder ?? config.name);
 	return () => {
@@ -353,7 +326,6 @@ export const makeKnownStaticCodegen = (config: {
 			mvrPlaceholder,
 			captured: {},
 			pinnedId: config.packageId,
-			...(config.networks !== undefined ? { networks: config.networks } : {}),
 		});
 		const bindings: PackageBindings = {
 			name: config.name,

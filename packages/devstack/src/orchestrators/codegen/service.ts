@@ -1097,8 +1097,9 @@ export class CodegenOrchestratorService extends Context.Service<
  * connection coordinates (rpc/chainId/faucet/graphql) inline. Reads are
  * defensive — any missing slice collapses to an empty record so a partial
  * stack still writes a valid (if sparse) network deployment. Single-network
- * only here (commit 2): `assembleDeployment` keys the envelope under this
- * unit's network. Per-package `byNetwork` resolution lands in commit 3.
+ * only here: `assembleDeployment` keys the envelope under this unit's network.
+ * Per-network package ids for live networks come from the committed
+ * `deployments/<net>.ts` files merged into the envelope at app build/dev time.
  */
 const deploymentFromBucket = (
 	bucket: Record<string, unknown>,
@@ -1134,10 +1135,10 @@ const deploymentFromBucket = (
 	const packages: Record<string, DeploymentPackage> = {};
 	for (const [name, raw] of Object.entries(asRecord(bucket['packages']))) {
 		const entry = asRecord(raw);
-		// The active-network id is `packageId` (convenience field the package
-		// projection sets = `byNetwork[activeNetwork]`). An empty/missing
-		// packageId maps to the UNRESOLVED_ID sentinel — an empty string would
-		// slip past `isUnresolvedId` and ship as a real, resolved id.
+		// The local network's id is `packageId` (the convenience field the
+		// package projection sets). An empty/missing packageId maps to the
+		// UNRESOLVED_ID sentinel — an empty string would slip past
+		// `isUnresolvedId` and ship as a real, resolved id.
 		const rawId = asString(entry['packageId']);
 		const id = rawId === undefined || rawId === '' ? UNRESOLVED_ID : rawId;
 		const objectsRaw = asRecord(entry['objects']);
@@ -1171,21 +1172,20 @@ const deploymentFromBucket = (
 	// `networks[network].rpc` off the envelope. The `network` PARAM is the
 	// identity's network name (e.g. `"testnet-fork"`), but the sui binding
 	// keys the connection map by what it emitted (`"localnet"` for every
-	// mode). So PREFER the network the binding stamped into the bucket
-	// (`bucket['network']`, which matches a connection key); fall back to the
-	// param, then — if neither is a known key but exactly one connection
-	// exists — that sole key. This keeps `network` in agreement with the
-	// connection map so resolution never dereferences `undefined`.
+	// mode). A single-network local stack contributes exactly ONE connection,
+	// so PREFER the network the binding stamped into the bucket
+	// (`bucket['network']`, which matches the connection key); fall back to
+	// that sole connection key, then the param. This keeps `network` in
+	// agreement with the connection map so resolution never dereferences
+	// `undefined`.
 	const connKeys = Object.keys(conns);
 	const bucketNetwork = asString(bucket['network']);
 	const activeNetwork =
 		bucketNetwork !== undefined && connKeys.includes(bucketNetwork)
 			? bucketNetwork
-			: connKeys.includes(network)
-				? network
-				: connKeys.length === 1
-					? connKeys[0]!
-					: (bucketNetwork ?? network);
+			: connKeys.length === 1
+				? connKeys[0]!
+				: (bucketNetwork ?? network);
 
 	// Flatten the active network's connection coordinates inline. A bucket
 	// with no connection at all (network-only / partial stack) still yields a
