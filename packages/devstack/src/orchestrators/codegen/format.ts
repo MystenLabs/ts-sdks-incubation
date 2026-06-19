@@ -66,6 +66,13 @@ export interface RenderInput {
 	 *  type import from `@mysten/dapp-kit` for the wallet config).
 	 *  Each entry is a raw import statement string. */
 	readonly imports?: ReadonlyArray<string>;
+	/** Optional module-level statements emitted AFTER the imports block and
+	 *  BEFORE the exports (e.g. the deployment preamble
+	 *  `const __deployment = loadDeployment();` /
+	 *  `const dep = __deployment.forNetwork(__deployment.defaultNetwork);` the
+	 *  committed `config.ts` + service buckets share). One line per entry,
+	 *  followed by a single blank line. Literal-only buckets pass no preamble. */
+	readonly preamble?: ReadonlyArray<string>;
 }
 
 /** Result of a render attempt. Discriminated so callers can dispatch
@@ -103,6 +110,12 @@ export const renderFile = (input: RenderInput): RenderResult => {
 				return renderErr(input, `generated files must not import devstack source: ${imp}`);
 			}
 			lines.push(imp);
+		}
+		lines.push('');
+	}
+	if (input.preamble && input.preamble.length > 0) {
+		for (const stmt of input.preamble) {
+			lines.push(stmt);
 		}
 		lines.push('');
 	}

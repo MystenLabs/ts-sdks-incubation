@@ -480,11 +480,36 @@ describe('codegen.runEmitCycle', () => {
 					);
 					expect(result.bindings?.packagesEmitted).toEqual([]);
 
+					// The committed `config.ts` now opens with
+					// `const __deployment = loadDeployment();` — the loud-failing
+					// deployment accessor — so importing it requires injected ids.
+					// Stub `__DEVSTACK_IDS__` (the Vite `define` channel) for the
+					// duration of the imports; restore it after so the global stays
+					// clean for sibling tests.
+					yield* Effect.acquireRelease(
+						Effect.sync(() => {
+							(globalThis as Record<string, unknown>)['__DEVSTACK_IDS__'] = {
+								network: 'localnet',
+								networks: { localnet: { rpc: 'http://127.0.0.1:9000' } },
+								packages: { mock_usdc: { id: '0x1' } },
+								accounts: { alice: '0xabc' },
+								mvrOverrides: { 'mock-usdc': '0x1' },
+							};
+						}),
+						() =>
+							Effect.sync(() => {
+								delete (globalThis as Record<string, unknown>)['__DEVSTACK_IDS__'];
+							}),
+					);
+
 					const configModule = yield* Effect.promise(
 						() =>
 							import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
 								readonly config: {
 									readonly network: string;
+									readonly defaultNetwork: string;
+									readonly networkNames: readonly string[];
+									readonly activeNetwork: { readonly rpc: string };
 									readonly networks: {
 										readonly localnet: { readonly rpc: string };
 									};
@@ -516,6 +541,12 @@ describe('codegen.runEmitCycle', () => {
 					// coexist in ONE config.ts (deep-merge, not last-write-wins).
 					expect(configModule.config.network).toBe('localnet');
 					expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
+					// The static-only DEPLOYMENT envelope accessors are wired off
+					// the loaded deployment: default network, the available network
+					// names, and the active network entry resolved from the ids.
+					expect(configModule.config.defaultNetwork).toBe('localnet');
+					expect(configModule.config.networkNames).toEqual(['localnet']);
+					expect(configModule.config.activeNetwork.rpc).toBe('http://127.0.0.1:9000');
 					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
 					expect(configModule.config.packages.mock_usdc.byNetwork.localnet).toBe('0x1');
 					// Top-level `mvrOverrides` is the active-network name→id map

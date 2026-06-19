@@ -118,14 +118,23 @@ describe('cli codegen Move bindings', () => {
 				expect(typeof mod.mint).toBe('function');
 
 				// The committed `config.ts` must runtime-resolve the active
-				// network + its connection map (sui's `staticCodegen`): NO baked
-				// network name, NO literal rpc URL. Regression guard for the
-				// missing-`network`/`networks` bug that broke app `tsc`.
+				// network + its connection map off the loaded DEPLOYMENT (sui's
+				// `staticCodegen`): NO baked network name, NO literal rpc URL.
+				// Regression guard for the missing-`network`/`networks` bug that
+				// broke app `tsc`. The active network reads `dep.network`; the
+				// connection map rebuilds from the deployment's network names.
 				const generatedConfig = readFileSync(generatedConfigPath, 'utf8');
-				expect(generatedConfig).toContain('network: resolveNetwork()');
-				expect(generatedConfig).toContain('networks: resolveNetworks()');
+				expect(generatedConfig).toContain('network: dep.network');
+				expect(generatedConfig).toContain(
+					'networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)]))',
+				);
+				// The deployment preamble + `loadDeployment` import are emitted.
+				expect(generatedConfig).toContain('const __deployment = loadDeployment();');
+				expect(generatedConfig).toContain(
+					'const dep = __deployment.forNetwork(__deployment.defaultNetwork);',
+				);
 				expect(generatedConfig).toMatch(
-					/import \{[^}]*\bresolveNetwork\b[^}]*\bresolveNetworks\b[^}]*\} from '\.\/config-runtime\.js';/,
+					/import \{[^}]*\bloadDeployment\b[^}]*\} from '\.\/config-runtime\.js';/,
 				);
 			} finally {
 				process.exitCode = previousExitCode;

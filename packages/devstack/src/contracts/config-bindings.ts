@@ -15,8 +15,8 @@
 // THE UNIFICATION. A plugin declares its `config.ts` contributions ONCE as
 // a `ConfigBindingSet`. BOTH paths are DERIVED from it:
 //   - `configCodegenable(set, 'static')` → the committed-tree decl whose
-//     aggregate emits `rawExpr(resolveValue(...))` / typed-sugar resolvers
-//     (and pure literals as literals).
+//     aggregate emits `rawExpr(requireValue(dep, ...))` / typed-sugar
+//     deployment accessors (and pure literals as literals).
 //   - `configCodegenable(set, { mode: 'live', state })` → the boot decl
 //     whose aggregate carries concrete resolved values that feed ONLY the
 //     loadable id-config (typed channel + the generic `values` channel) —
@@ -36,9 +36,10 @@ import type { JsonValue } from '../orchestrators/codegen/id-config.ts';
 // -----------------------------------------------------------------------------
 
 /** A typed-sugar resolver a binding may target instead of the generic
- *  `resolveValue(namespace, key)` channel. Each maps to a `config-runtime.ts`
- *  function: `id` → `resolveId(<arg>)`, `network` → `resolveNetwork()`,
- *  `networks` → `resolveNetworks()`. Sugar bindings also feed the TYPED
+ *  `requireValue(dep, namespace, key)` channel. Each maps to a deployment
+ *  accessor: `id` → `requireId(dep, <arg>)`, `network` → `dep.network`,
+ *  `networks` → `Object.fromEntries(__deployment.networkNames.map((n) =>
+ *  [n, __deployment.forNetwork(n)]))`. Sugar bindings also feed the TYPED
  *  id-config fields (`mvrOverrides`/`network`/`networks`), not the generic
  *  `values` channel — that keeps `config.network`/`config.mvrOverrides`
  *  readable by apps exactly as before. */
@@ -79,20 +80,21 @@ export type ConfigBinding<State = unknown> =
 			 *  `values` is harmless redundancy and keeps the guard simple). */
 			readonly namespace: string;
 			readonly key: string;
-			/** When set, the static path emits the typed-sugar resolver
-			 *  (`resolveId`/`resolveNetwork`/`resolveNetworks`) and the live
-			 *  path additionally feeds the TYPED id-config field. When
-			 *  omitted, the static path emits `resolveValue(namespace, key)`
-			 *  and the live value lands ONLY in the generic `values` channel. */
+			/** When set, the static path emits the typed-sugar deployment
+			 *  accessor (`requireId(dep, …)` / `dep.network` / the networks
+			 *  `Object.fromEntries(...)` expr) and the live path additionally
+			 *  feeds the TYPED id-config field. When omitted, the static path
+			 *  emits `requireValue(dep, namespace, key)` and the live value lands
+			 *  ONLY in the generic `values` channel. */
 			readonly sugar?: ConfigSugarResolver;
 			/** The field's STATIC TypeScript type, as a source string (e.g.
 			 *  `'string'`, `'string | null'`, or a structural literal type for a
 			 *  composite). When set, the static path emits
-			 *  `resolveValue(ns, key) as <tsType>` so the committed value carries
+			 *  `requireValue<tsType>(dep, ns, key)` so the committed value carries
 			 *  its concrete type instead of the `unknown` the generic channel
-			 *  returns. Ignored for sugar bindings (those use the typed resolver
+			 *  returns. Ignored for sugar bindings (those use the typed accessor
 			 *  whose return type is already concrete). When omitted, the static
-			 *  path emits a bare `resolveValue(ns, key)` (type `unknown`). */
+			 *  path emits a bare `requireValue(dep, ns, key)` (type `unknown`). */
 			readonly tsType?: string;
 			/** Compute the concrete value at boot from acquired plugin state.
 			 *  Only invoked on the LIVE path. */
@@ -152,31 +154,40 @@ const setAtPath = (
 	cursor[path[path.length - 1]!] = value;
 };
 
-/** The `rawExpr` the STATIC path emits for a resolved binding. */
+/** The `rawExpr` the STATIC path emits for a resolved binding. Reads off the
+ *  loaded deployment's active network — the emitted file carries a
+ *  `const dep = __deployment.forNetwork(__deployment.defaultNetwork);`
+ *  preamble (wired by the codegen orchestrator), so these expressions
+ *  reference `dep` / `__deployment` directly. */
 const staticExprFor = <State>(
 	binding: Extract<ConfigBinding<State>, { variant: 'resolved' }>,
 ): ReturnType<typeof rawExpr> => {
 	const sugar = binding.sugar;
 	if (sugar === undefined) {
-		const call = `resolveValue(${JSON.stringify(binding.namespace)}, ${JSON.stringify(binding.key)})`;
-		// A `tsType` carries the field's concrete static type so the committed
-		// value typechecks against the app's usage (the generic channel returns
-		// `unknown`). Emit the call as a typed cast; bare otherwise.
-		return rawExpr(binding.tsType === undefined ? call : `${call} as ${binding.tsType}`);
+		// Generic channel: `requireValue<tsType>(dep, "ns", "key")`. The optional
+		// `tsType` carries the field's concrete static type so the committed value
+		// typechecks against the app's usage (the generic channel returns
+		// `unknown`); emitted as a type argument on `requireValue`.
+		const typeArg = binding.tsType === undefined ? '' : `<${binding.tsType}>`;
+		const ns = JSON.stringify(binding.namespace);
+		const key = JSON.stringify(binding.key);
+		return rawExpr(`requireValue${typeArg}(dep, ${ns}, ${key})`);
 	}
 	switch (sugar.kind) {
 		case 'id':
-			return rawExpr(`resolveId(${JSON.stringify(sugar.mvrPlaceholder)})`);
+			return rawExpr(`requireId(dep, ${JSON.stringify(sugar.mvrPlaceholder)})`);
 		case 'network':
-			return rawExpr('resolveNetwork()');
+			return rawExpr('dep.network');
 		case 'networks':
-			return rawExpr('resolveNetworks()');
+			return rawExpr(
+				'Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)]))',
+			);
 	}
 };
 
 /** Build the STATIC (committed-tree) aggregate projection from a binding
- *  set — `rawExpr(resolve…())` for resolved bindings, literals for the
- *  rest. Pure: needs no acquired state. */
+ *  set — `rawExpr(requireValue(dep, …)/requireId(dep, …)/dep.network/…)` for
+ *  resolved bindings, literals for the rest. Pure: needs no acquired state. */
 export const projectStaticConfig = <State>(
 	set: ConfigBindingSet<State>,
 ): Record<string, unknown> => {
@@ -299,20 +310,20 @@ export const configCodegenable = <State, Emitter extends string = string>(
 /** One field of an instance's bucket entry, classified as either a pure
  *  STRUCTURAL literal (a name / mode / decimals — the same in both paths)
  *  or a runtime-RESOLVED value (an on-chain id, coin type, or endpoint URL —
- *  the static path emits `resolveValue`, the live path feeds the concrete
- *  value into the id-config). The `key` is the leaf field name written under
- *  the instance key in the bucket object literal. */
+ *  the static path emits `requireValue(dep, …)`, the live path feeds the
+ *  concrete value into the id-config). The `key` is the leaf field name written
+ *  under the instance key in the bucket object literal. */
 export type BucketField<State> =
 	| { readonly key: string; readonly variant: 'literal'; readonly value: JsonValue }
 	| {
 			readonly key: string;
 			readonly variant: 'resolved';
-			/** `resolveValue(namespace, valueKey)` coordinates. `valueKey`
+			/** `requireValue(dep, namespace, valueKey)` coordinates. `valueKey`
 			 *  defaults to `key` when omitted. */
 			readonly valueKey?: string;
 			/** The field's STATIC TypeScript type as a source string (see
 			 *  `ConfigBinding.tsType`). When set, the static path emits
-			 *  `resolveValue(...) as <tsType>` so the committed value carries its
+			 *  `requireValue<tsType>(dep, …)` so the committed value carries its
 			 *  concrete type instead of `unknown`. */
 			readonly tsType?: string;
 			readonly live: (state: State) => JsonValue;
@@ -333,7 +344,7 @@ export interface SiblingBucketSpec<State> {
 	/** The instance key the entry lives under in the bucket object
 	 *  (e.g. the coin symbol, the deepbook instance name). */
 	readonly instanceKey: string;
-	/** The `resolveValue` namespace shared by every resolved field
+	/** The `requireValue` namespace shared by every resolved field
 	 *  (e.g. `coin:<symbol>`, `deepbook:<name>`). */
 	readonly namespace: string;
 	/** The instance's fields. */
@@ -382,7 +393,7 @@ export const siblingBucketBindings = <State>(
 			configPath: [...configPath],
 			namespace: spec.namespace,
 			key: field.valueKey ?? field.key,
-			// No `sugar` — these are generic `resolveValue` bindings (the typed
+			// No `sugar` — these are generic `requireValue` bindings (the typed
 			// id-config channel only carries network/packages/mvrOverrides).
 			...(field.tsType !== undefined ? { tsType: field.tsType } : {}),
 			live: field.live,
@@ -406,7 +417,7 @@ export const liveBucketCodegen = <State>(
 ): CodegenableDecl => configCodegenable(siblingBucketBindings(spec), { mode: 'live', state });
 
 /** Derive the STATIC (stack-free) bucket decl — emits
- *  `resolveValue(namespace, key)` for resolved fields, literals for the
+ *  `requireValue(dep, namespace, key)` for resolved fields, literals for the
  *  rest. The committed `<bucket>.ts` carries no baked runtime value. */
 export const staticBucketCodegen = <State>(spec: SiblingBucketSpec<State>): CodegenableDecl =>
 	configCodegenable(siblingBucketBindings(spec), 'static');

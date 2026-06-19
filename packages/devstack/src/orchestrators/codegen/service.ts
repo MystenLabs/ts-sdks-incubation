@@ -50,6 +50,7 @@ import { dirname } from 'node:path';
 
 import {
 	isRawExpr,
+	rawExpr,
 	type CodegenableDecl,
 	type CodegenEmitDone,
 	type CodegenEmitContext,
@@ -481,27 +482,36 @@ const runEmitCycleInner = (
 			}
 		}
 
-		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta);
-		// True once any aggregate references a `config-runtime.ts` resolver
-		// (the committed `config.ts`): then we ALSO emit the fixed
-		// `config-runtime.ts` resolver and import the referenced resolvers into
-		// that file.
+		// Inject the static-only DEPLOYMENT envelope accessors into the
+		// committed `config.ts` aggregate BEFORE usage scanning, so the added
+		// `__deployment` / `dep` references drive the import + preamble below.
+		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta).map(
+			withConfigEnvelopeAccessors,
+		);
+		// True once any aggregate references a `config-runtime.ts` deployment
+		// symbol (the committed `config.ts` + service buckets): then we ALSO emit
+		// the fixed `config-runtime.ts` and import + preamble exactly what each
+		// file references.
 		let needsConfigRuntime = false;
 		for (const aggregate of aggregateFiles) {
-			const resolvers = resolversUsedBy(aggregate.exports);
-			if (resolvers.length > 0) needsConfigRuntime = true;
+			const usage = deploymentUsageOf(aggregate.exports);
+			if (!deploymentUsageEmpty(usage)) needsConfigRuntime = true;
+			const imports = deploymentImportsFor(usage);
+			const preamble = deploymentPreambleFor(usage);
 			const rendered = renderFile({
 				emitterName: aggregate.emitterName,
 				outputPath: aggregate.outputPath,
 				sensitive: aggregate.sensitive,
 				exports: aggregate.exports,
-				// The committed `config.ts` resolves ids/network at runtime —
-				// import exactly the resolvers it references (no unused imports;
-				// oxlint is pinned and flags them). `.js` specifier (ESM/TS-
+				// The committed `config.ts` + service buckets read off the injected
+				// deployment at runtime — import exactly the symbols referenced (no
+				// unused imports; oxlint is pinned and flags them) and emit the
+				// `loadDeployment()` / `dep` preamble. `.js` specifier (ESM/TS-
 				// resolved) mirrors the bindings' import style.
-				...(resolvers.length > 0
-					? { imports: [`import { ${resolvers.join(', ')} } from './config-runtime.js';`] }
+				...(imports.length > 0
+					? { imports: [`import { ${imports.join(', ')} } from './config-runtime.js';`] }
 					: {}),
+				...(preamble.length > 0 ? { preamble } : {}),
 			});
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
@@ -862,44 +872,123 @@ const buildAggregateFiles = (
 
 const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').replace(/^.*\//, '');
 
-/** The config-runtime resolver names a committed `config.ts` aggregate may
- *  reference as raw expressions. Each is imported from `./config-runtime.js`
- *  only when the aggregate actually calls it (oxlint flags unused imports). */
-const CONFIG_RUNTIME_RESOLVERS = [
-	'resolveId',
-	'resolveNetwork',
-	'resolveNetworks',
-	'resolveValue',
-] as const;
-type ConfigRuntimeResolver = (typeof CONFIG_RUNTIME_RESOLVERS)[number];
+/** The committed `config.ts` bucket. The orchestrator already encodes
+ *  `config.ts` semantics by name elsewhere (the live `assembleIdConfig`
+ *  slices it by this exact bucket); the static envelope-accessor injection
+ *  below is the matching static-render-only branch. */
+const CONFIG_BUCKET = 'config.ts';
 
-/** Recursively collect which `config-runtime.ts` resolvers an exports map
- *  references via raw expressions — i.e. the committed `config.ts` needs each
- *  imported + the fixed `config-runtime.ts` emitted alongside it. */
-const collectResolversInValue = (value: unknown, found: Set<ConfigRuntimeResolver>): void => {
+/**
+ * Inject the four DEPLOYMENT envelope-accessor fields into the committed
+ * `config.ts` aggregate's `config` object literal as raw expressions:
+ *   - `defaultNetwork: __deployment.defaultNetwork`
+ *   - `networkNames:   __deployment.networkNames`
+ *   - `forNetwork:     __deployment.forNetwork`
+ *   - `activeNetwork:  dep`
+ *
+ * STATIC-render-only: these are wired into the emitted committed tree so apps
+ * can switch networks / enumerate them off `config`, but they are NOT part of
+ * the live id-config path (`assembleIdConfig` / `idConfigFromBucket` slice the
+ * raw `network`/`networks`/`packages`/`mvrOverrides` fields, never these). The
+ * aggregate file's `exports` is `{ config: {...} }`; mutate the inner object.
+ */
+const withConfigEnvelopeAccessors = (file: AggregateFile): AggregateFile => {
+	if (file.outputPath !== CONFIG_BUCKET) return file;
+	const stem = bucketStem(file.outputPath); // 'config'
+	const inner = file.exports[stem];
+	if (!isPlainObject(inner)) return file;
+	const augmented: Record<string, unknown> = {
+		...inner,
+		defaultNetwork: rawExpr('__deployment.defaultNetwork'),
+		networkNames: rawExpr('__deployment.networkNames'),
+		forNetwork: rawExpr('__deployment.forNetwork'),
+		activeNetwork: rawExpr('dep'),
+	};
+	return { ...file, exports: { ...file.exports, [stem]: augmented } };
+};
+
+/** Which `config-runtime.ts` deployment symbols an aggregate's emitted raw
+ *  expressions reference. Drives BOTH the `./config-runtime.js` import line
+ *  (oxlint is pinned and flags unused imports — emit only what's used) AND the
+ *  module-level preamble the emitted file needs:
+ *    `const __deployment = loadDeployment();`
+ *    `const dep = __deployment.forNetwork(__deployment.defaultNetwork);`
+ *
+ *  - `usesDep`: any expr references the `dep` identifier
+ *    (`requireId(dep, …)`, `requireValue(dep, …)`, `dep.network`, …) — needs
+ *    the `dep` preamble line (and therefore `__deployment` + `loadDeployment`).
+ *  - `usesDeployment`: any expr references `__deployment` (the `networks`
+ *    sugar's `Object.fromEntries(__deployment.networkNames.map(...))`) — needs
+ *    the `__deployment` preamble line (and `loadDeployment`).
+ *  - `requireId` / `requireValue` / `optionalValue`: the named helper appears
+ *    in some expr — import it. */
+interface DeploymentUsage {
+	readonly usesDep: boolean;
+	readonly usesDeployment: boolean;
+	readonly requireId: boolean;
+	readonly requireValue: boolean;
+	readonly optionalValue: boolean;
+}
+
+const EMPTY_DEPLOYMENT_USAGE: DeploymentUsage = {
+	usesDep: false,
+	usesDeployment: false,
+	requireId: false,
+	requireValue: false,
+	optionalValue: false,
+};
+
+const deploymentUsageEmpty = (u: DeploymentUsage): boolean =>
+	!u.usesDep && !u.usesDeployment && !u.requireId && !u.requireValue && !u.optionalValue;
+
+/** Recursively scan an exports value's raw expressions, OR-ing in the
+ *  deployment symbols each references. */
+const scanDeploymentUsage = (value: unknown, acc: { -readonly [K in keyof DeploymentUsage]: boolean }): void => {
 	if (isRawExpr(value)) {
-		for (const name of CONFIG_RUNTIME_RESOLVERS) {
-			if (value.expr.includes(`${name}(`)) found.add(name);
-		}
+		const e = value.expr;
+		// `dep` as a standalone identifier (not a substring of e.g. `__deployment`).
+		if (/\bdep\b/.test(e)) acc.usesDep = true;
+		if (e.includes('__deployment')) acc.usesDeployment = true;
+		if (e.includes('requireId(')) acc.requireId = true;
+		if (e.includes('requireValue')) acc.requireValue = true;
+		if (e.includes('optionalValue(')) acc.optionalValue = true;
 		return;
 	}
 	if (Array.isArray(value)) {
-		for (const v of value) collectResolversInValue(v, found);
+		for (const v of value) scanDeploymentUsage(v, acc);
 		return;
 	}
 	if (isPlainObject(value)) {
-		for (const v of Object.values(value)) collectResolversInValue(v, found);
+		for (const v of Object.values(value)) scanDeploymentUsage(v, acc);
 	}
 };
 
-/** The ordered set of config-runtime resolvers an aggregate's exports use
- *  (empty when none — the aggregate needs no resolver import). */
-const resolversUsedBy = (exports: {
-	readonly [key: string]: unknown;
-}): ReadonlyArray<ConfigRuntimeResolver> => {
-	const found = new Set<ConfigRuntimeResolver>();
-	for (const v of Object.values(exports)) collectResolversInValue(v, found);
-	return CONFIG_RUNTIME_RESOLVERS.filter((name) => found.has(name));
+/** The deployment symbols an aggregate's exports use (all-false when the
+ *  aggregate carries no deployment expressions — pure literals). */
+const deploymentUsageOf = (exports: { readonly [key: string]: unknown }): DeploymentUsage => {
+	const acc = { ...EMPTY_DEPLOYMENT_USAGE };
+	for (const v of Object.values(exports)) scanDeploymentUsage(v, acc);
+	return acc;
+};
+
+/** The `./config-runtime.js` named imports the usage requires, in a stable
+ *  order. Only symbols actually used are imported (oxlint flags unused). */
+const deploymentImportsFor = (u: DeploymentUsage): ReadonlyArray<string> => {
+	const names: Array<string> = [];
+	if (u.usesDep || u.usesDeployment) names.push('loadDeployment');
+	if (u.requireId) names.push('requireId');
+	if (u.requireValue) names.push('requireValue');
+	if (u.optionalValue) names.push('optionalValue');
+	return names;
+};
+
+/** The module-level preamble lines the usage requires (loud-failing
+ *  `loadDeployment()` once, then the active-network `dep`). */
+const deploymentPreambleFor = (u: DeploymentUsage): ReadonlyArray<string> => {
+	const lines: Array<string> = [];
+	if (u.usesDep || u.usesDeployment) lines.push('const __deployment = loadDeployment();');
+	if (u.usesDep) lines.push('const dep = __deployment.forNetwork(__deployment.defaultNetwork);');
+	return lines;
 };
 
 // -----------------------------------------------------------------------------

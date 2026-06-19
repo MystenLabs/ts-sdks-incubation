@@ -285,16 +285,34 @@ const networkDeploymentFromIds = (blob: DevstackIds, network: string): NetworkDe
 	};
 };
 
+// Adapt the injected ids blob into the multi-network \`DevstackDeployment\`
+// envelope. Today the blob carries one active network, so the envelope keys
+// that single network; multi-network injection lands later (the shape is
+// already the production-authorable envelope).
+const deploymentFromIds = (blob: DevstackIds): DevstackDeployment => ({
+	defaultNetwork: blob.network,
+	networks: Object.fromEntries(
+		Object.keys(blob.networks).map((name) => [name, networkDeploymentFromIds(blob, name)]),
+	),
+});
+
+/** Wrap a resolved \`DevstackDeployment\` envelope in the \`LoadedDeployment\`
+ *  accessor the app consumes. */
+const loadedFrom = (deployment: DevstackDeployment): LoadedDeployment => ({
+	defaultNetwork: deployment.defaultNetwork,
+	networkNames: Object.keys(deployment.networks),
+	forNetwork: (network) => {
+		const entry = deployment.networks[network];
+		if (entry === undefined) {
+			throw new DevstackConfigMissingError(\`network "\${network}" has no deployment\`);
+		}
+		return entry;
+	},
+});
+
 /** Load the injected deployment envelope. Loud-fails ONCE here when nothing
  *  was injected; the app then reads typed fields off \`forNetwork(net)\`. */
-export const loadDeployment = (): LoadedDeployment => {
-	const blob = ids();
-	return {
-		defaultNetwork: blob.network,
-		networkNames: Object.keys(blob.networks),
-		forNetwork: (network) => networkDeploymentFromIds(blob, network),
-	};
-};
+export const loadDeployment = (): LoadedDeployment => loadedFrom(deploymentFromIds(ids()));
 
 /** Non-throwing sibling of \`loadDeployment\` — returns \`null\` instead of
  *  throwing when nothing was injected. For dev-only consumers (e.g. the dev
@@ -302,11 +320,7 @@ export const loadDeployment = (): LoadedDeployment => {
 export const loadDeploymentOptional = (): LoadedDeployment | null => {
 	const blob = injectedIds();
 	if (blob === null || blob === undefined) return null;
-	return {
-		defaultNetwork: blob.network,
-		networkNames: Object.keys(blob.networks),
-		forNetwork: (network) => networkDeploymentFromIds(blob, network),
-	};
+	return loadedFrom(deploymentFromIds(blob));
 };
 
 /** Resolve a package id for an MVR placeholder off a loaded deployment.
