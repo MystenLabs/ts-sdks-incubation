@@ -199,10 +199,9 @@ export interface DevstackSignerAdapterOptions {
  * shipping their private keys into the frontend bundle. All signing happens
  * server-side via the `wallet()` plugin.
  *
- * The simplest construction uses devstack's generated `dapp-kit-config.ts`,
- * which bakes the wallet adapter wiring at codegen time — apps spread
- * `devstackDappKitConfig` into `createDAppKit(...)` and never touch the
- * adapter directly.
+ * The dev wallet that devstack injects at serve time registers this adapter
+ * automatically from the wallet connection devstack publishes — apps wire
+ * dapp-kit in their own `dapp-kit.ts` and never touch the adapter directly.
  *
  * To construct one manually (e.g. from a non-manifest source):
  *
@@ -303,8 +302,8 @@ export function parseDevstackToken(pairedUrl: string | undefined): string | null
 }
 
 /** Narrow input — the only field the adapter consumes is
- *  `app.wallet.{url, pairUrl}`. Codegen emits exactly this shape so
- *  generated `dapp-kit-config.ts` doesn't have to fabricate placeholder
+ *  `app.wallet.{url, pairUrl}`. Codegen emits exactly this shape so the
+ *  generated wiring doesn't have to fabricate placeholder
  *  manifest fields (`stack.app`, `coins`, etc.) just to satisfy the
  *  full `Manifest` type. Mirrors a slice of `AppManifest` from
  *  `@mysten-incubation/devstack` without importing it (dev-wallet
