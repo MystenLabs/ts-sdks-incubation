@@ -58,7 +58,7 @@ export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
 The alias prefix is coordinated in two places, both pointing at the same fixed `src/generated` path:
 
 1. `devstackVitePlugin()` in `vite.config.ts` (and `vitest.config.ts` — Vitest runs its own Vite
-   pipeline; see [Vitest](/devstack/features/testing-vitest)).
+   pipeline; see [Vitest](/devstack/testing/testing-vitest)).
 2. A `tsconfig` `paths` entry so the type checker resolves it:
    ```json title="tsconfig.json"
    { "compilerOptions": { "paths": { "@generated/*": ["./src/generated/*"] } } }

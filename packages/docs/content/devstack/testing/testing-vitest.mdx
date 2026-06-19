@@ -65,7 +65,7 @@ already live, `apply` reuses it instead of starting a second stack.
 ## How live ids reach a test
 
 The committed `src/generated` tree is id-free — every on-chain value is a resolver call that reads
-the build-injected `__DEVSTACK_IDS__` global (see [Codegen](/devstack/features/codegen)). Under
+the build-injected `__DEVSTACK_IDS__` global (see [Codegen](/devstack/codegen)). Under
 Vitest there is a timing problem: Vite's `define` evaluates `__DEVSTACK_IDS__` **before**
 `globalSetup` boots the stack, so it bakes to `null` in the Node test environment.
 

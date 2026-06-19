@@ -1,0 +1,16 @@
+{
+	"title": "Configure your stack",
+	"pages": [
+		"sui",
+		"accounts-and-wallet",
+		"packages-config",
+		"known-packages",
+		"coins-and-funding",
+		"faucet",
+		"actions",
+		"dev-server",
+		"local-dev",
+		"dashboard",
+		"state-and-snapshots"
+	]
+}

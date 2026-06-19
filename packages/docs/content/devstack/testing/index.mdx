@@ -1,0 +1,24 @@
+---
+title: Testing
+description: The three-suite testing layout for devstack apps — unit, e2e, and browser.
+---
+
+Devstack apps test at three levels: **unit** tests over generated bindings, **e2e** tests against a
+booted stack, and **browser** tests that drive the app with the dev wallet. Each level uses a
+different devstack build integration.
+
+| Suite   | Runs against        | Build integration                                  |
+| ------- | ------------------- | -------------------------------------------------- |
+| Unit    | generated bindings  | `@mysten-incubation/devstack/vitest`               |
+| E2e     | a booted stack      | `@mysten-incubation/devstack/vitest` + `apply`     |
+| Browser | the running app + dev wallet | `@mysten-incubation/devstack/playwright`   |
+
+{/* TODO(Phase 3): write the full Testing index. Scope (from the docs restructure plan, Phase 3
+"Testing (new top-level)"):
+- The three-suite layout (unit / e2e / browser) and the run matrix.
+- Testing deployed packages via the `DEVSTACK_STACK` swap.
+- BCS round-trip unit tests built from generated bindings.
+- Browser e2e with dev-wallet-signed txns (createWalletAdapter / connectAs).
+- Cross-link dev-wallet auto-approval and the Accounts & wallet page.
+- Link out to the Vitest and Playwright config-helper pages (already in this section).
+*/}

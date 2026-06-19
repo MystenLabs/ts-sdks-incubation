@@ -1,0 +1,30 @@
+---
+title: Going to production
+description: Take a devstack app to production — declare the network set, hand-write typed deployments, switch networks in dapp-kit, and ship a build with no local artifacts.
+---
+
+Going to production is a first-class devstack path, not an appendix. The same multi-network config
+that runs your local stack also drives a production build: you declare the live network set, author
+typed `deployments/<network>.ts` files for each, wire dapp-kit to switch between them, and ship a
+build where local-mode networks (and the dev wallet) are dropped.
+
+{/* TODO(Phase 3): write the flagship Going to production page (owner: critical, must be fully
+documented as a first-class supported path). Scope (from the docs restructure plan, Phase 3
+"Going to production"):
+- Declaring the live network set (LiveNetwork = the declared non-local networks).
+- The strict, app-specific generated deployment type (`src/generated/deployment.ts`): exhaustive
+  over declared packages and required over every live network, so hand-written prod deployments are
+  completeness-checked at compile time.
+- Authoring typed `deployments/<network>.ts` against that type (typed TS, not raw JSON).
+- `devstack dump-deployment --network testnet` to scaffold/refresh a deployment from a live deploy
+  (so devs don't hand-type 0x-strings).
+- The multi-network envelope and the Vite merge layer: live localnet (dev) overlaid on the project's
+  `ProvidedDeployments`; the `deployments` plugin option as a per-network map.
+- Wiring dapp-kit to switch networks: `networks: config.networkNames`,
+  `createClient(net) => config.forNetwork(net)`, `switchNetwork('testnet')`.
+- "Deploy = drop local": a production build filters local-mode networks out of the merge — bundle
+  ships only live networks, no local RPC, no dev wallet.
+- Verifying a prod build carries no local/dev-wallet artifacts.
+- Loud-fail completeness: a declared network missing its ids is a build error.
+- Cross-link Codegen & ids > Config & deployments and Live networks & forking.
+*/}

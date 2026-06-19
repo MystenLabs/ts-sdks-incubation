@@ -72,7 +72,7 @@ body runs. Inside a plugin you can rely on the values being final.
 - **Per-stack runtime state.** The deployment file and the dev-only `generated-extras` tree live
   under `.devstack/stacks/<stack>/`, so two stacks of the same app keep distinct on-chain ids and
   dev-wallet state without collision. (The committed `src/generated` tree is NOT keyed by identity —
-  it is stack-invariant and id-free; see [Generated Outputs](/devstack/features/codegen).)
+  it is stack-invariant and id-free; see [Generated Outputs](/devstack/codegen).)
 - **Snapshot metadata.** Snapshots record the full identity triple; `restore` refuses identity drift
   before destructive changes.
 

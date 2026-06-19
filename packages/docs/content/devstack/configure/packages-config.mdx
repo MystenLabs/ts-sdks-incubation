@@ -1,0 +1,20 @@
+---
+title: Packages
+description: Declaring local Move packages, the per-stack registry, and how packages are published and discovered.
+---
+
+Local Move packages are declared with `localPackage(...)` and published into the stack on boot. Each
+package gets an id in the per-stack registry, and that id is injected into the generated config at
+runtime.
+
+{/* TODO(Phase 3): write the full Packages config page. Scope (from the docs restructure plan, Phase 3
+"Packages & coins"):
+- What packages *do*: publish + discover (local packages) vs verify (known packages).
+- The per-stack registry: how each package gets an id per stack, and how `DEVSTACK_STACK` swaps it.
+- How package ids reach app code: generated `config.packages.*` (for introspection) vs
+  `config.mvrOverrides` (what app/dapp-kit code actually uses) — note `packageId` is introspection
+  only.
+- Cross-link Codegen & ids (config-and-deployments) for the deployment/id channel, and
+  Configure > Known packages for fixed on-chain packages.
+- State the positive behavior once (Phase 3 tone rule).
+*/}

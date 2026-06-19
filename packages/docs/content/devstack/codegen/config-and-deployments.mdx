@@ -1,0 +1,26 @@
+---
+title: Config & deployments
+description: The NetworkDeployment per-network unit, the DevstackDeployment envelope, the strict generated type, and the dapp-kit handoff.
+---
+
+Devstack resolves a typed config object from a per-network **deployment**. A `NetworkDeployment`
+carries everything an app needs to talk to one network (rpc, chainId, faucet, graphql, accounts,
+package ids, mvrOverrides, values); a `DevstackDeployment` envelope holds one per network. The config
+is read once, with a single loud failure if it is missing.
+
+{/* TODO(Phase 3): write the full Config & deployments page. Scope (from the docs restructure plan,
+Phase 3 "Config & deployments (new page)"):
+- The `NetworkDeployment` per-network unit (flattened: rpc/chainId/faucet/graphql alongside
+  packages/accounts/mvrOverrides/values).
+- The `DevstackDeployment` envelope: `{ defaultNetwork, networks: { [net]: NetworkDeployment } }`,
+  injected as `__DEVSTACK_DEPLOYMENT__`, on disk as `.devstack/stacks/<s>/deployment.json`.
+- The strict, app-specific generated deployment type (`src/generated/deployment.ts`) narrowed to the
+  app's declared packages and network set, so hand-written prod deployments are completeness-checked
+  at compile time.
+- The loud-fail contract: `loadDeployment()` fails once when the deployment is absent;
+  `requireId` / `requireValue<T>` preserve per-field loud-fail (no silent all-zero ids).
+- The explicit dapp-kit handoff: `config.forNetwork(net)`, `config.networkNames`,
+  `config.defaultNetwork`, `config.mvrOverrides`. `createClient(net) => config.forNetwork(net)`.
+- Cross-link Going to production for the multi-network merge + deploy-drops-local build.
+- State the positive behavior once (Phase 3 tone rule).
+*/}

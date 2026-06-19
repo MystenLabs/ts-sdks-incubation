@@ -1,0 +1,19 @@
+---
+title: Sui config
+description: Declaring the local Sui network, RPC, faucet, and indexer for a stack.
+---
+
+The `sui()` member declares the local Sui network that backs a stack — the node, RPC endpoint,
+faucet, and GraphQL indexer. Everything else in the stack (packages, accounts, services) is wired on
+top of this network.
+
+{/* TODO(Phase 3): write the full "sui config" page. Scope (from the docs restructure plan, Phase 2
+"Configure your stack" + Phase 3 Packages/coins reframing):
+- What `sui()` does: boots the local node, exposes RPC, faucet, and the self-owned GraphQL indexer
+  sidecar (on by default; `sui({ indexer: false })` opts out; `indexerDb` for BYO).
+- The per-network connection fields it produces (rpc / chainId / faucet / graphql) and how those
+  feed the resolved NetworkDeployment.
+- How it relates to multi-network: a stack stays single-network; live networks are layered at the
+  Vite merge layer (cross-link Live networks & forking + Going to production).
+- State the positive behavior once; no defensive over-documentation (Phase 3 tone rule).
+*/}

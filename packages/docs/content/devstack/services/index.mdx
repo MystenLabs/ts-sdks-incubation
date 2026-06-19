@@ -35,7 +35,7 @@ export default defineDevstack({ members: [localnet, app] });
 
 The dev server binds the allocated process port injected through `HOST_SERVICE_PORT_TOKEN`, while
 the router exposes the stable dev endpoint on `http://dev.<app>.localhost:5175`. See
-[Dev servers](/devstack/features/services/dev-server#port-assignment-and-routing) for the port
+[Dev servers](/devstack/configure/dev-server#port-assignment-and-routing) for the port
 assignment details.
 
 ## Walrus
@@ -68,7 +68,7 @@ export default defineDevstack({
 
 Known mode requires explicit on-chain ids and an explicit node list. Fork stacks can use known
 Walrus deployments through `walrusFor(forkNetwork).known(...)`; local Walrus clusters remain a
-local-mode service. See [Walrus](/devstack/features/services/walrus).
+local-mode service. See [Walrus](/devstack/services/walrus).
 
 ## Seal
 
@@ -91,7 +91,7 @@ export default defineDevstack({
 
 Live modes reference existing key servers and do not expose a local manager. Fork stacks can point
 at the upstream key server through `sealFor(forkNetwork).forkKnown(...)`; local keygen remains a
-local-mode service. See [Seal](/devstack/features/services/seal).
+local-mode service. See [Seal](/devstack/services/seal).
 
 ## DeepBook
 
@@ -120,7 +120,7 @@ The current DeepBook surface only claims local pool creation, Pyth, margin, or m
 when those fields are present in the resolved value. Known mode still requires explicit deployed ids
 such as `packageId` and `registryId`, or a supported network shortcut. Local Pyth feeds are
 generated into the DeepBook bindings so app and Playwright code can assert the feed ids and initial
-prices that the stack created. See [DeepBook](/devstack/features/services/deepbook).
+prices that the stack created. See [DeepBook](/devstack/services/deepbook).
 
 ## Known on-chain dependencies
 
@@ -138,4 +138,4 @@ const registry = knownPackage('registry', {
 export default defineDevstack({ members: [liveSui, registry] });
 ```
 
-See [Known packages](/devstack/features/services/known-packages).
+See [Known packages](/devstack/configure/known-packages).

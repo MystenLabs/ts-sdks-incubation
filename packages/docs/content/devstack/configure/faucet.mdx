@@ -103,7 +103,7 @@ substrate-level dispatch does not retry for you. Wrap your `fetch` call so non-2
 
 ## Dashboard fund action
 
-The [web dashboard](/devstack/features/dashboard)'s Faucet panel exposes this same funding as a
+The [web dashboard](/devstack/configure/dashboard)'s Faucet panel exposes this same funding as a
 one-click **fund** action: SUI funds a fixed amount, while WAL and DEEP take an editable amount and
 fund a resolved account. It dispatches through the same registered funding strategies described
 above — the boot-time account-funding pass and the dashboard button share one code path.
@@ -120,4 +120,4 @@ The faucet error union is:
 A missing strategy for the requested chain is **not** a faucet tag — it surfaces as the substrate
 `StrategyNotFoundError` (carrying `capabilityKey` + `registeredKeys`).
 
-See [Errors](/devstack/errors).
+See [Errors](/devstack/reference/errors).

@@ -1,0 +1,21 @@
+---
+title: Forking
+description: Running a local fork of a public network — replay against real upstream state while keeping writes local.
+---
+
+Fork mode (`sui({ mode: 'fork' })`) runs a local `sui-fork` container against an upstream public
+network, so you can replay against real on-chain state while keeping all writes local. See
+[Live networks & forking](/devstack/live-networks) for the current fork documentation.
+
+{/* TODO(Phase 3): split the fork content out of live-networks.mdx into this dedicated page (the plan
+notes fork is "documented nowhere" was disproved — it lives in live-networks.mdx, just buried; it
+needs its own page, NOT net-new content). Move here from live-networks.mdx:
+- `mode: 'fork'` config, `sui-fork` container, gRPC endpoint, one-time pinned-revision build
+  (`DEVSTACK_SUI_FORK_IMAGE`).
+- Fork-specific knobs: `upstream`, `checkpoint`, `seed.addresses` / `seed.objects`, `autoTick`.
+- The `ForkAdminSurface` via `sui.fork` (status / advanceClock / advanceCheckpoint / impersonate).
+- `kind: 'impersonate'` accounts (empty-signature txns through the admin surface).
+- Fork faucet / whale impersonation funding (zero-config defaults; custom `faucet.whale`).
+- Fork-mode service factories (`walrusFor`/`sealFor` fork variants).
+After the split, leave live-networks.mdx focused on live testnet/mainnet and link here for forking.
+*/}
