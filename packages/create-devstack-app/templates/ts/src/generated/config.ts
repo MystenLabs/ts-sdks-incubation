@@ -4,18 +4,19 @@
 // imports from devstack.
 
 import { loadDeployment, requireId } from './config-runtime.js';
+import { NETWORK_NAMES } from './deployment.js';
 
 const __deployment = loadDeployment();
 const dep = __deployment.forNetwork(__deployment.defaultNetwork);
 
 export const config = {
-	defaultNetwork: __deployment.defaultNetwork,
+	defaultNetwork: __deployment.defaultNetwork as (typeof NETWORK_NAMES)[number],
 	forNetwork: __deployment.forNetwork,
 	mvrOverrides: {
 		"@local/counter": requireId(dep, "@local/counter"),
 	},
 	network: dep.network,
-	networkNames: __deployment.networkNames,
+	networkNames: NETWORK_NAMES,
 	networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)])),
 	packages: {
 		counter: {

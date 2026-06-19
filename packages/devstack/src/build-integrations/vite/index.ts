@@ -25,8 +25,9 @@
 // manifest read goes through the same `build-integrations/runtime`
 // machinery the playwright/vitest integrations use.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
 import { resolveNetworkOptions } from '../../orchestrators/network-options.ts';
@@ -102,7 +103,14 @@ export interface DevstackVitePluginOptions {
 	 *  networks a dev `serve` makes selectable alongside the live local one.
 	 *  Each thunk's `deployment` is validated against `NetworkDeploymentSchema`
 	 *  at config-load — a malformed committed file fails LOUDLY rather than
-	 *  silently injecting a broken network. Default `{}`. */
+	 *  silently injecting a broken network.
+	 *
+	 *  DEFAULT (when omitted): AUTO-DISCOVERY of `<root>/deployments/*.ts` (D7
+	 *  — "just drop a file"). Each filename (sans `.ts`) becomes a live network
+	 *  name keyed to a dynamic-`import()` thunk reading the file's `deployment`
+	 *  export. Supplying this option OVERRIDES auto-discovery entirely (a
+	 *  custom dir / explicit paths). No `deployments/` dir + no option ⇒ no
+	 *  committed networks. */
 	readonly deployments?: Readonly<Record<string, () => Promise<{ deployment: NetworkDeployment }>>>;
 	/** The network the app opens on when no live local network is present
 	 *  (a pure production build, or a dev serve with only committed
@@ -294,6 +302,54 @@ const resolveCommittedNetworks = async (
 	return committed;
 };
 
+/** Auto-discover the committed per-network deployment thunks by globbing
+ *  `<root>/deployments/*.ts` (D7 — "just drop a file" UX). Each filename
+ *  (sans `.ts`) becomes a live network name keyed to a thunk that
+ *  dynamically `import()`s the absolute file path and reads its `deployment`
+ *  export (the `dump-deployment`-emitted / hand-written
+ *  `export const deployment = {…} satisfies AppNetworkDeployment`). Returns
+ *  `{}` when there is no `deployments/` dir (a clean clone / template — a
+ *  pure types-only `deployment.ts` with an empty `ProvidedDeployments`). The
+ *  explicit `deployments` option overrides this entirely (custom dir/paths).
+ *  File CONTENTS are not read here — only the import is wired; ids load when
+ *  Vite transforms the thunk at build/serve. */
+const autoDiscoverDeployments = (
+	root: string,
+): Record<string, () => Promise<{ deployment: NetworkDeployment }>> => {
+	const deploymentsDir = resolve(root, 'deployments');
+	if (!existsSync(deploymentsDir)) return {};
+	const thunks: Record<string, () => Promise<{ deployment: NetworkDeployment }>> = {};
+	let files: ReadonlyArray<string>;
+	try {
+		files = readdirSync(deploymentsDir);
+	} catch {
+		return {};
+	}
+	for (const file of files) {
+		if (!file.endsWith('.ts') || file.endsWith('.d.ts')) continue;
+		const net = file.slice(0, -'.ts'.length);
+		if (net.length === 0) continue;
+		const abs = resolve(deploymentsDir, file);
+		// `/* @vite-ignore */` — the specifier is a runtime-computed absolute
+		// path (not a static literal Vite/Rollup can pre-analyze). Both Vite's
+		// dev server and `vite build` resolve it as a dynamic import.
+		thunks[net] = () =>
+			import(/* @vite-ignore */ pathToFileURL(abs).href) as Promise<{
+				deployment: NetworkDeployment;
+			}>;
+	}
+	return thunks;
+};
+
+/** The committed per-network deployments to merge — the explicit
+ *  `deployments` option when supplied, else auto-discovery of
+ *  `<root>/deployments/*.ts` (D7). */
+const resolveDeploymentThunks = (
+	options: DevstackVitePluginOptions,
+	root: string,
+): Record<string, () => Promise<{ deployment: NetworkDeployment }>> =>
+	options.deployments !== undefined ? { ...options.deployments } : autoDiscoverDeployments(root);
+
 /** The first key of a record, or `undefined` when empty. */
 const firstKey = (record: Record<string, unknown>): string | undefined => Object.keys(record)[0];
 
@@ -317,12 +373,15 @@ const mergeDeployment = (
 	if (command === 'build') {
 		if (Object.keys(committed).length === 0) return null;
 		const fallback = firstKey(committed)!;
+		// A pure prod build ships NO dev accounts (committed-only, network-
+		// agnostic identities exist only when running through devstack).
 		return {
 			defaultNetwork:
 				defaultNetworkOption !== undefined && committed[defaultNetworkOption] !== undefined
 					? defaultNetworkOption
 					: fallback,
 			networks: committed,
+			accounts: {},
 		};
 	}
 	// Dev serve / config-load default: overlay the live local network(s).
@@ -331,7 +390,14 @@ const mergeDeployment = (
 		for (const [net, dep] of Object.entries(live.networks)) {
 			networks[net] = { ...dep, network: net, local: true };
 		}
-		return { defaultNetwork: live.defaultNetwork, networks };
+		// Dev `accounts` ride the ENVELOPE (network-agnostic dev identities):
+		// the live local stack supplies them; committed `deployments/*.ts`
+		// networks carry none. Carry them through onto the merged envelope.
+		return {
+			defaultNetwork: live.defaultNetwork,
+			networks,
+			accounts: live.accounts ?? {},
+		};
 	}
 	const fallback = firstKey(networks);
 	if (fallback === undefined) return null;
@@ -341,6 +407,7 @@ const mergeDeployment = (
 				? defaultNetworkOption
 				: fallback,
 		networks,
+		accounts: {},
 	};
 };
 
@@ -357,7 +424,7 @@ const resolveInjectedDeployment = async (
 	command: 'build' | 'serve' | undefined,
 	options: DevstackVitePluginOptions,
 ): Promise<DevstackDeployment | null> => {
-	const committed = await resolveCommittedNetworks(options.deployments ?? {});
+	const committed = await resolveCommittedNetworks(resolveDeploymentThunks(options, root));
 	// Legacy `ids` / `DEVSTACK_DEPLOYMENT_FILE` fallback (build only, no
 	// `deployments` supplied): fold the committed FILE's networks in.
 	if (command === 'build' && Object.keys(committed).length === 0) {
@@ -534,7 +601,9 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// `transformIndexHtml` overlays the fresh live network on top of
 			// these without re-awaiting. A malformed committed file throws here,
 			// at config-load.
-			resolvedCommittedNetworks = await resolveCommittedNetworks(options.deployments ?? {});
+			resolvedCommittedNetworks = await resolveCommittedNetworks(
+				resolveDeploymentThunks(options, root),
+			);
 			// Inject the deployment envelope the generated `config-runtime.ts`
 			// resolver reads as `__DEVSTACK_DEPLOYMENT__`.
 			//   - PROD build: bake the static merged envelope literal (committed,

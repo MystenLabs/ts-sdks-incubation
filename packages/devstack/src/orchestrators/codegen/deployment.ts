@@ -22,9 +22,10 @@
 // The shape is a MULTI-NETWORK ENVELOPE: `{ defaultNetwork, networks }`.
 // Each `networks.<name>` entry is a `NetworkDeployment` — the id-half of
 // today's `config.ts` for that one network: rpc (+ chainId/faucet/graphql),
-// per-package ids (+ captured object ids), account addresses, the MVR
-// placeholder → id override map an app feeds dapp-kit, and a generic
-// `values` channel. A plain single-network dev stack produces an envelope
+// per-package ids (+ captured object ids), the MVR placeholder → id override
+// map an app feeds dapp-kit, and a generic `values` channel. Dev `accounts`
+// (name → address) live at the ENVELOPE level — they are network-agnostic
+// dev identities, not part of any per-network unit. A plain single-network dev stack produces an envelope
 // with exactly one entry (the live local network, `local: true`); a real
 // multi-network deployment keys several. The envelope is the uniform unit
 // the Vite plugin merges live (dev) + committed (prod) sources into.
@@ -100,8 +101,8 @@ export const DeploymentJsonSchema: Schema.Codec<JsonValue> = Schema.suspend(() =
 /** The generic resolver channel: a two-level namespaced map of arbitrary
  *  JSON values a plugin contributes at boot and the committed `config.ts`
  *  reads back via `resolveValue(namespace, key)`. This is the open-ended
- *  sibling to the typed `network`/`networks`/`packages`/`accounts`/
- *  `mvrOverrides` fields — it carries the plugin live values the fixed
+ *  sibling to the typed `network`/`networks`/`packages`/`mvrOverrides`
+ *  fields — it carries the plugin live values the fixed
  *  channel can't (deepbook pool ids, coin types, walrus/seal endpoints). */
 export const DeploymentValuesSchema = Schema.Record(
 	Schema.String,
@@ -140,9 +141,6 @@ export const NetworkDeploymentSchema = Schema.Struct({
 	packages: Schema.Record(Schema.String, DeploymentPackageSchema).pipe(
 		Schema.withDecodingDefaultKey(Effect.succeed({})),
 	),
-	accounts: Schema.Record(Schema.String, Schema.String).pipe(
-		Schema.withDecodingDefaultKey(Effect.succeed({})),
-	),
 	/** MVR placeholder (`@local/<slug>`) → resolved id, for this network.
 	 *  An app feeds this straight into dapp-kit's `mvr.overrides.packages`.
 	 *  Optional, default `{}` (see `packages`). */
@@ -164,6 +162,15 @@ export const DevstackDeploymentSchema = Schema.Struct({
 	/** The network the app opens on (a `networks.<name>` key). */
 	defaultNetwork: Schema.String,
 	networks: Schema.Record(Schema.String, NetworkDeploymentSchema),
+	/** DEV-only account name → address map. Accounts are a network-AGNOSTIC
+	 *  dev concept (keypair gen needs no network), so they live at the
+	 *  envelope level — NOT per-`NetworkDeployment`. They exist only when
+	 *  running THROUGH devstack (dev serve); a real prod deployment carries
+	 *  none. Optional, default `{}` (a hand-written committed envelope, or a
+	 *  pure prod build, omits it). */
+	accounts: Schema.Record(Schema.String, Schema.String).pipe(
+		Schema.withDecodingDefaultKey(Effect.succeed({})),
+	),
 });
 
 export type DevstackDeployment = typeof DevstackDeploymentSchema.Type;

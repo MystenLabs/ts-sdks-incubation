@@ -477,6 +477,14 @@ describe('codegen.runEmitCycle', () => {
 					});
 					expect(result.filesWritten.some((path) => path.endsWith('/config.ts'))).toBe(true);
 					expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
+					// The strict app-specific `deployment.ts` is emitted alongside
+					// `config-runtime.ts` (config.ts resolves ids at runtime).
+					expect(result.filesWritten.some((path) => path.endsWith(`${root}/deployment.ts`))).toBe(
+						true,
+					);
+					expect(
+						result.filesWritten.some((path) => path.endsWith(`${root}/config-runtime.ts`)),
+					).toBe(true);
 					// accounts.ts lands in the extras tree, NOT the runtime tree.
 					expect(
 						result.filesWritten.some((path) => path.endsWith(`${extrasOf(root)}/accounts.ts`)),
@@ -503,10 +511,11 @@ describe('codegen.runEmitCycle', () => {
 										rpc: 'http://127.0.0.1:9000',
 										local: true,
 										packages: { mock_usdc: { id: '0x1' } },
-										accounts: { alice: '0xabc' },
 										mvrOverrides: { 'mock-usdc': '0x1' },
 									},
 								},
+								// Dev accounts ride the ENVELOPE (network-agnostic), not the unit.
+								accounts: { alice: '0xabc' },
 							};
 						}),
 						() =>

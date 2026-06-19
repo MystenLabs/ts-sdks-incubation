@@ -46,7 +46,8 @@
 //   - Walk the user's Move-source mtimes (see `bindings.ts`).
 
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
-import { dirname } from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import {
 	isRawExpr,
@@ -57,6 +58,8 @@ import {
 	type OutputLocation,
 } from '../../contracts/codegenable.ts';
 import { CONFIG_RUNTIME_OUTPUT_PATH, CONFIG_RUNTIME_SOURCE } from './config-runtime.ts';
+import { DEPLOYMENT_STRICT_OUTPUT_PATH, renderDeploymentStrict } from './deployment-strict.ts';
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-and-swap/index.ts';
@@ -111,6 +114,13 @@ export interface RunEmitCycleInput {
 	 *  work on a fresh clone, ignoring only `sensitivePaths`. When
 	 *  `false`/omitted, the ephemeral tree is blanket-ignored. */
 	readonly trackTree?: boolean;
+	/** The LIVE network names — the app's `deployments/*.ts` filenames (sans
+	 *  `.ts`, local excluded) — used to render the strict `deployment.ts`
+	 *  type's `ProvidedNetwork` union + `NETWORK_NAMES` tuple. Omitted ⇒ the
+	 *  outer {@link runEmitCycle} discovers them by globbing
+	 *  `<projectRoot>/deployments/*.ts` (the canonical, non-staging output
+	 *  dir's grandparent). Empty / no dir ⇒ `ProvidedNetwork = never`. */
+	readonly providedNetworks?: ReadonlyArray<string>;
 }
 
 export interface RunEmitCycleResult {
@@ -133,6 +143,31 @@ const resolveAt = (
 
 const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
 	decl.outputLocation ?? 'generated';
+
+/** Discover the app's LIVE network names by globbing `<projectRoot>/deployments/*.ts`
+ *  (D7 — the network set is the `deployments/` directory, by FILENAME; the
+ *  file CONTENTS are never read — ids load at app build via Vite). The
+ *  project root is the grandparent of the canonical (non-staging) codegen
+ *  `outputDir` (`<projectRoot>/src/generated`). Returns the filenames sans
+ *  `.ts`, sorted; empty when there is no `deployments/` dir (a clean clone /
+ *  template — `ProvidedNetwork = never`, `NETWORK_NAMES = [<local>]`). Never
+ *  throws — a read failure degrades to empty (no live networks). */
+const discoverProvidedNetworks = (canonicalOutputDir: string): ReadonlyArray<string> => {
+	try {
+		// `<projectRoot>/src/generated` → `<projectRoot>`. `deployments/` is a
+		// sibling of `src/`.
+		const projectRoot = dirname(dirname(canonicalOutputDir));
+		const deploymentsDir = join(projectRoot, 'deployments');
+		if (!existsSync(deploymentsDir)) return [];
+		return readdirSync(deploymentsDir)
+			.filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+			.map((f) => f.slice(0, -'.ts'.length))
+			.filter((n) => n.length > 0)
+			.sort();
+	} catch {
+		return [];
+	}
+};
 
 /** A decl belongs to the `emitExtras` flush IFF it writes ONLY into the
  *  dev-only `generated-extras` tree. INVARIANT: `emitExtras` must NEVER
@@ -245,6 +280,15 @@ const runEmitCycleLocked = (
 		const moveRunner = yield* MoveSummaryRunnerService;
 		const moveCodegen = yield* MoveCodegenService;
 
+		// Discover the app's LIVE network set ONCE from the canonical (non-
+		// staging) `outputDir` — globbing `<projectRoot>/deployments/*.ts` by
+		// FILENAME (D7). Done here (not inside the staging build, whose
+		// `outputDir` is the throwaway `.staging.<id>` dir) so the project root
+		// resolves against the real tree. The caller may override (e.g. a test
+		// pinning a fixed set). Empty when no `deployments/` dir.
+		const providedNetworks = input.providedNetworks ?? discoverProvidedNetworks(paths.outputDir);
+		const innerInput: RunEmitCycleInput = { ...input, providedNetworks };
+
 		// Pre-flight contribution-set validation. Detected BEFORE the
 		// stage-and-swap so a programming-bug rejection (duplicate
 		// emitterName / outputPath collision) never opens an empty
@@ -288,7 +332,7 @@ const runEmitCycleLocked = (
 			idSuffix: cycleId,
 			preserveOnPreseed: true,
 			build: Effect.gen(function* () {
-				const inner = yield* runEmitCycleInner(input, stagingPaths).pipe(
+				const inner = yield* runEmitCycleInner(innerInput, stagingPaths).pipe(
 					Effect.provideService(MoveSummaryRunnerService, moveRunner),
 					Effect.provideService(MoveCodegenService, moveCodegen),
 				);
@@ -503,6 +547,20 @@ const runEmitCycleInner = (
 			if (!deploymentUsageEmpty(usage)) needsConfigRuntime = true;
 			const imports = deploymentImportsFor(usage);
 			const preamble = deploymentPreambleFor(usage);
+			// `config.ts` references the app-specific `NETWORK_NAMES` tuple (D2)
+			// for `defaultNetwork`/`networkNames`; import it from the strict
+			// `deployment.ts` we emit alongside `config-runtime.ts`. Scan for the
+			// identifier so only files that use it carry the import (oxlint flags
+			// unused). `import type` is wrong — `NETWORK_NAMES` is a runtime value
+			// (used both as a value AND in the `typeof` cast).
+			const usesNetworkNames = referencesNetworkNames(aggregate.exports);
+			const importLines: Array<string> = [];
+			if (imports.length > 0) {
+				importLines.push(`import { ${imports.join(', ')} } from './config-runtime.js';`);
+			}
+			if (usesNetworkNames) {
+				importLines.push(`import { NETWORK_NAMES } from './deployment.js';`);
+			}
 			const rendered = renderFile({
 				emitterName: aggregate.emitterName,
 				outputPath: aggregate.outputPath,
@@ -513,9 +571,7 @@ const runEmitCycleInner = (
 				// unused imports; oxlint is pinned and flags them) and emit the
 				// `loadDeployment()` / `dep` preamble. `.js` specifier (ESM/TS-
 				// resolved) mirrors the bindings' import style.
-				...(imports.length > 0
-					? { imports: [`import { ${imports.join(', ')} } from './config-runtime.js';`] }
-					: {}),
+				...(importLines.length > 0 ? { imports: importLines } : {}),
 				...(preamble.length > 0 ? { preamble } : {}),
 			});
 			if (!rendered.ok) {
@@ -562,6 +618,42 @@ const runEmitCycleInner = (
 					break;
 				case 'chmod-only':
 					filesChmod.push(abs);
+					break;
+			}
+
+			// Emit the APP-SPECIFIC strict `deployment.ts` type alongside the
+			// fixed `config-runtime.ts` (it imports `NetworkDeployment` from
+			// it). RENDERED FROM DATA: `AppPackages` is exhaustive over the
+			// declared package names, `AppNetworkDeployment.mvrOverrides`
+			// requires the declared `@local/*` placeholders, and
+			// `ProvidedNetwork` / `NETWORK_NAMES` enumerate the live networks
+			// from the `deployments/*.ts` filenames (D7, passed in
+			// `providedNetworks`). Types-only + zero runtime (bar the
+			// `NETWORK_NAMES` tuple) so a clean clone (no `deployments/` dir →
+			// empty `providedNetworks`) stays `tsc`-green.
+			const strictInput = strictTypeInputFrom(aggregateFiles);
+			const deploymentStrict = renderDeploymentStrict({
+				localNetworkName: LOCAL_NETWORK_NAME,
+				packageNames: strictInput.packageNames,
+				mvrPlaceholders: strictInput.mvrPlaceholders,
+				providedNetworks: input.providedNetworks ?? [],
+			});
+			const strictAbs = yield* paths.resolve(DEPLOYMENT_STRICT_OUTPUT_PATH);
+			const strictOutcome = yield* emitOne({
+				path: strictAbs,
+				content: deploymentStrict,
+				mode: 0o644,
+				parentMode: parentModeFor(strictAbs),
+			});
+			switch (strictOutcome.outcome) {
+				case 'wrote':
+					filesWritten.push(strictAbs);
+					break;
+				case 'unchanged':
+					filesUnchanged.push(strictAbs);
+					break;
+				case 'chmod-only':
+					filesChmod.push(strictAbs);
 					break;
 			}
 		}
@@ -911,11 +1003,36 @@ const withConfigEnvelopeAccessors = (file: AggregateFile): AggregateFile => {
 	if (!isPlainObject(inner)) return file;
 	const augmented: Record<string, unknown> = {
 		...inner,
-		defaultNetwork: rawExpr('__deployment.defaultNetwork'),
-		networkNames: rawExpr('__deployment.networkNames'),
+		// Typed against the app-specific `NETWORK_NAMES` tuple (D2) so dapp-kit's
+		// `switchNetwork(name)` is literal-checked: `defaultNetwork` narrows to
+		// the tuple's element union, and `networkNames` IS the literal tuple
+		// (the app's declared network set: local + committed `deployments/*.ts`).
+		defaultNetwork: rawExpr('__deployment.defaultNetwork as (typeof NETWORK_NAMES)[number]'),
+		networkNames: rawExpr('NETWORK_NAMES'),
 		forNetwork: rawExpr('__deployment.forNetwork'),
 	};
 	return { ...file, exports: { ...file.exports, [stem]: augmented } };
+};
+
+/** Pull the app's declared package names + MVR placeholders out of the
+ *  committed `config.ts` aggregate's inner `config` object — the SAME data
+ *  the strict `deployment.ts` type narrows over. `config.packages.<name>`
+ *  gives the package names; `config.mvrOverrides.<mvr>` gives the placeholder
+ *  keys. Both come from the deep-merged bucket (no chain / no live data), so
+ *  this stays a pure projection over already-collected exports. Returns empty
+ *  arrays when there is no `config.ts` aggregate. */
+const strictTypeInputFrom = (
+	aggregateFiles: ReadonlyArray<AggregateFile>,
+): { packageNames: ReadonlyArray<string>; mvrPlaceholders: ReadonlyArray<string> } => {
+	const configFile = aggregateFiles.find((f) => f.outputPath === CONFIG_BUCKET);
+	if (configFile === undefined) return { packageNames: [], mvrPlaceholders: [] };
+	const inner = configFile.exports[bucketStem(CONFIG_BUCKET)];
+	if (!isPlainObject(inner)) return { packageNames: [], mvrPlaceholders: [] };
+	const packagesNode = inner['packages'];
+	const mvrNode = inner['mvrOverrides'];
+	const packageNames = isPlainObject(packagesNode) ? Object.keys(packagesNode).sort() : [];
+	const mvrPlaceholders = isPlainObject(mvrNode) ? Object.keys(mvrNode).sort() : [];
+	return { packageNames, mvrPlaceholders };
 };
 
 /** Which `config-runtime.ts` deployment symbols an aggregate's emitted raw
@@ -975,6 +1092,16 @@ const scanDeploymentUsage = (
 	if (isPlainObject(value)) {
 		for (const v of Object.values(value)) scanDeploymentUsage(v, acc);
 	}
+};
+
+/** True when any raw expression in the exports references the `NETWORK_NAMES`
+ *  identifier (the strict `deployment.ts` tuple `config.ts` types against).
+ *  Drives the `./deployment.js` import injection. */
+const referencesNetworkNames = (value: unknown): boolean => {
+	if (isRawExpr(value)) return /\bNETWORK_NAMES\b/.test(value.expr);
+	if (Array.isArray(value)) return value.some(referencesNetworkNames);
+	if (isPlainObject(value)) return Object.values(value).some(referencesNetworkNames);
+	return false;
 };
 
 /** The deployment symbols an aggregate's exports use (all-false when the
@@ -1092,7 +1219,7 @@ export class CodegenOrchestratorService extends Context.Service<
  * Slice the deep-merged `config.ts` aggregate bucket into a single
  * loadable `NetworkDeployment` (the LIVE LOCAL network unit). The bucket is
  * the live codegen accumulation (sui `networks`, per-package `packages`/
- * `objects`/`mvrOverrides`, account `accounts`); this picks the id-bearing
+ * `objects`/`mvrOverrides`); this picks the id-bearing
  * fields the Vite plugin injects and FLATTENS the chosen network's
  * connection coordinates (rpc/chainId/faucet/graphql) inline. Reads are
  * defensive — any missing slice collapses to an empty record so a partial
@@ -1153,14 +1280,6 @@ const deploymentFromBucket = (
 		};
 	}
 
-	const accounts: Record<string, string> = {};
-	for (const [name, v] of Object.entries(asRecord(bucket['accounts']))) {
-		// Account bindings are an object keyed by name; the injectable id is
-		// the `address`. Tolerate a bare string too (a pinned known-config).
-		const address = asString(v) ?? asString(asRecord(v)['address']);
-		if (address !== undefined) accounts[name] = address;
-	}
-
 	const mvrOverrides: Record<string, string> = {};
 	for (const [mvr, v] of Object.entries(asRecord(bucket['mvrOverrides']))) {
 		const s = asString(v);
@@ -1203,7 +1322,6 @@ const deploymentFromBucket = (
 		// drops it; dev overlays it as the default network.
 		local: true,
 		packages,
-		accounts,
 		mvrOverrides,
 		...(Object.keys(values).length > 0 ? { values } : {}),
 	};
@@ -1247,8 +1365,10 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				const bucket: Record<string, unknown> = {};
 				// `accounts.ts` is a SEPARATE aggregate bucket (the account
 				// plugin routes it to `generated-extras`); fold its projection
-				// under an `accounts` key so the deployment carries account
-				// addresses alongside the `config.ts`-derived ids.
+				// into the ENVELOPE-level `accounts` map. Accounts are a
+				// network-AGNOSTIC dev concept, so they ride the envelope, NOT
+				// any per-network unit (the per-network shape a prod author
+				// writes has no accounts at all).
 				const accounts: Record<string, unknown> = {};
 				// The generic resolver channel — `values[namespace][key]` —
 				// accumulated from any LIVE config-binding aggregate that
@@ -1279,16 +1399,30 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 						if (projected !== null) deepMerge(accounts, projected);
 					}
 				}
-				bucket['accounts'] = accounts;
+				// Normalize the account-bucket projection (`{ <name>:
+				// { address } }`, tolerating a bare string) into the
+				// envelope-level name → address map.
+				const envelopeAccounts: Record<string, string> = {};
+				for (const [name, v] of Object.entries(accounts)) {
+					const address =
+						typeof v === 'string'
+							? v
+							: isPlainObject(v) && typeof v['address'] === 'string'
+								? v['address']
+								: undefined;
+					if (address !== undefined) envelopeAccounts[name] = address;
+				}
 				// The single-network slice — the live LOCAL network unit.
 				const unit = deploymentFromBucket(bucket, network, values as DeploymentValues);
 				// Wrap it in the multi-network envelope keyed by the unit's own
 				// (bucket-derived) network, so the on-disk shape is uniform with a
 				// multi-network deployment. A single-network dev stack ⇒ one entry.
+				// `accounts` ride the ENVELOPE (network-agnostic dev identities).
 				const unitNetwork = unit.network ?? network;
 				return {
 					defaultNetwork: unitNetwork,
 					networks: { [unitNetwork]: unit },
+					accounts: envelopeAccounts,
 				} satisfies DevstackDeployment;
 			});
 

@@ -110,7 +110,6 @@ export interface NetworkDeployment {
 	readonly packages: {
 		readonly [name: string]: { readonly id: string; readonly objects?: { readonly [k: string]: string } };
 	};
-	readonly accounts: { readonly [name: string]: string };
 	readonly mvrOverrides: { readonly [mvrPlaceholder: string]: string };
 	/** Generic resolver channel: \`values[namespace][key]\` carries arbitrary
 	 *  plugin JSON the typed fields above can't (deepbook pool ids, coin
@@ -125,6 +124,12 @@ export interface NetworkDeployment {
 export interface DevstackDeployment {
 	readonly defaultNetwork: string;
 	readonly networks: { readonly [name: string]: NetworkDeployment };
+	/** DEV-only account name → address map. Network-AGNOSTIC (keypair gen
+	 *  needs no network), so it lives on the envelope, NOT per-network. Only
+	 *  present when running THROUGH devstack (dev serve); a real prod
+	 *  deployment carries none. Optional — \`resolveAccounts()\` defaults to
+	 *  \`{}\` when absent. */
+	readonly accounts?: { readonly [name: string]: string };
 }
 
 /** Accessor returned by \`loadDeployment()\` — the default network, the set of
@@ -190,6 +195,17 @@ export const loadDeploymentOptional = (): LoadedDeployment | null => {
 	const injected = injectedDeployment();
 	if (injected === null || injected === undefined) return null;
 	return loadedFrom(injected);
+};
+
+/** The DEV-only account name → address map off the injected envelope.
+ *  Accounts are network-AGNOSTIC dev identities (envelope-level, never
+ *  per-network), injected only when running THROUGH devstack. Returns \`{}\`
+ *  — NOT a loud failure — when no deployment was injected or none carries
+ *  accounts (a pure prod build), so a dev-only consumer (e.g. the dev
+ *  wallet) no-ops gracefully. */
+export const resolveAccounts = (): { readonly [name: string]: string } => {
+	const injected = injectedDeployment();
+	return injected?.accounts ?? {};
 };
 
 /** Resolve a package id for an MVR placeholder off a loaded deployment.

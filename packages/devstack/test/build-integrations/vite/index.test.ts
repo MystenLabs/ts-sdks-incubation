@@ -100,7 +100,7 @@ const writeLiveEnvelope = (tmp: string, stack: string, network: string, rpc: str
 		JSON.stringify({
 			defaultNetwork: network,
 			networks: {
-				[network]: { network, rpc, packages: {}, accounts: {}, mvrOverrides: {} },
+				[network]: { network, rpc, packages: {}, mvrOverrides: {} },
 			},
 		}),
 	);
@@ -112,7 +112,7 @@ const writeLiveEnvelope = (tmp: string, stack: string, network: string, rpc: str
  *  merge stamps from the key). */
 const committedThunk = (rpc: string) => () =>
 	Promise.resolve({
-		deployment: { rpc, packages: {}, accounts: {}, mvrOverrides: {} },
+		deployment: { rpc, packages: {}, mvrOverrides: {} },
 	});
 
 interface ParsedEnvelope {
@@ -393,6 +393,45 @@ describe('devstackVitePlugin', () => {
 			const plugin = devstackVitePlugin();
 			const patch = await plugin.config({ root: tmp }, { command: 'build' });
 			expect(patch.define.__DEVSTACK_DEPLOYMENT__).toBe('null');
+		}));
+
+	it('AUTO-DISCOVERS <root>/deployments/*.ts (D7 — "just drop a file")', () =>
+		withTempRootAsync('devstack-vite', async (tmp) => {
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+			// Drop a committed `deployments/testnet.ts` — no `deployments` option.
+			const depsDir = join(tmp, 'deployments');
+			mkdirSync(depsDir, { recursive: true });
+			writeFileSync(
+				join(depsDir, 'testnet.ts'),
+				`export const deployment = { rpc: 'http://auto-testnet', packages: {}, mvrOverrides: {} };\n`,
+			);
+			// No explicit `deployments` option → auto-discovery picks up the file.
+			const plugin = devstackVitePlugin();
+			const patch = await plugin.config({ root: tmp }, { command: 'build' });
+			const envelope = parseDefine(patch.define);
+			expect(Object.keys(envelope.networks)).toEqual(['testnet']);
+			expect(envelope.networks['testnet']!.rpc).toBe('http://auto-testnet');
+			expect(envelope.networks['testnet']!.local).toBe(false);
+		}));
+
+	it('explicit deployments option OVERRIDES auto-discovery', () =>
+		withTempRootAsync('devstack-vite', async (tmp) => {
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+			// A `deployments/` dir exists, but the explicit option wins.
+			const depsDir = join(tmp, 'deployments');
+			mkdirSync(depsDir, { recursive: true });
+			writeFileSync(
+				join(depsDir, 'testnet.ts'),
+				`export const deployment = { rpc: 'http://auto', packages: {}, mvrOverrides: {} };\n`,
+			);
+			const plugin = devstackVitePlugin({
+				deployments: { mainnet: committedThunk('http://explicit-mainnet') },
+			});
+			const patch = await plugin.config({ root: tmp }, { command: 'build' });
+			const envelope = parseDefine(patch.define);
+			expect(Object.keys(envelope.networks)).toEqual(['mainnet']);
 		}));
 
 	it('a malformed committed thunk fails loud at config-load', () =>

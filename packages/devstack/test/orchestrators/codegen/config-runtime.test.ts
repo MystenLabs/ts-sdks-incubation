@@ -20,6 +20,7 @@ interface Resolver {
 	resolveActiveNetwork: () => { rpc: string };
 	resolveValue: <T = unknown>(namespace: string, key: string) => T;
 	resolveValueOptional: <T = unknown>(namespace: string, key: string) => T | undefined;
+	resolveAccounts: () => Record<string, string>;
 	DevstackConfigMissingError: new (detail: string) => Error;
 	// Deployment API (the typed, multi-network surface).
 	loadDeployment: () => LoadedDeploymentLike;
@@ -67,25 +68,28 @@ const loadResolver = (injected: unknown): Resolver => {
 	return sandbox.module.exports as unknown as Resolver;
 };
 
-/** Build a single-network envelope around one `NetworkDeployment` unit. */
-const envelope = (unit: {
-	network: string;
-	rpc: string;
-	packages?: Record<string, { id: string }>;
-	accounts?: Record<string, string>;
-	mvrOverrides?: Record<string, string>;
-	values?: Record<string, Record<string, unknown>>;
-	local?: boolean;
-}) => ({
+/** Build a single-network envelope around one `NetworkDeployment` unit. Dev
+ *  `accounts` ride the ENVELOPE (network-agnostic), NOT the per-network unit. */
+const envelope = (
+	unit: {
+		network: string;
+		rpc: string;
+		packages?: Record<string, { id: string }>;
+		mvrOverrides?: Record<string, string>;
+		values?: Record<string, Record<string, unknown>>;
+		local?: boolean;
+	},
+	accounts?: Record<string, string>,
+) => ({
 	defaultNetwork: unit.network,
 	networks: {
 		[unit.network]: {
 			packages: {},
-			accounts: {},
 			mvrOverrides: {},
 			...unit,
 		},
 	},
+	...(accounts !== undefined ? { accounts } : {}),
 });
 
 const localUnit = {
@@ -93,11 +97,10 @@ const localUnit = {
 	rpc: 'http://127.0.0.1:9000',
 	local: true,
 	packages: {},
-	accounts: {},
 	mvrOverrides: { '@local/demo': '0xabc' },
 	values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
 };
-const idsBlob = envelope(localUnit);
+const idsBlob = envelope(localUnit, { alice: '0xa11ce' });
 
 /** A two-network envelope (localnet default + a committed testnet). */
 const multiBlob = {
@@ -108,7 +111,6 @@ const multiBlob = {
 			rpc: 'http://127.0.0.1:9000',
 			local: true,
 			packages: {},
-			accounts: {},
 			mvrOverrides: { '@local/demo': '0xabc' },
 			values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
 		},
@@ -117,11 +119,11 @@ const multiBlob = {
 			rpc: 'http://testnet.example',
 			local: false,
 			packages: {},
-			accounts: {},
 			mvrOverrides: { '@local/demo': '0xdef' },
 			values: {},
 		},
 	},
+	accounts: { alice: '0xa11ce' },
 };
 
 const UNRESOLVED = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -134,6 +136,35 @@ describe('CONFIG_RUNTIME_SOURCE shape', () => {
 		for (const name of ['resolveId', 'resolveNetwork', 'resolveNetworks', 'resolveValue']) {
 			expect(CONFIG_RUNTIME_SOURCE).toContain(`export const ${name}`);
 		}
+	});
+
+	it('exports the envelope-level resolveAccounts helper', () => {
+		expect(CONFIG_RUNTIME_SOURCE).toContain('export const resolveAccounts');
+		// Accounts hoisted OUT of the per-network unit — the per-network
+		// `NetworkDeployment` interface carries no `accounts` field.
+		expect(CONFIG_RUNTIME_SOURCE).not.toContain('readonly accounts: {');
+	});
+});
+
+describe('resolveAccounts (envelope-level dev accounts)', () => {
+	it('returns the envelope accounts map', () => {
+		const r = loadResolver(idsBlob);
+		expect(r.resolveAccounts()).toEqual({ alice: '0xa11ce' });
+	});
+
+	it('returns the envelope accounts from a multi-network envelope', () => {
+		const r = loadResolver(multiBlob);
+		expect(r.resolveAccounts()).toEqual({ alice: '0xa11ce' });
+	});
+
+	it('returns {} (no throw) when no deployment was injected', () => {
+		const r = loadResolver(null);
+		expect(r.resolveAccounts()).toEqual({});
+	});
+
+	it('returns {} when the envelope carries no accounts (prod build)', () => {
+		const r = loadResolver(envelope(localUnit));
+		expect(r.resolveAccounts()).toEqual({});
 	});
 });
 
