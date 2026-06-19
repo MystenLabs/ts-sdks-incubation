@@ -7,12 +7,13 @@ import {
 
 describe('network-scoped options', () => {
 	describe('defaultNetworkOptions', () => {
-		it('turns dev conveniences ON for every non-mainnet network', () => {
+		it('turns dev wallet ON for every non-mainnet network, signing OFF', () => {
+			// `autoApproveSigning` defaults OFF even on dev networks so `pnpm dev`
+			// shows the real connect + approve UX; tests opt in via env/override.
 			for (const network of ['localnet', 'testnet', 'devnet']) {
 				expect(defaultNetworkOptions(network)).toEqual({
 					devWallet: true,
-					faucet: true,
-					autoApproveSigning: true,
+					autoApproveSigning: false,
 				});
 			}
 		});
@@ -20,7 +21,6 @@ describe('network-scoped options', () => {
 		it('turns dev conveniences OFF for live mainnet', () => {
 			expect(defaultNetworkOptions('mainnet')).toEqual({
 				devWallet: false,
-				faucet: false,
 				autoApproveSigning: false,
 			});
 		});
@@ -39,51 +39,57 @@ describe('network-scoped options', () => {
 		});
 
 		it('merges author overrides field-by-field on top of the policy', () => {
-			// Disable just the wallet on localnet; faucet/signing keep the default.
+			// Disable just the wallet on localnet; signing keeps the default.
 			expect(resolveNetworkOptions('localnet', { localnet: { devWallet: false } })).toEqual({
 				devWallet: false,
-				faucet: true,
-				autoApproveSigning: true,
+				autoApproveSigning: false,
 			});
+		});
+
+		it('lets an author opt back into auto-approve on a dev network', () => {
+			// The default is OFF, so a fast-iteration author can re-enable
+			// auto-signing for localnet without the env var.
+			expect(resolveNetworkOptions('localnet', { localnet: { autoApproveSigning: true } })).toEqual(
+				{
+					devWallet: true,
+					autoApproveSigning: true,
+				},
+			);
 		});
 
 		it('HARD-CLAMPS devWallet OFF on mainnet even with an explicit opt-in', () => {
-			// `{ mainnet: { devWallet: true } }` MUST NOT mount the test-only dev
-			// wallet on real mainnet — it would flush the secret generated-extras
-			// tree and inject a signer into a production build.
+			// `{ mainnet: { devWallet: true } }` MUST NOT signal mounting the
+			// test-only dev wallet on real mainnet (the resolved flag stays off).
 			expect(resolveNetworkOptions('mainnet', { mainnet: { devWallet: true } })).toEqual({
 				devWallet: false,
-				faucet: false,
 				autoApproveSigning: false,
 			});
 		});
 
-		it('HARD-CLAMPS faucet + autoApproveSigning OFF on mainnet even with explicit opt-ins', () => {
+		it('HARD-CLAMPS autoApproveSigning OFF on mainnet even with an explicit opt-in', () => {
 			// Mirrors the devWallet clamp: no dev convenience may be silently
 			// enabled on a real-funds mainnet. An explicit
-			// `{ mainnet: { faucet: true, autoApproveSigning: true } }` MUST NOT
-			// expose a funding faucet or auto-approve a real-funds signature.
+			// `{ mainnet: { autoApproveSigning: true } }` MUST NOT auto-approve a
+			// real-funds signature.
 			expect(
 				resolveNetworkOptions('mainnet', {
-					mainnet: { faucet: true, autoApproveSigning: true },
+					mainnet: { autoApproveSigning: true },
 				}),
 			).toEqual({
 				devWallet: false,
-				faucet: false,
 				autoApproveSigning: false,
 			});
 		});
 
-		it('honors faucet + autoApproveSigning overrides on a non-mainnet network', () => {
+		it('honors an autoApproveSigning override on a non-mainnet network', () => {
 			// Off-by-override on a dev network: the clamp is mainnet-only, so a
-			// non-mainnet network can opt each convenience out individually.
+			// non-mainnet network can opt the convenience out individually.
 			expect(
 				resolveNetworkOptions('testnet', {
-					testnet: { faucet: false, autoApproveSigning: false },
+					testnet: { autoApproveSigning: false },
 				}),
 			).toEqual({
 				devWallet: true,
-				faucet: false,
 				autoApproveSigning: false,
 			});
 		});

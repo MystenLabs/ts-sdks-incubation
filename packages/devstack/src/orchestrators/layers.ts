@@ -46,7 +46,6 @@ export const buildVerbLayers = (params: {
 	layerProductionOrchestrators({
 		codegen: resolveProductionCodegenOptions({
 			appRoot: params.appRoot,
-			effectiveStack: String(params.identity.stack),
 			codegen: params.stack.options.codegen,
 		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(params.identity, params.runtimeRoot)));

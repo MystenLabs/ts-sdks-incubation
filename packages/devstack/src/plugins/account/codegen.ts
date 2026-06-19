@@ -1,40 +1,36 @@
 // Account plugin — Codegenable contribution.
 //
 // Architecture §6 + 12-account.md "Cross-component references":
-// Codegen emits a constant address map keyed by account name so
-// downstream code can `import { accounts } from '<staged>/accounts'`
-// and read `accounts.alice.address` at the type level.
+// Accounts are a DEV-only, network-AGNOSTIC concept. The account name →
+// address map rides the deployment ENVELOPE's `accounts` channel: boot's
+// `assembleDeployment` folds this decl's `accounts.ts` aggregate
+// projection into `deployment.accounts`, which the generated
+// `config-runtime.ts` exposes via `resolveAccounts()`. The decl is
+// VALUES-ONLY — it emits NO standalone file and lands no `accounts.ts`
+// tree on disk (the dev wallet reads the addresses off the injected
+// deployment, not an import).
 //
-// Distilled-doc tension (12-account.md "publicKey caveat"):
-// impersonation accounts have a zero-buffer publicKey — emitting it
-// into the codegen bindings would be a type-level lie. The emitted
-// shape below carries the `source` discriminator INSTEAD of
-// publicKey; consumers branch on `source: 'impersonate'` rather than
-// publicKey-truthiness.
-//
-// SAFETY: the codegen output never emits secret material. Only the
-// `name`, `address`, `scheme`, and `source` fields land on disk.
-// `sensitive: false` is correct because none of these are secret.
+// SAFETY: only the non-secret `name` + `address` reach the deployment.
+// No keypair / secret material is ever projected.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
 import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
 
-/** The typed shape the emitted file exports. Per-account record keyed
- *  by name. */
+/** The typed shape the account decl projects. Per-account record keyed
+ *  by name → address. (No `scheme`/`source` — those had no consumer and
+ *  the address is the only field the envelope-level `accounts` map carries.) */
 export interface AccountBindings {
 	readonly name: string;
 	readonly address: string;
-	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
-	readonly source: 'real' | 'impersonate';
 }
 
-/** Construct the Codegenable contribution. One emit per account.
+/** Construct the Codegenable contribution. One decl per account.
  *
- *  The emitter name is `account/${name}` (literal) so multiple
- *  accounts in a single stack get co-located but typed-distinct
- *  emissions; the codegen orchestrator can fold them into a single
- *  `accounts` namespace at staging time. */
+ *  Values-only: emits NO standalone file. The combined `accounts.ts`
+ *  aggregate projection is consumed ONLY by boot's `assembleDeployment`,
+ *  which folds it into the deployment envelope's network-agnostic
+ *  `accounts` map (name → address). No `accounts.ts` file is written. */
 export const makeAccountCodegen = <Name extends string>(parts: {
 	readonly name: Name;
 	readonly resolved: AccountBindings;
@@ -44,17 +40,10 @@ export const makeAccountCodegen = <Name extends string>(parts: {
 		outputPath: `accounts/${parts.name}.ts`,
 		exportName: parts.name,
 		value: parts.resolved,
-		// Dev-only surface: the combined `accounts.ts` lands in the
-		// gitignored `generated-extras` tree (reached via `@devstack-dev`),
-		// and no standalone per-account file is emitted (aggregateOnly).
-		// The template app must NOT use accounts at runtime; examples
-		// (dev-only) import them from `@devstack-dev`.
-		outputLocation: 'generated-extras',
 		aggregateOnly: true,
 		aggregate: {
 			kind: 'account',
 			bucket: 'accounts.ts',
-			outputLocation: 'generated-extras',
 			// Pass-through: this decl's exported map already keys by
 			// account name, which is the aggregate's merge key.
 			project: (exported) => exported,

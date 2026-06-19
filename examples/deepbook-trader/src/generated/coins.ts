@@ -3,41 +3,46 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveValue } from './config-runtime.js';
+import { loadDeployment, requireValue } from './config-runtime.js';
 
 export const coins = {
-	dbtc: {
-		decimals: resolveValue("coin:dbtc", "decimals") as number,
-		fullCoinType: resolveValue("coin:dbtc", "fullCoinType") as string,
-		packageId: resolveValue("coin:dbtc", "packageId") as string | null,
-		source: "registry",
-		symbol: "dbtc",
-	},
-	deep: {
-		decimals: resolveValue("coin:deep", "decimals") as number,
-		fullCoinType: resolveValue("coin:deep", "fullCoinType") as string,
-		packageId: resolveValue("coin:deep", "packageId") as string | null,
-		source: "registry",
-		symbol: "deep",
-	},
-	deth: {
-		decimals: resolveValue("coin:deth", "decimals") as number,
-		fullCoinType: resolveValue("coin:deth", "fullCoinType") as string,
-		packageId: resolveValue("coin:deth", "packageId") as string | null,
-		source: "registry",
-		symbol: "deth",
-	},
-	dusdc: {
-		decimals: resolveValue("coin:dusdc", "decimals") as number,
-		fullCoinType: resolveValue("coin:dusdc", "fullCoinType") as string,
-		packageId: resolveValue("coin:dusdc", "packageId") as string | null,
-		source: "registry",
-		symbol: "dusdc",
-	},
-	sui: {
-		decimals: 9,
-		fullCoinType: "0x2::sui::SUI",
-		source: "builtin",
-		symbol: "sui",
+	forNetwork(network: string) {
+		const dep = loadDeployment().forNetwork(network);
+		return {
+			dbtc: {
+				decimals: requireValue<number>(dep, "coin:dbtc", "decimals"),
+				fullCoinType: requireValue<string>(dep, "coin:dbtc", "fullCoinType"),
+				packageId: requireValue<string | null>(dep, "coin:dbtc", "packageId"),
+				source: "registry",
+				symbol: "dbtc",
+			},
+			deep: {
+				decimals: requireValue<number>(dep, "coin:deep", "decimals"),
+				fullCoinType: requireValue<string>(dep, "coin:deep", "fullCoinType"),
+				packageId: requireValue<string | null>(dep, "coin:deep", "packageId"),
+				source: "registry",
+				symbol: "deep",
+			},
+			deth: {
+				decimals: requireValue<number>(dep, "coin:deth", "decimals"),
+				fullCoinType: requireValue<string>(dep, "coin:deth", "fullCoinType"),
+				packageId: requireValue<string | null>(dep, "coin:deth", "packageId"),
+				source: "registry",
+				symbol: "deth",
+			},
+			dusdc: {
+				decimals: requireValue<number>(dep, "coin:dusdc", "decimals"),
+				fullCoinType: requireValue<string>(dep, "coin:dusdc", "fullCoinType"),
+				packageId: requireValue<string | null>(dep, "coin:dusdc", "packageId"),
+				source: "registry",
+				symbol: "dusdc",
+			},
+			sui: {
+				decimals: 9,
+				fullCoinType: "0x2::sui::SUI",
+				source: "builtin",
+				symbol: "sui",
+			},
+		} as const;
 	},
 } as const;

@@ -51,13 +51,13 @@ import { WALRUS_ERROR_TAGS } from '../../src/plugins/walrus/errors.ts';
 import { StrategyNotFoundError } from '../../src/substrate/runtime/errors.ts';
 
 const ERRORS_DOC = fileURLToPath(
-	new URL('../../../docs/content/devstack/errors.mdx', import.meta.url),
+	new URL('../../../docs/content/devstack/reference/errors.mdx', import.meta.url),
 );
 const FAUCET_DOC = fileURLToPath(
-	new URL('../../../docs/content/devstack/features/faucet.mdx', import.meta.url),
+	new URL('../../../docs/content/devstack/configure/faucet.mdx', import.meta.url),
 );
 const ACTIONS_DOC = fileURLToPath(
-	new URL('../../../docs/content/devstack/features/actions.mdx', import.meta.url),
+	new URL('../../../docs/content/devstack/configure/actions.mdx', import.meta.url),
 );
 
 const FAUCET_ERRORS_SRC = fileURLToPath(

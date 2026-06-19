@@ -7,8 +7,8 @@ import {
 } from '@mysten/seal';
 import { Transaction } from '@mysten/sui/transactions';
 
-import { dAppKit, vaultPackageId } from '../dapp-kit.js';
-import { deployment } from './deployment.js';
+import { dAppKit, vaultPackageIdFor } from '../dapp-kit.js';
+import { deploymentForNetwork } from './deployment.js';
 import { bytesToHex, hexToBytes } from './format.js';
 import * as vault from '@generated/bindings/vault/vault.js';
 
@@ -32,18 +32,21 @@ const serverConfigsCacheKey = (configs: ReadonlyArray<KeyServerConfig>) =>
 
 export function getSealClient(
 	suiClient: SealCompatibleClient,
-	serverConfigs: ReadonlyArray<KeyServerConfig> = deployment.seal?.serverConfigs ?? [],
+	network: string,
+	serverConfigs?: ReadonlyArray<KeyServerConfig>,
 ): SealClient {
-	if (!deployment.seal) {
+	const dep = deploymentForNetwork(network);
+	if (!dep.seal) {
 		throw new Error(
 			'getSealClient: seal bindings are missing. Did `devstack apply` complete the seal bootstrap step?',
 		);
 	}
-	const key = serverConfigsCacheKey(serverConfigs);
+	const configs = serverConfigs ?? dep.seal.serverConfigs ?? [];
+	const key = `${network}|${serverConfigsCacheKey(configs)}`;
 	if (cachedClient && cachedClientKey === key) return cachedClient;
 	cachedClient = new SealClient({
 		suiClient,
-		serverConfigs: [...serverConfigs],
+		serverConfigs: [...configs],
 		// Self-signed key server in Open mode — the SDK can't verify it
 		// against the on-chain registration without the public key
 		// matching what we generated locally; skipping verification is
@@ -82,10 +85,12 @@ export function freshSealId(): { hex: string; bytes: Uint8Array } {
  */
 export async function encryptForSealId(opts: {
 	suiClient: SealCompatibleClient;
+	network: string;
 	sealIdHex: string;
 	data: Uint8Array;
 }): Promise<Uint8Array> {
-	const seal = getSealClient(opts.suiClient);
+	const seal = getSealClient(opts.suiClient, opts.network);
+	const vaultPackageId = vaultPackageIdFor(opts.network);
 	if (!vaultPackageId) throw new Error('encryptForSealId: vault package not deployed');
 	const { encryptedObject } = await seal.encrypt({
 		threshold: SEAL_THRESHOLD,
@@ -104,12 +109,18 @@ export async function encryptForSealId(opts: {
  */
 export async function decryptForFile(opts: {
 	suiClient: SealCompatibleClient;
+	network: string;
 	address: string;
 	fileId: string;
 	sealIdHex: string;
 	encrypted: Uint8Array;
 }): Promise<Uint8Array> {
-	const seal = getSealClient(opts.suiClient, serverConfigsForEncryptedObject(opts.encrypted));
+	const seal = getSealClient(
+		opts.suiClient,
+		opts.network,
+		serverConfigsForEncryptedObject(opts.encrypted),
+	);
+	const vaultPackageId = vaultPackageIdFor(opts.network);
 	if (!vaultPackageId) throw new Error('decryptForFile: vault package not deployed');
 
 	const sessionKey = await SessionKey.create({

@@ -19,8 +19,9 @@ import type {
 	WalletAccount,
 	WalletIcon,
 } from '@mysten/wallet-standard';
-import { getWallets, ReadonlyWalletAccount, SUI_CHAINS } from '@mysten/wallet-standard';
+import { getWallets, ReadonlyWalletAccount } from '@mysten/wallet-standard';
 
+import { chainsForNetworks } from '../adapters/build-managed-account.js';
 import type { SignerAdapter } from '../types.js';
 import { DEFAULT_WALLET_ICON, getNetworkFromChain, type WalletEventsMap } from './constants.js';
 import { type SigningResult, executeSigning } from './signing.js';
@@ -78,6 +79,12 @@ export interface DevWalletConfig {
 	adapters: SignerAdapter[];
 	/** Network URLs by name (network → gRPC endpoint). Defaults to devnet, testnet, and localnet. */
 	networks?: Record<string, string>;
+	/** Optional per-network faucet endpoints (network → faucet URL). The
+	 *  active network's faucet is resolvable via {@link DevWallet.activeFaucet}
+	 *  / {@link DevWallet.getFaucet}, so a fund flow funds the SELECTED
+	 *  network's account. Networks without a faucet (live mainnet, fork
+	 *  stacks) simply omit a key. */
+	faucets?: Record<string, string>;
 	/** Display name for the wallet. Defaults to 'Dev Wallet'. */
 	name?: string;
 	icon?: WalletIcon;
@@ -106,6 +113,7 @@ export interface DevWalletConfig {
 export class DevWallet implements Wallet {
 	readonly #adapters: SignerAdapter[];
 	#networkUrls: Record<string, string>;
+	#faucetUrls: Record<string, string>;
 	#clients: Record<string, ClientWithCoreApi>;
 	#activeNetwork: string;
 	readonly #name: string;
@@ -137,6 +145,7 @@ export class DevWallet implements Wallet {
 		this.#adapters = config.adapters;
 		this.#persistNetworks = config.persistNetworks ?? false;
 		this.#networkUrls = this.#loadNetworkUrls(config.networks ?? DEFAULT_NETWORK_URLS);
+		this.#faucetUrls = { ...config.faucets };
 		this.#clients = {};
 		this.#activeNetwork = config.activeNetwork ?? Object.keys(this.#networkUrls)[0] ?? '';
 		this.#name = config.name ?? DEFAULT_WALLET_NAME;
@@ -169,8 +178,16 @@ export class DevWallet implements Wallet {
 		return this.#icon;
 	}
 
-	get chains() {
-		return SUI_CHAINS;
+	/**
+	 * Wallet-standard chains this wallet advertises. Reflects the CONFIGURED
+	 * networks — each network name is advertised as `sui:<name>` so dApp Kit's
+	 * chain-gated paths work for fork networks (`testnet-fork`, …) and custom
+	 * network names, not just the fixed standard set. Unioned with the standard
+	 * Sui chains for safety, de-duplicated, with the standard chains first and
+	 * configured-only chains appended in network-map order.
+	 */
+	get chains(): `sui:${string}`[] {
+		return chainsForNetworks(Object.keys(this.#networkUrls));
 	}
 
 	get accounts(): readonly ReadonlyWalletAccount[] {
@@ -273,6 +290,25 @@ export class DevWallet implements Wallet {
 		return { ...this.#networkUrls };
 	}
 
+	/** Per-network faucet endpoints (network → faucet URL). Networks without
+	 *  a faucet are absent from the map. */
+	get faucetUrls(): Record<string, string> {
+		return { ...this.#faucetUrls };
+	}
+
+	/** Faucet endpoint for the named network, or `null` when that network has
+	 *  no faucet configured. */
+	getFaucet(network: string): string | null {
+		return this.#faucetUrls[network] ?? null;
+	}
+
+	/** Faucet endpoint for the currently-active network, or `null` when the
+	 *  active network has no faucet (live mainnet, fork stacks). Drives a
+	 *  fund flow against the SELECTED network. */
+	get activeFaucet(): string | null {
+		return this.getFaucet(this.#activeNetwork);
+	}
+
 	get activeNetwork(): string {
 		return this.#activeNetwork;
 	}
@@ -294,10 +330,10 @@ export class DevWallet implements Wallet {
 			);
 		}
 		this.#activeNetwork = network;
-		this.#events.emit('change', { accounts: this.#accounts });
+		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
-	addNetwork(name: string, url: string): void {
+	addNetwork(name: string, url: string, faucet?: string | null): void {
 		let parsed: URL;
 		try {
 			parsed = new URL(url);
@@ -309,18 +345,22 @@ export class DevWallet implements Wallet {
 		}
 		this.#networkUrls[name] = url;
 		this.#clients[name] = this.#clientFactory(name, url);
+		if (faucet !== undefined && faucet !== null) {
+			this.#faucetUrls[name] = faucet;
+		}
 		this.#saveNetworkUrls();
-		this.#events.emit('change', { accounts: this.#accounts });
+		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
 	removeNetwork(name: string): void {
 		delete this.#networkUrls[name];
+		delete this.#faucetUrls[name];
 		delete this.#clients[name];
 		if (this.#activeNetwork === name) {
 			this.#activeNetwork = Object.keys(this.#networkUrls)[0] ?? '';
 		}
 		this.#saveNetworkUrls();
-		this.#events.emit('change', { accounts: this.#accounts });
+		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
 	/** Register this wallet with the wallet-standard registry. Returns an unregister function. */

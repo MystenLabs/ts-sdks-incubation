@@ -1,0 +1,96 @@
+---
+title: Faucet and funding strategies
+description: How devstack funds accounts, and how plugin authors add a faucet strategy for a chain.
+---
+
+Most of the time you don't configure a faucet at all. Local `sui()` brings one up for you, and
+[account funding](/devstack/configure/accounts-and-wallet) draws on it automatically —
+`{ coin: 'sui', amount }` pulls from the faucet, managed coins mint from their treasury cap. This
+page covers where that funding comes from, and how a plugin author adds a faucet for a new chain.
+
+## How funding finds its source
+
+When `account('alice', { funding: [{ coin: 'sui', amount: 1_000_000_000n }] })` resolves, devstack
+looks up a funding strategy by the active network's chain id:
+
+```txt
+faucet:request:<chainId>
+```
+
+where `<chainId>` is the resolved network — `sui:localnet`, `sui:testnet`,
+`sui:mainnet-fork@<height>`, and so on. If a strategy is registered for that key, the request goes
+through it. If none is registered, SUI funding raises `StrategyNotFoundError`, which lists the keys
+that are registered so you can see what's wired.
+
+Non-SUI funding (managed local-package coins, `walCoin(localWalrus)`, and the like) works the same
+way under a `coinType:<fullCoinType>` key. A missing non-SUI strategy is a no-op so optional service
+funding stays ergonomic; a missing SUI strategy is an error, since default account funding depends
+on it.
+
+## Adding a faucet strategy
+
+There's no `faucet()` stack member to compose — `sui()` registers its `sui:localnet` strategy for
+you. To fund a chain devstack doesn't already cover, a plugin author provides a strategy with
+`defineFaucetStrategy(...)`:
+
+```ts title="my-faucet/index.ts"
+import { Effect } from 'effect';
+import { defineFaucetStrategy, definePlugin } from '@mysten-incubation/devstack';
+
+export const myFaucet = (chainId: `sui:${string}`) =>
+	definePlugin({
+		id: 'my-faucet-strategy',
+		role: 'service',
+		section: 'service',
+		start: () => Effect.succeed({}),
+		capabilities: [
+			defineFaucetStrategy({
+				chainId,
+				strategy: {
+					request: ({ address, amount }) =>
+						// ... call the actual faucet wire here.
+						Effect.succeed({ address, amount }),
+				},
+			}),
+		],
+	});
+```
+
+`defineFaucetStrategy` packages a `{ chainId, strategy }` pair. The capability key is computed from
+the chain id, and the strategy registers as the plugin starts — so pass the real resolved `chainId`
+for the network the plugin runs against.
+
+Two options shape how it behaves:
+
+- **`autoMounted: false`** (default) — the contribution shows up in the dashboard so you can see
+  what funding is wired. Pass `true` for built-ins the orchestrator includes automatically.
+- **`priority: 1`** (default) — a user strategy wins over the built-in's `0`. Higher wins.
+
+### Failure handling
+
+A strategy is responsible for raising the right tagged error on each failure path; dispatch does not
+retry for you. Wrap your `fetch` so a non-2xx response surfaces as `FaucetUnreachable` or
+`FaucetBodyError`, and a `200 OK` body carrying `{ status: { Failure } }` surfaces as
+`FaucetBodyError({ reason: 'failure-status' })`. (The Sui faucet binary answers requests during a
+warm-up window before it can actually transfer coins, so both cases come up in practice.)
+
+## Funding from the dashboard
+
+The [web dashboard](/devstack/configure/dashboard)'s Faucet panel exposes the same funding as a
+one-click action: SUI funds a fixed amount, while WAL and DEEP take an editable amount and fund a
+resolved account. The button and the boot-time funding pass run through the same registered
+strategies.
+
+## Failure surface
+
+The faucet error union is:
+
+- `FaucetUnreachable` — transport-level (ECONNREFUSED, DNS, TLS, AbortSignal timeout).
+- `FaucetExhausted` — wall-clock budget exhausted; carries `attempts: number` and `lastCause`.
+- `FaucetBodyError` — `reason: 'failure-status' | 'invalid-json'`.
+- `FaucetConfigError` — invalid strategy config.
+
+A missing strategy for the requested chain is not a faucet error — it surfaces as
+`StrategyNotFoundError` (carrying `capabilityKey` + `registeredKeys`).
+
+See [Errors](/devstack/reference/errors).

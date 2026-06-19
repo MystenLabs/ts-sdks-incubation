@@ -1,0 +1,126 @@
+---
+title: Sui config
+description: Declaring the local Sui network, RPC, faucet, indexer, and forking for a stack.
+---
+
+`sui()` gives a stack its network — the node, RPC endpoint, faucet, and GraphQL indexer that every
+other member (packages, accounts, coins, services) builds on. Add one `sui()` member and the rest of
+your config has a chain to publish to, fund from, and read against.
+
+With no options, `sui()` boots a local validator with RPC, a faucet, and the GraphQL indexer all on.
+That single line is the whole network for local development: created fresh each boot, torn down with
+the stack.
+
+```ts title="devstack.config.ts"
+import { defineDevstack, sui } from '@mysten-incubation/devstack';
+
+const localnet = sui();
+
+export default defineDevstack({ members: [localnet] });
+```
+
+## Modes
+
+`sui()` runs in one of four modes, chosen by the options you pass. Local is the default; the others
+point at networks you don't run.
+
+| Mode        | Selector                             | What it does                                                   |
+| ----------- | ------------------------------------ | -------------------------------------------------------------- |
+| `local`     | `sui()`                              | In-stack validator + faucet + GraphQL, published from scratch  |
+| `local-rpc` | `sui({ mode: 'local-rpc', rpcUrl })` | Wraps a Sui process you already run — no container             |
+| `live`      | `sui({ mode: 'live', network })`     | Reads/trades against testnet, mainnet, devnet, or a custom RPC |
+| `fork`      | `sui({ mode: 'fork', upstream })`    | A `sui-fork` node mirroring a real chain at a checkpoint       |
+
+A stack is single-network: one `sui()` member, one network. To ship an app that switches between
+local and live networks at runtime, you layer those deployments at the Vite merge step rather than
+inside the stack — see [Live networks](/devstack/live-networks) and
+[Going to production](/devstack/going-to-production).
+
+## Local mode
+
+```ts title="devstack.config.ts"
+const localnet = sui(); // RPC + faucet + GraphQL indexer
+const rpcOnly = sui({ indexer: false }); // RPC + faucet, no GraphQL, no sidecar
+```
+
+The GraphQL indexer is on by default, so a bare `sui()` gives you the full GraphQL surface with no
+extra wiring. To support it, devstack runs a Postgres sidecar (auto-creating its `sui_indexer`
+database) and starts the validator with `--with-graphql` against it.
+
+You can turn the indexer down or point it elsewhere:
+
+- **`indexer: false`** — RPC and faucet only. No GraphQL, no Postgres sidecar.
+- **`indexerDb`** — point GraphQL at a Postgres you already run, so devstack provisions no sidecar:
+
+  ```ts
+  const localnet = sui({
+  	indexerDb: {
+  		url: 'postgres://user:pass@host:5432',
+  		network: 'my-network', // a docker network the validator can reach the DB on
+  		database: 'sui_indexer', // appended to the DSN if it carries no path; default 'sui_indexer'
+  	},
+  });
+  ```
+
+Other local-mode options:
+
+- **`image`** — override the validator image: `{ pull: '<ref>' }` skips the build, or
+  `{ build: { context, dockerfile? } }` builds the bundled Dockerfile with a content-hashed tag.
+- **`ports`** — pin exact host ports keyed by container port (`{ 9000: 9000 }`). Omit it and
+  devstack assigns host ports for you, reassigning on collision; the public `9000` / `9123` / `9125`
+  entrypoints stay fixed through the router.
+- **`readyTimeout`** — the ready-probe timeout.
+
+## Live mode
+
+Live mode reads and trades against a network you don't run. Known networks default their endpoints;
+`custom` requires an `rpcUrl`.
+
+```ts title="devstack.config.ts"
+const testnet = sui({ mode: 'live', network: 'testnet' });
+
+const custom = sui({
+	mode: 'live',
+	network: 'custom',
+	rpcUrl: 'https://my-fullnode.example:443',
+	faucetUrl: 'https://my-faucet.example', // optional
+	graphqlUrl: 'https://my-graphql.example', // optional
+	chainId: '…', // optional pin; omit to probe the RPC endpoint
+});
+```
+
+`local-rpc` mode is the local counterpart — pass `rpcUrl` (and optional `faucetUrl` / `graphqlUrl` /
+`chainId`) to wrap a Sui process you're already running, with no container and no sidecar.
+
+## Fork mode
+
+Fork mode runs a `sui-fork` node that mirrors a real chain at a checkpoint, so your app sees live
+on-chain state but you can still publish, fund, and mutate against it. Forking funds test accounts
+by impersonating a large-reserve **whale** address and transferring SUI from it — there's no real
+faucet on a fork.
+
+```ts title="devstack.config.ts"
+const fork = sui({
+	mode: 'fork',
+	upstream: 'mainnet', // mainnet | testnet | devnet
+	checkpoint: 12345678, // optional; omit for the latest
+	faucet: { whale: '0x…', perRequestCapMist: 1_000_000_000_000n }, // optional overrides
+});
+```
+
+The fork faucet is enabled by default with a per-upstream whale. See [Forking](/devstack/forking)
+for the full fork walkthrough.
+
+## The resolved network
+
+Whatever the mode, `sui()` resolves one network into the deployment's per-network connection fields:
+
+| Field     | Meaning                                                            |
+| --------- | ------------------------------------------------------------------ |
+| `rpc`     | The RPC endpoint the app reads synchronously.                      |
+| `chainId` | The node's genesis-digest chain identifier (not the network name). |
+| `faucet`  | The faucet URL, or `null` when the network has none.               |
+| `graphql` | The GraphQL endpoint, or `null` when the indexer is off.           |
+
+These ride the resolved `NetworkDeployment` and surface in app code through `config.network` and
+`config.networks` — see [Config & deployments](/devstack/codegen/config-and-deployments).

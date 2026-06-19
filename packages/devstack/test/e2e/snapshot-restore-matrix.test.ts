@@ -60,42 +60,49 @@ const ensureRealImages = (): void => {
 	delete process.env.SEAL_MOVE_SOURCE_OVERRIDE;
 };
 
-// Boot no longer emits a codegen tree; it assembles + writes the id-config
-// (`devstack-ids.json`) carrying the live on-chain ids. The package plugin
+// Boot no longer emits a codegen tree; it assembles + writes the deployment
+// (`deployment.json`) carrying the live on-chain ids. The package plugin
 // contributes each package's resolved id under `packages.<name>.id` (and
 // the active-network `mvrOverrides` map). This stack publishes exactly one
 // local package (the vault — the codegen test builds the matrix stack with
-// `deepbook: false`), so the id-config carries a single package id == the
-// vault's id. Read it back from the harness-written id-config file.
-const ID_CONFIG_FILE = 'devstack-ids.json';
+// `deepbook: false`), so the deployment carries a single package id == the
+// vault's id. Read it back from the harness-written deployment file.
+const DEPLOYMENT_FILE = 'deployment.json';
 
 // The codegen test boots under this app (`appName: CODEGEN_APP`); the matrix
 // invariant boots under `STACK_APP`. Both must be swept in `afterAll`.
 const CODEGEN_APP = 'snapshot-matrix-codegen';
 
-interface IdConfigLike {
-	readonly packages: { readonly [name: string]: { readonly id: string } };
+interface DeploymentLike {
+	readonly networks: {
+		readonly [name: string]: {
+			readonly packages: { readonly [name: string]: { readonly id: string } };
+		};
+	};
 }
 
 const readCodegenPackageId = (outputDir: string): string => {
-	const file = join(outputDir, ID_CONFIG_FILE);
-	const parsed = JSON.parse(readFileSync(file, 'utf8')) as IdConfigLike;
-	const ids = Object.values(parsed.packages)
+	const file = join(outputDir, DEPLOYMENT_FILE);
+	const parsed = JSON.parse(readFileSync(file, 'utf8')) as DeploymentLike;
+	const ids = Object.values(parsed.networks)
+		.flatMap((net) => Object.values(net.packages))
 		.map((p) => p.id)
 		.filter((id) => /^0x[0-9a-fA-F]+$/.test(id));
-	if (ids.length === 0) throw new Error(`no package id in id-config ${file}`);
+	if (ids.length === 0) throw new Error(`no package id in deployment ${file}`);
 	return ids[0]!;
 };
 
 // Simulate post-snapshot drift: overwrite the written package id with a
-// sentinel. The id-config lives OUTSIDE the runtime stack root, so a restore
-// does not roll it back — boot 2's id-config write must regenerate it.
+// sentinel. The deployment lives OUTSIDE the runtime stack root, so a restore
+// does not roll it back — boot 2's deployment write must regenerate it.
 const corruptCodegenPackageId = (outputDir: string): void => {
-	const p = join(outputDir, ID_CONFIG_FILE);
+	const p = join(outputDir, DEPLOYMENT_FILE);
 	const parsed = JSON.parse(readFileSync(p, 'utf8')) as {
-		packages: Record<string, { id: string }>;
+		networks: Record<string, { packages: Record<string, { id: string }> }>;
 	};
-	for (const entry of Object.values(parsed.packages)) entry.id = '0xdead0000dead0000';
+	for (const net of Object.values(parsed.networks)) {
+		for (const entry of Object.values(net.packages)) entry.id = '0xdead0000dead0000';
+	}
 	writeFileSync(p, `${JSON.stringify(parsed, null, 2)}\n`);
 };
 

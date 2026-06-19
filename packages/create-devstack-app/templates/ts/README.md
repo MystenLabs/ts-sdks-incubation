@@ -44,11 +44,14 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { readCounter } from './counter.ts';
 import { config } from './generated/config.ts';
 
-const { rpc } = config.networks[config.network];
+// `config.forNetwork(name)` returns that network's deployment (`.rpc`, `.network`,
+// `.packages`, `.mvrOverrides`, …). `config.defaultNetwork` is the dev default;
+// `config.networkNames` lists every network this build knows about.
+const deployment = config.forNetwork(config.defaultNetwork);
 const client = new SuiGrpcClient({
 	network: 'localnet',
-	baseUrl: rpc,
-	mvr: { overrides: { packages: config.mvrOverrides } },
+	baseUrl: deployment.rpc,
+	mvr: { overrides: { packages: deployment.mvrOverrides } },
 });
 console.log('counter value:', await readCounter(client, process.argv[2]!));
 ```

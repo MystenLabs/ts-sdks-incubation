@@ -30,17 +30,9 @@ const DEFAULT_TRADE_DIRECTION: TradeDirection = 'quote-to-base';
 // non-null assertion is safe (`noUncheckedIndexedAccess` widens the index
 // access to `T | undefined`).
 const networkEndpoints = Object.values(config.networks)[0]!;
-const deepbookBindings = deepbook.deepbook;
-const configuredPoolCount: number = deepbookBindings.pools.length;
-const coinBindings = coins as Record<string, CoinBinding>;
-const deepCoin = requireCoinBinding('DEEP', coinBindings.deep ?? coinBindings.DEEP);
-const usdcCoin = requireCoinBinding(
-	'USDC',
-	coinBindings.dusdc ?? coinBindings.usdc ?? coinBindings.USDC,
-);
-const dbtcCoin = requireCoinBinding('DBTC', coinBindings.dbtc ?? coinBindings.DBTC);
-const dethCoin = requireCoinBinding('DETH', coinBindings.deth ?? coinBindings.DETH);
-const pythBindings = deepbookBindings.pyth as PythBinding | null;
+
+type DeepbookBindings = ReturnType<typeof deepbook.forNetwork>['deepbook'];
+type CoinsForNetwork = ReturnType<typeof coins.forNetwork>;
 
 type DemoCoinKey = 'SUI' | 'DEEP' | 'USDC' | 'DBTC' | 'DETH';
 type TradeDirection = 'quote-to-base' | 'base-to-quote';
@@ -53,13 +45,15 @@ const COIN_SCALARS: Record<DemoCoinKey, number> = {
 	DETH: DETH_SCALAR,
 };
 
-const demoCoinBindings: Record<DemoCoinKey, CoinBinding> = {
-	SUI: coins.sui,
-	DEEP: deepCoin,
-	USDC: usdcCoin,
-	DBTC: dbtcCoin,
-	DETH: dethCoin,
-};
+function deriveDemoCoinBindings(coinsForNet: CoinsForNetwork): Record<DemoCoinKey, CoinBinding> {
+	return {
+		SUI: requireCoinBinding('SUI', coinsForNet.sui),
+		DEEP: requireCoinBinding('DEEP', coinsForNet.deep),
+		USDC: requireCoinBinding('USDC', coinsForNet.dusdc),
+		DBTC: requireCoinBinding('DBTC', coinsForNet.dbtc),
+		DETH: requireCoinBinding('DETH', coinsForNet.deth),
+	};
+}
 
 interface DemoMarket {
 	readonly pool: string;
@@ -108,7 +102,17 @@ export function App() {
 	// Active network label comes from dapp-kit (the connected client's
 	// network), not the generated config — app code never reads `config.network`.
 	const network = useCurrentNetwork();
-	const availableMarkets = useMemo(() => configuredDemoMarkets(), []);
+	// Per-network service buckets — re-read whenever dapp-kit flips the active
+	// network so deepbook pool/coin ids stay in lockstep with `switchNetwork`.
+	const deepbookBindings = useMemo(() => deepbook.forNetwork(network).deepbook, [network]);
+	const coinsForNet = useMemo(() => coins.forNetwork(network), [network]);
+	const demoCoinBindings = useMemo(() => deriveDemoCoinBindings(coinsForNet), [coinsForNet]);
+	const pythBindings = deepbookBindings.pyth as PythBinding | null;
+	const configuredPoolCount = deepbookBindings.pools.length;
+	const availableMarkets = useMemo(
+		() => configuredDemoMarkets(deepbookBindings),
+		[deepbookBindings],
+	);
 	const [selectedPool, setSelectedPool] = useState(DEFAULT_POOL);
 	const [tradeDirection, setTradeDirection] = useState<TradeDirection>(DEFAULT_TRADE_DIRECTION);
 	const [amountInput, setAmountInput] = useState(() =>
@@ -129,12 +133,12 @@ export function App() {
 		return suiClient.$extend(
 			deepbookExtension({
 				address: currentAccount.address,
-				packageIds: buildPackageIds(),
-				coins: buildCoinMap(),
-				pools: buildPoolMap(),
+				packageIds: buildPackageIds(deepbookBindings),
+				coins: buildCoinMap(demoCoinBindings),
+				pools: buildPoolMap(deepbookBindings),
 			}),
 		);
-	}, [suiClient, currentAccount?.address]);
+	}, [suiClient, currentAccount?.address, configuredPoolCount, deepbookBindings, demoCoinBindings]);
 	const balances = {
 		SUI: readBalanceRaw(suiBalance.data),
 		DEEP: readBalanceRaw(deepBalance.data),
@@ -264,8 +268,12 @@ export function App() {
 				</aside>
 
 				<section className="space-y-4">
-					<DeepBookStatus />
-					<PricePanel />
+					<DeepBookStatus
+						packageId={deepbookBindings.packageId}
+						poolCount={configuredPoolCount}
+						pyth={pythBindings}
+					/>
+					<PricePanel pyth={pythBindings} />
 					<TradePanel
 						markets={availableMarkets}
 						selectedMarket={selectedMarket}
@@ -294,7 +302,7 @@ export function App() {
 	);
 }
 
-function buildPackageIds(): DeepbookPackageIds {
+function buildPackageIds(deepbookBindings: DeepbookBindings): DeepbookPackageIds {
 	return {
 		DEEPBOOK_PACKAGE_ID: deepbookBindings.packageId,
 		REGISTRY_ID: deepbookBindings.registryId,
@@ -302,7 +310,7 @@ function buildPackageIds(): DeepbookPackageIds {
 	};
 }
 
-function buildCoinMap(): CoinMap {
+function buildCoinMap(demoCoinBindings: Record<DemoCoinKey, CoinBinding>): CoinMap {
 	return {
 		DEEP: {
 			address:
@@ -336,7 +344,7 @@ function buildCoinMap(): CoinMap {
 	};
 }
 
-function buildPoolMap(): PoolMap {
+function buildPoolMap(deepbookBindings: DeepbookBindings): PoolMap {
 	return Object.fromEntries(
 		deepbookBindings.pools.map((pool) => [
 			pool.name,
@@ -345,7 +353,7 @@ function buildPoolMap(): PoolMap {
 	);
 }
 
-function configuredDemoMarkets(): ReadonlyArray<DemoMarket> {
+function configuredDemoMarkets(deepbookBindings: DeepbookBindings): ReadonlyArray<DemoMarket> {
 	const poolNames: ReadonlySet<string> = new Set(deepbookBindings.pools.map((pool) => pool.name));
 	return DEMO_MARKETS.filter((market) => poolNames.has(market.pool));
 }
@@ -502,7 +510,15 @@ function WalletPanel({
 	);
 }
 
-function DeepBookStatus() {
+function DeepBookStatus({
+	packageId,
+	poolCount,
+	pyth,
+}: {
+	packageId: string;
+	poolCount: number;
+	pyth: PythBinding | null;
+}) {
 	return (
 		<section className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-emerald-950 shadow-sm dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">
 			<div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -521,19 +537,15 @@ function DeepBookStatus() {
 				</span>
 			</div>
 			<div className="grid gap-3 md:grid-cols-3">
-				<StatusMetric label="Package" value={shortId(deepbookBindings.packageId, 8, 6)} />
-				<StatusMetric
-					label="Pools"
-					value={String(configuredPoolCount)}
-					testId="deepbook-pool-count"
-				/>
-				<StatusMetric label="Pyth" value={`${pythBindings?.feeds.length ?? 0} feeds`} />
+				<StatusMetric label="Package" value={shortId(packageId, 8, 6)} />
+				<StatusMetric label="Pools" value={String(poolCount)} testId="deepbook-pool-count" />
+				<StatusMetric label="Pyth" value={`${pyth?.feeds.length ?? 0} feeds`} />
 			</div>
 		</section>
 	);
 }
 
-function PricePanel() {
+function PricePanel({ pyth }: { pyth: PythBinding | null }) {
 	return (
 		<section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-950">
 			<div className="mb-4 flex items-center justify-between gap-3">
@@ -542,11 +554,11 @@ function PricePanel() {
 					className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
 					data-testid="pyth-feed-count"
 				>
-					{pythBindings?.feeds.length ?? 0} feeds
+					{pyth?.feeds.length ?? 0} feeds
 				</span>
 			</div>
 			<div className="grid gap-3 md:grid-cols-3">
-				{(pythBindings?.feeds ?? []).map((feed) => (
+				{(pyth?.feeds ?? []).map((feed) => (
 					<div
 						key={feed.symbol}
 						className="min-h-16 rounded-md border border-neutral-200 p-3 dark:border-neutral-800"
@@ -783,7 +795,10 @@ function formatPythPrice(feed: PythFeedBinding): string {
 
 interface CoinBinding {
 	readonly fullCoinType: string;
-	readonly packageId?: string;
+	// The generated per-network coin bucket types `packageId` as `string | null`
+	// (a registry coin's id is null until published); consumers fall back via
+	// `?? addressFromCoinType(...)`, so `null` is handled.
+	readonly packageId?: string | null;
 }
 
 function requireCoinBinding(label: string, binding: CoinBinding | undefined): CoinBinding {

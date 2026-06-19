@@ -19,14 +19,13 @@ import type { Transaction } from '@mysten/sui/transactions';
 import { describe, expect, it } from 'vitest';
 
 import { config } from '@generated/config.ts';
-import { resolveActiveNetwork } from '@generated/config-runtime.ts';
 import { createCounterTx, incrementTx, readCounter } from '../../src/counter.ts';
 import { executedTx } from '../../src/tx.ts';
 
-// `resolveActiveNetwork` returns the active (test) stack's connection entry
-// with a non-undefined type and a loud throw — no `config.networks[...]`
-// index-signature footgun (which would type `net` as possibly-undefined).
-const net = resolveActiveNetwork();
+// `config.forNetwork(config.defaultNetwork)` returns the active (test) stack's
+// connection entry with a non-undefined type, throwing if the network isn't in
+// the deployment.
+const net = config.forNetwork(config.defaultNetwork);
 
 /** Sign with `signer`, execute, wait for finality, and return the
  *  digest + created object id (via the unit-tested `executedTx`). */
@@ -55,7 +54,7 @@ describe('counter (local devstack)', () => {
 			baseUrl: net.rpc,
 			// Resolves the bindings' default `@local/counter` package name to
 			// the deployed id at tx-build time.
-			mvr: { overrides: { packages: config.mvrOverrides } },
+			mvr: { overrides: config.mvrOverrides },
 		});
 
 		// Throwaway on-chain actor, funded by the stack's faucet.

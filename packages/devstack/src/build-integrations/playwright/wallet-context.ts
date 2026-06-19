@@ -243,6 +243,68 @@ const SELECT_ACCOUNT_SLOT_TIMEOUT_MS = 10_000;
 const SELECT_ACCOUNT_SLOT_POLL_MS = 50;
 
 /**
+ * Outcome of classifying a single `page.evaluate` result inside the
+ * slot-poll loop. `done` resolves the loop; `retry` waits a poll
+ * interval and re-evaluates (until the deadline); `fail` aborts.
+ */
+type SlotPollOutcome = { kind: 'done' } | { kind: 'retry' } | { kind: 'fail'; cause: unknown };
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Shared poll-evaluate-until-deadline loop for the dapp-kit slot helpers.
+ *
+ * Factored out so `selectAccount` and `switchNetwork` can't drift on
+ * retry/timeout semantics. Responsibilities owned here:
+ *   - Run `evaluate` against the page, retrying on a destroyed JS
+ *     execution context (a network/account switch can tear the context
+ *     down mid-evaluate) until the deadline, then surfacing a typed
+ *     error via `onContextTimeout`.
+ *   - Hand each successful `evaluate` result to `classify`, which decides
+ *     whether the loop is `done`, should `retry` (polling until the
+ *     deadline), or has definitively `fail`ed.
+ *
+ * The caller owns *what* a result means (success/retry/failure) and how
+ * to build its terminal errors; this helper owns the *when* (timing,
+ * polling, context-loss recovery).
+ */
+const pollSlotUntilDeadline = async <T>(args: {
+	readonly page: PlaywrightPageLike;
+	readonly evaluate: (page: PlaywrightPageLike) => Promise<T>;
+	readonly classify: (result: T, beforeDeadline: boolean) => SlotPollOutcome;
+	readonly onContextTimeout: (lastEvaluateError: unknown) => PlaywrightWalletAdapterError;
+	readonly onFail: (cause: unknown) => PlaywrightWalletAdapterError;
+}): Promise<void> => {
+	const deadline = Date.now() + SELECT_ACCOUNT_SLOT_TIMEOUT_MS;
+	let lastEvaluateError: unknown;
+	for (;;) {
+		let result: T;
+		try {
+			result = await args.evaluate(args.page);
+		} catch (cause) {
+			// A network/account switch can destroy the JS execution context
+			// mid-evaluate ("Execution context was destroyed"); the raw
+			// rejection is transient, so retry until the deadline rather than
+			// letting it escape as a flaky failure.
+			lastEvaluateError = cause;
+			if (Date.now() < deadline) {
+				await sleep(SELECT_ACCOUNT_SLOT_POLL_MS);
+				continue;
+			}
+			throw args.onContextTimeout(lastEvaluateError);
+		}
+
+		const outcome = args.classify(result, Date.now() < deadline);
+		if (outcome.kind === 'done') return;
+		if (outcome.kind === 'retry') {
+			await sleep(SELECT_ACCOUNT_SLOT_POLL_MS);
+			continue;
+		}
+		throw args.onFail(outcome.cause);
+	}
+};
+
+/**
  * Connect/switch the app's active dev-wallet account through the dapp-kit
  * slot the app populates at boot.
  *
@@ -271,17 +333,17 @@ export const selectAccount = async (
 	page: PlaywrightPageLike,
 	accountName: string,
 ): Promise<void> => {
-	const deadline = Date.now() + SELECT_ACCOUNT_SLOT_TIMEOUT_MS;
-	let lastEvaluateError: unknown;
 	// `evaluate`'s closure is serialized into the browser; the slot
 	// shape (`DAppKitSlot`) lives in `runtime/dapp-kit-slot.ts` — the
 	// in-browser closure can't import it, but the global-augmentation
 	// `globalThis.__devstackDAppKit__` is the typed contract both sides
 	// rely on.
-	for (;;) {
-		let result: { ok: boolean; reason?: string };
-		try {
-			result = await page.evaluate(async (name): Promise<{ ok: boolean; reason?: string }> => {
+	await pollSlotUntilDeadline<{ ok: boolean; reason?: string }>({
+		page,
+		// `await` here collapses the page-bridge's nested promise (the browser
+		// function is async) so the callback resolves to the awaited result.
+		evaluate: async (p) =>
+			await p.evaluate(async (name): Promise<{ ok: boolean; reason?: string }> => {
 				const slot = (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
 				if (slot === undefined || slot.selectAccount === undefined) {
 					return { ok: false, reason: 'slot-not-populated' };
@@ -295,43 +357,126 @@ export const selectAccount = async (
 						reason: err instanceof Error ? err.message : String(err),
 					};
 				}
-			}, accountName);
-		} catch (cause) {
-			lastEvaluateError = cause;
-			if (Date.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, SELECT_ACCOUNT_SLOT_POLL_MS));
-				continue;
-			}
-			throw new PlaywrightWalletAdapterError({
+			}, accountName),
+		classify: (result, beforeDeadline) => {
+			if (result.ok) return { kind: 'done' };
+			if (result.reason === 'slot-not-populated' && beforeDeadline) return { kind: 'retry' };
+			return { kind: 'fail', cause: result.reason };
+		},
+		onContextTimeout: (lastEvaluateError) =>
+			new PlaywrightWalletAdapterError({
 				message:
 					`selectAccount("${accountName}") failed: page evaluation did not settle before ` +
 					`${SELECT_ACCOUNT_SLOT_TIMEOUT_MS}ms. Confirm the app finished loading before ` +
 					`calling connectAs().`,
 				operation: 'switch-account',
 				cause: lastEvaluateError,
-			});
-		}
+			}),
+		onFail: (cause) =>
+			new PlaywrightWalletAdapterError({
+				message:
+					`selectAccount("${accountName}") failed: ${(cause as string | undefined) ?? 'unknown'}. ` +
+					`Confirm \`globalThis.${DAPP_KIT_SLOT}\` is populated by the app's ` +
+					`dapp-kit module at boot.`,
+				operation: 'switch-account',
+				// `cause` survives the `page.evaluate` boundary as a string —
+				// the browser-side `Error` instance is lost across the bridge,
+				// but the message is the load-bearing diagnostic. Preserving
+				// it on the typed error keeps the underlying detail attached
+				// when consumers inspect `cause` rather than `message`.
+				cause,
+			}),
+	});
+};
 
-		if (result.ok) return;
-		if (result.reason === 'slot-not-populated' && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, SELECT_ACCOUNT_SLOT_POLL_MS));
-			continue;
-		}
+/**
+ * Switch the app's active dApp Kit network through the same dapp-kit slot
+ * `selectAccount` uses — one level over (network instead of account). Drives
+ * dApp Kit's public `switchNetwork`; the dev wallet (registered once via
+ * wallet-standard) stays mounted across the switch — only the active
+ * network/client changes.
+ *
+ * Resolution semantics:
+ *   - When the app exposes `currentNetwork`, resolves once the slot reports
+ *     the current network is `network` (the switch deterministically took
+ *     effect).
+ *   - When it does NOT, there is no post-switch confirmation signal, so the
+ *     helper lets the swap settle (see `SWITCH_NETWORK_UNCONFIRMED_SETTLE_MS`)
+ *     rather than resolving the instant `switchNetwork()` returns `ok`.
+ */
+// When the app's slot does not expose `currentNetwork`, the helper has no
+// post-switch signal to confirm the client swap propagated. Resolving the
+// instant `switchNetwork()` returns `ok` (before the swap settles) produces
+// flaky stale reads. Without a confirmation source we instead let the swap
+// settle: keep re-confirming the slot reports `ok` across this window before
+// accepting success. This is best-effort — apps that want a crisp signal
+// should expose `currentNetwork` so the switch is confirmed deterministically.
+const SWITCH_NETWORK_UNCONFIRMED_SETTLE_MS = 250;
 
-		throw new PlaywrightWalletAdapterError({
-			message:
-				`selectAccount("${accountName}") failed: ${result.reason ?? 'unknown'}. ` +
-				`Confirm \`globalThis.${DAPP_KIT_SLOT}\` is populated by the app's ` +
-				`dapp-kit module at boot.`,
-			operation: 'switch-account',
-			// `cause` survives the `page.evaluate` boundary as a string —
-			// the browser-side `Error` instance is lost across the bridge,
-			// but the message is the load-bearing diagnostic. Preserving
-			// it on the typed error keeps the underlying detail attached
-			// when consumers inspect `cause` rather than `message`.
-			cause: result.reason,
-		});
-	}
+export const switchNetwork = async (page: PlaywrightPageLike, network: string): Promise<void> => {
+	// Tracks the first tick on which an unconfirmable switch (no
+	// `currentNetwork` exposed) reported `ok`, so we can require the swap to
+	// hold `ok` for a settle window rather than returning on the first tick.
+	let unconfirmedOkSince: number | undefined;
+	await pollSlotUntilDeadline<{ ok: boolean; reason?: string; current?: string }>({
+		page,
+		// `await` here collapses the page-bridge's nested promise (the browser
+		// function is async) so the callback resolves to the awaited result.
+		evaluate: async (p) =>
+			await p.evaluate(async (net): Promise<{ ok: boolean; reason?: string; current?: string }> => {
+				const slot = (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
+				if (slot === undefined || slot.switchNetwork === undefined) {
+					return { ok: false, reason: 'slot-not-populated' };
+				}
+				try {
+					await slot.switchNetwork(net as string);
+					return { ok: true, current: slot.currentNetwork?.() };
+				} catch (err) {
+					return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+				}
+			}, network),
+		classify: (result, beforeDeadline) => {
+			if (result.ok && result.current === network) return { kind: 'done' };
+			// No `currentNetwork` to confirm against — accept `ok`, but only
+			// after it has held across the settle window so the client swap has
+			// a real chance to propagate before downstream reads.
+			if (result.ok && result.current === undefined) {
+				const now = Date.now();
+				unconfirmedOkSince ??= now;
+				if (now - unconfirmedOkSince >= SWITCH_NETWORK_UNCONFIRMED_SETTLE_MS) {
+					return { kind: 'done' };
+				}
+				return beforeDeadline ? { kind: 'retry' } : { kind: 'done' };
+			}
+			// `slot-not-populated`, or switched-but-not-yet-propagated
+			// (`ok` with a stale `current`): keep polling until the deadline.
+			if ((result.reason === 'slot-not-populated' || result.ok) && beforeDeadline) {
+				return { kind: 'retry' };
+			}
+			return {
+				kind: 'fail',
+				cause: result.reason ?? `current is "${result.current}"`,
+			};
+		},
+		onContextTimeout: (lastEvaluateError) =>
+			new PlaywrightWalletAdapterError({
+				message:
+					`switchNetwork("${network}") failed: page evaluation did not settle before ` +
+					`${SELECT_ACCOUNT_SLOT_TIMEOUT_MS}ms. Confirm the app finished loading and ` +
+					`\`globalThis.${DAPP_KIT_SLOT}\` is populated.`,
+				operation: 'switch-network',
+				cause: lastEvaluateError,
+			}),
+		onFail: (cause) =>
+			new PlaywrightWalletAdapterError({
+				message:
+					`switchNetwork("${network}") failed: ${(cause as string | undefined) ?? 'unknown'}. ` +
+					`Confirm the network is in the app's deployment (a committed deployments/${network}.ts ` +
+					`or the live local stack) and \`globalThis.${DAPP_KIT_SLOT}\` is populated.`,
+				operation: 'switch-network',
+				cause,
+			}),
+	});
 };
 
 // -----------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
+import { useCurrentClient, useCurrentNetwork, useDAppKit } from '@mysten/dapp-kit-react';
 import type { SuiGrpcClient } from '@mysten/sui/grpc';
 import type { Transaction } from '@mysten/sui/transactions';
 import {
@@ -8,7 +8,7 @@ import {
 	type UseMutationResult,
 } from '@tanstack/react-query';
 
-import { vaultPackageId } from '../dapp-kit.js';
+import { vaultPackageIdFor } from '../dapp-kit.js';
 import { Cap as CapStruct, File as FileStruct } from '@generated/bindings/vault/vault.js';
 import { bytesToHex } from './format.js';
 import { bytesToBlobId } from './walrus.js';
@@ -95,8 +95,10 @@ export interface VaultCap {
  */
 export function useOwnedCaps(address: string | undefined) {
 	const client: SuiGrpcClient = useCurrentClient();
+	const network = useCurrentNetwork();
+	const vaultPackageId = vaultPackageIdFor(network);
 	return useQuery({
-		queryKey: ['vault', 'caps', address, vaultPackageId],
+		queryKey: ['vault', 'caps', address, network, vaultPackageId],
 		queryFn: async (): Promise<VaultCap[]> => {
 			if (!address || !vaultPackageId) return [];
 			const capType = `${vaultPackageId}::vault::Cap`;

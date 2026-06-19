@@ -11,30 +11,44 @@ import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit'
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
-import { resolveActiveNetwork } from '@generated/config-runtime.js';
 
-const devstackNetwork = 'localnet' as const;
-
-// The active network's connection map is runtime-resolved (injected via
-// `__DEVSTACK_IDS__`, not baked into the committed tree). `resolveActiveNetwork`
-// returns the active entry with a non-undefined type and fails loudly if it is
-// missing — no index-signature footgun.
-const activeNetwork = resolveActiveNetwork();
+// Injected by the devstack Vite plugin (`true` iff `DEVSTACK_E2E` is set).
+// `undefined` in a normal prod build — used to gate e2e-only auto-connect.
+declare const __DEVSTACK_E2E__: boolean | undefined;
 
 export const dAppKit = createDAppKit({
-	networks: [devstackNetwork],
-	defaultNetwork: devstackNetwork,
-	autoConnect: import.meta.env.DEV,
-	createClient() {
+	// The switcher offers ONLY the networks actually present in the injected
+	// deployment envelope (`config.networks`), not the static `networkNames`
+	// superset (local + every committed `deployments/*.ts`). A prod build drops
+	// local networks from the envelope, so the static list would let the user
+	// select a network absent from `config.networks` — `config.forNetwork` (in
+	// `createClient` below) then throws `DevstackConfigMissingError`. Filtering
+	// the static tuple by envelope membership keeps the list and the resolvable
+	// set in lockstep while PRESERVING the literal element union (so dApp Kit's
+	// `switchNetwork` / `defaultNetwork` stay type-checked — `Object.keys` would
+	// widen to `string`). `defaultNetwork` is the envelope's own default, so it
+	// is always a member of `config.networks` and survives the filter.
+	networks: [...config.networkNames].filter((n) => config.networks[n] !== undefined),
+	defaultNetwork: config.defaultNetwork,
+	autoConnect: __DEVSTACK_E2E__ === true,
+	// `createClient` is called per network dApp Kit manages, with the network
+	// it is building a client for — so EVERYTHING flows through dApp Kit's
+	// selected network and stays in sync across a runtime `switchNetwork`. The
+	// connection is resolved off the loaded deployment (injected via
+	// `__DEVSTACK_DEPLOYMENT__`, not baked into the committed tree);
+	// `config.forNetwork(network)` returns that network's resolved entry — a
+	// non-undefined type that throws if the network isn't in the deployment.
+	createClient(network) {
+		const net = config.forNetwork(network);
 		return new SuiGrpcClient({
-			network: devstackNetwork,
-			baseUrl: activeNetwork.rpc,
-			// `config.mvrOverrides` is the codegen-emitted active-network
-			// name→id map: each generated Move binding defaults its `package`
-			// to `@local/<name>` (e.g. `@local/connect-four`), and this map
-			// resolves that name to its deployed id. App code consumes the
-			// bindings' MVR defaults and never touches `config.packages.*`.
-			mvr: { overrides: { packages: config.mvrOverrides } },
+			network,
+			baseUrl: net.rpc,
+			// `net.mvrOverrides` is THAT network's name→id map: each generated
+			// Move binding defaults its `package` to `@local/<name>` (e.g.
+			// `@local/connect-four`), and this map resolves that name to its
+			// deployed id. App code consumes the bindings' MVR defaults and
+			// never touches `config.packages.*`.
+			mvr: { overrides: net.mvrOverrides },
 		});
 	},
 });

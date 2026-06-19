@@ -1,30 +1,28 @@
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
-import { deployment } from './deployment.js';
-
 // Pure amount/format helpers live in `amount.ts` (no @generated dependency,
 // unit-tested without a stack); re-exported here so callers keep one import site.
 export { COIN_DECIMALS, formatStudio, parseStudioAmount, shortAddress } from './amount.js';
 
-export const MANAGED_COIN_TYPE = deployment.managedCoinType;
-export const TREASURY_CAP_ID = deployment.treasuryCapId;
-
 /**
- * Build a transaction that transfers `amount` (raw units) of STUDIO to `recipient`.
- * Resolves the sender's STUDIO coins, merges them as needed, and splits out the
- * exact amount.
+ * Build a transaction that transfers `amount` (raw units) of the STUDIO coin
+ * (`coinType`) to `recipient`. The `coinType` is per-network and must be passed
+ * by the caller from `useDeployment().managedCoinType` so the tx follows the
+ * dapp-kit-selected network. Resolves the sender's coins, merges them as needed,
+ * and splits out the exact amount.
  */
 export async function buildTransferTx(args: {
 	client: ClientWithCoreApi;
 	sender: string;
 	amount: bigint;
 	recipient: string;
+	coinType: string;
 }): Promise<Transaction> {
-	const { client, sender, amount, recipient } = args;
+	const { client, sender, amount, recipient, coinType } = args;
 	const { objects } = await client.core.listCoins({
 		owner: sender,
-		coinType: MANAGED_COIN_TYPE,
+		coinType,
 	});
 	if (objects.length === 0) throw new Error('No STUDIO coins owned by this account');
 

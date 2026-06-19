@@ -7,8 +7,7 @@ import {
 	type UseMutationResult,
 } from '@tanstack/react-query';
 
-import { deployment } from './deployment.js';
-import { MANAGED_COIN_TYPE } from './coin.js';
+import { useDeployment } from './deployment.js';
 
 export interface UseSignAndExecuteOptions {
 	invalidateKeys?: ReadonlyArray<readonly unknown[]>;
@@ -77,9 +76,10 @@ const COIN_POLL_MS = 2_000;
 
 export function useCoinMetadata() {
 	const client = useCurrentClient();
+	const dep = useDeployment();
 	return useQuery({
-		queryKey: ['coinMetadata', MANAGED_COIN_TYPE],
-		queryFn: () => client.core.getCoinMetadata({ coinType: MANAGED_COIN_TYPE }),
+		queryKey: ['coinMetadata', dep.managedCoinType],
+		queryFn: () => client.core.getCoinMetadata({ coinType: dep.managedCoinType }),
 	});
 }
 
@@ -90,11 +90,12 @@ export function useCoinMetadata() {
  */
 export function useTotalSupply() {
 	const client = useCurrentClient();
+	const dep = useDeployment();
 	return useQuery({
-		queryKey: ['totalSupply', deployment.treasuryCapId],
+		queryKey: ['totalSupply', dep.treasuryCapId],
 		queryFn: async () => {
 			const { object } = await client.core.getObject({
-				objectId: deployment.treasuryCapId,
+				objectId: dep.treasuryCapId,
 				include: { json: true },
 			});
 			const json = object.json as { total_supply?: { value?: string } } | undefined;
@@ -115,11 +116,12 @@ export function useTotalSupply() {
  */
 export function useTreasuryCapOwner() {
 	const client = useCurrentClient();
+	const dep = useDeployment();
 	return useQuery({
-		queryKey: ['treasuryCapOwner', deployment.treasuryCapId],
+		queryKey: ['treasuryCapOwner', dep.treasuryCapId],
 		queryFn: async (): Promise<string | null> => {
 			const { object } = await client.core.getObject({
-				objectId: deployment.treasuryCapId,
+				objectId: dep.treasuryCapId,
 			});
 			// The TreasuryCap is an owned object; its owner is an address. Other
 			// owner kinds (shared / immutable / parent) have no minting address,
@@ -129,19 +131,20 @@ export function useTreasuryCapOwner() {
 			if (owner.$kind === 'ConsensusAddressOwner') return owner.ConsensusAddressOwner.owner;
 			return null;
 		},
-		enabled: deployment.treasuryCapId.length > 0,
+		enabled: dep.treasuryCapId.length > 0,
 	});
 }
 
 export function useCoinBalance(address: string | undefined) {
 	const client = useCurrentClient();
+	const dep = useDeployment();
 	return useQuery({
-		queryKey: ['balance', address, MANAGED_COIN_TYPE],
+		queryKey: ['balance', address, dep.managedCoinType],
 		queryFn: async () => {
 			if (!address) return null;
 			const result = await client.core.getBalance({
 				owner: address,
-				coinType: MANAGED_COIN_TYPE,
+				coinType: dep.managedCoinType,
 			});
 			return result.balance;
 		},

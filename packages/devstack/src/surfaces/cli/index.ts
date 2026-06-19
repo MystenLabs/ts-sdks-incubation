@@ -62,13 +62,14 @@ export interface CodegenCommandDeps {
 	}) => Effect.Effect<CommandResult, CliError>;
 }
 
-/** `dump-ids` emits the stack's `devstack-ids.json` id-config. It owns
+/** `dump-deployment` emits the stack's `deployment.json` deployment. It owns
  *  its own output (file via `--out`, else stdout), so it receives `io`
  *  and the resolved `outputMode` alongside the config path + destination. */
-export interface DumpIdsCommandDeps {
+export interface DumpDeploymentCommandDeps {
 	readonly run: (flags: {
 		readonly configPath: string | undefined;
 		readonly out: string | undefined;
+		readonly network: string | undefined;
 		readonly io: CliIO;
 		readonly outputMode: OutputMode;
 	}) => Effect.Effect<CommandResult, CliError>;
@@ -78,7 +79,7 @@ export interface CliDeps {
 	readonly up: LifecycleCommandDeps;
 	readonly apply: LifecycleCommandDeps;
 	readonly codegen: CodegenCommandDeps;
-	readonly dumpIds: DumpIdsCommandDeps;
+	readonly dumpDeployment: DumpDeploymentCommandDeps;
 	readonly status: StatusDeps;
 	readonly snapshot: SnapshotDeps;
 	readonly prune: PruneDeps;
@@ -197,7 +198,7 @@ interface UpFlags extends ConfigFlags {
 	readonly snapshotStale?: SnapshotStalePolicy;
 }
 
-interface DumpIdsFlags extends ConfigFlags {
+interface DumpDeploymentFlags extends ConfigFlags {
 	readonly out?: string;
 }
 
@@ -539,21 +540,26 @@ const codegenCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
 	},
 });
 
-const dumpIdsCommand = buildCommand<DumpIdsFlags, [], DevstackCliContext>({
+const dumpDeploymentCommand = buildCommand<DumpDeploymentFlags, [], DevstackCliContext>({
 	parameters: {
 		flags: {
 			...configFlagParams,
-			out: stringFlag('Write the id-config JSON to this file instead of stdout', 'path'),
+			out: stringFlag('Write the deployment JSON to this file instead of stdout', 'path'),
+			network: stringFlag(
+				'Emit a typed deployments/<network>.ts (satisfies AppNetworkDeployment) instead of the raw envelope',
+				'name',
+			),
 		},
 	},
 	docs: {
-		brief: 'Emit the stack id-config (devstack-ids.json) for a real-network deploy',
+		brief: 'Emit the stack deployment (deployment.json) for a real-network deploy',
 	},
 	func: function (flags) {
-		return runWithFlags(this, 'dump-ids', flags, [], (global) =>
-			this.deps.dumpIds.run({
+		return runWithFlags(this, 'dump-deployment', flags, [], (global) =>
+			this.deps.dumpDeployment.run({
 				configPath: global.configPath,
 				out: flags.out,
+				network: flags.network,
 				io: this.io,
 				outputMode: global.outputMode,
 			}),
@@ -716,7 +722,7 @@ const root = buildRouteMap({
 		up: upCommand,
 		apply: applyCommand,
 		codegen: codegenCommand,
-		dumpIds: dumpIdsCommand,
+		dumpDeployment: dumpDeploymentCommand,
 		status: statusCommand,
 		doctor: doctorCommand,
 		config: configCommand,

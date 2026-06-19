@@ -5,16 +5,18 @@ import { Balances } from './components/Balances.js';
 import { CoinHeader } from './components/CoinHeader.js';
 import { MintForm } from './components/MintForm.js';
 import { TransferForm } from './components/TransferForm.js';
-import { deployment, isDeployed } from './lib/deployment.js';
+import { isDeployedFor, useDeployment } from './lib/deployment.js';
 import { shortAddress } from './lib/coin.js';
 import { useTreasuryCapOwner } from './lib/queries.js';
 
 export function App() {
-	const deployed = isDeployed;
 	// Active network label comes from dapp-kit (the connected client's
 	// network), not from the generated config — app code never reads
-	// `config.network` directly.
+	// `config.network` directly. The deployment is projected for that same
+	// network, so a runtime `switchNetwork` flips the coin ids in lockstep.
 	const network = useCurrentNetwork();
+	const deployment = useDeployment();
+	const deployed = isDeployedFor(deployment);
 	return (
 		<div className="min-h-screen flex flex-col">
 			<header className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 bg-white/50 dark:bg-neutral-950/50 backdrop-blur sticky top-0 z-10">

@@ -48,7 +48,7 @@ import { makeDirectPruneDeps } from './prune-direct.ts';
 import { runUpLive } from './wirings/up.ts';
 import { runApplyLive } from './wirings/apply.ts';
 import { runCodegen } from './wirings/codegen.ts';
-import { runDumpIds } from './wirings/dump-ids.ts';
+import { runDumpDeployment } from './wirings/dump-deployment.ts';
 import {
 	runSnapshotCaptureLiveAware,
 	runSnapshotDeleteDirect,
@@ -216,11 +216,12 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 		codegen: {
 			run: (flags) => runCodegen(flags.configPath),
 		},
-		dumpIds: {
+		dumpDeployment: {
 			run: (flags) =>
-				runDumpIds(identity, {
+				runDumpDeployment(identity, {
 					configPath: flags.configPath,
 					out: flags.out,
+					network: flags.network,
 					io: flags.io,
 					outputMode: flags.outputMode,
 				}),

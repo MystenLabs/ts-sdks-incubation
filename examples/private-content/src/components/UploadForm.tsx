@@ -1,10 +1,10 @@
 import { CurrentAccountSigner } from '@mysten/dapp-kit-core';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
+import { useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
 import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
 import { useMemo, useState } from 'react';
 
-import { dAppKit, vaultPackageId } from '../dapp-kit.js';
+import { dAppKit, vaultPackageIdFor } from '../dapp-kit.js';
 import { stringToBytes } from '../lib/format.js';
 import { useSignAndExecute } from '../lib/queries.js';
 import { encryptForSealId, freshSealId } from '../lib/seal.js';
@@ -13,6 +13,7 @@ import { blobIdToBytes, storeBlob } from '../lib/walrus.js';
 
 export function UploadForm() {
 	const client = useCurrentClient();
+	const network = useCurrentNetwork();
 	const { mutateAsync, isPending } = useSignAndExecute({
 		invalidateKeys: [['vault']],
 	});
@@ -43,18 +44,19 @@ export function UploadForm() {
 		try {
 			if (!name.trim()) throw new Error('Name is required');
 			if (!content) throw new Error('Content is required');
-			if (!vaultPackageId) {
+			if (!vaultPackageIdFor(network)) {
 				throw new Error('Vault package is not deployed. Did `devstack apply` complete?');
 			}
 
 			const { hex: sealIdHex, bytes: sealIdBytes } = freshSealId();
 			const data = stringToBytes(content);
-			const encrypted = await encryptForSealId({ suiClient: client, sealIdHex, data });
+			const encrypted = await encryptForSealId({ suiClient: client, network, sealIdHex, data });
 
 			// Push the ciphertext to walrus first; the on-chain tx only carries
 			// the resulting 32-byte blob id (plus seal_id + name + access list).
 			const { blobId } = await storeBlob({
 				suiClient: client,
+				network,
 				signer: walrusSigner,
 				data: encrypted,
 			});

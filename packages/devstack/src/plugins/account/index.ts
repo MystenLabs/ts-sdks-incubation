@@ -410,8 +410,6 @@ export const account = <const N extends string, const Funding extends AccountFun
 						resolved: {
 							name,
 							address: resolved.address,
-							scheme: resolved.scheme,
-							source: resolved.source,
 						},
 					}),
 				);

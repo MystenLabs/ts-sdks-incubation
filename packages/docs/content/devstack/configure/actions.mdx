@@ -1,0 +1,83 @@
+---
+title: Actions
+description:
+  Declare one-shot on-chain effects (mint, create-singleton, seed-config) that run once after their
+  dependencies are ready.
+---
+
+Use `action()` to run a one-shot on-chain effect once your packages and accounts are ready — mint a
+token, create a singleton object, or make a seed-config call. The action runs after its declared
+upstream refs (typically a signer account plus one or more published packages) and returns an
+`ActionReceipt` with the transaction digest and the objects it changed.
+
+An action runs once and then it's done; it is not a long-lived service.
+
+```ts title="devstack.config.ts"
+import { account, action, defineDevstack, localPackage, sui } from '@mysten-incubation/devstack';
+
+const localnet = sui();
+const alice = account('alice');
+const connectFour = localPackage('connect-four', {
+	sourcePath: './move/connect-four',
+	publisher: alice,
+});
+
+const openLobby = action('connect-four.openLobby', {
+	dependsOn: { signer: alice, pkg: connectFour },
+	body: (ctx, { signer, pkg }) =>
+		ctx.signAndExecute(signer, (tx) => {
+			tx.moveCall({ target: `${pkg.packageId}::game::create_lobby` });
+		}),
+});
+
+export default defineDevstack({
+	members: [localnet, alice, connectFour, openLobby],
+});
+```
+
+## The `body` callback
+
+`action(name, opts)` takes:
+
+- `dependsOn` — single ref, tuple, or object of plugin/refs. The resolved values arrive in the
+  second argument of `body` in the same shape.
+- `body: (ctx, deps) => Effect<ActionReceipt, ActionError>` — the on-chain effect.
+- `discriminator` — optional caller-supplied material that influences the cache key (literal string
+  or `(ctx, deps) => Effect<string>`).
+
+`ctx.signAndExecute(account, build)` folds the full pipeline:
+
+1. Build the `Transaction` via the caller's `build(tx)` callback.
+2. Sign with the supplied `account`.
+3. Execute with `{effects, objectTypes}` includes.
+4. Wait for finality.
+5. Project the envelope into an `ActionReceipt` with `digest` + `objectChanges`.
+
+The returned receipt's `objectChanges` array surfaces the SDK's `changedObjects` with
+`kind: 'created' | 'mutated'` and the fully-qualified `objectType` string when available.
+
+## Caching
+
+Action results are cached, so re-running the same stack against the same chain reuses the recorded
+receipt instead of re-executing. The cache key folds:
+
+- the chain id, so `localnet` and `testnet` cache independently;
+- the action name and its resolved dependency ids;
+- the `discriminator`, when present.
+
+Supply a callback `discriminator` to force re-execution when upstream state changes — for example, a
+counter on a singleton object.
+
+## Failure surface
+
+`action(...)` raises a single `ActionError` with a `phase` tag:
+
+- `'discriminator'` — the dynamic discriminator failed.
+- `'build'` — substrate dependency wiring failed before the body ran.
+- `'sign'` — the body itself raised, or signing/submit transport failed (also covers a missing
+  digest).
+- `'execute-failed'` — the transaction was delivered and executed but the validator returned a
+  `FailedTransaction` envelope.
+- `'verify'` — substrate-side cache verify exhausted retries.
+
+See [Errors](/devstack/reference/errors) for the full catalog.

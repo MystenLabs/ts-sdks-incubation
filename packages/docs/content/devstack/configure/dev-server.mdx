@@ -1,0 +1,67 @@
+---
+title: Dev Servers
+description: Supervise a local frontend dev server with hostService.
+---
+
+Run your frontend dev server (or any host process) alongside your stack so it starts and stops with
+`devstack up`. `hostService(...)` supervises the process, gives it a stable browser-facing URL, and
+orders it after the packages, wallet, or services it depends on.
+
+```ts title="devstack.config.ts"
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+	HOST_SERVICE_PORT_TOKEN,
+	defineDevstack,
+	hostService,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5173;
+
+const localnet = sui();
+// Makes every account available in your app — in dev, devstack injects the
+// wallet onto the page and dApp Kit auto-discovers it via wallet-standard.
+const devWallet = wallet({
+	accounts: 'all',
+});
+
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [devWallet] as const,
+});
+
+export default defineDevstack({ members: [localnet, app], stackName: 'main' });
+```
+
+## Ports and routing
+
+There are two ports involved:
+
+- The host process port is the port Vite actually binds. Set `port` as a preferred value, or omit it
+  and devstack will allocate a free port automatically. `HOST_SERVICE_PORT_TOKEN` is replaced with
+  the allocated process port before the command starts.
+- The routed dev endpoint is the stable browser-facing URL. For the default dev server endpoint, the
+  router serves `http://dev.<app>.localhost:5175` and forwards traffic to whatever process port was
+  allocated.
+
+The raw process port can change between runs while the routed URL stays predictable. Open the routed
+URL for everyday work — it's the one that makes stack-scoped browser behavior, wallet origin checks,
+Playwright base URLs, and manifest links line up. Use the direct `127.0.0.1:<process-port>` URL only
+for low-level debugging.
+
+## Options
+
+`hostService(...)` returns a ref you can list in `after` on other members.
+
+- `script` — the dev command to run. Use `command` plus `args` instead when you need argv-level
+  control.
+- `after` — members this process should start after, such as packages, the wallet, or other
+  services.
+- `ready` — the readiness probe to wait for before treating the service as started.

@@ -1,11 +1,18 @@
 ---
-title: Devstack
-description: Current package API and workflow for @mysten-incubation/devstack.
+title: Get started
+description:
+  Boot a local Sui stack, fund accounts, publish packages, wire your app, and generate typed
+  bindings — all from one TypeScript config.
 ---
 
-Devstack composes a local Sui development stack from one TypeScript config. A stack is a list of
-members such as `sui()`, `account()`, `localPackage()`, `wallet()`, `walrus()`, `seal()`,
-`deepbook()`, `action()`, and `dashboard()`.
+Spin up everything your Sui app needs to run locally from one TypeScript file. A single
+`devstack.config.ts` boots a local network, funds named accounts, publishes your Move packages,
+wires your dev server and a browser dev wallet, and generates typed bindings plus a runtime config
+your app imports — so `pnpm dev` gives you a working chain, funded wallets, and your published
+contracts.
+
+You describe the stack as a list of members — `sui()`, `account()`, `localPackage()`, `wallet()`,
+`walrus()`, `seal()`, `deepbook()`, `action()`, and `dashboard()` — and devstack stands them up.
 
 ## Install
 
@@ -17,12 +24,17 @@ cd my-app
 pnpm dev
 ```
 
-Add devstack to an existing app:
+Add devstack to an existing app — install the devstack package, the dev wallet used by the generated
+browser bindings, and the shared tsconfig package:
 
 ```bash
 pnpm add @mysten-incubation/devstack @mysten-incubation/dev-wallet @mysten/signers
 pnpm add -D @mysten-incubation/tsconfig
 ```
+
+## Configure the stack
+
+Add a `devstack.config.ts` at the app root:
 
 ```ts title="devstack.config.ts"
 import { dirname, resolve } from 'node:path';
@@ -41,18 +53,19 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5173;
 
-const localnet = sui();
-const publisher = account('publisher');
-const alice = account('alice');
+export const localnet = sui();
+export const publisher = account('publisher');
+export const alice = account('alice');
+export const bob = account('bob');
 
-const hello = localPackage('hello', {
+export const hello = localPackage('hello', {
 	sourcePath: resolve(HERE, 'move/hello'),
 	publisher,
 });
-const devWallet = wallet({
-	accounts: [publisher, alice],
+export const devWallet = wallet({
+	accounts: [publisher, alice, bob],
 });
-const app = hostService({
+export const app = hostService({
 	name: 'app',
 	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
@@ -67,33 +80,100 @@ export default defineDevstack({
 });
 ```
 
-The public package surface is:
+## Wire the app
 
-- Root API: `defineDevstack`, `runStack`, built-in factories, plugin-author helpers, and public
-  types.
-- Build integrations: `@mysten-incubation/devstack/vitest`, `/vitest/setup`, `/playwright`,
-  `/playwright/global-setup`, `/vite`, and `/runtime`.
+Add a Vite config. `devstackVitePlugin()` wires the `@generated` alias so your app can import the
+generated tree, and passes the allocated port through to the `hostService` command.
 
-There are no exported `contracts`, `substrate`, `advanced`, or `dapp-kit` package subpaths. App code
-reads generated files and the runtime manifest instead of importing private helpers.
+```ts title="vite.config.ts"
+import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
+import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
 
-## Core Flow
+export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
+```
 
-1. Put stack members in `devstack.config.ts`.
-2. Include your dev server as a `hostService(...)` member when the stack backs a browser app.
-3. Run `devstack up` for an attached local supervisor, or `devstack apply` to reconcile through the
-   live supervisor when one exists and one-shot otherwise.
-4. Generated files land under `src/generated` by default. Runtime state, manifests, snapshots, and
-   logs stay under `.devstack/stacks/<stack>`.
-5. Use the Vitest, Playwright, Vite, or runtime subpaths from application tooling.
+Import the generated files through the `@generated` alias and wire dapp-kit from
+`@generated/config.js`. The typed `config` object gives you `config.networkNames`,
+`config.defaultNetwork`, and `config.forNetwork(net)`. In dev, the dev wallet is added to the page
+automatically and dApp Kit discovers it via wallet-standard; a production build carries no dev
+wallet.
 
-## Start Here
+```ts title="src/dapp-kit.ts"
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-- [Quickstart](/devstack/quickstart) for a small app config.
-- [Local development](/devstack/features/local-dev) for state and generated output.
-- [Dashboard](/devstack/features/dashboard) to inspect a running stack in the browser.
-- [Vitest](/devstack/features/testing-vitest) and
-  [Playwright](/devstack/features/testing-playwright) for test integration.
-- [Services](/devstack/features/services) for Walrus, Seal, DeepBook, and known deployments.
-- [Snapshot state](/devstack/features/state-and-snapshots) for the currently supported snapshot
-  surface.
+import { config } from '@generated/config.js';
+
+export const dAppKit = createDAppKit({
+	networks: [...config.networkNames],
+	defaultNetwork: config.defaultNetwork,
+	autoConnect: import.meta.env.DEV,
+	createClient(network) {
+		// `config.forNetwork(net)` returns the resolved deployment for the
+		// selected network, so a runtime `switchNetwork` flips ids in lockstep.
+		const net = config.forNetwork(network);
+		return new SuiGrpcClient({
+			network,
+			baseUrl: net.rpc,
+			// Generated bindings default `package` to `@local/<name>`;
+			// `mvrOverrides` points each name at its deployed id.
+			mvr: { overrides: net.mvrOverrides },
+		});
+	},
+});
+```
+
+See [Config & deployments](/devstack/codegen/config-and-deployments) for the full config surface and
+how the deployment loader resolves ids.
+
+## First boot
+
+Generate the typed bindings your app builds against:
+
+```bash
+pnpm devstack codegen
+```
+
+This writes the generated `src/generated` tree — typed Move bindings and the runtime config your app
+imports — from your Move source. It needs no running stack; run it whenever the Move source changes.
+
+Then run the stack:
+
+```bash
+pnpm devstack up
+```
+
+Reconcile from another shell or CI:
+
+```bash
+pnpm devstack apply
+```
+
+If `devstack up` is already running for this stack, `apply` waits on it; otherwise it runs the same
+setup once and exits. Use the generated files from `src/generated`, and treat `.devstack/` as
+runtime state only.
+
+## Core flow
+
+1. Put stack members in `devstack.config.ts`. Include your dev server as a `hostService(...)` member
+   when the stack backs a browser app.
+2. Run `devstack codegen` to write the typed bindings and runtime config under `src/generated` — the
+   tree your app builds against. Rerun it when the Move source changes.
+3. Run `devstack up` to start the stack and keep it running, or `devstack apply` to reconcile from
+   another shell or CI.
+4. Import the generated files from `src/generated`; runtime state, snapshots, and logs stay under
+   `.devstack/stacks/<stack>`.
+5. Pull in the Vitest, Playwright, Vite, and runtime helpers from their subpaths when you need them
+   — `@mysten-incubation/devstack/vitest`, `/playwright`, `/vite`, and `/runtime`.
+
+## Where to go next
+
+- [Configure your stack](/devstack/configure/sui) for sui, accounts, packages, and funding.
+- [Walrus](/devstack/walrus), [Seal](/devstack/seal), and [DeepBook](/devstack/deepbook) for the
+  local and known stack services.
+- [Codegen & deployments](/devstack/codegen) for generated outputs and the deployment config.
+- [Testing](/devstack/testing) for unit, e2e, and browser tests.
+- [Live networks](/devstack/live-networks) for running against public networks.
+- [Forking](/devstack/forking) for mirroring a real chain at a checkpoint.
+- [Going to production](/devstack/going-to-production) for the prod build and dapp-kit handoff.

@@ -54,7 +54,6 @@ import {
 	makeKnownStaticCodegen,
 	makeLocalCodegenable,
 	makeLocalStaticCodegen,
-	type PackageNetworks,
 } from './codegen.ts';
 import { hashMoveSources } from './build.ts';
 import type { PublishError } from './errors.ts';
@@ -106,7 +105,7 @@ export type {
 } from './publish-output.ts';
 export { pickCreatedByType } from './publish-output.ts';
 export type { PublishError } from './errors.ts';
-export type { PackageBindings, PackageNetworks, PackageNetworkEntry } from './codegen.ts';
+export type { PackageBindings } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
 
 /** Resolved value carried by the package resource. Local packages also
@@ -168,16 +167,20 @@ export interface LocalPackageOptions<
 	readonly git?: GitSource;
 	readonly mvrPlaceholder?: string;
 	readonly excludeFromCodegen?: boolean;
+	/** Move datatypes (struct / enum) to expose as MVR `types` overrides.
+	 *  OPT-IN: each entry is a `'<module>::<Name>'` relative to THIS package
+	 *  (the `@local/<slug>` prefix is implied), e.g. `['game::Lobby',
+	 *  'game::Game']`. Each declared type emits one
+	 *  `mvrOverrides.types['@local/<slug>::<module>::<Name>']` entry whose value
+	 *  resolves per-network to `` `${requireId(dep, "@local/<slug>")}::<module>::<Name>` ``
+	 *  (the resolved package id, never baked). Absent / empty ⇒ `types: {}` — we
+	 *  do NOT auto-enumerate every package type (that balloons the config + every
+	 *  committed `deployments/<net>.ts`). */
+	readonly mvrTypes?: readonly string[];
 	/** Capture created objects from the publish output. The record
 	 *  form maps output keys to object-type suffixes, e.g.
 	 *  `{ boardId: '::board::Board' }`. */
 	readonly capture?: Capture;
-	/** Per-network declared package ids (+ optional object ids) for
-	 *  prod-targeting. Pure literals, no resolution: codegen merges the
-	 *  resolved-local id into `config.packages.<name>.byNetwork.localnet`
-	 *  and these literals into `byNetwork.testnet` / `byNetwork.mainnet`.
-	 *  A consumer flips `config.network` (env) to select active ids. */
-	readonly networks?: PackageNetworks;
 	/** Publisher account — the signer for the publish tx. Pass the
 	 *  result of `account('alice')` (the same plugin/resource ref used
 	 *  in the rest of the stack — NOT a duplicate factory call).
@@ -194,10 +197,10 @@ export interface KnownPackageOptions {
 	readonly packageId: string;
 	readonly upgradeCapId?: string;
 	readonly mvrPlaceholder?: string;
-	/** Per-network declared package ids (+ optional object ids) for
-	 *  prod-targeting — same as `LocalPackageOptions.networks`. Pure
-	 *  literals; codegen fills `config.packages.<name>.byNetwork`. */
-	readonly networks?: PackageNetworks;
+	/** Move datatypes (struct / enum) to expose as MVR `types` overrides —
+	 *  see {@link LocalPackageOptions.mvrTypes}. Each entry is a
+	 *  `'<module>::<Name>'` relative to this package; OPT-IN, defaults to none. */
+	readonly mvrTypes?: readonly string[];
 }
 
 interface PackageRegistryProjectionContribution {
@@ -306,9 +309,9 @@ const buildLocalPlugin = <
 							sourceHash,
 							publisher: opts.publisher.id,
 							mvrPlaceholder: opts.mvrPlaceholder ?? null,
+							mvrTypes: opts.mvrTypes ?? null,
 							excludeFromCodegen: opts.excludeFromCodegen === true,
 							capture: opts.capture ?? null,
-							networks: opts.networks ?? null,
 							// url+rev change → new identity → re-clone + rebuild.
 							git: opts.git ?? null,
 						})),
@@ -345,9 +348,9 @@ const buildLocalPlugin = <
 			sourcePath: opts.sourcePath ?? null,
 			mvrPlaceholder: opts.mvrPlaceholder,
 			excluded: opts.excludeFromCodegen ?? false,
-			networks: opts.networks,
+			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 			// Capture KEYS (config-known) so the committed stub carries
-			// `resolveValue('package:<name>:objects', '<key>')` references —
+			// `requireValue(dep, 'package:<name>:objects', '<key>')` references —
 			// no live-only `objects` field, no baked object id.
 			...(opts.capture !== undefined ? { objectKeys: Object.keys(opts.capture) } : {}),
 		}),
@@ -459,7 +462,6 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 			packageId: opts.packageId,
 			upgradeCapId: opts.upgradeCapId ?? null,
 			mvrPlaceholder: opts.mvrPlaceholder ?? null,
-			networks: opts.networks ?? null,
 		}),
 		// Stack-free codegen: a known package's `packageId` is already a
 		// config literal, so the committed stub emits it verbatim (no chain
@@ -469,7 +471,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 			packageId: opts.packageId,
 			mvrPlaceholder: opts.mvrPlaceholder,
 			...(opts.upgradeCapId !== undefined ? { upgradeCapId: opts.upgradeCapId } : {}),
-			networks: opts.networks,
+			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 		}),
 		start: ({ sui }) =>
 			Effect.gen(function* () {
@@ -515,7 +517,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 
 const makeLocalCapabilities = (
 	name: string,
-	opts: { readonly excludeFromCodegen?: boolean; readonly networks?: PackageNetworks },
+	opts: { readonly excludeFromCodegen?: boolean; readonly mvrTypes?: readonly string[] },
 	resolved: LocalPackageResolved,
 ): ReadonlyArray<Contribution> => {
 	// Snapshot + codegen lift their typed fields off the resolved
@@ -537,7 +539,7 @@ const makeLocalCapabilities = (
 		},
 		{
 			excluded: opts.excludeFromCodegen ?? false,
-			...(opts.networks !== undefined ? { networks: opts.networks } : {}),
+			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 		},
 	);
 	// The plugin contributes to the package-registry strategy under a
@@ -577,7 +579,7 @@ const makeKnownCapabilities = (
 			upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
 			mvrPlaceholder: resolved.mvrPlaceholder,
 		},
-		opts.networks !== undefined ? { networks: opts.networks } : {},
+		opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {},
 	);
 	const projection: PackageRegistryProjectionContribution = {
 		kind: 'known',

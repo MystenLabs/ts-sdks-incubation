@@ -149,7 +149,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 		pluginKey: walrusKey,
 		// Stack-free codegen: a local walrus cluster's deploy ids / endpoint
 		// URLs are LOADED CONFIG DATA -- the committed `walrus.ts` stub emits
-		// `resolveValue('walrus', '<key>')`, never a baked object id / URL.
+		// `requireValue(dep, 'walrus', '<key>')`, never a baked object id / URL.
 		staticCodegen: () => [makeWalrusStaticCodegen({ mode: 'local', network: LOCAL_NETWORK_NAME })],
 		// `deps` auto-infers the resolved `[sui]` tuple from the
 		// `[suiResource] as const` dependency. `ctx` arrives via the

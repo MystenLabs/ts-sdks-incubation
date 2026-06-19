@@ -4,8 +4,7 @@
 		"types": ["vite/client", "node"],
 		"paths": {
 			"@/*": ["./src/*"],
-			"@generated/*": ["./src/generated/*"],
-			"@devstack-dev/*": ["./.devstack/stacks/private-content/generated-extras/*"]
+			"@generated/*": ["./src/generated/*"]
 		}
 	},
 	"include": ["tests/**/*", "src/**/*"]

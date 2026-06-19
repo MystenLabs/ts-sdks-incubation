@@ -38,6 +38,7 @@ import {
 	layerCodegenOrchestrator,
 	runEmitCycle,
 } from '../../../src/orchestrators/codegen/service.ts';
+import { makeLocalStaticCodegen } from '../../../src/plugins/package/codegen.ts';
 
 // Helper — synthesise a Codegenable for tests.
 const writeExports = (
@@ -53,7 +54,6 @@ const fakeDecl = (parts: {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly sensitive?: boolean;
-	readonly outputLocation?: 'generated' | 'generated-extras';
 	readonly aggregateOnly?: boolean;
 	readonly allowEmitterNameRepetition?: boolean;
 	readonly aggregate?: AggregateContribution;
@@ -63,7 +63,6 @@ const fakeDecl = (parts: {
 	emitterName: parts.emitterName,
 	outputPath: parts.outputPath,
 	sensitive: parts.sensitive,
-	outputLocation: parts.outputLocation,
 	aggregateOnly: parts.aggregateOnly,
 	allowEmitterNameRepetition: parts.allowEmitterNameRepetition,
 	aggregate: parts.aggregate,
@@ -94,16 +93,9 @@ const stubMoveLayers = Layer.mergeAll(
 
 const nodePlatformLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 
-// Extras tree is a sibling of the runtime tree (mirrors production:
-// `generated-extras` lives outside `outputDir`). Tests that assert on
-// `generated-extras` artifacts import from `${root}-extras`.
-const extrasOf = (root: string): string => `${root}-extras`;
-
 const baseLayer = (root: string) =>
 	Layer.mergeAll(stubMoveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
-		Layer.provide(
-			layerCodegenRoot({ outputDir: root, stackSubdir: null, extrasDir: extrasOf(root) }),
-		),
+		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
 		Layer.provide(nodePlatformLayer),
 	);
 
@@ -112,9 +104,7 @@ const baseLayerWithMove = (
 	moveLayers: Layer.Layer<MoveCodegenService | MoveSummaryRunnerService>,
 ) =>
 	Layer.mergeAll(moveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
-		Layer.provide(
-			layerCodegenRoot({ outputDir: root, stackSubdir: null, extrasDir: extrasOf(root) }),
-		),
+		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
 		Layer.provide(nodePlatformLayer),
 	);
 
@@ -365,172 +355,298 @@ describe('codegen.runEmitCycle', () => {
 		}),
 	);
 
-	it.effect(
-		'deep-merges sui + packages into one config.ts and routes accounts to generated-extras',
-		() =>
-			withTempRoot('codegen-test', (root) =>
-				Effect.gen(function* () {
-					// Each decl below carries its own `aggregate` contribution
-					// matching what the real account/coin/sui/package plugins
-					// register. The orchestrator must remain plugin-name-blind.
-					// sui + package both deep-merge into `config.ts`; account
-					// routes to the gitignored `generated-extras` tree.
-					const result = yield* runEmitCycle({
-						contributions: [
-							fakeDecl({
-								emitterName: 'account/alice',
-								outputPath: 'accounts/alice.ts',
-								outputLocation: 'generated-extras',
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'accounts.ts',
-									outputLocation: 'generated-extras',
-									project: (e) => e,
+	it.effect('deep-merges sui + packages into one config.ts (name-blind aggregation)', () =>
+		withTempRoot('codegen-test', (root) =>
+			Effect.gen(function* () {
+				// Each decl below carries its own `aggregate` contribution
+				// matching what the real coin/sui/package plugins register. The
+				// orchestrator must remain plugin-name-blind. sui + package both
+				// deep-merge into `config.ts`; coins into `coins.ts`.
+				const result = yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'coin/mock_usdc',
+							outputPath: 'coins/mock_usdc.ts',
+							aggregate: {
+								bucket: 'coins.ts',
+								project: (e) => e,
+							},
+							exports: {
+								mock_usdc: {
+									symbol: 'mock_usdc',
+									fullCoinType: '0x1::mock_usdc::MOCK_USDC',
+									decimals: 6,
+									source: 'registry',
 								},
-								exports: {
-									alice: {
-										name: 'alice',
-										address: '0xabc',
-										scheme: 'ed25519',
-										source: 'real',
-									},
+							},
+						}),
+						fakeDecl({
+							emitterName: 'sui-network',
+							outputPath: 'config.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'config.ts',
+								project: (e) => {
+									const n = e['__suiNetworkEntry'] as {
+										readonly rpc: string;
+									};
+									return { network: 'localnet', networks: { localnet: n } };
 								},
-							}),
-							fakeDecl({
-								emitterName: 'coin/mock_usdc',
-								outputPath: 'coins/mock_usdc.ts',
-								aggregate: {
-									bucket: 'coins.ts',
-									project: (e) => e,
+							},
+							exports: {
+								__suiNetworkEntry: {
+									chain: 'sui:localnet',
+									mode: 'local',
+									rpc: 'http://127.0.0.1:9000',
+									faucet: 'http://127.0.0.1:9123',
+									graphql: null,
+									forkUpstream: null,
 								},
-								exports: {
-									mock_usdc: {
-										symbol: 'mock_usdc',
-										fullCoinType: '0x1::mock_usdc::MOCK_USDC',
-										decimals: 6,
-										source: 'registry',
-									},
+							},
+						}),
+						fakeDecl({
+							emitterName: 'package',
+							outputPath: 'package/mock-usdc.ts',
+							allowEmitterNameRepetition: true,
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'config.ts',
+								project: (e) => {
+									const b = e['packageBindings'] as {
+										readonly name: string;
+										readonly mvrPlaceholder: string;
+									};
+									return {
+										// Mirror the real package projection shape:
+										// `{ mvr, packageId }` (per-network ids now live in
+										// the injected deployment envelope, not a `byNetwork`
+										// sub-key).
+										packages: {
+											[b.name]: { mvr: b.mvrPlaceholder, packageId: '0x1' },
+										},
+										// Mirror the real `projectPackageConfig`: each package
+										// folds its active-network id into the shared
+										// `mvrOverrides` map keyed by its `mvr` placeholder.
+										mvrOverrides: { [b.mvrPlaceholder]: '0x1' },
+									};
 								},
-							}),
-							fakeDecl({
-								emitterName: 'sui-network',
-								outputPath: 'config.ts',
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'config.ts',
-									project: (e) => {
-										const n = e['__suiNetworkEntry'] as {
-											readonly rpc: string;
-										};
-										return { network: 'localnet', networks: { localnet: n } };
-									},
+							},
+							exports: {
+								packageBindings: {
+									name: 'mock_usdc',
+									packageId: '0x1',
+									mvrPlaceholder: 'mock-usdc',
+									sourcePath: null,
+									excluded: true,
 								},
-								exports: {
-									__suiNetworkEntry: {
-										chain: 'sui:localnet',
-										mode: 'local',
-										rpc: 'http://127.0.0.1:9000',
-										faucet: 'http://127.0.0.1:9123',
-										graphql: null,
-										forkUpstream: null,
-									},
-								},
-							}),
-							fakeDecl({
-								emitterName: 'package',
-								outputPath: 'package/mock-usdc.ts',
-								allowEmitterNameRepetition: true,
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'config.ts',
-									project: (e) => {
-										const b = e['packageBindings'] as {
-											readonly name: string;
-											readonly mvrPlaceholder: string;
-										};
-										return {
-											packages: { [b.name]: { ...b, byNetwork: { localnet: '0x1' } } },
-											// Mirror the real `projectPackageConfig`: each package
-											// folds its active-network id into the shared
-											// `mvrOverrides` map keyed by its `mvr` placeholder.
-											mvrOverrides: { [b.mvrPlaceholder]: '0x1' },
-										};
-									},
-								},
-								exports: {
-									packageBindings: {
-										name: 'mock_usdc',
-										packageId: '0x1',
-										mvrPlaceholder: 'mock-usdc',
-										sourcePath: null,
-										excluded: true,
-									},
-								},
-							}),
-						],
-					});
-					expect(result.filesWritten.some((path) => path.endsWith('/config.ts'))).toBe(true);
-					expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
-					// accounts.ts lands in the extras tree, NOT the runtime tree.
-					expect(
-						result.filesWritten.some((path) => path.endsWith(`${extrasOf(root)}/accounts.ts`)),
-					).toBe(true);
-					expect(result.filesWritten.some((path) => path.endsWith(`${root}/accounts.ts`))).toBe(
-						false,
-					);
-					expect(result.bindings?.packagesEmitted).toEqual([]);
+							},
+						}),
+					],
+				});
+				expect(result.filesWritten.some((path) => path.endsWith('/config.ts'))).toBe(true);
+				expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
+				// The strict app-specific `deployment.ts` is emitted alongside
+				// `config-runtime.ts` (config.ts resolves ids at runtime).
+				expect(result.filesWritten.some((path) => path.endsWith(`${root}/deployment.ts`))).toBe(
+					true,
+				);
+				expect(result.filesWritten.some((path) => path.endsWith(`${root}/config-runtime.ts`))).toBe(
+					true,
+				);
+				expect(result.bindings?.packagesEmitted).toEqual([]);
 
-					const configModule = yield* Effect.promise(
-						() =>
-							import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
-								readonly config: {
-									readonly network: string;
-									readonly networks: {
-										readonly localnet: { readonly rpc: string };
-									};
-									readonly packages: {
-										readonly mock_usdc: {
-											readonly packageId: string;
-											readonly byNetwork: { readonly localnet: string };
-										};
-									};
-									readonly mvrOverrides: Readonly<Record<string, string>>;
+				// The committed `config.ts` now opens with
+				// `const __deployment = loadDeployment();` — the loud-failing
+				// deployment accessor — so importing it requires an injected
+				// deployment. Stub `__DEVSTACK_DEPLOYMENT__` (the Vite `define`
+				// channel) with the multi-network ENVELOPE for the duration of the
+				// imports; restore it after so the global stays clean for sibling
+				// tests.
+				yield* Effect.acquireRelease(
+					Effect.sync(() => {
+						(globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'] = {
+							defaultNetwork: 'localnet',
+							networks: {
+								localnet: {
+									network: 'localnet',
+									rpc: 'http://127.0.0.1:9000',
+									local: true,
+									packages: { mock_usdc: { id: '0x1' } },
+									mvrOverrides: { 'mock-usdc': '0x1' },
+								},
+							},
+							// Dev accounts ride the ENVELOPE (network-agnostic), not the unit.
+							accounts: { alice: '0xabc' },
+						};
+					}),
+					() =>
+						Effect.sync(() => {
+							delete (globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'];
+						}),
+				);
+
+				const configModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly config: {
+								readonly network: string;
+								readonly defaultNetwork: string;
+								readonly networkNames: readonly string[];
+								readonly forNetwork: (network: string) => { readonly rpc: string };
+								readonly networks: {
+									readonly localnet: { readonly rpc: string };
 								};
-							}>,
-					);
-					const coinsModule = yield* Effect.promise(
-						() =>
-							import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
-								readonly coins: { readonly mock_usdc: { readonly fullCoinType: string } };
-							}>,
-					);
-					const accountsModule = yield* Effect.promise(
-						() =>
-							import(
-								`${pathToFileURL(`${extrasOf(root)}/accounts.ts`).href}?t=${Date.now()}`
-							) as Promise<{
-								readonly accounts: { readonly alice: { readonly address: string } };
-							}>,
-					);
-					// sui's `networks.localnet` and the package's `packages.*`
-					// coexist in ONE config.ts (deep-merge, not last-write-wins).
-					expect(configModule.config.network).toBe('localnet');
-					expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
-					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
-					expect(configModule.config.packages.mock_usdc.byNetwork.localnet).toBe('0x1');
-					// Top-level `mvrOverrides` is the active-network name→id map
-					// (what the old per-app `mvrOverrides()` helper computed):
-					// keyed by the package's `mvr` placeholder, valued by
-					// `byNetwork[network]`. Apps feed it straight into
-					// dapp-kit's `mvr.overrides.packages`.
-					expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
-					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
-						configModule.config.packages.mock_usdc.byNetwork.localnet,
-					);
-					expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
-					expect(accountsModule.accounts.alice.address).toBe('0xabc');
-				}).pipe(Effect.provide(baseLayer(root))),
-			),
+								readonly packages: {
+									readonly mock_usdc: {
+										readonly packageId: string;
+									};
+								};
+								readonly mvrOverrides: Readonly<Record<string, string>>;
+							};
+						}>,
+				);
+				const coinsModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly coins: {
+								readonly forNetwork: (network: string) => {
+									readonly mock_usdc: { readonly fullCoinType: string };
+								};
+							};
+						}>,
+				);
+				// sui's `networks.localnet` and the package's `packages.*`
+				// coexist in ONE config.ts (deep-merge, not last-write-wins).
+				expect(configModule.config.network).toBe('localnet');
+				expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
+				// The static-only DEPLOYMENT envelope accessors are wired off
+				// the loaded deployment: default network, the available network
+				// names, and the per-network lookup. There is deliberately NO
+				// `activeNetwork` — apps resolve per-network data through
+				// `config.forNetwork(<dapp-kit-selected network>)` so nothing
+				// drifts out of sync with the runtime-selected network.
+				expect(configModule.config.defaultNetwork).toBe('localnet');
+				expect(configModule.config.networkNames).toEqual(['localnet']);
+				expect(configModule.config.forNetwork('localnet').rpc).toBe('http://127.0.0.1:9000');
+				expect('activeNetwork' in configModule.config).toBe(false);
+				expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
+				// The package entry no longer carries a `byNetwork` sub-key —
+				// per-network ids live in the injected deployment envelope.
+				expect('byNetwork' in configModule.config.packages.mock_usdc).toBe(false);
+				// Top-level `mvrOverrides` is the active-network name→id map
+				// (what the old per-app `mvrOverrides()` helper computed):
+				// keyed by the package's `mvr` placeholder, valued by the
+				// default-network resolved id. Apps feed it straight into
+				// dapp-kit's `mvr.overrides.packages`.
+				expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
+				expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
+					configModule.config.packages.mock_usdc.packageId,
+				);
+				// The coins bucket is a per-network accessor: switching the
+				// app's network re-resolves coin ids in lockstep with rpc /
+				// packages. `forNetwork('localnet')` reads the injected
+				// localnet entry.
+				expect(coinsModule.coins.forNetwork('localnet').mock_usdc.fullCoinType).toBe(
+					'0x1::mock_usdc::MOCK_USDC',
+				);
+			}).pipe(Effect.provide(baseLayer(root))),
+		),
+	);
+
+	it.effect('emits config.mvrOverrides.types ONLY for developer-declared mvrTypes', () =>
+		withTempRoot('codegen-test', (root) => {
+			// A REAL local package decl (via `makeLocalStaticCodegen`) emits
+			// `config.mvrOverrides.packages.<mvr>` from config alone. The MVR
+			// `types` overrides are OPT-IN: each `<module>::<Name>` the developer
+			// declares via `mvrTypes` emits one
+			// `config.mvrOverrides.types['@local/<slug>::<module>::<Name>']` whose
+			// value resolves per-network via `requireId(dep, "<mvr>")`. Nothing is
+			// auto-enumerated from the rendered bindings. Stub the Move codegen so
+			// the bindings step runs (its output no longer feeds `types`).
+			const moveLayers = Layer.mergeAll(
+				Layer.succeed(MoveSummaryRunnerService)(
+					stubMoveSummaryRunner((sourcePath) => ({
+						packageName: sourcePath,
+						sourcePath,
+						summaryJson: {},
+					})),
+				),
+				Layer.succeed(MoveCodegenService)(
+					stubMoveCodegen(() => [
+						{
+							relPath: 'connect_four/game.ts',
+							content: [
+								"const $moduleName = '@local/connect-four::game';",
+								'export const Lobby = new MoveStruct({ name: `${$moduleName}::Lobby`, fields: {} });',
+								'export const Game = new MoveStruct({ name: `${$moduleName}::Game`, fields: {} });',
+							].join('\n'),
+						},
+					]),
+				),
+			);
+			return Effect.gen(function* () {
+				// Use the STATIC (committed-tree) codegen source — the path the
+				// `codegen` verb runs — so `mvrOverrides.types` emits the per-network
+				// `requireId(dep, "<mvr>")`-resolved tags (the committed tree never
+				// bakes an id). OPT-IN: declare exactly the two types we want exposed.
+				const [packageDecl] = makeLocalStaticCodegen({
+					name: 'connect-four',
+					sourcePath: '/tmp/source/connect-four',
+					excluded: false,
+					mvrTypes: ['game::Game', 'game::Lobby'],
+				})();
+				const result = yield* runEmitCycle({ contributions: [packageDecl!] });
+				expect(result.bindings?.packagesEmitted).toEqual(['connect-four']);
+
+				// Read the emitted config.ts back through the injected deployment.
+				yield* Effect.acquireRelease(
+					Effect.sync(() => {
+						(globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'] = {
+							defaultNetwork: 'localnet',
+							networks: {
+								localnet: {
+									network: 'localnet',
+									rpc: 'http://127.0.0.1:9000',
+									local: true,
+									packages: { 'connect-four': { id: '0xpkg' } },
+									mvrOverrides: {
+										packages: { '@local/connect-four': '0xpkg' },
+										types: {},
+									},
+								},
+							},
+						};
+					}),
+					() =>
+						Effect.sync(() => {
+							delete (globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'];
+						}),
+				);
+				const configModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly config: {
+								readonly mvrOverrides: {
+									readonly packages: Readonly<Record<string, string>>;
+									readonly types: Readonly<Record<string, string>>;
+								};
+							};
+						}>,
+				);
+				// `mvrOverrides.packages` resolves the package id (via requireId).
+				expect(configModule.config.mvrOverrides.packages).toEqual({
+					'@local/connect-four': '0xpkg',
+				});
+				// `mvrOverrides.types` substitutes the resolved id into each
+				// DECLARED named tag — the `@local/...::game::<Name>` head replaced
+				// by `<packageId>::game::<Name>`. ONLY the developer-declared types
+				// appear (no auto-enumeration).
+				expect(configModule.config.mvrOverrides.types).toEqual({
+					'@local/connect-four::game::Game': '0xpkg::game::Game',
+					'@local/connect-four::game::Lobby': '0xpkg::game::Lobby',
+				});
+			}).pipe(Effect.provide(baseLayerWithMove(root, moveLayers)));
+		}),
 	);
 
 	it.effect(
@@ -682,52 +798,6 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 		}),
 	);
 
-	it.effect('fails fast when two contributors to one bucket disagree on outputLocation', () =>
-		withTempRoot('codegen-test', (root) =>
-			Effect.gen(function* () {
-				const result = yield* runEmitCycle({
-					contributions: [
-						// First contributor establishes `generated` (non-sensitive).
-						fakeDecl({
-							emitterName: 'first',
-							outputPath: 'first.ts',
-							aggregateOnly: true,
-							aggregate: {
-								bucket: 'config.ts',
-								outputLocation: 'generated',
-								project: (e) => e,
-							},
-							exports: { a: { x: 1 } },
-						}),
-						// Later contributor disagrees: routes to extras +
-						// sensitive. MUST be rejected, not silently ignored
-						// (would otherwise land the secret in committed tree).
-						fakeDecl({
-							emitterName: 'second',
-							outputPath: 'second.ts',
-							aggregateOnly: true,
-							aggregate: {
-								bucket: 'config.ts',
-								outputLocation: 'generated-extras',
-								sensitive: true,
-								project: (e) => e,
-							},
-							exports: { b: { y: 2 } },
-						}),
-					],
-				}).pipe(Effect.flip);
-				expect(result).toBeInstanceOf(CodegenAggregateConflict);
-				if (result instanceof CodegenAggregateConflict) {
-					expect(result.bucket).toBe('config.ts');
-					expect(result.field).toBe('outputLocation');
-					expect(result.established).toBe('generated');
-					expect(result.conflicting).toBe('generated-extras');
-					expect([...result.emitters]).toEqual(['first', 'second']);
-				}
-			}).pipe(Effect.provide(baseLayer(root))),
-		),
-	);
-
 	it.effect('fails fast when two contributors to one bucket disagree on sensitive', () =>
 		withTempRoot('codegen-test', (root) =>
 			Effect.gen(function* () {
@@ -784,7 +854,6 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 							aggregateOnly: true,
 							aggregate: {
 								bucket: 'secrets.ts',
-								outputLocation: 'generated',
 								sensitive: true,
 								project: (e) => e,
 							},
@@ -827,101 +896,6 @@ describe('codegen orchestrator source — plugin-name blindness', () => {
 	});
 });
 
-describe('codegen.emitExtras', () => {
-	it.effect('flushes ONLY the generated-extras decls, leaving the runtime tree untouched', () =>
-		withTempRoot('codegen-extras-test', (root) =>
-			Effect.scoped(
-				Effect.gen(function* () {
-					const codegen = yield* CodegenOrchestratorService;
-					// A dev-wallet-shaped decl routed to generated-extras (sensitive,
-					// like the real one) plus an account-shaped aggregate into
-					// `accounts.ts` (also generated-extras).
-					yield* codegen.registerContribution(
-						'wallet',
-						fakeDecl({
-							emitterName: 'dapp-kit-config',
-							outputPath: 'dev-wallet.ts',
-							outputLocation: 'generated-extras',
-							sensitive: true,
-							exports: { devWallet: { url: 'http://127.0.0.1:9999' } },
-						}),
-					);
-					yield* codegen.registerContribution(
-						'account',
-						fakeDecl({
-							emitterName: 'account/alice',
-							outputPath: 'accounts/alice.ts',
-							outputLocation: 'generated-extras',
-							aggregateOnly: true,
-							aggregate: {
-								kind: 'account',
-								bucket: 'accounts.ts',
-								outputLocation: 'generated-extras',
-								project: (exported) => exported,
-							},
-							exports: { alice: { address: '0xa11ce' } },
-						}),
-					);
-					// A `generated`-located decl that emitExtras MUST skip — it
-					// belongs to the committed `src/generated` tree written only by
-					// the stack-free `codegen` verb.
-					yield* codegen.registerContribution(
-						'sui',
-						fakeDecl({
-							emitterName: 'config',
-							outputPath: 'config.ts',
-							outputLocation: 'generated',
-							exports: { network: 'localnet' },
-						}),
-					);
-
-					const result = yield* codegen.emitExtras();
-
-					// dev-wallet.ts + accounts.ts land in the extras tree...
-					const extras = extrasOf(root);
-					const walletPath = `${extras}/dev-wallet.ts`;
-					const accountsPath = `${extras}/accounts.ts`;
-					expect(result.filesWritten).toContain(walletPath);
-					expect(result.filesWritten).toContain(accountsPath);
-					const walletSource = yield* Effect.promise(() => readFile(walletPath, 'utf8'));
-					expect(walletSource).toContain('devWallet');
-					// ...the sensitive wallet file is 0o600.
-					expect(statSync(walletPath).mode & 0o777).toBe(0o600);
-					const accountsSource = yield* Effect.promise(() => readFile(accountsPath, 'utf8'));
-					expect(accountsSource).toContain('0xa11ce');
-
-					// The `generated` decl is NEVER written by emitExtras.
-					expect(existsSync(`${root}/config.ts`)).toBe(false);
-					expect(result.filesWritten.some((p) => p === `${root}/config.ts`)).toBe(false);
-				}),
-			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
-		),
-	);
-
-	it.effect('is a no-op (empty result) when nothing is routed to generated-extras', () =>
-		withTempRoot('codegen-extras-empty', (root) =>
-			Effect.scoped(
-				Effect.gen(function* () {
-					const codegen = yield* CodegenOrchestratorService;
-					yield* codegen.registerContribution(
-						'sui',
-						fakeDecl({
-							emitterName: 'config',
-							outputPath: 'config.ts',
-							outputLocation: 'generated',
-							exports: { network: 'localnet' },
-						}),
-					);
-					const result = yield* codegen.emitExtras();
-					expect(result.filesWritten).toEqual([]);
-					expect(result.filesChmod).toEqual([]);
-					expect(existsSync(extrasOf(root))).toBe(false);
-				}),
-			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
-		),
-	);
-});
-
 describe('codegen.emitBindings', () => {
 	// The dev-`up` invariant: `emitBindings` regenerates the committed tree from
 	// the caller's STATIC (id-free) contributions and IGNORES the live
@@ -942,7 +916,6 @@ describe('codegen.emitBindings', () => {
 						fakeDecl({
 							emitterName: 'config',
 							outputPath: 'config.ts',
-							outputLocation: 'generated',
 							exports: { liveBakedId: '0xliveBAKEDid' },
 						}),
 					);
@@ -954,7 +927,6 @@ describe('codegen.emitBindings', () => {
 						fakeDecl({
 							emitterName: 'config',
 							outputPath: 'config.ts',
-							outputLocation: 'generated',
 							exports: { idFreeResolver: 'RESOLVE_ID_PLACEHOLDER' },
 						}),
 					]);
@@ -985,22 +957,20 @@ describe('codegen.emitBindings', () => {
 	);
 });
 
-describe('codegen.assembleIdConfig — active-network agreement', () => {
+describe('codegen.assembleDeployment — active-network agreement', () => {
 	// A sui-like config.ts contribution: the binding emits `network: 'localnet'`
 	// and a `networks` map keyed by 'localnet' for EVERY identity mode (mirrors
-	// plugins/sui/codegen.ts hard-coding LOCAL_NETWORK_NAME). The id-config's
+	// plugins/sui/codegen.ts hard-coding LOCAL_NETWORK_NAME). The deployment's
 	// active `network` field MUST be a key present in `networks` — the committed
-	// runtime resolver does `resolveNetworks()[network]`.
+	// runtime resolver does `loadDeployment().forNetwork(network)`.
 	const suiLikeDecl = (): CodegenableDecl<string> =>
 		fakeDecl({
 			emitterName: 'sui-network',
 			outputPath: 'config.ts',
-			outputLocation: 'generated',
 			aggregateOnly: true,
 			aggregate: {
 				kind: 'sui-network',
 				bucket: 'config.ts',
-				outputLocation: 'generated',
 				// Project the emitted `network` + `networks` straight into the
 				// config.ts bucket (what the real sui projection does).
 				project: (exported) => ({
@@ -1026,29 +996,32 @@ describe('codegen.assembleIdConfig — active-network agreement', () => {
 						// Boot for a fork: identity network = 'testnet-fork', but the
 						// sui binding still keys `networks` by 'localnet'. Old behavior
 						// stamped network: 'testnet-fork' (absent from networks) →
-						// `resolveNetworks()['testnet-fork']` is undefined → throws +
+						// `forNetwork('testnet-fork')` has no entry → throws +
 						// dev-wallet injection reads undefined.rpc. The fix derives the
 						// active network from the bucket so they AGREE.
-						const idConfig = yield* codegen.assembleIdConfig('testnet-fork');
-						// The active network MUST be a key present in `networks`.
-						expect(Object.keys(idConfig.networks)).toContain(idConfig.network);
+						const deployment = yield* codegen.assembleDeployment('testnet-fork');
+						// The envelope's default network MUST be a key present in
+						// `networks`, and each unit's `network` field agrees with its key.
+						expect(Object.keys(deployment.networks)).toContain(deployment.defaultNetwork);
+						const unit = deployment.networks[deployment.defaultNetwork]!;
+						expect(unit.network).toBe(deployment.defaultNetwork);
 						// And it is the key the binding emitted ('localnet').
-						expect(idConfig.network).toBe('localnet');
+						expect(deployment.defaultNetwork).toBe('localnet');
 					}),
 				).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
 			),
 	);
 });
 
-// Regression: an extras-only emit (boot's `emitExtras`) writes solely into
-// `extrasDir` (under the already-gitignored `.devstack/` root), so it must NOT
-// write a managed `.gitignore` at the committed `<outputDir>/.gitignore`. At
-// boot `outputDir` is only a stand-in — clobbering its tracked `.gitignore`
-// with the ignore-all policy on every `devstack up` would break `tsc`/`vite
+// Regression: a metadata-only emit (no standalone files, no aggregate files —
+// e.g. the values-only account / dev-wallet decls that feed the deployment
+// envelope, projecting nothing to a committed file) must NOT write a managed
+// `.gitignore` at the committed `<outputDir>/.gitignore`. Clobbering its
+// tracked `.gitignore` with the ignore-all policy would break `tsc`/`vite
 // build` on a fresh clone (the committed bindings would become untracked).
-describe('codegen extras emit — committed .gitignore is never clobbered', () => {
-	it.effect('an extras-only emit leaves the committed tree’s TRACKED .gitignore untouched', () =>
-		withTempRoot('codegen-extras-gitignore', (root) =>
+describe('codegen — a values-only emit never clobbers the committed .gitignore', () => {
+	it.effect('a values-only emit leaves the committed tree’s TRACKED .gitignore untouched', () =>
+		withTempRoot('codegen-values-only-gitignore', (root) =>
 			Effect.gen(function* () {
 				const committedIgnore = `${root}/.gitignore`;
 
@@ -1064,16 +1037,22 @@ describe('codegen extras emit — committed .gitignore is never clobbered', () =
 				const tracked = readFileSync(committedIgnore, 'utf8');
 				expect(tracked).toContain('track the whole committed projection tree');
 
-				// 2. An extras-only emit (only `generated-extras` decls) must NOT
-				//    touch the committed `.gitignore` — extras need no managed
-				//    ignore (they live under the gitignored `.devstack/` root).
+				// 2. A values-only emit (an aggregate-only decl whose `project`
+				//    returns null — like the dev-wallet connection / account decls,
+				//    which carry their data on `idConfigValues` for the deployment
+				//    envelope and write no committed file) must NOT touch the
+				//    committed `.gitignore`.
 				yield* runEmitCycle({
 					contributions: [
 						fakeDecl({
-							emitterName: 'account/alice',
-							outputPath: 'accounts/alice.ts',
-							outputLocation: 'generated-extras',
-							exports: { alice: { name: 'alice', address: '0xabc' } },
+							emitterName: 'dev-wallet-connection',
+							outputPath: 'dev-wallet.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'dev-wallet.ts',
+								project: () => null,
+							},
+							exports: { devWallet: { walletUrl: 'http://127.0.0.1:9999' } },
 						}),
 					],
 					trackTree: false,

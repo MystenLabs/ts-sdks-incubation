@@ -79,7 +79,7 @@ packages/*/docs/
 # `devstack codegen`, tracked so `tsc`/`vite build` work on a clean clone. Its
 # own managed `.gitignore` keeps any sensitive files out. Live, per-deployment
 # ids + dev-only wallet/account material live under the gitignored `.devstack/`
-# (`devstack-ids.json`, `generated-extras/`), NOT here. So this tree is NOT
+# (`deployment.json`), NOT here. So this tree is NOT
 # ignored. (Older flat `dapp-kit-config.ts` bearer-token output is gone.)
 
 # Codegen integration test scratch dir — written by
@@ -100,3 +100,6 @@ packages/*/docs/
 # https://github.com/effect-ts/effect-smol/blob/main/scripts/worktree-setup.sh
 # and that repo's AGENTS.md.
 .repos/
+
+# sui test-publish metadata (never commit)
+Pub.*.toml

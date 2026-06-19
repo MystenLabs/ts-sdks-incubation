@@ -28,7 +28,7 @@ import { Effect } from 'effect';
 import type { FileSystem, Scope } from 'effect';
 
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
-import type { DevWalletConfig } from './codegen.ts';
+import type { DevWalletConnection } from './codegen.ts';
 import { walletBootError, type WalletBootError } from './errors.ts';
 import { resolveOriginPolicy } from './origin-policy.ts';
 import { acquirePairingToken, composePairUrl, tokenPath, type PairingToken } from './pairing.ts';
@@ -98,7 +98,7 @@ export interface WalletOptions<
 export interface WalletValue {
 	readonly url: string; // router-fronted URL when available, loopback otherwise
 	readonly pairUrl: string;
-	readonly bindings: DevWalletConfig;
+	readonly connection: DevWalletConnection;
 	readonly localPort: number;
 	readonly token: PairingToken;
 	/** Server handle — substrate's scope finalizer chain invokes
@@ -248,9 +248,12 @@ export const acquireWallet = (
 			ctx.routerFrontedUrl ?? `http://${directUrlHostForBindAddress(bindAddress)}:${port}`;
 		const pairUrl = composePairUrl(walletUrl, token);
 
-		const bindings: DevWalletConfig = {
+		// NON-secret connection metadata only — the token never rides this
+		// (it stays in the `0o600` side-channel file the Vite plugin reads by
+		// path; `pairUrl`/`token` remain on the resolved value for tests and the
+		// snapshot subtree, but are NOT routed through `deployment.json`).
+		const connection: DevWalletConnection = {
 			walletUrl,
-			pairUrl,
 			network: ctx.network,
 			protocolPaths: {
 				health: WalletHttpPath.HEALTH,
@@ -271,7 +274,7 @@ export const acquireWallet = (
 		return {
 			url: walletUrl,
 			pairUrl,
-			bindings,
+			connection,
 			localPort: port,
 			token,
 			server,

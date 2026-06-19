@@ -375,7 +375,6 @@ export const runStackWithBoot = (
 	const substrate = layerProductionOrchestrators({
 		codegen: resolveProductionCodegenOptions({
 			appRoot,
-			effectiveStack: String(identity.stack),
 			codegen,
 		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
@@ -420,7 +419,6 @@ export const runStackWithBoot = (
 		// chained after the built-in, and the composed boot hooks below.
 		yield* superviseStackWithProductionBoot(supervisedStack, identity, state, {
 			extras: stack.options.extras,
-			networkOptions: stack.options.networkOptions,
 			...(opts.emitBindings === undefined ? {} : { emitBindings: opts.emitBindings }),
 			...(opts.boot?.devstackVersion === undefined
 				? {}

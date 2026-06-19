@@ -96,7 +96,7 @@ and logs stay under `.devstack/`.
 ## Package Surface
 
 - Root API: stack composition, built-in factories, plugin-author helpers, and public types.
-- CLI: `devstack up`, `apply`, `codegen`, `dump-ids`, `status`, `doctor`, `config`, `schema`,
+- CLI: `devstack up`, `apply`, `codegen`, `dump-deployment`, `status`, `doctor`, `config`, `schema`,
   `snapshot`, `prune`, and `wipe`. `--json` is a global flag that switches any verb to JSON output.
 - `devstack codegen` regenerates the committed generated bindings from Move source with NO stack
   boot — run it when Move source changes.

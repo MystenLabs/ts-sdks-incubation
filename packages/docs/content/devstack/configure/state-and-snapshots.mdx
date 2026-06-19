@@ -1,0 +1,89 @@
+---
+title: State and Snapshots
+description: Save and restore a stack's chain, blobs, and runtime state.
+---
+
+Snapshots let you save the full state of a running stack — its chain, blobs, key-server vaults, and
+runtime — and restore it later. Use them to capture a known-good baseline before a risky migration,
+to share a seeded environment, or to reset back to a clean starting point.
+
+Each stack keeps its state under `.devstack/stacks/<stack>/`, including a `snapshots/` directory
+where saved artifacts live.
+
+## Saving and restoring
+
+Save a snapshot with a one-shot CLI command when no `devstack up` session is attached to the stack:
+
+```bash
+devstack snapshot save
+devstack snapshot save before-migration
+devstack snapshot list
+devstack snapshot restore <name-or-id>
+devstack snapshot delete <name-or-id>
+```
+
+Snapshot names are the operator-facing handle. `save before-migration` records the name in metadata
+and stores the artifact under a generated immutable id. If no name is supplied, devstack generates a
+`manual-...` name. Names must be unique within a stack, so `restore before-migration` is
+deterministic. The generated id is still shown by `list` and can always be used as an escape hatch.
+
+To boot from a snapshot and then continue normal stack startup, use `up --from-snapshot`:
+
+```bash
+devstack up --from-snapshot before-migration
+devstack up --from-snapshot before-migration --snapshot-stale block
+devstack up --from-snapshot before-migration --snapshot-stale clean-start
+devstack up --snapshot-cache dev-baseline
+```
+
+`--from-snapshot` resolves the same name-or-id references as `snapshot restore`, restores before
+startup, and then brings the stack up. A snapshot is _stale_ when it was captured for a different
+stack configuration than the one you're booting. The default stale policy is `warn`: devstack logs a
+warning and restores anyway. Use `block` to refuse the restore when stale, or `clean-start` to skip
+the restore and boot normally.
+
+`--snapshot-cache <name>` uses the same staleness check as a startup cache: a current snapshot is
+restored, while a missing or stale one is refreshed after a normal startup.
+
+### Capturing from the TUI
+
+When you're already attached to `devstack up --renderer tui`, capture without starting a second
+command. Press `s`, type a snapshot name, and press Enter. Press Enter on an empty prompt to use a
+generated `manual-...` name, or press Esc to cancel. This shortcut is TUI-only; the `plain` and
+`silent` renderers don't handle keypress commands.
+
+Capture runs in the background after you submit. The bottom status row shows progress, and `q` still
+shuts down gracefully rather than waiting behind the capture. To keep the snapshot consistent,
+devstack briefly pauses the stack's containers while capturing, so services may stop responding for
+a moment.
+
+## Snapshot artifact
+
+A snapshot lives under `.devstack/stacks/<stack>/snapshots/<snapshotId>/` with this layout:
+
+```txt
+meta.json
+state.json              # present only when the stack state store exists
+host-tree.tar
+containers/images.tar
+contributions/<encoded-plugin>.json
+```
+
+Treat `meta.json`, `state.json`, `host-tree.tar`, and `containers/images.tar` as the stable artifact
+contract; anything else under the directory is internal.
+
+## Things to know
+
+- Snapshots are stack-scoped — you save and restore one stack at a time.
+- `restore` and `up --from-snapshot` refuse to run while `devstack up` owns the stack, and prompt
+  for `y` unless you pass `--yes`.
+- Restore raises `IdentityMismatchError` if the snapshot was captured for a different app, stack, or
+  network, before changing anything.
+- A stale snapshot — one captured for a different stack configuration — restores with a warning by
+  default, because it may create inconsistent state. Use `--snapshot-stale block` or `clean-start`
+  to change that.
+
+## Wiping state
+
+Use `devstack wipe --stack <name>` to remove all state for a stack. Pass `--yes` in non-interactive
+shells; in a TTY, omitting it prompts for `y` first.

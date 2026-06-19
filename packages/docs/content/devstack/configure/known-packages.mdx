@@ -1,0 +1,47 @@
+---
+title: Known packages
+description: Reference packages that already exist on-chain as stack members.
+---
+
+Use `knownPackage(name, { packageId })` to bring a package that already exists on-chain into your
+stack — a protocol you depend on, or your own code already deployed to a live network. Devstack
+treats it like any other package member: it gets a name, an MVR placeholder, and a slot in the
+generated `config`, so your app references it by name instead of pasting the `0x…` id.
+
+```ts title="devstack.config.ts"
+import { defineDevstack, knownPackage, sui } from '@mysten-incubation/devstack';
+
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const registry = knownPackage('registry', {
+	packageId: '0x...',
+	mvrPlaceholder: '@demo/registry',
+});
+
+export default defineDevstack({ members: [liveSui, registry] });
+```
+
+## Known vs local packages
+
+The difference is who owns the bytecode:
+
+- **`knownPackage(...)`** references an existing package. Devstack reads `packageId` from the
+  network to confirm it exists and is the right kind of object — it never builds or publishes
+  anything, and the id is fixed by you rather than discovered. Use it for packages you don't own or
+  that are already deployed.
+- **`localPackage(...)`** publishes Move source you control, then discovers the resulting package
+  id, upgrade cap, captured objects, and any coins it mints. Use it when devstack should build and
+  publish on boot. See [Packages](/devstack/configure/packages-config).
+
+Both expose the same `config.packages.<name>` shape to app code, so you can swap one for the other
+without touching how the app reads it.
+
+## Options
+
+| Option           | Purpose                                                          |
+| ---------------- | ---------------------------------------------------------------- |
+| `packageId`      | The on-chain package id to reference. Required.                  |
+| `upgradeCapId`   | The package's upgrade cap, if you need it available to app code. |
+| `mvrPlaceholder` | Override the default MVR placeholder for the package.            |
+
+A known package can serve as a dependency member anywhere a package ref is expected — for example as
+the `member` in [`coin.fromPackage(...)`](/devstack/configure/coins-and-funding).

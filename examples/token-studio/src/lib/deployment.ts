@@ -16,37 +16,90 @@
 // via dApp Kit (`useCurrentWallet().accounts`), so it reflects whatever
 // accounts the active wallet exposes in any build.
 //
-// `coins.managed_coin.{fullCoinType, packageId}` are emitted by the generated
-// (stack-free) coin table; the discovery-only object ids (`treasuryCapId` /
-// `metadataId`) are NON-DETERMINISTIC — they are only known after a live
-// publish, so the committed table omits them and they are resolved at runtime
-// from the injected ids' generic `values` channel (`coin:managed_coin`). The
-// generated key follows the witness struct name.
+// `coins.forNetwork(net).managed_coin.{fullCoinType, packageId}` are emitted by
+// the generated (stack-free) coin table; the discovery-only object ids
+// (`treasuryCapId` / `metadataId`) are NON-DETERMINISTIC — they are only known
+// after a live publish, so the committed table omits them and they are resolved
+// at runtime from the injected ids' generic `values` channel
+// (`coin:managed_coin`). The generated key follows the witness struct name.
+//
+// Everything is keyed by NETWORK: `deploymentForNetwork(net)` projects one
+// network, and the `useDeployment()` hook binds that to the dapp-kit-selected
+// network so a runtime `switchNetwork` re-projects all coin ids in lockstep.
+
+import { useCurrentNetwork } from '@mysten/dapp-kit-react';
 
 import { coins } from '@generated/coins.js';
-import { resolveValueOptional } from '@generated/config-runtime.js';
+import { config } from '@generated/config.js';
+import { DevstackConfigMissingError, optionalValue } from '@generated/config-runtime.js';
 
-const studio = coins.managed_coin;
-
-// Resolve a discovery-only coin object id from the injected ids, tolerating
-// absence: a build with no injected ids (or a coin not yet published) yields
-// `''`, which the UI gates on (`isDeployed`, query `enabled`). The non-throwing
-// `resolveValueOptional` returns `undefined` for these optional ids; the hard
-// `DevstackConfigMissingError` from the typed resolvers stays loud for the
-// load-bearing fields (rpc, package ids).
-const discoveryId = (key: string): string =>
-	resolveValueOptional<string>('coin:managed_coin', key) ?? '';
-
-export const deployment = {
-	// Display-only: the published package id (header/footer + deployed gate).
-	packageId: studio?.packageId ?? '0x0',
-	// Coin TYPE string — sourced from generated coin config, never concatenated.
-	managedCoinType: studio?.fullCoinType ?? '',
-	// Known objects, sourced from coin auto-discovery (runtime-resolved).
-	treasuryCapId: discoveryId('treasuryCapId'),
-	metadataId: discoveryId('metadataId'),
+// The undeployed projection: the sentinel shape `isDeployedFor` reads as
+// "nothing deployed for this network". Returned for any unknown/undeployed
+// network so the gate can render `NotDeployed` instead of crashing.
+const UNDEPLOYED = {
+	packageId: '0x0',
+	managedCoinType: '',
+	treasuryCapId: '',
+	metadataId: '',
 } as const;
 
-export const isDeployed: boolean = (deployment.packageId as string) !== '0x0';
+// Project the manifest for ONE network. Both the generated coin table
+// (`coins.forNetwork`) and the discovery-only object ids resolve per network,
+// so flipping the dapp-kit-selected network (via `useDeployment`) flips every
+// coin id in lockstep — a runtime `switchNetwork` re-projects everything.
+//
+// NON-THROWING: `useDeployment` runs this bare in render to gate the deployed
+// view, so an unknown/undeployed network must project the `UNDEPLOYED` sentinel
+// (which `isDeployedFor` reads as `false`), not throw. Two guards mirror the
+// throwing surfaces: (1) the network must be present in the injected envelope
+// (`config.networks[network]`) — `config.forNetwork` / `coins.forNetwork` throw
+// otherwise; (2) the coin table resolves required fields via `requireValue`,
+// which throws `DevstackConfigMissingError` when the coin hasn't been published
+// — caught here and reported as undeployed.
+export function deploymentForNetwork(network: string): Deployment {
+	const net = config.networks[network];
+	if (net === undefined) return UNDEPLOYED;
 
-export type Deployment = typeof deployment;
+	// Resolve a discovery-only coin object id off this network's deployment,
+	// tolerating absence: a build with no injected ids (or a coin not yet
+	// published) yields `''`, which the UI gates on (`isDeployedFor`, query
+	// `enabled`). The non-throwing `optionalValue` returns `undefined` for these
+	// optional ids; `requireValue` still throws `DevstackConfigMissingError`
+	// for the required fields (rpc, package ids).
+	const discoveryId = (key: string): string =>
+		optionalValue<string>(net, 'coin:managed_coin', key) ?? '';
+
+	try {
+		const studio = coins.forNetwork(network).managed_coin;
+		return {
+			// Display-only: the published package id (header/footer + deployed gate).
+			packageId: studio?.packageId ?? '0x0',
+			// Coin TYPE string — sourced from generated coin config, never concatenated.
+			managedCoinType: studio?.fullCoinType ?? '',
+			// Known objects, sourced from coin auto-discovery (runtime-resolved).
+			treasuryCapId: discoveryId('treasuryCapId'),
+			metadataId: discoveryId('metadataId'),
+		};
+	} catch (cause) {
+		if (cause instanceof DevstackConfigMissingError) return UNDEPLOYED;
+		throw cause;
+	}
+}
+
+export type Deployment = {
+	readonly packageId: string;
+	readonly managedCoinType: string;
+	readonly treasuryCapId: string;
+	readonly metadataId: string;
+};
+
+export const isDeployedFor = (d: Deployment): boolean => d.packageId !== '0x0';
+
+/**
+ * The active deployment, projected for the dapp-kit-selected network. Because
+ * the network comes from `useCurrentNetwork()`, a runtime `switchNetwork` flips
+ * the coin ids/type this returns, and every consumer hook re-reads in lockstep.
+ */
+export function useDeployment(): Deployment {
+	return deploymentForNetwork(useCurrentNetwork());
+}

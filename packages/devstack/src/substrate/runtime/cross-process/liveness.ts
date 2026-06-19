@@ -156,6 +156,7 @@ const hashStartTimeStamp = (stamp: string): number => {
  *  Returns `'alive' | 'dead'`. Never throws. Effect-wrapped so callers
  *  compose under spans. */
 export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolderLiveness')(
+	// eslint-disable-next-line require-yield -- Effect.fn requires a generator; this probe is pure synchronous logic wrapped only for span composition, so it has no yield
 	function* (holder: RosterHolder, cache?: LivenessCache) {
 		if (!isPidAlive(holder.pid)) return 'dead' as const;
 		const probedStart = processStartTime(holder.pid, cache);

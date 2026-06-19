@@ -1,0 +1,121 @@
+---
+title: Live networks
+description: Point the same stack at devnet, testnet, or mainnet.
+---
+
+Run your stack against a public network when you want to develop or test against the real chain
+rather than a local one. The same config works — you just choose the network. `sui()` is the local
+shorthand; for a public network, pass `sui({ mode: 'live', network })`.
+
+```ts
+import {
+	defineDevstack,
+	sui,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	knownPackage,
+	wallet,
+} from '@mysten-incubation/devstack';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+
+const DEV_PORT = 5173;
+
+const alice = account('alice', {
+	kind: 'signer',
+	signer: Ed25519Keypair.fromSecretKey(process.env.ALICE_PRIVATE_KEY!),
+});
+
+const registry = knownPackage('registry', {
+	packageId: '0x...',
+});
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const devWallet = wallet({
+	accounts: [alice],
+});
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [registry, devWallet] as const,
+});
+
+export default defineDevstack({
+	members: [liveSui, app],
+	stackName: 'main',
+});
+```
+
+The CLI can also select the surface network for mode-narrowed configs:
+
+```bash
+devstack up --network testnet
+devstack up --network mainnet
+devstack up --network testnet-fork
+```
+
+The names accepted by `--network` and `DEVSTACK_NETWORK` are exactly `localnet`, `testnet`,
+`mainnet`, `devnet`, `testnet-fork`, `mainnet-fork`, and `devnet-fork` — one canonical spelling
+each, with no `sui:` prefix or alias form. Any other value is rejected.
+
+## Forking a public network
+
+The `*-fork` networks run a local fork of a public network: you develop against real on-chain state
+while every write stays local. Forking adds its own options for seeding upstream state, funding
+accounts, and advancing the chain — see [Forking](/devstack/forking) for the full guide.
+
+## Live accounts
+
+Live accounts should use the `signer` variant: pass a `Keypair` built from an env-var secret, an
+inline `suiprivkey1...` literal, or a hardware/KMS `Signer`. The default ephemeral form is designed
+for local development, not custody of real assets.
+
+## Live-mode service factories
+
+Some services only run locally. To point Walrus, Seal, or DeepBook at a live chain, use the
+mode-specific factories — they narrow the type to the branches available on a live network:
+
+```ts
+import { chainIdForNetwork, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
+
+const live = { mode: 'live', chainId: chainIdForNetwork('testnet') } as const;
+
+const wal = walrusFor(live).known({
+	systemObjectId: '0x...',
+	stakingPoolId: '0x...',
+	nodes: [],
+});
+
+const keyServer = sealFor(live).testnet({
+	objectId: '0x...',
+	keyServerUrl: 'https://example.test/key',
+});
+
+const dex = deepbookFor(live).known({
+	packageId: '0x...',
+	registryId: '0x...',
+});
+```
+
+See [Forking](/devstack/forking) for the fork-mode variants of these factories.
+
+## Dev conveniences per network
+
+The dev wallet and faucet are on by default on every network except live mainnet, so localnet, fork,
+and live testnet stay easy to develop against. On live mainnet they're off and can't be turned back
+on.
+
+<Callout type="info">
+	On live mainnet, the dev wallet, faucet, and `autoApproveSigning` are forced off regardless of
+	your config. A build pointed at live mainnet ships no dev wallet and no faucet, and won't
+	auto-approve a signature against real funds.
+</Callout>
+
+`autoApproveSigning` is off by default everywhere, so `pnpm dev` shows the real connect and approve
+prompts your users will see. Turn it on where you want it:
+
+- **Headless e2e** — set `DEVSTACK_AUTO_APPROVE=1` (the Vite plugin reads it ahead of the policy),
+  or pass `autoApprove: true` to `devstackVitePlugin(...)`.
+- **Fast local iteration** — re-enable it for a network with a per-network override, e.g.
+  `networkOptions: { localnet: { autoApproveSigning: true } }`.

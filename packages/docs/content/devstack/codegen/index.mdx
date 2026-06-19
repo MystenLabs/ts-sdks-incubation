@@ -1,0 +1,193 @@
+---
+title: Generated Outputs
+description: Current generated-file behavior.
+---
+
+Import typed bindings for your Move packages and the services in your stack from one place:
+`src/generated`. Run `devstack codegen` to (re)write that tree from your Move source. It's
+deterministic — running it twice on the same source produces the same files — and needs no running
+stack, Docker, or on-chain ids. It does require the
+[Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install) (`sui`) on your `PATH`
+for the `sui move summary` step.
+
+The tree lives at one fixed location, shared across every stack:
+
+```txt
+src/generated/
+```
+
+Codegen emits a flat set of files, one per domain:
+
+```txt
+config.ts            # sui networks + package handles (id-free; deployment lookups)
+config-runtime.ts    # deployment loader (fixed; reads __DEVSTACK_DEPLOYMENT__)
+deployment.ts        # the strict app-specific deployment type
+coins.ts             # coin types and metadata
+deepbook.ts          # pool ids and market config
+seal.ts              # seal key-server / vault handles
+walrus.ts            # walrus endpoints and config
+bindings/<pkg>/<module>.ts   # generated Move bindings, one file per module
+```
+
+The `bindings/` tree is standard Sui Move codegen — `MoveStruct` BCS definitions and typed function
+builders, one file per module. Devstack drives the
+[`@mysten/codegen`](https://github.com/MystenLabs/ts-sdks/blob/main/packages/codegen#readme)
+generator for these; see its docs for how Move types, BCS, and function builders map to TypeScript.
+This page covers the devstack layer on top: the file layout, the `@generated` alias, the
+`includePhantomTypeParameters` knob, and how on-chain ids reach the generated tree.
+
+## Importing generated code
+
+Import generated files like any other source, through the `@generated` alias. It always resolves to
+`src/generated`, whichever stack is active; per-stack runtime state under `.devstack/` is not
+importable through it.
+
+```ts
+import { config } from '@generated/config.js';
+import { Vault } from '@generated/bindings/my_pkg/vault.js';
+```
+
+The alias is wired by `devstackVitePlugin()` and a matching `tsconfig` `paths` entry. Because the
+generated tree is id-free (see [On-chain ids](#on-chain-ids)), the same import works under every
+stack — only the injected deployment differs, never the file location.
+
+```ts title="vite.config.ts"
+import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
+import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
+
+export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
+```
+
+The alias prefix is coordinated in two places, both pointing at the same fixed `src/generated` path:
+
+1. `devstackVitePlugin()` in `vite.config.ts` (and `vitest.config.ts` — Vitest runs its own Vite
+   pipeline; see [Vitest](/devstack/testing/testing-vitest)).
+2. A `tsconfig` `paths` entry so the type checker resolves it:
+   ```json title="tsconfig.json"
+   { "compilerOptions": { "paths": { "@generated/*": ["./src/generated/*"] } } }
+   ```
+
+After changing Move source, regenerate the tree:
+
+```bash
+devstack codegen
+```
+
+`devstack codegen` rewrites `src/generated` only — it doesn't boot a stack or touch the deployment
+file. To refresh the live deployment (real ids) for a running stack, use
+[`devstack apply`](#regenerating-the-deployment-with-apply) instead.
+
+### Regenerating the deployment with apply
+
+`devstack apply` re-emits the per-stack `deployment.json` from a live or one-shot stack. It writes
+the per-stack deployment, not the `src/generated` tree.
+
+```bash
+devstack apply
+```
+
+When a matching `devstack up` stack is live, `apply` asks it to emit from the current runtime state.
+Otherwise, `apply` boots the stack once, emits the deployment, and exits.
+
+## On-chain ids
+
+The generated `config.ts` carries no on-chain ids. Each id is resolved at runtime from the
+build-time-injected `__DEVSTACK_DEPLOYMENT__` global through `config-runtime.ts`. So the generated
+tree stays the same whether you're on local, testnet, or a real deploy — only the injected ids
+differ — and each command owns one job:
+
+- `pnpm codegen` / `devstack codegen` — regenerates `src/generated` from Move source. Deterministic,
+  no running stack, no Docker (requires the `sui` CLI on `PATH`). Writes the generated tree only,
+  not the deployment file.
+- `pnpm dev` / `devstack up` — boots the stack and writes a gitignored, per-stack
+  `.devstack/stacks/<stack>/deployment.json`; the [Vite plugin](#importing-generated-code) injects
+  it automatically in dev. It doesn't rewrite the generated tree.
+- `devstack apply` — re-emits the per-stack deployment from a live (or one-shot) stack. It doesn't
+  write the generated tree.
+- `pnpm build` (`tsc -b && vite build`) — works on a clean clone with no running stack.
+
+The deployment loader, the strict `deployment.ts` type, the missing-id error behavior, and the
+dapp-kit handoff are covered in [Config & deployments](/devstack/codegen/config-and-deployments). To
+author a deployment for a real network, see [Going to production](/devstack/going-to-production).
+
+## Phantom type parameters
+
+`includePhantomTypeParameters` is a devstack codegen knob that controls how the bindings render Move
+structs with `phantom` type parameters — `Vault<phantom T>`, coin and pool markers, capability
+types. By default the bindings drop them: a struct whose type parameters are all phantom renders as
+a plain `const`, with the phantom slots baked into its BCS name as placeholders:
+
+```ts
+// default (includePhantomTypeParameters: false)
+export const Vault = new MoveStruct({ name: `${$moduleName}::Vault<phantom T>`, fields: { ... } });
+```
+
+That class can parse `Vault` fields, but it cannot express a **concrete type tag** like
+`Vault<USDC>` — the phantom is gone from both the type and the runtime name.
+
+Turn on `includePhantomTypeParameters` to keep them:
+
+```ts title="devstack.config.ts"
+export default defineDevstack({
+	members: [localnet, pkg],
+	codegen: {
+		includePhantomTypeParameters: true,
+	},
+});
+```
+
+Phantom-parameterized structs now generate as factories whose phantom parameters are required
+arguments, and the returned class's `.name` is the fully-qualified type tag:
+
+```ts
+export function Vault<T extends BcsType<any>>(...typeParameters: [T]) {
+	return new MoveStruct({ name: `${$moduleName}::Vault<${typeParameters[0].name}>`, fields: { ... } });
+}
+```
+
+This lets the generated classes double as type tags: the phantom is tracked at the type level (not
+widened to `string`), and tags compose by nesting.
+
+### Type arguments: strings or generated classes
+
+Function builders type `typeArguments` as strings, so a hand-written fully-qualified tag always
+works — including nested ones:
+
+```ts
+deposit({
+	arguments: { vault, coin },
+	typeArguments: ['0x2::sui::SUI'],
+});
+
+burnReceipt({
+	arguments: { receipt },
+	typeArguments: ['0x…::vault::Receipt<0x…::vault::Vault<0x2::sui::SUI>>'],
+});
+```
+
+With the flag on, the same tags can be **composed from the generated BCS classes** instead of
+spelled by hand — structs without type parameters (one-time witnesses, markers) stay plain consts
+and slot straight in, factories nest, and `.name` yields the string:
+
+```ts
+import { Receipt, Vault } from '@generated/bindings/my_pkg/vault.js';
+import { USDC } from '@generated/bindings/my_pkg/usdc.js';
+
+const vaultType = Vault(USDC); // MoveStruct for Vault<…::usdc::USDC>
+vaultType.name; // '0x…::vault::Vault<0x…::usdc::USDC>'
+
+deposit({ arguments: { vault, coin }, typeArguments: [vaultType.name] });
+
+// Nested tags compose the same way — Receipt<Vault<USDC>>:
+burnReceipt({ arguments: { receipt }, typeArguments: [Receipt(Vault(USDC)).name] });
+```
+
+Anything `BcsType`-shaped fits a phantom slot, so primitives work too: `Vault(bcs.u64())` renders
+`Vault<u64>`. And the factory result is still a full codec for the struct's real fields —
+`Vault(USDC).parse(bytes)` and the typed object readers (`Vault(USDC).get({ client, objectId })`)
+keep working, now with the phantom tracked in the type.
+
+One consequence to plan for when enabling the flag on an existing app: structs whose only type
+parameters are phantom switch shape from `const` to factory in the regenerated bindings, so call
+sites change from `Vault` to `Vault(USDC)`. That reshape is why the option is opt-in.

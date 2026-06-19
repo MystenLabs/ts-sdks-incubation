@@ -312,13 +312,13 @@ describe('api/run-stack', () => {
 		}
 	}, 30_000);
 
-	it('start writes the id-config through the production post-acquire hook', async () => {
+	it('start writes the deployment through the production post-acquire hook', async () => {
 		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-app-'));
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-state-'));
 		// Boot no longer emits a codegen tree; it assembles + writes the
-		// id-config (the live on-chain ids the Vite plugin injects). The
+		// deployment (the live on-chain ids the Vite plugin injects). The
 		// committed `src/generated` tree is the stack-free `devstack codegen`
-		// verb's job. Assert the boot wrote `devstack-ids.json` and emitted
+		// verb's job. Assert the boot wrote `deployment.json` and emitted
 		// the `codegen.emitted` event pointing at it.
 		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
@@ -343,19 +343,29 @@ describe('api/run-stack', () => {
 			);
 			expect(Option.isSome(emitted)).toBe(true);
 
-			const idsPath = join(runtimeRoot, 'stacks', 'main', 'devstack-ids.json');
-			expect(existsSync(idsPath)).toBe(true);
-			const idConfig = JSON.parse(readFileSync(idsPath, 'utf8')) as {
-				readonly network: string;
-				readonly networks: Record<string, unknown>;
-				readonly packages: Record<string, unknown>;
-				readonly mvrOverrides: Record<string, unknown>;
+			const deploymentPath = join(runtimeRoot, 'stacks', 'main', 'deployment.json');
+			expect(existsSync(deploymentPath)).toBe(true);
+			const envelope = JSON.parse(readFileSync(deploymentPath, 'utf8')) as {
+				readonly defaultNetwork: string;
+				readonly networks: Record<
+					string,
+					{
+						readonly network: string;
+						readonly packages: Record<string, unknown>;
+						readonly mvrOverrides: Record<string, unknown>;
+					}
+				>;
 			};
-			expect(idConfig.network).toBe('localnet');
-			// A leaf-only stack contributes no codegen — the id-config is valid
-			// but empty.
-			expect(idConfig.packages).toEqual({});
-			expect(idConfig.mvrOverrides).toEqual({});
+			expect(envelope.defaultNetwork).toBe('localnet');
+			const unit = envelope.networks['localnet']!;
+			expect(unit.network).toBe('localnet');
+			// A leaf-only stack contributes no codegen — the deployment is valid
+			// but empty. `mvrOverrides` is the @mysten override shape with empty
+			// `packages`/`types` maps (the live assembly always emits both keys;
+			// `types` is folded into the committed `config.ts` from rendered
+			// bindings, never the live unit).
+			expect(unit.packages).toEqual({});
+			expect(unit.mvrOverrides).toEqual({ packages: {}, types: {} });
 		} finally {
 			await Effect.runPromise(handle.stop);
 			await Effect.runPromise(handle.awaitShutdown);

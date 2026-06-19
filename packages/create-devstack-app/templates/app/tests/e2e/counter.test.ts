@@ -17,14 +17,13 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { describe, expect, it } from 'vitest';
 
 import { config } from '@generated/config.js';
-import { resolveActiveNetwork } from '@generated/config-runtime.js';
 import { createCounterTx, incrementTx, readCounter } from '../../src/counter.js';
 import { executedTx } from '../../src/tx.js';
 
-// `resolveActiveNetwork` returns the active (test) stack's connection entry
-// with a non-undefined type and a loud throw — no `config.networks[...]`
-// index-signature footgun (which would type `net` as possibly-undefined).
-const net = resolveActiveNetwork();
+// `config.forNetwork(config.defaultNetwork)` returns the active (test) stack's
+// connection entry with a non-undefined type, throwing if the network isn't in
+// the deployment.
+const net = config.forNetwork(config.defaultNetwork);
 
 describe('counter (local devstack)', () => {
 	it('creates a shared Counter and increments it', async () => {
@@ -36,8 +35,11 @@ describe('counter (local devstack)', () => {
 			network: 'localnet',
 			baseUrl: net.rpc,
 			// Resolves the bindings' default `@local/counter` package name to the
-			// deployed id at tx-build time (same wiring as `dapp-kit.ts`).
-			mvr: { overrides: { packages: config.mvrOverrides } },
+			// deployed id at tx-build time. Wired off `net.mvrOverrides` — the same
+			// per-network `{ packages, types }` map `dapp-kit.ts` uses — so the e2e
+			// exercises the identical MVR resolution as the app (not the narrower
+			// `config.mvrOverrides`, which carries `packages` only).
+			mvr: { overrides: net.mvrOverrides },
 		});
 
 		// Throwaway on-chain actor, funded by the stack's local faucet.

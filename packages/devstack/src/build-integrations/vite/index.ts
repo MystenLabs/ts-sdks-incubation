@@ -5,8 +5,9 @@
 // that alias at the committed `<root>/src/generated` tree — the ONE
 // source of bindings, written only by the stack-free `devstack codegen`
 // verb. On-chain ids are NOT baked into that tree; they resolve at
-// runtime via the `__DEVSTACK_IDS__` global (see `resolveInjectedIds`),
-// so the same generated source serves every stack. Resolution:
+// runtime via the `__DEVSTACK_DEPLOYMENT__` global (see
+// `mergeDeployment`), so the same generated source serves every
+// stack. Resolution:
 //   1. `options.generatedDir` — explicit escape hatch (relative → root).
 //   2. `<root>/src/generated` — the committed tree, always.
 //
@@ -24,25 +25,24 @@
 // manifest read goes through the same `build-integrations/runtime`
 // machinery the playwright/vitest integrations use.
 
-import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
 import { resolveNetworkOptions } from '../../orchestrators/network-options.ts';
-import { decodeIdConfig } from '../../orchestrators/codegen/id-config.ts';
+import {
+	decodeDeployment,
+	decodeNetworkDeployment,
+	type DevstackDeployment,
+	type NetworkDeployment,
+} from '../../orchestrators/codegen/deployment.ts';
 
 /** Default import-alias prefix. Customizable via `options.alias` (some
  *  apps prefer `@gen`, `~generated`, …). The app MUST use the SAME
  *  prefix in three derivable places: this plugin option, the
  *  `tsconfig` `paths` entry, and its import specifiers. */
 export const DEFAULT_GENERATED_ALIAS = '@generated';
-
-/** Default dev-extras import-alias prefix. Resolves the PRIMARY stack's
- *  `.devstack/stacks/<stack>/generated-extras` tree (dev-only / secret
- *  artifacts — `accounts.ts`, `dev-wallet.ts`). Mirror the `@generated`
- *  three-place discipline: this option, the `tsconfig` `paths` entry,
- *  and the import specifiers. */
-export const DEFAULT_DEV_EXTRAS_ALIAS = '@devstack-dev';
 
 /** The committed generated-bindings subpath, relative to the Vite root.
  *  The single source of bindings — written by `devstack codegen` — that
@@ -53,15 +53,10 @@ const GENERATED_SUBPATH = 'src/generated';
 export interface DevstackVitePluginOptions {
 	/** Import-alias prefix. Default `'@generated'`. */
 	readonly alias?: string;
-	/** Dev-extras import-alias prefix. Default `'@devstack-dev'`. */
-	readonly devExtrasAlias?: string;
 	/** Explicit generated dir — bypasses manifest discovery entirely
 	 *  (escape hatch for unusual layouts / tests). Relative paths
 	 *  resolve against the Vite root. */
 	readonly generatedDir?: string;
-	/** Explicit dev-extras dir — bypasses manifest discovery. Relative
-	 *  paths resolve against the Vite root. */
-	readonly extrasDir?: string;
 	/** Inject + register the devstack dev wallet on the page in DEV
 	 *  (wallet-standard, so dApp Kit auto-discovers it). Defaults to
 	 *  `true`. Production builds (`command === 'build'`) inject nothing
@@ -70,33 +65,51 @@ export interface DevstackVitePluginOptions {
 	/** Auto-approve all dev-wallet signing requests (headless Playwright /
 	 *  in-app "Open/Join as" buttons). Defaults to the `DEVSTACK_AUTO_APPROVE`
 	 *  env (`'1'`/`'true'`), then to the active network's `autoApproveSigning`
-	 *  per-network policy (ON for every network except live `mainnet`). A
-	 *  single switch, replacing per-app `VITE_*_AUTO_APPROVE`.
+	 *  per-network policy (OFF by default on every network — a normal `pnpm dev`
+	 *  shows the real connect + approve UX; opt in per-network). A single
+	 *  switch, replacing per-app `VITE_*_AUTO_APPROVE`.
 	 *
-	 *  HARD-CLAMP: on live `mainnet` the per-network policy forces
+	 *  PRECEDENCE: an explicit value here ALWAYS wins — passing `autoApprove:
+	 *  false` forces it off even when `DEVSTACK_AUTO_APPROVE` is set, and
+	 *  `autoApprove: true` forces it on. The `DEVSTACK_AUTO_APPROVE` env and the
+	 *  per-network policy default apply ONLY when this option is left undefined.
+	 *
+	 *  HARD-CLAMP: on live `mainnet` the per-network policy default forces
 	 *  auto-approve OFF — a real-funds signature is NEVER granted without a
-	 *  human in the loop. An explicit `autoApprove: true` here, or
-	 *  `DEVSTACK_AUTO_APPROVE`, still take precedence (the author opted in
-	 *  deliberately), but the policy default never silently auto-approves on
-	 *  mainnet. */
+	 *  human in the loop. The policy default never silently auto-approves on
+	 *  mainnet; an explicit `autoApprove: true` (or, when this option is
+	 *  undefined, `DEVSTACK_AUTO_APPROVE`) is still the author opting in
+	 *  deliberately. */
 	readonly autoApprove?: boolean;
 	/** Per-network overrides for the dev-convenience policy (the same
 	 *  `networkOptions` shape `defineDevstack` takes, forwarded verbatim).
 	 *  Only the `autoApproveSigning` field is read here, to resolve the
 	 *  auto-approve default for the active network. Omitted ⇒ the built-in
-	 *  policy (ON except live `mainnet`) applies. The override RECORD is not
+	 *  policy (OFF by default; opt in per-network) applies. The override RECORD is not
 	 *  otherwise on disk, so an app that customizes per-network signing must
 	 *  thread it here explicitly; the mainnet hard-clamp holds regardless. */
 	readonly networkOptions?: Readonly<Record<string, unknown>>;
-	/** Production id-config FILE — the known deployment's `devstack-ids.json`
-	 *  (same schema the dev stack writes), committed at e.g.
-	 *  `config/<network>.ids.json`. Used only for `command === 'build'` to
-	 *  inject `__DEVSTACK_IDS__`. Relative paths resolve against the Vite
-	 *  root. If omitted, the `DEVSTACK_IDS_FILE` env (a path pointer) is used.
-	 *  Neither ⇒ no ids baked, and the generated resolver throws loudly at
-	 *  id-access time. We deliberately take a FILE, not a JSON env blob: a
-	 *  real deployment's ids are many + nested. */
-	readonly ids?: string;
+	/** Committed, per-network PROD deployments — `{ <net>: () => import('./deployments/<net>.ts') }`,
+	 *  each thunk resolving to `{ deployment: NetworkDeployment }` (the typed
+	 *  hand-written / `dump-deployment`-emitted file). These are the
+	 *  non-local networks a production `build` ships, and the additional
+	 *  networks a dev `serve` makes selectable alongside the live local one.
+	 *  Each thunk's `deployment` is validated against `NetworkDeploymentSchema`
+	 *  at config-load — a malformed committed file fails LOUDLY rather than
+	 *  silently injecting a broken network.
+	 *
+	 *  DEFAULT (when omitted): AUTO-DISCOVERY of `<root>/deployments/*.ts` (D7
+	 *  — "just drop a file"). Each filename (sans `.ts`) becomes a live network
+	 *  name keyed to a dynamic-`import()` thunk reading the file's `deployment`
+	 *  export. Supplying this option OVERRIDES auto-discovery entirely (a
+	 *  custom dir / explicit paths). No `deployments/` dir + no option ⇒ no
+	 *  committed networks. */
+	readonly deployments?: Readonly<Record<string, () => Promise<{ deployment: NetworkDeployment }>>>;
+	/** The network the app opens on when no live local network is present
+	 *  (a pure production build, or a dev serve with only committed
+	 *  networks). Defaults to the first committed network key. The live
+	 *  local network always wins as the default in dev. */
+	readonly defaultNetwork?: string;
 }
 
 /** A `vite` `Plugin`'s `config` hook receives the partial user config.
@@ -147,7 +160,7 @@ export interface DevstackVitePlugin {
 	readonly config: (
 		config: ViteUserConfigLike,
 		env?: ViteConfigEnvLike,
-	) => {
+	) => Promise<{
 		readonly resolve: {
 			readonly alias: Record<string, string>;
 			// Mutable `string[]` (NOT `readonly`): Vite's `ResolveOptions.dedupe`
@@ -160,17 +173,18 @@ export interface DevstackVitePlugin {
 			readonly dedupe?: string[];
 		};
 		readonly optimizeDeps?: { readonly include: string[] };
-		/** `define` injecting the on-chain ids as `__DEVSTACK_IDS__`. In a
-		 *  prod `build` this is the static id literal; in dev `serve` it is a
-		 *  reference to the `globalThis.__DEVSTACK_IDS_LIVE__` runtime global
-		 *  the `transformIndexHtml` hook sets fresh per page load, so a
-		 *  republished id reaches the app on reload (`define` is fixed for the
-		 *  dev server's lifetime and could never hot-update). */
+		/** `define` injecting the deployment envelope as
+		 *  `__DEVSTACK_DEPLOYMENT__`. In a prod `build` this is the static
+		 *  envelope literal; in dev `serve` it is a reference to the
+		 *  `globalThis.__DEVSTACK_DEPLOYMENT_LIVE__` runtime global the
+		 *  `transformIndexHtml` hook sets fresh per page load, so a republished
+		 *  id reaches the app on reload (`define` is fixed for the dev server's
+		 *  lifetime and could never hot-update). */
 		readonly define: Record<string, string>;
-	};
+	}>;
 	/** Capture the resolved command so injection is DEV-only. */
 	readonly configResolved: (config: ViteUserConfigLike) => void;
-	/** Dev-only: watch the live `devstack-ids.json` and full-reload the page
+	/** Dev-only: watch the live `deployment.json` and full-reload the page
 	 *  when it changes, so a republished package id (rewritten by the
 	 *  supervisor's post-acquire hook) reaches the running app. */
 	readonly configureServer: (server: ViteDevServerLike) => void;
@@ -178,10 +192,10 @@ export interface DevstackVitePlugin {
 	readonly resolveId: (id: string) => string | undefined;
 	/** Emit the dev-wallet register module (or a no-op when not applicable). */
 	readonly load: (id: string) => string | undefined;
-	/** Inject the dev-only HTML tags: the `__DEVSTACK_IDS_LIVE__` global
-	 *  (read fresh from the ids file per request) and, when the app carries
-	 *  the dev wallet, the `<script type="module">` importing the virtual
-	 *  module. The return shape mirrors a structural subset of Vite's
+	/** Inject the dev-only HTML tags: the `__DEVSTACK_DEPLOYMENT_LIVE__`
+	 *  global (read fresh from the deployment file per request) and, when the
+	 *  app carries the dev wallet, the `<script type="module">` importing the
+	 *  virtual module. The return shape mirrors a structural subset of Vite's
 	 *  `IndexHtmlTransformResult` so the plugin stays assignable to Vite's
 	 *  `Plugin` without devstack importing `vite`. */
 	readonly transformIndexHtml: (html: string) =>
@@ -198,7 +212,7 @@ export interface DevstackVitePlugin {
 }
 
 /** Best-effort, SYNC read of a string-valued field at `dottedPath` (e.g.
- *  `'codegen.idsFile'`, `'identity.network'`) from the active stack's
+ *  `'codegen.deploymentFile'`, `'identity.network'`) from the active stack's
  *  manifest. Walks each path segment as a nested object, returning the leaf
  *  value, or `null` on ANY miss (absent / partially-written / version-
  *  mismatched manifest, a non-object hop, a missing or non-string/empty
@@ -207,78 +221,194 @@ export interface DevstackVitePlugin {
  *  and throws on a version mismatch) so an out-of-date or partially-written
  *  manifest degrades gracefully instead of crashing the dev server. Never
  *  throws — the single discover→parse→guard→degrade-to-null reader every
- *  manifest field above (`codegen.idsFile`, `codegen.extrasDir`,
- *  `identity.network`) routes through. */
-const readManifestField = (
+ *  manifest field above (`codegen.deploymentFile`, `identity.network`)
+ *  routes through. */
+const readManifestObject = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-	dottedPath: string,
-): string | null => {
+): unknown => {
 	try {
 		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
 		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
 		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
-		let node: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-		for (const segment of dottedPath.split('.')) {
-			if (typeof node !== 'object' || node === null) return null;
-			node = (node as Record<string, unknown>)[segment];
-		}
-		return typeof node === 'string' && node.length > 0 ? node : null;
+		return JSON.parse(readFileSync(manifestPath, 'utf8'));
 	} catch {
 		return null;
 	}
 };
 
-/** The gitignored `devstack-ids.json` path the boot wrote for the active
- *  stack (`codegen.idsFile`), or `null` on any miss. */
+/** Walk `dottedPath` over an already-parsed manifest object, returning the
+ *  non-empty string leaf or `null` on ANY miss (non-object hop, missing /
+ *  non-string / empty leaf). Lets one parsed manifest serve several field
+ *  reads without re-parsing. */
+const pickManifestString = (manifest: unknown, dottedPath: string): string | null => {
+	let node = manifest;
+	for (const segment of dottedPath.split('.')) {
+		if (typeof node !== 'object' || node === null) return null;
+		node = (node as Record<string, unknown>)[segment];
+	}
+	return typeof node === 'string' && node.length > 0 ? node : null;
+};
+
+const readManifestField = (
+	env: Readonly<Record<string, string | undefined>>,
+	cwd: string,
+	dottedPath: string,
+): string | null => pickManifestString(readManifestObject(env, cwd), dottedPath);
+
+/** The gitignored `deployment.json` path the boot wrote for the active
+ *  stack (`codegen.deploymentFile`), or `null` on any miss. */
 const readIdsFileFromManifest = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-): string | null => readManifestField(env, cwd, 'codegen.idsFile');
+): string | null => readManifestField(env, cwd, 'codegen.deploymentFile');
 
-/** SYNC read + schema-decode of an id-config FILE. The MISSING-file case
- *  (absent path, no file on disk) collapses to `null` so the Vite config
+/** SYNC read + schema-decode of a deployment ENVELOPE file. The MISSING-file
+ *  case (absent path, no file on disk) collapses to `null` so the Vite config
  *  load degrades gracefully when no stack has booted / no committed file is
- *  wired. A PRESENT-but-malformed file is NOT swallowed: it flows through
- *  the shared {@link decodeIdConfig}, which THROWS on bad JSON or a shape
- *  that violates `IdConfigSchema` — surfacing a genuinely broken committed
- *  id-config at config-load instead of silently injecting `null`. */
-const readIdConfigFile = (idsFile: string | null): unknown => {
-	if (idsFile === null || !existsSync(idsFile)) return null;
-	return decodeIdConfig(readFileSync(idsFile, 'utf8'));
+ *  wired. A PRESENT-but-malformed file is NOT swallowed: it flows through the
+ *  shared {@link decodeDeployment}, which THROWS on bad JSON or a shape that
+ *  violates `DevstackDeploymentSchema` — surfacing a genuinely broken
+ *  deployment at config-load instead of silently injecting `null`. */
+const readDeploymentFile = (file: string | null): DevstackDeployment | null => {
+	if (file === null || !existsSync(file)) return null;
+	return decodeDeployment(readFileSync(file, 'utf8'));
 };
 
-/** Resolve the on-chain ids to inject as the `__DEVSTACK_IDS__` global —
- *  ALWAYS from an id-config FILE (same schema in dev and prod), never a
- *  JSON env blob. Dev (`serve`): the live `devstack-ids.json` (via the
- *  manifest `codegen.idsFile`). Prod (`build`): the committed known-
- *  deployment file — the plugin `ids` option, else the `DEVSTACK_IDS_FILE`
- *  env (a PATH pointer, not data). Neither ⇒ `null`, so the generated
- *  resolver throws loudly at id-access time. */
-const resolveInjectedIds = (
+/** The LIVE local-stack deployment envelope for the active stack — the
+ *  `deployment.json` boot wrote (via the manifest `codegen.deploymentFile`),
+ *  or `null` on any miss. Read fresh so a republish reaches the app. */
+const readLiveEnvelope = (
 	env: Readonly<Record<string, string | undefined>>,
 	root: string,
-	command: 'build' | 'serve' | undefined,
-	idsOption: string | undefined,
-): unknown => {
-	// Prod build: the known deployment's committed id-config file. Option
-	// wins; else a `DEVSTACK_IDS_FILE` path pointer. Relative → Vite root.
-	if (command === 'build') {
-		const pointer = idsOption ?? env['DEVSTACK_IDS_FILE'];
-		if (pointer === undefined || pointer.length === 0) return null;
-		return readIdConfigFile(isAbsolute(pointer) ? pointer : resolve(root, pointer));
+): DevstackDeployment | null => readDeploymentFile(readIdsFileFromManifest(env, root));
+
+/** Resolve + validate the committed per-network deployments — the
+ *  `deployments` option's thunks, each `() => Promise<{ deployment }>`. Each
+ *  `deployment` is validated against `NetworkDeploymentSchema` (loud-fail on a
+ *  malformed committed file) and stamped `{ network: <key>, local: false }` so
+ *  the envelope key is authoritative and the deploy filter treats it as a real
+ *  (non-local) network. Empty when no `deployments` are supplied. */
+const resolveCommittedNetworks = async (
+	deployments: Readonly<Record<string, () => Promise<{ deployment: NetworkDeployment }>>>,
+): Promise<Record<string, NetworkDeployment>> => {
+	const committed: Record<string, NetworkDeployment> = {};
+	for (const [net, thunk] of Object.entries(deployments)) {
+		const loaded = await thunk();
+		const validated = decodeNetworkDeployment(loaded.deployment, `deployments['${net}']`);
+		committed[net] = { ...validated, network: net, local: false };
 	}
-	// Dev serve (and config-load default): the live id-config file.
-	return readIdConfigFile(readIdsFileFromManifest(env, root));
+	return committed;
 };
 
-/** The manifest-recorded dev-extras tree (`codegen.extrasDir`) the
- *  `@devstack-dev` alias points at for the active stack, or `null` on any
- *  miss. */
-const readExtrasDirFromManifest = (
-	env: Readonly<Record<string, string | undefined>>,
-	cwd: string,
-): string | null => readManifestField(env, cwd, 'codegen.extrasDir');
+/** Auto-discover the committed per-network deployment thunks by globbing
+ *  `<root>/deployments/*.ts` (D7 — "just drop a file" UX). Each filename
+ *  (sans `.ts`) becomes a live network name keyed to a thunk that
+ *  dynamically `import()`s the absolute file path and reads its `deployment`
+ *  export (the `dump-deployment`-emitted / hand-written
+ *  `export const deployment = {…} satisfies AppNetworkDeployment`). Returns
+ *  `{}` when there is no `deployments/` dir (a clean clone / template — a
+ *  pure types-only `deployment.ts` with an empty `ProvidedDeployments`). The
+ *  explicit `deployments` option overrides this entirely (custom dir/paths).
+ *  File CONTENTS are not read here — only the import is wired; ids load when
+ *  Vite transforms the thunk at build/serve. */
+const autoDiscoverDeployments = (
+	root: string,
+): Record<string, () => Promise<{ deployment: NetworkDeployment }>> => {
+	const deploymentsDir = resolve(root, 'deployments');
+	if (!existsSync(deploymentsDir)) return {};
+	const thunks: Record<string, () => Promise<{ deployment: NetworkDeployment }>> = {};
+	let files: ReadonlyArray<string>;
+	try {
+		files = readdirSync(deploymentsDir);
+	} catch {
+		return {};
+	}
+	for (const file of files) {
+		if (!file.endsWith('.ts') || file.endsWith('.d.ts')) continue;
+		const net = file.slice(0, -'.ts'.length);
+		if (net.length === 0) continue;
+		const abs = resolve(deploymentsDir, file);
+		// `/* @vite-ignore */` — the specifier is a runtime-computed absolute
+		// path (not a static literal Vite/Rollup can pre-analyze). Both Vite's
+		// dev server and `vite build` resolve it as a dynamic import.
+		thunks[net] = () =>
+			import(/* @vite-ignore */ pathToFileURL(abs).href) as Promise<{
+				deployment: NetworkDeployment;
+			}>;
+	}
+	return thunks;
+};
+
+/** The committed per-network deployments to merge — the explicit
+ *  `deployments` option when supplied, else auto-discovery of
+ *  `<root>/deployments/*.ts` (D7). */
+const resolveDeploymentThunks = (
+	options: DevstackVitePluginOptions,
+	root: string,
+): Record<string, () => Promise<{ deployment: NetworkDeployment }>> =>
+	options.deployments !== undefined ? { ...options.deployments } : autoDiscoverDeployments(root);
+
+/** The first key of a record, or `undefined` when empty. */
+const firstKey = (record: Record<string, unknown>): string | undefined => Object.keys(record)[0];
+
+/** Merge the committed + live deployments into the envelope to inject as
+ *  `__DEVSTACK_DEPLOYMENT__`.
+ *   - `command === 'build'` (DEPLOY): the committed, NON-local networks only —
+ *     the live local network is dropped. Empty ⇒ `null` (the generated
+ *     resolver throws loudly at access time).
+ *   - dev `serve` (and config-load default): the committed networks OVERLAID
+ *     with the live local network(s), the live default winning. No live
+ *     envelope ⇒ committed only (default = `defaultNetwork` option / first
+ *     committed key).
+ *  The live envelope's entries are forced `local: true` (they ARE the running
+ *  local stack) so a later `build` would drop them. */
+const mergeDeployment = (
+	command: 'build' | 'serve' | undefined,
+	committed: Record<string, NetworkDeployment>,
+	live: DevstackDeployment | null,
+	defaultNetworkOption: string | undefined,
+): DevstackDeployment | null => {
+	if (command === 'build') {
+		if (Object.keys(committed).length === 0) return null;
+		const fallback = firstKey(committed)!;
+		// A pure prod build ships NO dev accounts (committed-only, network-
+		// agnostic identities exist only when running through devstack).
+		return {
+			defaultNetwork:
+				defaultNetworkOption !== undefined && committed[defaultNetworkOption] !== undefined
+					? defaultNetworkOption
+					: fallback,
+			networks: committed,
+			accounts: {},
+		};
+	}
+	// Dev serve / config-load default: overlay the live local network(s).
+	const networks: Record<string, NetworkDeployment> = { ...committed };
+	if (live !== null) {
+		for (const [net, dep] of Object.entries(live.networks)) {
+			networks[net] = { ...dep, network: net, local: true };
+		}
+		// Dev `accounts` ride the ENVELOPE (network-agnostic dev identities):
+		// the live local stack supplies them; committed `deployments/*.ts`
+		// networks carry none. Carry them through onto the merged envelope.
+		return {
+			defaultNetwork: live.defaultNetwork,
+			networks,
+			accounts: live.accounts ?? {},
+		};
+	}
+	const fallback = firstKey(networks);
+	if (fallback === undefined) return null;
+	return {
+		defaultNetwork:
+			defaultNetworkOption !== undefined && networks[defaultNetworkOption] !== undefined
+				? defaultNetworkOption
+				: fallback,
+		networks,
+		accounts: {},
+	};
+};
 
 /**
  * Build the devstack Vite plugin that aliases `options.alias`
@@ -290,47 +420,69 @@ const readExtrasDirFromManifest = (
  *     // or devstackVitePlugin({ alias: '@gen' })
  *
  * The plugin's `config` hook merges `resolve.alias[<prefix>] = <dir>`
- * into the user config (Vite deep-merges the returned partial). Sync;
- * reads `process.env` + the manifest (for `__DEVSTACK_IDS__` / the
- * `@devstack-dev` extras dir) once at config-load.
+ * into the user config (Vite deep-merges the returned partial). Async
+ * (it awaits the committed `deployments` thunks); reads `process.env` +
+ * the manifest (for `__DEVSTACK_DEPLOYMENT__`) once at config-load.
  */
-/** Derive the cold-start fallback dev-extras dir
- *  (`<root>/.devstack/stacks/<stack>/generated-extras`) for the active
- *  stack — used when no manifest / `codegen.extrasDir` is on disk yet.
- *  Mirrors `output-location.ts`'s `extrasDirFor`. Best-effort: a
- *  discovery failure collapses to the `default` stack name. */
-const fallbackExtrasDir = (
-	env: Readonly<Record<string, string | undefined>>,
-	root: string,
-): string => {
-	let stack = 'default';
+
+/** The on-disk dev-wallet pairing-token for the active stack, given the
+ *  already-resolved `deploymentFile` path (the manifest's
+ *  `codegen.deploymentFile`). The token lives in a `0o600` side-channel file
+ *  (`<stackRoot>/wallet/token`, written by `pairing.ts`), NEVER in the
+ *  world-readable `deployment.json`. The boot writes `deployment.json` into the
+ *  SAME `<stackRoot>`, so the token sits at `<dirname(deploymentFile)>/wallet/
+ *  token`. Read in Node by the `load` hook (which runs server-side) so the
+ *  secret stays off the manifest/deployment surface. Returns `null` on any
+ *  miss (including a `null` deployment file). */
+const readDevWalletToken = (deploymentFile: string | null): string | null => {
+	if (deploymentFile === null) return null;
+	const tokenFile = resolve(dirname(deploymentFile), 'wallet', 'token');
 	try {
-		stack = resolveDiscoveryEnv(env, { cwd: root }).stack;
+		if (!existsSync(tokenFile)) return null;
+		const raw = readFileSync(tokenFile, 'utf8').trim();
+		return /^[0-9a-f]{32}$/.test(raw) ? raw : null;
 	} catch {
-		// keep the `default` fallback.
+		return null;
 	}
-	return resolve(root, '.devstack', 'stacks', stack, 'generated-extras');
 };
 
-/** Resolve the dev-extras dir for the active stack (shared by the alias
- *  config and the dev-wallet virtual module). Explicit option wins, else
- *  manifest `codegen.extrasDir`, else the derived cold-start path. */
-const resolveExtrasDir = (
-	options: DevstackVitePluginOptions,
-	root: string,
-	env: Readonly<Record<string, string | undefined>>,
-): string => {
-	const explicitExtras = options.extrasDir;
-	return explicitExtras !== undefined
-		? resolve(root, explicitExtras)
-		: (readExtrasDirFromManifest(env, root) ?? fallbackExtrasDir(env, root));
-};
+/** Escape a `JSON.stringify` result for safe embedding in an inline
+ *  `<script>` element's text. Unlike an external file, inline-script text is
+ *  parsed by the HTML tokenizer first, so a raw `</script>` (or `<!--`) inside
+ *  any string value would terminate the tag early — and a lone `<` is enough to
+ *  matter. We escape `<` / `>` / `&` to their `\uXXXX` JS-string forms (valid
+ *  inside JSON-as-JS, and inert to the HTML tokenizer) and the U+2028/U+2029
+ *  line separators (legal in JSON strings but illegal as raw JS line
+ *  terminators in older engines). Used ONLY on the inline-script injection path
+ *  — the `define` build path embeds into a JS module, not HTML, so it needs no
+ *  such escaping. */
+const escapeForInlineScript = (json: string): string =>
+	json
+		.replace(/</g, '\\u003c')
+		.replace(/>/g, '\\u003e')
+		.replace(/&/g, '\\u0026')
+		// U+2028 / U+2029: legal in JSON strings but illegal as raw JS line
+		// terminators in older engines — matched by code point so no literal
+		// separator lives in this source.
+		.replace(/[\u2028\u2029]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+
+/** A boolean env flag is truthy when set to `'1'` or `'true'`
+ *  (case-insensitive). Shared by the auto-approve + e2e env readers. */
+const isTruthyEnvFlag = (raw: string | undefined): boolean =>
+	raw === '1' || raw?.toLowerCase() === 'true';
 
 /** Read the `DEVSTACK_AUTO_APPROVE` env (`'1'`/`'true'`, case-insensitive). */
-const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean => {
-	const raw = env['DEVSTACK_AUTO_APPROVE'];
-	return raw === '1' || raw?.toLowerCase() === 'true';
-};
+const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean =>
+	isTruthyEnvFlag(env['DEVSTACK_AUTO_APPROVE']);
+
+/** True under a Playwright e2e run (`DEVSTACK_E2E` set to `'1'`/`'true'`,
+ *  case-insensitive). DEDICATED signal — distinct from `DEVSTACK_AUTO_APPROVE`
+ *  — driving the injected `__DEVSTACK_E2E__` global. Gates dApp Kit's
+ *  `autoConnect` ON only under e2e, so a normal `pnpm dev` serve exercises the
+ *  real connect UX. A prod `vite build` never sets the env ⇒ injects `false`
+ *  (tree-shakeable). */
+const e2eFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean =>
+	isTruthyEnvFlag(env['DEVSTACK_E2E']);
 
 /** Lit packages deduped to a single instance. The injected dev-wallet UI and
  *  the app's dapp-kit UI are both Lit-based; if Vite loads two Lit copies they
@@ -379,19 +531,59 @@ const devWalletInstalled = (root: string): boolean =>
 
 export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): DevstackVitePlugin => {
 	const alias = options.alias ?? DEFAULT_GENERATED_ALIAS;
-	const devExtrasAlias = options.devExtrasAlias ?? DEFAULT_DEV_EXTRAS_ALIAS;
 	const injectDevWallet = options.injectDevWallet ?? true;
 
-	// Captured across hooks. `config` runs first (alias resolution),
-	// `configResolved` records the command (DEV-gate), and `load` re-reads
-	// the dev-wallet config off `extrasDir`.
+	// Captured across hooks. `config` runs first (alias resolution + committed
+	// deployment validation), `configResolved` records the command (DEV-gate),
+	// and `load` reads the dev-wallet connection off the injected deployment +
+	// the secret token off its side-channel file.
 	let resolvedRoot = process.cwd();
-	let resolvedExtrasDir: string | null = null;
 	let isServe = false;
+	// Whether the app carries the dev wallet (`devWalletInstalled(root)`),
+	// computed ONCE in the `config` hook and reused by `transformIndexHtml` so
+	// the per-request HTML injection doesn't re-`stat` the package on disk.
+	let devWalletPresent = false;
+	// The committed per-network deployments, resolved + validated ONCE in the
+	// async `config` hook (the thunks are async; the runtime-global path in
+	// `transformIndexHtml` is sync). Stable for the dev server's lifetime, so
+	// the per-request HTML injection overlays the fresh live network on top of
+	// these without re-awaiting.
+	let resolvedCommittedNetworks: Record<string, NetworkDeployment> = {};
+	// Per-republish cache of the live local envelope. `readLiveEnvelope` walks
+	// the manifest + reads/decodes `deployment.json` on every call, but the file
+	// only changes on a republish — which the `configureServer` watcher already
+	// observes. So we read a PRESENT envelope once (lazily, on the first
+	// `transformIndexHtml`) and reuse it until the watcher invalidates it, rather
+	// than re-reading per page load. `liveEnvelopeFresh === false` is the
+	// "needs (re)read" sentinel.
+	let liveEnvelopeFresh = false;
+	let liveEnvelopeCache: DevstackDeployment | null = null;
+	const readLiveEnvelopeCached = (
+		env: Readonly<Record<string, string | undefined>>,
+	): DevstackDeployment | null => {
+		if (liveEnvelopeFresh) return liveEnvelopeCache;
+		const live = readLiveEnvelope(env, resolvedRoot);
+		// Only memoize a PRESENT envelope. A `null` result (no live stack yet)
+		// must NOT stick: the `configureServer` watcher that invalidates this
+		// cache only registers when a manifest already exists at server start
+		// (`if (idsFile === null) return`), so a standalone `vite dev` launched
+		// BEFORE `devstack up` has no invalidation hook — caching `null` here
+		// would pin it forever, and the app would never pick up the stack even
+		// after it boots and the page reloads. Re-reading while absent is cheap
+		// (no `deployment.json` to decode) and lets the first post-boot reload
+		// resolve the freshly-written envelope.
+		if (live !== null) {
+			liveEnvelopeCache = live;
+			liveEnvelopeFresh = true;
+		} else {
+			liveEnvelopeCache = null;
+		}
+		return live;
+	};
 
 	return {
 		name: 'devstack:generated-alias',
-		config: (config: ViteUserConfigLike, configEnv?: ViteConfigEnvLike) => {
+		config: async (config: ViteUserConfigLike, configEnv?: ViteConfigEnvLike) => {
 			const root = config.root ?? process.cwd();
 			resolvedRoot = root;
 			const env = process.env as Readonly<Record<string, string | undefined>>;
@@ -405,48 +597,68 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// Explicit `generatedDir` wins (relative → resolved against the
 			// Vite root). Otherwise always the committed `<root>/src/generated`
 			// tree — the single source of bindings written by `devstack
-			// codegen`; ids resolve at runtime via `__DEVSTACK_IDS__`, so the
-			// same tree serves every stack.
+			// codegen`; ids resolve at runtime via `__DEVSTACK_DEPLOYMENT__`, so
+			// the same tree serves every stack.
 			const explicit = options.generatedDir;
 			const generatedDir =
 				explicit !== undefined ? resolve(root, explicit) : resolve(root, GENERATED_SUBPATH);
-			// `@devstack-dev` mirrors `@generated` exactly.
-			const extrasDir = resolveExtrasDir(options, root, env);
-			resolvedExtrasDir = extrasDir;
 			// Return a partial config; Vite deep-merges it. `resolve.dedupe`
 			// pins a single Lit copy, and — when this app carries the dev
 			// wallet — we pre-bundle the injected dev-wallet entries so Vite
 			// never re-optimizes them mid-session into a second Lit realm
 			// (see the constants above).
-			const includeDevWallet = injectDevWallet && devWalletInstalled(root);
-			// Inject the on-chain ids the generated `config-runtime.ts` resolver
-			// reads as `__DEVSTACK_IDS__`.
-			//   - PROD build: bake the static literal.
+			// `devWalletInstalled` stats the package on disk; do it once here and
+			// reuse the result in `transformIndexHtml` (the root is stable for the
+			// server's lifetime).
+			devWalletPresent = devWalletInstalled(root);
+			const includeDevWallet = injectDevWallet && devWalletPresent;
+			// Resolve + validate the committed per-network deployments ONCE (the
+			// thunks are async; the per-request HTML path is sync). Captured so
+			// `transformIndexHtml` overlays the fresh live network on top of
+			// these without re-awaiting. A malformed committed file throws here,
+			// at config-load.
+			resolvedCommittedNetworks = await resolveCommittedNetworks(
+				resolveDeploymentThunks(options, root),
+			);
+			// Inject the deployment envelope the generated `config-runtime.ts`
+			// resolver reads as `__DEVSTACK_DEPLOYMENT__`.
+			//   - PROD build: bake the static merged envelope literal (committed,
+			//     non-local networks only).
 			//   - DEV server (`vite dev`): point the identifier at the
-			//     `__DEVSTACK_IDS_LIVE__` runtime global the `transformIndexHtml`
-			//     hook sets fresh per page load — `define` is fixed for the dev
-			//     server's lifetime, so baking the value would pin the FIRST id
-			//     forever and a republish would never reach the app. A distinct
-			//     global name avoids a single-pass `define` token collision with
-			//     `__DEVSTACK_IDS__`.
+			//     `__DEVSTACK_DEPLOYMENT_LIVE__` runtime global the
+			//     `transformIndexHtml` hook sets fresh per page load — `define`
+			//     is fixed for the dev server's lifetime, so baking the value
+			//     would pin the FIRST id forever and a republish would never
+			//     reach the app. A distinct global name avoids a single-pass
+			//     `define` token collision with `__DEVSTACK_DEPLOYMENT__`.
 			//   - VITEST: vitest ALSO reports `command === 'serve'`, but it runs
 			//     no `transformIndexHtml` (no HTML), so the live global is never
 			//     set — and esbuild's stricter `define` rejects an operator
 			//     expression anyway. Bake a literal instead: the Vite config loads
-			//     BEFORE the test stack boots, so `injectedIds` is null and the
-			//     resolver falls back to the `DEVSTACK_IDS_FILE` env the vitest
-			//     globalSetup points at the freshly-booted stack (see
+			//     BEFORE the test stack boots, so the merged envelope is null and
+			//     the resolver falls back to the `DEVSTACK_DEPLOYMENT_FILE` env the
+			//     vitest globalSetup points at the freshly-booted stack (see
 			//     vitest/global-setup.ts).
 			// The define VALUE must be esbuild-valid (a JSON literal or a
 			// member-access chain) — note the bare `globalThis.…`, NOT a
 			// parenthesised `(… ?? null)`; `config-runtime.ts` already guards the
 			// `typeof … === 'undefined'` case.
-			const injectedIds = resolveInjectedIds(env, root, command, options.ids);
+			// Merge the deployment envelope to bake/point at — reusing the
+			// committed networks just resolved above rather than re-resolving the
+			// thunks. `build` drops the live local stack; `serve`/config-load
+			// overlays it.
+			const injectedLive = command === 'build' ? null : readLiveEnvelope(env, root);
+			const injectedDeployment = mergeDeployment(
+				command,
+				resolvedCommittedNetworks,
+				injectedLive,
+				options.defaultNetwork,
+			);
 			const isVitest = env['VITEST'] !== undefined;
-			const idsDefine =
+			const deploymentDefine =
 				command === 'serve' && !isVitest
-					? 'globalThis.__DEVSTACK_IDS_LIVE__'
-					: JSON.stringify(injectedIds ?? null);
+					? 'globalThis.__DEVSTACK_DEPLOYMENT_LIVE__'
+					: JSON.stringify(injectedDeployment ?? null);
 			return {
 				resolve: {
 					// A bare-prefix alias (no trailing `/`) matches both
@@ -454,12 +666,16 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 					// string-alias resolution.
 					alias: {
 						[alias]: generatedDir,
-						[devExtrasAlias]: extrasDir,
 					},
 					dedupe: resolvableLitDedupe(root),
 				},
 				define: {
-					__DEVSTACK_IDS__: idsDefine,
+					__DEVSTACK_DEPLOYMENT__: deploymentDefine,
+					// `true` ONLY under a Playwright e2e run (`DEVSTACK_E2E`), so the
+					// app's dApp Kit `autoConnect` is on for headless e2e and OFF for a
+					// normal `pnpm dev` serve. A prod `vite build` never sets the env ⇒
+					// `false` (tree-shakeable). Distinct from `DEVSTACK_AUTO_APPROVE`.
+					__DEVSTACK_E2E__: JSON.stringify(e2eFromEnv(env)),
 				},
 				...(includeDevWallet
 					? { optimizeDeps: { include: [...DEV_WALLET_OPTIMIZE_ENTRIES] } }
@@ -480,53 +696,92 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 
 		load: (id: string): string | undefined => {
 			if (id !== RESOLVED_VIRTUAL_DEV_WALLET_ID) return undefined;
-			// Graceful no-op when injection is off, not a dev serve, or the
-			// dev-extras config is absent (no `devstack apply` yet).
-			const extrasDir = resolvedExtrasDir ?? resolveExtrasDir(options, resolvedRoot, process.env);
-			const devWalletFile = resolve(extrasDir, 'dev-wallet.ts');
-			const accountsFile = resolve(extrasDir, 'accounts.ts');
-			if (!injectDevWallet || !isServe || !existsSync(devWalletFile) || !existsSync(accountsFile)) {
+			const env = process.env as Readonly<Record<string, string | undefined>>;
+			// The dev-wallet connection metadata rides the injected deployment's
+			// `values['dev-wallet'].connection` channel (non-secret); the secret
+			// pairing token stays in its `0o600` side-channel file, read HERE in
+			// Node (the `load` hook runs server-side) so it never lands in the
+			// world-readable `deployment.json`. Graceful no-op when injection is
+			// off, not a dev serve, or no live stack has written the token yet
+			// (no `devstack up`). The presence of BOTH the deployment file (for the
+			// connection) and the token gate injection — the browser side resolves
+			// the connection off the injected envelope.
+			// Parse the manifest ONCE and read both fields it carries below — the
+			// `codegen.deploymentFile` (locating the token side-channel) and the
+			// `identity.network` (the active network for the auto-approve policy) —
+			// off the same parsed object rather than discovering + parsing twice.
+			const manifest = readManifestObject(env, resolvedRoot);
+			const deploymentFile = pickManifestString(manifest, 'codegen.deploymentFile');
+			const token = readDevWalletToken(deploymentFile);
+			if (!injectDevWallet || !isServe || token === null) {
 				return 'export {};';
 			}
-			const env = process.env as Readonly<Record<string, string | undefined>>;
 			// Auto-approve resolution (highest precedence first): explicit
 			// `options.autoApprove`, then the `DEVSTACK_AUTO_APPROVE` env, then
 			// the active network's `autoApproveSigning` per-network policy. The
-			// policy is ON for every network EXCEPT live `mainnet`, so a stack
-			// booted against real mainnet never silently auto-approves a
-			// real-funds signature. The active network comes from the manifest
+			// policy defaults OFF on every network — a normal `pnpm dev` exercises
+			// the real connect + approve UX, headless e2e sets the env, and an
+			// author can opt a network back in via `networkOptions`. Live
+			// `mainnet` is additionally hard-clamped OFF, so a stack booted
+			// against real mainnet never silently auto-approves a real-funds
+			// signature. The active network comes from the manifest
 			// boot wrote (`identity.network`); absent that we conservatively
 			// resolve as `mainnet` (auto-approve OFF) rather than assuming a
 			// dev network. The override RECORD isn't on disk — `networkOptions`
 			// is read from the plugin option when the app threads it.
-			const network = readManifestField(env, resolvedRoot, 'identity.network') ?? 'mainnet';
+			const network = pickManifestString(manifest, 'identity.network') ?? 'mainnet';
 			const netOpts = resolveNetworkOptions(network, options.networkOptions);
 			const autoApprove =
 				options.autoApprove ?? (autoApproveFromEnv(env) || netOpts.autoApproveSigning);
-			// Re-export the generated config through the `@devstack-dev`
-			// alias (already wired in `config`), parse the token, and
-			// register the page wallet on load. Kept as source the dev
-			// server transpiles — it imports `@mysten-incubation/dev-wallet`
-			// + the generated extras, both resolvable in the app graph.
+			// Browser-side registration source the dev server transpiles. It reads
+			// the dev-only account name→address map (`resolveAccounts()`) and the
+			// non-secret dev-wallet connection (`optionalValue(dep, 'dev-wallet',
+			// 'connection')`) off the injected deployment envelope (via the
+			// generated `config-runtime.ts`), and the FULL network set the app
+			// supports off the generated `config.networks` map (each with its
+			// routed `rpc` + optional `faucet`). The wallet advertises each network
+			// as a wallet-standard chain and operates on whichever dApp Kit has
+			// selected, so it PERSISTS across a UI `switchNetwork` (registered once;
+			// only the active chain changes). The token is baked in from the Node
+			// read above — the only secret on this surface.
 			return [
 				`import { registerDevstackDevWallet } from '@mysten-incubation/dev-wallet/inject';`,
-				`import { parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';`,
-				`import { devWallet } from '${devExtrasAlias}/dev-wallet.js';`,
-				`import { accounts } from '${devExtrasAlias}/accounts.js';`,
-				// The wallet EXECUTES (and simulates) against the same routed
-				// RPC the app's dApp Kit client uses — a raw 127.0.0.1 RPC is
-				// CORS-blocked from the routed page origin. Sourced from the
-				// generated runtime config (active network's `rpc`).
 				`import { config as __devstackConfig } from '${alias}/config.js';`,
-				`registerDevstackDevWallet({`,
-				`  serverOrigin: devWallet.walletUrl,`,
-				`  token: parseDevstackToken(devWallet.pairUrl),`,
-				`  accounts,`,
-				`  rpcUrl: __devstackConfig.networks[__devstackConfig.network].rpc,`,
-				`  network: devWallet.network,`,
-				`  autoApprove: ${autoApprove ? 'true' : 'false'},`,
-				`  mountUI: true,`,
-				`}).catch((err) => console.error('[devstack] dev-wallet injection failed:', err));`,
+				`import { resolveAccounts, optionalValue } from '${alias}/config-runtime.js';`,
+				`const __devstackToken = ${JSON.stringify(token)};`,
+				// name → address (from the injected envelope's dev `accounts`),
+				// mapped to the inject API's `{ address }` shape.
+				`const __devstackAccounts = Object.fromEntries(`,
+				`  Object.entries(resolveAccounts()).map(([__name, __address]) => [`,
+				`    __name,`,
+				`    { name: __name, address: __address },`,
+				`  ]),`,
+				`);`,
+				// The full routed network set (live local + any committed live).
+				`const __devstackNetworks = Object.fromEntries(`,
+				`  Object.entries(__devstackConfig.networks).map(([__net, __dep]) => [`,
+				`    __net,`,
+				`    { rpc: __dep.rpc, faucet: __dep.faucet ?? null },`,
+				`  ]),`,
+				`);`,
+				// Non-secret connection (server URL + protocol paths), resolved off
+				// the default network's `values['dev-wallet'].connection`. No
+				// stack ⇒ undefined ⇒ no injection.
+				`const __devstackDefaultDep = __devstackConfig.networks[__devstackConfig.defaultNetwork];`,
+				`const __devstackConnection = __devstackDefaultDep`,
+				`  ? optionalValue(__devstackDefaultDep, 'dev-wallet', 'connection')`,
+				`  : undefined;`,
+				`if (__devstackConnection) {`,
+				`  registerDevstackDevWallet({`,
+				`    serverOrigin: __devstackConnection.walletUrl,`,
+				`    token: __devstackToken,`,
+				`    accounts: __devstackAccounts,`,
+				`    networks: __devstackNetworks,`,
+				`    defaultNetwork: __devstackConfig.defaultNetwork,`,
+				`    autoApprove: ${autoApprove ? 'true' : 'false'},`,
+				`    mountUI: true,`,
+				`  }).catch((err) => console.error('[devstack] dev-wallet injection failed:', err));`,
+				`}`,
 			].join('\n');
 		},
 
@@ -535,17 +790,20 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			const env = process.env as Readonly<Record<string, string | undefined>>;
 			const idsFile = readIdsFileFromManifest(env, resolvedRoot);
 			if (idsFile === null) return;
-			// Watch the live id-config and full-reload on change. The supervisor's
+			// Watch the live deployment and full-reload on change. The supervisor's
 			// post-acquire hook rewrites this file whenever a package (re)publishes
 			// (e.g. after a Move-source edit fires the file watcher → selective
 			// restart); a reload re-runs `transformIndexHtml`, which re-reads the
-			// file into `__DEVSTACK_IDS_LIVE__`, so the app picks up the new id.
+			// file into `__DEVSTACK_DEPLOYMENT_LIVE__`, so the app picks up the new id.
 			server.watcher.add(idsFile);
 			const reloadOnIdsChange = (changed: string): void => {
 				// Chokidar fires absolute paths for an absolute `watcher.add`, so
 				// `resolve(changed)` is normally a no-op; resolve against the Vite
 				// root anyway so a relative event path can't silently miss.
 				if (resolve(resolvedRoot, changed) !== resolve(idsFile)) return;
+				// Invalidate the per-republish live-envelope cache so the next
+				// `transformIndexHtml` re-reads the rewritten `deployment.json`.
+				liveEnvelopeFresh = false;
 				const channel = server.hot ?? server.ws;
 				channel?.send({ type: 'full-reload' });
 			};
@@ -556,11 +814,20 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 		transformIndexHtml: (html: string) => {
 			if (!isServe) return undefined;
 			const env = process.env as Readonly<Record<string, string | undefined>>;
-			// Read the live ids FRESH per request so a full-reload after a
-			// republish injects the new id. Set on a distinct global
-			// (`__DEVSTACK_IDS_LIVE__`) the `config` hook's `define` points
-			// `__DEVSTACK_IDS__` at; `head-prepend` runs it before any app module.
-			const liveIds = resolveInjectedIds(env, resolvedRoot, 'serve', options.ids);
+			// Read the live local envelope (cached per republish, invalidated by
+			// the `configureServer` watcher on a `deployment.json` change), then
+			// overlay it on the committed networks captured at config-load (a sync
+			// merge — the committed thunks were already awaited in `config`). Set on
+			// a distinct global (`__DEVSTACK_DEPLOYMENT_LIVE__`) the `config` hook's
+			// `define` points `__DEVSTACK_DEPLOYMENT__` at; `head-prepend` runs it
+			// before any app module.
+			const live = readLiveEnvelopeCached(env);
+			const liveDeployment = mergeDeployment(
+				'serve',
+				resolvedCommittedNetworks,
+				live,
+				options.defaultNetwork,
+			);
 			const tags: Array<{
 				tag: string;
 				attrs?: Record<string, string | boolean>;
@@ -569,15 +836,15 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			}> = [
 				{
 					tag: 'script',
-					children: `globalThis.__DEVSTACK_IDS_LIVE__ = ${JSON.stringify(liveIds ?? null)};`,
+					children: `globalThis.__DEVSTACK_DEPLOYMENT_LIVE__ = ${escapeForInlineScript(JSON.stringify(liveDeployment ?? null))};`,
 					injectTo: 'head-prepend',
 				},
 			];
 			// Gate the script tag on the app actually carrying the wallet (same
-			// condition as the `config` hook's `optimizeDeps` include), so a
-			// headless app emits zero dev-wallet plumbing rather than a tag that
-			// resolves to the no-op virtual module.
-			if (injectDevWallet && devWalletInstalled(resolvedRoot)) {
+			// condition as the `config` hook's `optimizeDeps` include — reusing the
+			// boolean it computed), so a headless app emits zero dev-wallet plumbing
+			// rather than a tag that resolves to the no-op virtual module.
+			if (injectDevWallet && devWalletPresent) {
 				tags.push({
 					tag: 'script',
 					attrs: { type: 'module', src: VIRTUAL_DEV_WALLET_SCRIPT_SRC },

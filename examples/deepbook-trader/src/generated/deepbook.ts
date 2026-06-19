@@ -3,20 +3,25 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveValue } from './config-runtime.js';
+import { loadDeployment, requireValue } from './config-runtime.js';
 
 export const deepbook = {
-	deepbook: {
-		adminCapId: resolveValue("deepbook:deepbook", "adminCapId") as string | null,
-		deepTreasuryId: resolveValue("deepbook:deepbook", "deepTreasuryId") as string | null,
-		indexerUrl: resolveValue("deepbook:deepbook", "indexerUrl") as string | null,
-		margin: resolveValue("deepbook:deepbook", "margin") as { readonly packageId: string; readonly registryId: string } | null,
-		name: "deepbook",
-		network: "localnet",
-		packageId: resolveValue("deepbook:deepbook", "packageId") as string,
-		pools: resolveValue("deepbook:deepbook", "pools") as ReadonlyArray<{ readonly name: string; readonly poolId: string; readonly base: string; readonly quote: string; readonly baseCoinType: string; readonly quoteCoinType: string }>,
-		pyth: resolveValue("deepbook:deepbook", "pyth") as { readonly packageId: string | null; readonly stateId: string | null; readonly wormholeStateId: string | null; readonly feeds: ReadonlyArray<{ readonly symbol: string; readonly feedId: string; readonly priceInfoObjectId: string; readonly price: string; readonly expo: number }> } | null,
-		registryId: resolveValue("deepbook:deepbook", "registryId") as string,
-		serverUrl: resolveValue("deepbook:deepbook", "serverUrl") as string | null,
+	forNetwork(network: string) {
+		const dep = loadDeployment().forNetwork(network);
+		return {
+			deepbook: {
+				adminCapId: requireValue<string | null>(dep, "deepbook:deepbook", "adminCapId"),
+				deepTreasuryId: requireValue<string | null>(dep, "deepbook:deepbook", "deepTreasuryId"),
+				indexerUrl: requireValue<string | null>(dep, "deepbook:deepbook", "indexerUrl"),
+				margin: requireValue<{ readonly packageId: string; readonly registryId: string } | null>(dep, "deepbook:deepbook", "margin"),
+				name: "deepbook",
+				network: "localnet",
+				packageId: requireValue<string>(dep, "deepbook:deepbook", "packageId"),
+				pools: requireValue<ReadonlyArray<{ readonly name: string; readonly poolId: string; readonly base: string; readonly quote: string; readonly baseCoinType: string; readonly quoteCoinType: string }>>(dep, "deepbook:deepbook", "pools"),
+				pyth: requireValue<{ readonly packageId: string | null; readonly stateId: string | null; readonly wormholeStateId: string | null; readonly feeds: ReadonlyArray<{ readonly symbol: string; readonly feedId: string; readonly priceInfoObjectId: string; readonly price: string; readonly expo: number }> } | null>(dep, "deepbook:deepbook", "pyth"),
+				registryId: requireValue<string>(dep, "deepbook:deepbook", "registryId"),
+				serverUrl: requireValue<string | null>(dep, "deepbook:deepbook", "serverUrl"),
+			},
+		} as const;
 	},
 } as const;

@@ -1,0 +1,237 @@
+---
+title: Config & deployments
+description:
+  The NetworkDeployment per-network unit, the DevstackDeployment envelope, the strict generated
+  type, and the dapp-kit handoff.
+---
+
+Your app reads everything it needs to talk to a network — rpc, package ids, service config — from a
+typed `config` object backed by a per-network **deployment**. A `NetworkDeployment` holds one
+network's resolved state (rpc, chainId, faucet, graphql, package ids, mvrOverrides, values); a
+`DevstackDeployment` envelope holds one per network, plus the network the app opens on. The config
+is read once, and throws `DevstackConfigMissingError` if no deployment was injected.
+
+## The per-network unit: `NetworkDeployment`
+
+A `NetworkDeployment` is one network's resolved on-chain state. The connection fields sit flat
+alongside the ids and values:
+
+```ts title="src/generated/config-runtime.ts"
+export interface NetworkDeployment {
+	readonly network?: string;
+	readonly rpc: string;
+	readonly chainId?: string;
+	readonly faucet?: string | null;
+	readonly graphql?: string | null;
+	/** Marks a live LOCAL network (a `devstack up` stack). Production builds
+	 *  ship only non-local networks. */
+	readonly local?: boolean;
+	readonly packages: {
+		readonly [name: string]: {
+			readonly id: string;
+			readonly objects?: { readonly [k: string]: string };
+		};
+	};
+	readonly mvrOverrides: {
+		readonly packages: { readonly [mvrPlaceholder: string]: string };
+		readonly types: { readonly [namedType: string]: string };
+	};
+	/** Generic resolver channel: `values[namespace][key]` carries arbitrary
+	 *  plugin JSON the typed fields above can't (deepbook pool ids, coin
+	 *  types, walrus/seal endpoints). */
+	readonly values?: { readonly [namespace: string]: { readonly [key: string]: unknown } };
+}
+```
+
+`rpc` is the connection field your app reads to reach the network; `chainId` / `faucet` / `graphql`
+are optional. `packages.*.id` and `mvrOverrides` carry the on-chain package ids; `values` is the
+channel services resolve through (DeepBook pools, Walrus/Seal endpoints, coin types). The unit is
+hand-writable — it's exactly what you author in a
+[committed `deployments/<net>.ts`](/devstack/going-to-production).
+
+## The envelope: `DevstackDeployment`
+
+Every network a build supports rides one envelope, keyed by name, plus the default network the app
+opens on:
+
+```ts title="src/generated/config-runtime.ts"
+export interface DevstackDeployment {
+	readonly defaultNetwork: string;
+	readonly networks: { readonly [name: string]: NetworkDeployment };
+	/** DEV-only account name → address map. Network-agnostic (keypair gen
+	 *  needs no network), so it lives on the envelope, NOT per-network. Only
+	 *  present when running through devstack (dev serve); a real prod
+	 *  deployment carries none. */
+	readonly accounts?: { readonly [name: string]: string };
+}
+```
+
+The envelope is injected as the build-time global `__DEVSTACK_DEPLOYMENT__` (by the
+[Vite plugin](/devstack/going-to-production)), and the dev stack writes it to disk at
+`.devstack/stacks/<stack>/deployment.json`. `accounts` rides the envelope rather than a per-network
+unit because dev identities are network-agnostic — the same keypair signs on every network.
+
+## The strict generated type
+
+When you hand-write a production deployment, `tsc` checks it against `src/generated/deployment.ts` —
+an app-specific type narrowed to exactly this app's declared packages and network set, so a missing
+or mistyped id is a compile error:
+
+```ts title="src/generated/deployment.ts (connect-four)"
+/** Exhaustive over THIS app's declared package names. */
+export interface AppPackages {
+	readonly connect_four: { readonly id: string; readonly objects?: Record<string, string> };
+}
+
+/** The per-network shape a prod author hand-writes in `deployments/<net>.ts`:
+ *  a `NetworkDeployment` narrowed so `packages` is exhaustive over this app's
+ *  packages, `mvrOverrides` is the @mysten MVR override surface
+ *  (`{ packages, types }`) requiring every declared `@local/<slug>`
+ *  placeholder, and `values` requires every service value namespace/key (when
+ *  the app declares any). NO `accounts` — dev accounts ride the runtime
+ *  envelope. */
+export interface AppNetworkDeployment extends Omit<
+	NetworkDeployment,
+	'packages' | 'mvrOverrides' | 'values'
+> {
+	readonly packages: AppPackages;
+	readonly mvrOverrides: {
+		readonly packages: {
+			'@local/connect-four': string;
+		} & { readonly [mvrPlaceholder: string]: string };
+		readonly types?: { readonly [namedType: string]: string };
+	};
+	readonly values?: NetworkDeployment['values'];
+}
+
+/** The LIVE network names this app ships — the `deployments/*.ts` filenames. */
+export type ProvidedNetwork = 'devnet';
+
+/** The committed per-network deployments map a prod build / dev serve loads. */
+export type ProvidedDeployments = Partial<Record<ProvidedNetwork, AppNetworkDeployment>>;
+
+/** The full network-name set, local-first: `[<local>, ...<provided>]`. */
+export const NETWORK_NAMES = ['localnet', 'devnet'] as const;
+```
+
+`AppNetworkDeployment` is the type you author against: `packages` is exhaustive over the app's
+declared packages, and `mvrOverrides.packages` requires every `@local/<slug>` placeholder.
+`ProvidedNetwork` comes from the `deployments/*.ts` filenames, and `NETWORK_NAMES` is the literal
+tuple dapp-kit's `switchNetwork` / `defaultNetwork` type-check against. The file is types-only — no
+runtime, except that one literal tuple.
+
+<Callout type="info">
+	The `AppNetworkDeployment` type carries no `accounts` field at all. Dev accounts live only on the
+	runtime envelope and are dev-injected, so they're never part of the prod-authoring surface.
+</Callout>
+
+## Load once, resolve ids
+
+The generated `config.ts` carries no on-chain ids — they come from the injected deployment, not
+codegen. `loadDeployment()` reads the envelope once and wraps it in an accessor; `requireId`
+resolves a single package id off a network, throwing when the id is missing or unresolved:
+
+```ts title="src/generated/config-runtime.ts"
+/** Load the injected deployment envelope. Throws once here when nothing was
+ *  injected; the app then reads typed fields off `forNetwork(net)`. */
+export const loadDeployment = (): LoadedDeployment => {
+	const injected = injectedDeployment();
+	if (injected === null || injected === undefined) {
+		throw new DevstackConfigMissingError('no deployment was ever injected');
+	}
+	return loadedFrom(injected);
+};
+
+/** Resolve a package id for an MVR placeholder off a loaded deployment.
+ *  Throws when the id is missing or unresolved. */
+export const requireId = (deployment: NetworkDeployment, mvrPlaceholder: string): string => {
+	const id = deployment.mvrOverrides.packages[mvrPlaceholder];
+	if (id === undefined || id === UNRESOLVED_ID) {
+		throw new DevstackConfigMissingError(`id for "${mvrPlaceholder}" is unresolved`);
+	}
+	return id;
+};
+```
+
+`DevstackConfigMissingError` tells you what to do: run `devstack up` for local dev, or commit a
+`deployments/<net>.ts` for a real deploy. For the generic `values` channel, use `requireValue<T>`
+when the value must be present, or `optionalValue<T>` when your app gates on whether it's there.
+
+<Callout type="info">
+	Because the generated tree is id-free, your app always compiles. Accessing an id that wasn't
+	provided throws `DevstackConfigMissingError` at access time, naming the missing key and pointing you
+	at `devstack up` or a committed `deployments/<net>.ts`.
+</Callout>
+
+## The generated `config` object
+
+`config.ts` resolves the active network's ids and exposes the multi-network accessors:
+
+```ts title="src/generated/config.ts (connect-four)"
+import { loadDeployment, requireId } from './config-runtime.js';
+import { NETWORK_NAMES } from './deployment.js';
+
+const __deployment = loadDeployment();
+const dep = __deployment.forNetwork(__deployment.defaultNetwork);
+
+export const config = {
+	defaultNetwork: __deployment.defaultNetwork as (typeof NETWORK_NAMES)[number],
+	forNetwork: __deployment.forNetwork,
+	mvrOverrides: {
+		packages: {
+			'@local/connect-four': requireId(dep, '@local/connect-four'),
+		},
+		types: {},
+	},
+	network: dep.network,
+	networkNames: NETWORK_NAMES,
+	networks: Object.fromEntries(
+		__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)]),
+	),
+	packages: {
+		connect_four: {
+			mvr: '@local/connect-four',
+			packageId: requireId(dep, '@local/connect-four'),
+		},
+	},
+} as const;
+```
+
+## The dapp-kit handoff
+
+`config` exposes a small surface app code wires straight into dapp-kit:
+
+- **`config.networkNames`** — the literal `NETWORK_NAMES` tuple. dapp-kit's `networks` list and
+  typed `switchNetwork`.
+- **`config.defaultNetwork`** — the network the app opens on.
+- **`config.forNetwork(net)`** — the per-network accessor. Returns that network's resolved
+  `NetworkDeployment`, throwing `DevstackConfigMissingError` if the network has no deployment.
+- **`config.mvrOverrides`** — the default network's MVR override surface (`{ packages, types }`),
+  passed straight to `mvr: { overrides }`. Each network's own surface is
+  `config.forNetwork(net).mvrOverrides`.
+
+dapp-kit builds a client per network, keyed off the selected network, so a runtime `switchNetwork`
+stays in sync:
+
+```ts title="src/dapp-kit.ts (connect-four)"
+export const dAppKit = createDAppKit({
+	networks: [...config.networkNames],
+	defaultNetwork: config.defaultNetwork,
+	createClient(network) {
+		const net = config.forNetwork(network);
+		return new SuiGrpcClient({
+			network,
+			baseUrl: net.rpc,
+			mvr: { overrides: net.mvrOverrides },
+		});
+	},
+});
+```
+
+Package ids flow through `mvrOverrides`: each generated Move binding defaults its `package` to
+`@local/<name>`, and that map resolves the name to the deployed id. Read
+`config.packages.*.packageId` when you want an id directly, but code that calls the bindings
+consumes their MVR defaults and never touches `config.packages`.
+
+For the end-to-end story — declaring the network set, scaffolding typed deployments, the Vite merge,
+and the production build — see [Going to production](/devstack/going-to-production).

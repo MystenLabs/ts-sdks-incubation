@@ -1,0 +1,187 @@
+---
+title: Forking
+description:
+  Running a local fork of a public network — replay against real upstream state while keeping writes
+  local.
+---
+
+Fork a public network when a bug, package interaction, or funding shape only shows up against real
+on-chain state — but you still want repeatable local transactions, snapshots, and the dev wallet. A
+fork replays against the upstream network's real state while keeping every write local, so you get
+the fidelity of the public chain with the control of a local one.
+
+The `examples/fork-greeting` example is the smallest runnable fork: it forks testnet, funds
+ephemeral accounts from a default whale, publishes a Move package, and captures the published object
+id.
+
+## Configuring a fork
+
+Select fork mode with `sui({ mode: 'fork', upstream })`:
+
+```ts
+import { defineDevstack, sui, account, localPackage } from '@mysten-incubation/devstack';
+
+const publisherAddress = process.env.PUBLISHER_ADDRESS!;
+const aliceAddress = process.env.ALICE_ADDRESS!;
+
+const forkedTestnet = sui({
+	mode: 'fork',
+	upstream: 'testnet',
+	seed: { addresses: [publisherAddress, aliceAddress] },
+});
+const publisher = account('publisher', {
+	kind: 'impersonate',
+	address: publisherAddress,
+});
+const alice = account('alice', {
+	kind: 'impersonate',
+	address: aliceAddress,
+});
+
+const pkg = localPackage('demo', {
+	sourcePath: './move/demo',
+	publisher,
+});
+
+export default defineDevstack({
+	members: [forkedTestnet, pkg],
+	stackName: 'fork-demo',
+});
+```
+
+The fork-specific knobs are:
+
+- `upstream` — the public network to mirror (`testnet`, `mainnet`, or `devnet`).
+- `checkpoint` — pin the upstream checkpoint used to initialize the fork.
+- `seed.addresses` / `seed.objects` — preload upstream addresses or objects the local fork should
+  materialize.
+- `autoTick` — advance the fork clock periodically; pass `true` for the default cadence or
+  `{ intervalMs }` for a custom interval.
+- `faucet` — configure the impersonation faucet (see
+  [Funding test accounts](#funding-test-accounts)).
+- `version` — pin the Git revision of the Sui repository used to build `sui-fork`.
+- `image` — point at a prebuilt image to skip the build.
+
+```ts
+const forkedTestnet = sui({
+	mode: 'fork',
+	upstream: 'testnet',
+	checkpoint: 64_000_000,
+	seed: { addresses: [publisherAddress] },
+	autoTick: { intervalMs: 1_000 },
+});
+```
+
+## The fork endpoint
+
+A fork serves a gRPC endpoint (not legacy JSON-RPC) on the usual devstack Sui RPC route. There's no
+GraphQL endpoint, and the balance APIs (`getBalance` / `listBalances` / `getCoinInfo`) aren't
+available — read balances through `ChainProbe`, and fund accounts through the fork faucet (below).
+
+First boot builds the fork image from a pinned Sui revision, which takes a few minutes; later boots
+reuse the cached image. To skip the build, point at a prebuilt image with `image: { pull: '…' }` or
+set the `DEVSTACK_SUI_FORK_IMAGE` environment variable.
+
+If a slow first build or a large upstream checkpoint trips the ready probe, raise `readyTimeout` (a
+`sui()` option, `Duration`; default 180s), or check the fork container logs with
+`docker logs <container>`.
+
+## Accounts: impersonate vs. ephemeral
+
+Two account kinds work in fork mode, for two different needs:
+
+- **`kind: 'impersonate'`** acts as a specific upstream address. These accounts submit
+  empty-signature transactions through the fork admin surface, which is useful for deterministic
+  local replay. No private key exists, so direct signing APIs fail.
+- **`kind: 'ephemeral'`** is a funded local signer. Ephemeral accounts have local private keys, work
+  with the dev wallet, and receive SUI from the fork faucet.
+
+Use `impersonate` when the test must act as a specific upstream address; use ephemeral accounts when
+the test only needs funded local signers.
+
+## Funding test accounts
+
+Fork networks have no HTTP faucet, so devstack funds accounts by transferring SUI from a
+large-reserve "whale" address on the forked upstream. For `testnet`, `mainnet`, and `devnet` a
+default whale is built in, so funding works with zero config — ephemeral accounts auto-fund exactly
+like on localnet:
+
+```ts
+const forkedTestnet = sui({ mode: 'fork', upstream: 'testnet' });
+
+// Auto-funded from the default whale — no env vars, pre-funded addresses,
+// or impersonation needed:
+const publisher = account('publisher', { kind: 'ephemeral' });
+```
+
+To use your own funding source — or for an upstream with no default — set `faucet.whale` to an
+address holding a large single SUI coin. It's auto-added to the fork seed and validated at boot:
+
+```ts
+const forkedTestnet = sui({
+	mode: 'fork',
+	upstream: 'testnet',
+	faucet: { whale: process.env.FORK_WHALE! }, // large-reserve upstream address
+});
+```
+
+Auto-funding and explicit SUI top-ups behave exactly as on localnet. `faucet.perRequestCapMist` caps
+a single request (default 1000 SUI), and `faucet: { enabled: false }` turns the faucet off. For
+`faucet.whale`, use any address holding a large single SUI coin — an active validator or treasury
+address you can find on a block explorer. If the whale doesn't hold a coin large enough to cover a
+fund plus gas, boot fails with a message saying so.
+
+Faucet-funded ephemeral accounts are first-class: they can publish packages, run actions, mint
+coins, and transfer value.
+
+## The fork admin surface
+
+Plugins that depend on the forked Sui member can use the mode-narrowed `ForkAdminSurface` through
+`sui.fork`: `status`, `advanceClock`, `advanceCheckpoint`, and `impersonate`.
+
+```ts
+import { Effect } from 'effect';
+import { definePlugin } from '@mysten-incubation/devstack';
+
+const forkProbe = definePlugin({
+	id: 'fork-probe',
+	role: 'task',
+	section: 'action',
+	dependsOn: { sui: forkedTestnet },
+	start: ({ sui }) =>
+		Effect.gen(function* () {
+			const fork = sui.fork;
+			if (fork === null) return null;
+			const before = yield* fork.status;
+			yield* fork.advanceCheckpoint;
+			yield* fork.advanceClock(1_000);
+			return { before, after: yield* fork.status };
+		}),
+});
+```
+
+## Fork-mode service factories
+
+Some services only run locally. To point Walrus or Seal at a fork, use the mode-specific factories —
+they narrow the type to the branches available on a fork chain:
+
+```ts
+import { chainIdForNetwork, walrusFor, sealFor } from '@mysten-incubation/devstack';
+
+const fork = { mode: 'fork', chainId: chainIdForNetwork('testnet-fork') } as const;
+
+const forkWal = walrusFor(fork).known({
+	systemObjectId: '0x...',
+	stakingPoolId: '0x...',
+	nodes: [],
+});
+
+const forkKeyServer = sealFor(fork).forkKnown({
+	upstream: 'testnet',
+	objectId: '0x...',
+	keyServerUrl: 'https://example.test/key',
+});
+```
+
+See [Live networks](/devstack/live-networks) for the live-mode equivalents and the full `--network`
+name list (which includes `testnet-fork`, `mainnet-fork`, and `devnet-fork`).

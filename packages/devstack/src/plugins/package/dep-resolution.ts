@@ -26,7 +26,7 @@ export const mvrSlugify = (name: string): string =>
  * the resulting `@local/<slug>` passes BOTH `hasMvrName` and
  * `isValidNamedPackage`. Resolution never hits a real registry — the
  * dapp-kit/`MvrClient` override map keys on this exact string and
- * short-circuits to the resolved `byNetwork.<network>` id.
+ * short-circuits to the active network's resolved package id.
  */
 const MVR_LOCAL_ORG = '@local';
 

@@ -46,16 +46,21 @@
 //   - Walk the user's Move-source mtimes (see `bindings.ts`).
 
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
-import { dirname } from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import {
+	ForNetworkBucket,
+	isForNetworkBucket,
 	isRawExpr,
+	rawExpr,
 	type CodegenableDecl,
 	type CodegenEmitDone,
 	type CodegenEmitContext,
-	type OutputLocation,
 } from '../../contracts/codegenable.ts';
 import { CONFIG_RUNTIME_OUTPUT_PATH, CONFIG_RUNTIME_SOURCE } from './config-runtime.ts';
+import { DEPLOYMENT_STRICT_OUTPUT_PATH, renderDeploymentStrict } from './deployment-strict.ts';
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-and-swap/index.ts';
@@ -79,8 +84,13 @@ import {
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
-import { UNRESOLVED_ID } from './id-config.ts';
-import type { IdConfig, IdConfigNetwork, IdConfigPackage, IdConfigValues } from './id-config.ts';
+import { UNRESOLVED_ID } from './deployment.ts';
+import type {
+	DevstackDeployment,
+	NetworkDeployment,
+	DeploymentPackage,
+	DeploymentValues,
+} from './deployment.ts';
 import { CodegenPathsService, type CodegenPaths } from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
@@ -105,6 +115,13 @@ export interface RunEmitCycleInput {
 	 *  work on a fresh clone, ignoring only `sensitivePaths`. When
 	 *  `false`/omitted, the ephemeral tree is blanket-ignored. */
 	readonly trackTree?: boolean;
+	/** The LIVE network names — the app's `deployments/*.ts` filenames (sans
+	 *  `.ts`, local excluded) — used to render the strict `deployment.ts`
+	 *  type's `ProvidedNetwork` union + `NETWORK_NAMES` tuple. Omitted ⇒ the
+	 *  outer {@link runEmitCycle} discovers them by globbing
+	 *  `<projectRoot>/deployments/*.ts` (the canonical, non-staging output
+	 *  dir's grandparent). Empty / no dir ⇒ `ProvidedNetwork = never`. */
+	readonly providedNetworks?: ReadonlyArray<string>;
 }
 
 export interface RunEmitCycleResult {
@@ -114,49 +131,51 @@ export interface RunEmitCycleResult {
 	readonly bindings: EmitBindingsResult | null;
 }
 
-/** Resolve a decl/aggregate's absolute output path against the tree
- *  selected by its `outputLocation`. `'generated-extras'` routes
- *  through `paths.resolveExtras` (the gitignored dev tree); everything
- *  else through `paths.resolve` (the staging-and-swapped runtime tree). */
-const resolveAt = (
-	paths: CodegenPaths,
-	location: OutputLocation,
-	outputPath: string,
-): Effect.Effect<string, CodegenPathConflict> =>
-	location === 'generated-extras' ? paths.resolveExtras(outputPath) : paths.resolve(outputPath);
-
-const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
-	decl.outputLocation ?? 'generated';
-
-/** A decl belongs to the `emitExtras` flush IFF it writes ONLY into the
- *  dev-only `generated-extras` tree. INVARIANT: `emitExtras` must NEVER
- *  touch the committed `src/generated` tree (it runs without stage-and-swap),
- *  so a decl that would emit any file into `generated` is excluded.
- *
- *  - `aggregateOnly` decls write only their aggregate file: include iff the
- *    aggregate's location is `generated-extras` (e.g. each account folding
- *    into the gitignored `accounts.ts`).
- *  - standalone decls write a per-decl file (and possibly an aggregate):
- *    include iff that standalone file lands in `generated-extras` (e.g. the
- *    wallet's `dev-wallet.ts`). A standalone-in-`generated` decl is excluded
- *    even if its aggregate targets `generated-extras`. */
-const isExtrasDecl = (decl: Codegenable): boolean =>
-	decl.aggregateOnly === true
-		? (decl.aggregate?.outputLocation ?? 'generated') === 'generated-extras'
-		: declLocation(decl) === 'generated-extras';
+/** Discover the app's LIVE network names by globbing `<projectRoot>/deployments/*.ts`
+ *  (D7 — the network set is the `deployments/` directory, by FILENAME; the
+ *  file CONTENTS are never read — ids load at app build via Vite). The
+ *  project root is the grandparent of the canonical (non-staging) codegen
+ *  `outputDir` (`<projectRoot>/src/generated`). Returns the filenames sans
+ *  `.ts`, sorted; empty when there is no `deployments/` dir (a clean clone /
+ *  template — `ProvidedNetwork = never`, `NETWORK_NAMES = [<local>]`). Never
+ *  throws — a read failure degrades to empty (no live networks). */
+const discoverProvidedNetworks = (canonicalOutputDir: string): ReadonlyArray<string> => {
+	try {
+		// `<projectRoot>/src/generated` → `<projectRoot>`. `deployments/` is a
+		// sibling of `src/`.
+		const projectRoot = dirname(dirname(canonicalOutputDir));
+		const deploymentsDir = join(projectRoot, 'deployments');
+		if (!existsSync(deploymentsDir)) return [];
+		return (
+			readdirSync(deploymentsDir)
+				.filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+				.map((f) => f.slice(0, -'.ts'.length))
+				.filter((n) => n.length > 0)
+				// The local network is never a COMMITTED/provided network — it is the
+				// live dev stack, added as the head of `NETWORK_NAMES` separately. A
+				// stray committed `deployments/localnet.ts` must NOT pollute the
+				// `ProvidedNetwork` union / `NETWORK_NAMES` tuple with a duplicate
+				// `localnet`; the documented "local excluded" contract is enforced here
+				// at the source so every consumer of `providedNetworks` sees it honored.
+				.filter((n) => n !== LOCAL_NETWORK_NAME)
+				.sort()
+		);
+	} catch {
+		return [];
+	}
+};
 
 const buildParentModeResolver = (
 	paths: CodegenPaths,
 	entries: ReadonlyArray<{
 		readonly outputPath: string;
-		readonly location: OutputLocation;
 		readonly sensitive: boolean;
 	}>,
 ): Effect.Effect<(absolutePath: string) => number, CodegenPathConflict> =>
 	Effect.gen(function* () {
 		const byParent = new Map<string, Array<{ readonly sensitive?: boolean }>>();
 		for (const entry of entries) {
-			const parent = dirname(yield* resolveAt(paths, entry.location, entry.outputPath));
+			const parent = dirname(yield* paths.resolve(entry.outputPath));
 			const current = byParent.get(parent);
 			if (current === undefined) {
 				byParent.set(parent, [{ sensitive: entry.sensitive }]);
@@ -239,6 +258,15 @@ const runEmitCycleLocked = (
 		const moveRunner = yield* MoveSummaryRunnerService;
 		const moveCodegen = yield* MoveCodegenService;
 
+		// Discover the app's LIVE network set ONCE from the canonical (non-
+		// staging) `outputDir` — globbing `<projectRoot>/deployments/*.ts` by
+		// FILENAME (D7). Done here (not inside the staging build, whose
+		// `outputDir` is the throwaway `.staging.<id>` dir) so the project root
+		// resolves against the real tree. The caller may override (e.g. a test
+		// pinning a fixed set). Empty when no `deployments/` dir.
+		const providedNetworks = input.providedNetworks ?? discoverProvidedNetworks(paths.outputDir);
+		const innerInput: RunEmitCycleInput = { ...input, providedNetworks };
+
 		// Pre-flight contribution-set validation. Detected BEFORE the
 		// stage-and-swap so a programming-bug rejection (duplicate
 		// emitterName / outputPath collision) never opens an empty
@@ -282,7 +310,7 @@ const runEmitCycleLocked = (
 			idSuffix: cycleId,
 			preserveOnPreseed: true,
 			build: Effect.gen(function* () {
-				const inner = yield* runEmitCycleInner(input, stagingPaths).pipe(
+				const inner = yield* runEmitCycleInner(innerInput, stagingPaths).pipe(
 					Effect.provideService(MoveSummaryRunnerService, moveRunner),
 					Effect.provideService(MoveCodegenService, moveCodegen),
 				);
@@ -381,7 +409,6 @@ const runEmitCycleInner = (
 				.filter((d) => d.aggregateOnly !== true)
 				.map((d) => ({
 					outputPath: d.outputPath,
-					location: declLocation(d),
 					sensitive: d.sensitive === true,
 				})),
 		);
@@ -394,33 +421,20 @@ const runEmitCycleInner = (
 					const bucket = aggregates.get(decl.aggregate.bucket) ?? {};
 					deepMerge(bucket, projected);
 					aggregates.set(decl.aggregate.bucket, bucket);
-					// First-contributor-wins for routing/sensitivity, but a
-					// LATER contributor that disagrees is a hard error — the
+					// First-contributor-wins for sensitivity, but a LATER
+					// contributor that disagrees is a hard error — the
 					// `AggregateContribution` contract requires all
 					// contributors to a bucket to agree, and a silent
-					// mismatch could misroute a sensitive aggregate into the
-					// committed `generated` tree (secret leak).
-					const declLoc = decl.aggregate.outputLocation ?? 'generated';
+					// mismatch could misroute a sensitive aggregate's
+					// permissions (secret leak).
 					const declSensitive = decl.aggregate.sensitive === true;
 					const established = aggregateMeta.get(decl.aggregate.bucket);
 					if (established === undefined) {
 						aggregateMeta.set(decl.aggregate.bucket, {
-							location: declLoc,
 							sensitive: declSensitive,
 							establishedBy: decl.emitterName,
 						});
 					} else {
-						if (established.location !== declLoc) {
-							return yield* Effect.fail(
-								new CodegenAggregateConflict({
-									bucket: decl.aggregate.bucket,
-									field: 'outputLocation',
-									established: established.location,
-									conflicting: declLoc,
-									emitters: [established.establishedBy, decl.emitterName],
-								}),
-							);
-						}
 						if (established.sensitive !== declSensitive) {
 							return yield* Effect.fail(
 								new CodegenAggregateConflict({
@@ -461,7 +475,7 @@ const runEmitCycleInner = (
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
 			}
-			const abs = yield* resolveAt(paths, declLocation(decl), decl.outputPath);
+			const abs = yield* paths.resolve(decl.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
 				content: rendered.text,
@@ -481,32 +495,64 @@ const runEmitCycleInner = (
 			}
 		}
 
-		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta);
-		// True once any aggregate references a `config-runtime.ts` resolver
-		// (the committed `config.ts`): then we ALSO emit the fixed
-		// `config-runtime.ts` resolver and import the referenced resolvers into
-		// that file.
+		// Inject the static-only DEPLOYMENT envelope accessors into the
+		// committed `config.ts` aggregate and wrap each SERVICE bucket
+		// (coins/deepbook/seal/walrus) in its per-network `forNetwork(network)`
+		// accessor — BEFORE usage scanning, so the resulting `__deployment` /
+		// `dep` references drive the import + preamble below. The MVR `types`
+		// overrides are NOT folded here: they are OPT-IN and come from the
+		// package's own config bindings (each declared `mvrOverrides.types.<tag>`
+		// already projected into the `config.ts` aggregate), so no bindings-derived
+		// post-transform — and no dependency on the bindings having run first.
+		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta)
+			.map(withConfigEnvelopeAccessors)
+			.map(withForNetworkAccessor);
+		// True once any aggregate references a `config-runtime.ts` deployment
+		// symbol (the committed `config.ts` + service buckets): then we ALSO emit
+		// the fixed `config-runtime.ts` and import + preamble exactly what each
+		// file references.
 		let needsConfigRuntime = false;
 		for (const aggregate of aggregateFiles) {
-			const resolvers = resolversUsedBy(aggregate.exports);
-			if (resolvers.length > 0) needsConfigRuntime = true;
+			const usage = deploymentUsageOf(aggregate.exports);
+			if (!deploymentUsageEmpty(usage)) needsConfigRuntime = true;
+			const imports = deploymentImportsFor(usage);
+			// A SERVICE bucket carries its `dep` inside the `forNetwork(network)`
+			// accessor (a per-call `loadDeployment().forNetwork(network)` local),
+			// so it imports `loadDeployment` but emits NO module-level `dep` /
+			// `__deployment` preamble. Non-service buckets (config.ts) keep the
+			// module-level preamble.
+			const preamble = isServiceBucket(aggregate.outputPath) ? [] : deploymentPreambleFor(usage);
+			// `config.ts` references the app-specific `NETWORK_NAMES` tuple (D2)
+			// for `defaultNetwork`/`networkNames`; import it from the strict
+			// `deployment.ts` we emit alongside `config-runtime.ts`. Scan for the
+			// identifier so only files that use it carry the import (oxlint flags
+			// unused). `import type` is wrong — `NETWORK_NAMES` is a runtime value
+			// (used both as a value AND in the `typeof` cast).
+			const usesNetworkNames = referencesNetworkNames(aggregate.exports);
+			const importLines: Array<string> = [];
+			if (imports.length > 0) {
+				importLines.push(`import { ${imports.join(', ')} } from './config-runtime.js';`);
+			}
+			if (usesNetworkNames) {
+				importLines.push(`import { NETWORK_NAMES } from './deployment.js';`);
+			}
 			const rendered = renderFile({
 				emitterName: aggregate.emitterName,
 				outputPath: aggregate.outputPath,
 				sensitive: aggregate.sensitive,
 				exports: aggregate.exports,
-				// The committed `config.ts` resolves ids/network at runtime —
-				// import exactly the resolvers it references (no unused imports;
-				// oxlint is pinned and flags them). `.js` specifier (ESM/TS-
+				// The committed `config.ts` + service buckets read off the injected
+				// deployment at runtime — import exactly the symbols referenced (no
+				// unused imports; oxlint is pinned and flags them) and emit the
+				// `loadDeployment()` / `dep` preamble. `.js` specifier (ESM/TS-
 				// resolved) mirrors the bindings' import style.
-				...(resolvers.length > 0
-					? { imports: [`import { ${resolvers.join(', ')} } from './config-runtime.js';`] }
-					: {}),
+				...(importLines.length > 0 ? { imports: importLines } : {}),
+				...(preamble.length > 0 ? { preamble } : {}),
 			});
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
 			}
-			const abs = yield* resolveAt(paths, aggregate.location, aggregate.outputPath);
+			const abs = yield* paths.resolve(aggregate.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
 				content: rendered.text,
@@ -528,7 +574,7 @@ const runEmitCycleInner = (
 
 		// Emit the FIXED `config-runtime.ts` resolver (a constant string, NOT
 		// routed through the literal renderer) when `config.ts` resolves ids
-		// at runtime. It reads the injected `__DEVSTACK_IDS__` global and
+		// at runtime. It reads the injected `__DEVSTACK_DEPLOYMENT__` global and
 		// THROWS `DevstackConfigMissingError` on an unresolved id.
 		if (needsConfigRuntime) {
 			const abs = yield* paths.resolve(CONFIG_RUNTIME_OUTPUT_PATH);
@@ -549,8 +595,52 @@ const runEmitCycleInner = (
 					filesChmod.push(abs);
 					break;
 			}
+
+			// Emit the APP-SPECIFIC strict `deployment.ts` type alongside the
+			// fixed `config-runtime.ts` (it imports `NetworkDeployment` from
+			// it). RENDERED FROM DATA: `AppPackages` is exhaustive over the
+			// declared package names, `AppNetworkDeployment.mvrOverrides`
+			// requires the declared `@local/*` placeholders, and
+			// `ProvidedNetwork` / `NETWORK_NAMES` enumerate the live networks
+			// from the `deployments/*.ts` filenames (D7, passed in
+			// `providedNetworks`). Types-only + zero runtime (bar the
+			// `NETWORK_NAMES` tuple) so a clean clone (no `deployments/` dir →
+			// empty `providedNetworks`) stays `tsc`-green.
+			const strictInput = strictTypeInputFrom(aggregateFiles);
+			const deploymentStrict = renderDeploymentStrict({
+				localNetworkName: LOCAL_NETWORK_NAME,
+				packageNames: strictInput.packageNames,
+				mvrPlaceholders: strictInput.mvrPlaceholders,
+				mvrTypeTags: strictInput.mvrTypeTags,
+				providedNetworks: input.providedNetworks ?? [],
+				serviceValues: serviceValuesFrom(input.contributions),
+			});
+			const strictAbs = yield* paths.resolve(DEPLOYMENT_STRICT_OUTPUT_PATH);
+			const strictOutcome = yield* emitOne({
+				path: strictAbs,
+				content: deploymentStrict,
+				mode: 0o644,
+				parentMode: parentModeFor(strictAbs),
+			});
+			switch (strictOutcome.outcome) {
+				case 'wrote':
+					filesWritten.push(strictAbs);
+					break;
+				case 'unchanged':
+					filesUnchanged.push(strictAbs);
+					break;
+				case 'chmod-only':
+					filesChmod.push(strictAbs);
+					break;
+			}
 		}
 
+		// Run the Move-to-TS bindings step — render each local package's typed
+		// client modules into `generated/bindings/`. Order-independent of the
+		// aggregate emission above: the MVR `types` overrides are opt-in and come
+		// from the package's config bindings, not from the rendered bindings, so
+		// nothing downstream of this step depends on its result beyond the emitted
+		// files + the returned summary.
 		let bindings: EmitBindingsResult | null = null;
 		if (packageContribs.length > 0) {
 			bindings = yield* emitBindings({
@@ -564,46 +654,34 @@ const runEmitCycleInner = (
 			);
 		}
 
-		// `.gitignore` covers the runtime `generated/` tree only. Decls
-		// routed to `generated-extras` live outside `outputDir` (that
-		// whole tree is gitignored at the `.devstack/` level), and
-		// aggregate-only decls never write a standalone file — both are
-		// excluded here so the managed `.gitignore` only lists real
-		// sensitive files in `outputDir`.
+		// `.gitignore` covers the runtime `generated/` tree only.
+		// Aggregate-only decls never write a standalone file, so they are
+		// excluded here — the managed `.gitignore` only lists real sensitive
+		// files in `outputDir`.
 		//
 		// Synthesized aggregate files are a SEPARATE source of sensitive
-		// runtime paths: a sensitive bucket routed to `generated` writes a
-		// real secret-bearing file in `outputDir` that the standalone-decl
-		// scan above never sees (its contributors may all be
-		// `aggregateOnly`). Without an explicit ignore line such a file
-		// would rely solely on the blanket `*` rule — and a user `!<file>`
-		// override in the preserved user block would then start tracking
-		// the secret. Include them so each gets an explicit re-ignore line.
-		// The managed `.gitignore` belongs to the committed/live `generated`
-		// tree at `<outputDir>/.gitignore` — and only that tree. We write it
-		// ONLY when this emit actually produces `generated` output. An
-		// EXTRAS-ONLY emit (boot's `emitExtras`) writes solely into `extrasDir`,
-		// which lives under the already-gitignored `.devstack/` root, so it
-		// needs no `.gitignore` of its own. Skipping it here is also the fix
-		// for a real bug: at BOOT `outputDir` is only a STAND-IN (boot emits
-		// nothing there — see `paths.ts`), so writing `paths.gitignoreFile` for
-		// an extras-only emit would clobber the committed tree's TRACKED policy
-		// with the blanket ignore-all on every `devstack up`, breaking
-		// `tsc`/`vite build` on a fresh clone.
+		// runtime paths: a sensitive aggregate bucket writes a real
+		// secret-bearing file in `outputDir` that the standalone-decl scan
+		// above never sees (its contributors may all be `aggregateOnly`).
+		// Without an explicit ignore line such a file would rely solely on
+		// the blanket `*` rule — and a user `!<file>` override in the
+		// preserved user block would then start tracking the secret. Include
+		// them so each gets an explicit re-ignore line. The managed
+		// `.gitignore` belongs to the committed/live `generated` tree at
+		// `<outputDir>/.gitignore`. Write it ONLY when this emit actually
+		// produces output: a metadata-only cycle (no standalone files, no
+		// aggregate files — e.g. boot's values-only deployment assembly,
+		// which writes no committed file) must NOT clobber the committed
+		// tree's TRACKED policy with the blanket ignore-all, which would
+		// break `tsc`/`vite build` on a fresh clone.
 		const hasGeneratedOutput =
-			fileEmitters.some((d) => d.aggregateOnly !== true && declLocation(d) === 'generated') ||
-			aggregateFiles.some((a) => a.location === 'generated');
+			fileEmitters.some((d) => d.aggregateOnly !== true) || aggregateFiles.length > 0;
 		if (hasGeneratedOutput) {
 			const sensitivePaths = [
 				...fileEmitters
-					.filter(
-						(d) =>
-							d.sensitive === true && d.aggregateOnly !== true && declLocation(d) === 'generated',
-					)
+					.filter((d) => d.sensitive === true && d.aggregateOnly !== true)
 					.map((d) => d.outputPath),
-				...aggregateFiles
-					.filter((a) => a.sensitive && a.location === 'generated')
-					.map((a) => a.outputPath),
+				...aggregateFiles.filter((a) => a.sensitive).map((a) => a.outputPath),
 			];
 			yield* writeGitignore({
 				path: paths.gitignoreFile,
@@ -689,28 +767,21 @@ const validateUniqueness = (
 			// share `config.ts`'s bucket but carry distinct dead
 			// `package/<name>.ts` outputPaths that never hit disk).
 			if (d.aggregateOnly !== true) {
-				// Key by (location, path): the same relative path in the
-				// `generated` vs `generated-extras` trees is two distinct
-				// files, so `accounts.ts` may exist in both without a
-				// false collision.
-				const pathKey = `${declLocation(d)} ${d.outputPath}`;
-				const ps = byPath.get(pathKey) ?? [];
+				const ps = byPath.get(d.outputPath) ?? [];
 				ps.push(d.emitterName);
-				byPath.set(pathKey, ps);
+				byPath.set(d.outputPath, ps);
 			}
 			if (d.allowEmitterNameRepetition === true) continue;
 			const ns = byName.get(d.emitterName) ?? [];
 			ns.push(d.outputPath);
 			byName.set(d.emitterName, ns);
 		}
-		for (const [pathKey, emitters] of byPath) {
+		for (const [outputPath, emitters] of byPath) {
 			if (emitters.length > 1) {
 				return yield* Effect.fail(
 					new CodegenPathConflict({
 						kind: 'duplicate',
-						// Strip the `<location> ` prefix from the dedup key so
-						// the error names the relative path the plugin declared.
-						outputPath: pathKey.slice(pathKey.indexOf(' ') + 1),
+						outputPath,
 						emitters,
 					}),
 				);
@@ -738,25 +809,18 @@ const validateAggregatePathAvailability = (
 	decls: ReadonlyArray<Codegenable>,
 ): Effect.Effect<void, CodegenPathConflict> =>
 	Effect.gen(function* () {
-		// Aggregate buckets keyed by (location, bucket). A standalone
-		// decl in the SAME tree that writes the bucket path would clash
-		// with the synthesized aggregate; a decl in the OTHER tree (or
-		// an aggregate-only decl, which writes no standalone file) does
-		// not.
-		const aggregatePaths = new Map<string, string>();
+		// A standalone decl that writes a synthesized aggregate bucket's
+		// path would clash with the aggregate; an aggregate-only decl
+		// (which writes no standalone file) does not.
+		const aggregateBuckets = new Set<string>();
 		for (const decl of decls) {
 			if (decl.aggregate !== undefined) {
-				const location = decl.aggregate.outputLocation ?? 'generated';
-				aggregatePaths.set(`${location} ${decl.aggregate.bucket}`, decl.aggregate.bucket);
+				aggregateBuckets.add(decl.aggregate.bucket);
 			}
 		}
-		for (const [key, bucket] of aggregatePaths) {
-			const location = key.slice(0, key.indexOf(' '));
+		for (const bucket of aggregateBuckets) {
 			const colliding = decls.filter(
-				(decl) =>
-					decl.aggregateOnly !== true &&
-					declLocation(decl) === location &&
-					decl.outputPath === bucket,
+				(decl) => decl.aggregateOnly !== true && decl.outputPath === bucket,
 			);
 			if (colliding.length > 0) {
 				return yield* Effect.fail(
@@ -770,14 +834,13 @@ const validateAggregatePathAvailability = (
 		}
 	});
 
-/** Per-bucket location + sensitivity, captured from the first decl
- *  the orchestrator sees contributing to a bucket. The orchestrator
- *  stays name-blind; the plugin owns these on its
- *  `AggregateContribution`. `establishedBy` records the emitter name
- *  of that first contributor so a later disagreement can quote both
- *  sides in `CodegenAggregateConflict`. */
+/** Per-bucket sensitivity, captured from the first decl the
+ *  orchestrator sees contributing to a bucket. The orchestrator stays
+ *  name-blind; the plugin owns this on its `AggregateContribution`.
+ *  `establishedBy` records the emitter name of that first contributor so
+ *  a later disagreement can quote both sides in
+ *  `CodegenAggregateConflict`. */
 interface AggregateMeta {
-	readonly location: OutputLocation;
 	readonly sensitive: boolean;
 	readonly establishedBy: string;
 }
@@ -786,7 +849,6 @@ interface AggregateFile {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly exports: { readonly [key: string]: unknown };
-	readonly location: OutputLocation;
 	readonly sensitive: boolean;
 }
 
@@ -832,8 +894,7 @@ const deepMerge = (
  * orchestrator picks the export key from the bucket filename; the
  * stem itself is not a plugin identifier — it is the filename
  * without the `.ts` extension, derived mechanically. The bucket's
- * `location`/`sensitive` (from the first contributing decl) drive
- * which tree the file lands in and its mode.
+ * `sensitive` flag (from the first contributing decl) drives its mode.
  */
 const buildAggregateFiles = (
 	buckets: ReadonlyMap<string, Record<string, unknown>>,
@@ -845,7 +906,6 @@ const buildAggregateFiles = (
 		if (Object.keys(contents).length === 0) continue;
 		const stem = bucketStem(bucket);
 		const bucketMeta = meta.get(bucket) ?? {
-			location: 'generated' as const,
 			sensitive: false,
 			establishedBy: `aggregate/${stem}`,
 		};
@@ -853,7 +913,6 @@ const buildAggregateFiles = (
 			emitterName: `aggregate/${stem}`,
 			outputPath: bucket,
 			exports: { [stem]: contents },
-			location: bucketMeta.location,
 			sensitive: bucketMeta.sensitive,
 		});
 	}
@@ -862,44 +921,294 @@ const buildAggregateFiles = (
 
 const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').replace(/^.*\//, '');
 
-/** The config-runtime resolver names a committed `config.ts` aggregate may
- *  reference as raw expressions. Each is imported from `./config-runtime.js`
- *  only when the aggregate actually calls it (oxlint flags unused imports). */
-const CONFIG_RUNTIME_RESOLVERS = [
-	'resolveId',
-	'resolveNetwork',
-	'resolveNetworks',
-	'resolveValue',
-] as const;
-type ConfigRuntimeResolver = (typeof CONFIG_RUNTIME_RESOLVERS)[number];
+/** The committed `config.ts` bucket. The orchestrator already encodes
+ *  `config.ts` semantics by name elsewhere (the live `assembleDeployment`
+ *  slices it by this exact bucket); the static envelope-accessor injection
+ *  below is the matching static-render-only branch. */
+const CONFIG_BUCKET = 'config.ts';
 
-/** Recursively collect which `config-runtime.ts` resolvers an exports map
- *  references via raw expressions — i.e. the committed `config.ts` needs each
- *  imported + the fixed `config-runtime.ts` emitted alongside it. */
-const collectResolversInValue = (value: unknown, found: Set<ConfigRuntimeResolver>): void => {
-	if (isRawExpr(value)) {
-		for (const name of CONFIG_RUNTIME_RESOLVERS) {
-			if (value.expr.includes(`${name}(`)) found.add(name);
+/** The network-agnostic `accounts.ts` bucket. Like `config.ts`, this is a
+ *  bucket the orchestrator special-cases STRUCTURALLY (not by plugin identity):
+ *  the live `assembleDeployment` folds it into the deployment envelope's
+ *  network-AGNOSTIC `accounts` map (name → address) rather than any per-network
+ *  unit, so it must NOT receive the per-network `forNetwork(network)` wrapper. */
+const ACCOUNTS_BUCKET = 'accounts.ts';
+
+/** The network-agnostic `packages.ts` MVR-pointer bucket. Unlike the service
+ *  buckets, its per-network package ids do NOT live in this module — they
+ *  resolve through `config.forNetwork(net).packages.<name>.id`; the standalone
+ *  `packages.ts` export is only the network-agnostic MVR placeholder plus the
+ *  default-network convenience id. It therefore must NOT receive the per-network
+ *  `forNetwork(network)` wrapper (doing so reshapes `packages.<name>` into a
+ *  network accessor and breaks `packages.<name>.mvrPlaceholder`). It is absent
+ *  from `assembleDeployment`'s name branches because the envelope's `packages`
+ *  field is sliced out of `config.ts`, not this aggregate. */
+const PACKAGES_BUCKET = 'packages.ts';
+
+/** The buckets that are NOT per-network service buckets — the ones the
+ *  orchestrator special-cases structurally:
+ *   - `config.ts`: carries the TYPED deployment channel and its own
+ *     per-network `forNetwork` field (injected by {@link withConfigEnvelopeAccessors});
+ *     `assembleDeployment` slices it into `network`/`networks`/`packages`/`mvrOverrides`.
+ *   - `accounts.ts`: network-agnostic (name → address), folded into the
+ *     envelope's `accounts` map by `assembleDeployment`.
+ *   - `packages.ts`: network-agnostic MVR pointers (see {@link PACKAGES_BUCKET}).
+ *  config/accounts mirror the two bucket arms `assembleDeployment` branches on;
+ *  `packages.ts` is the additional structurally-network-agnostic aggregate whose
+ *  per-network story is owned by `config.forNetwork`. Keeping this set to the
+ *  genuinely network-agnostic buckets is what lets the STATIC `forNetwork` gate
+ *  auto-wrap any NEW per-network service bucket by default. */
+const NON_SERVICE_BUCKETS: ReadonlySet<string> = new Set([
+	CONFIG_BUCKET,
+	ACCOUNTS_BUCKET,
+	PACKAGES_BUCKET,
+]);
+
+/** True when a bucket is a per-network SERVICE bucket (coins / deepbook / seal /
+ *  walrus today; a NEW plugin's `pyth.ts` automatically) — i.e. any aggregate
+ *  bucket that is NOT one of the orchestrator's structurally-special buckets.
+ *
+ *  Derived from a DECLARED structural fact (the bucket is not config / not
+ *  accounts) rather than a hard-coded service-name allowlist: a per-network
+ *  service plugin emitting a new bucket is wrapped in its `forNetwork(network)`
+ *  accessor by default, so its ids resolve for the dapp-kit-selected network
+ *  instead of silently baking the DEFAULT network's ids at module load. */
+const isServiceBucket = (bucket: string): boolean => !NON_SERVICE_BUCKETS.has(bucket);
+
+/**
+ * Inject the DEPLOYMENT envelope-accessor fields into the committed
+ * `config.ts` aggregate's `config` object literal as raw expressions:
+ *   - `defaultNetwork: __deployment.defaultNetwork`
+ *   - `networkNames:   __deployment.networkNames`
+ *   - `forNetwork:     __deployment.forNetwork`
+ *
+ * There is deliberately NO `activeNetwork` field: the genuinely active network
+ * is whatever dapp-kit currently has selected (it can `switchNetwork` at
+ * runtime), so a statically-resolved "active" entry would lie the moment the
+ * user switches. Apps resolve per-network data through
+ * `config.forNetwork(<dapp-kit-selected network>)` — e.g.
+ * `createClient(network) => config.forNetwork(network)` — so nothing drifts out
+ * of sync with the selected network.
+ *
+ * STATIC-render-only: these are wired into the emitted committed tree so apps
+ * can enumerate / look up networks off `config`, but they are NOT part of the
+ * live deployment path (`assembleDeployment` / `deploymentFromBucket` slice the raw
+ * `network`/`networks`/`packages`/`mvrOverrides` fields, never these). The
+ * aggregate file's `exports` is `{ config: {...} }`; mutate the inner object.
+ */
+const withConfigEnvelopeAccessors = (file: AggregateFile): AggregateFile => {
+	if (file.outputPath !== CONFIG_BUCKET) return file;
+	const stem = bucketStem(file.outputPath); // 'config'
+	const inner = file.exports[stem];
+	if (!isPlainObject(inner)) return file;
+	const augmented: Record<string, unknown> = {
+		...inner,
+		// Typed against the app-specific `NETWORK_NAMES` tuple (D2) so dapp-kit's
+		// `switchNetwork(name)` is literal-checked: `defaultNetwork` narrows to
+		// the tuple's element union, and `networkNames` IS the literal tuple
+		// (the app's declared network set: local + committed `deployments/*.ts`).
+		defaultNetwork: rawExpr('__deployment.defaultNetwork as (typeof NETWORK_NAMES)[number]'),
+		networkNames: rawExpr('NETWORK_NAMES'),
+		forNetwork: rawExpr('__deployment.forNetwork'),
+	};
+	return { ...file, exports: { ...file.exports, [stem]: augmented } };
+};
+
+/**
+ * Wrap a SERVICE bucket's inner object in a `forNetwork(network)` accessor.
+ *
+ * A per-network service bucket (coin → `coins.ts`, deepbook → `deepbook.ts`,
+ * seal → `seal.ts`, walrus → `walrus.ts`, and any NEW plugin's bucket) gets its
+ * ids wrapped so they resolve for the dapp-kit-selected network rather than the
+ * default network baked at module load. Which buckets qualify is derived from
+ * {@link isServiceBucket} (every bucket that is not the structurally-special
+ * `config.ts` / `accounts.ts`) — see its note for why a declared denylist beats
+ * a hard-coded service-name allowlist.
+ *
+ * The aggregate file's `exports` is `{ <stem>: <merged bucket object> }`. We
+ * replace the merged object with a {@link ForNetworkBucket} marker the renderer
+ * emits as `{ forNetwork(network) { const dep = …; return <object> as const; } }`.
+ * `needsDep` is true when the merged object actually references `dep` (a
+ * pure-literal bucket — known/live seal, builtin-only coin — does not, so the
+ * accessor omits the `const dep` line and ignores its `network` param).
+ *
+ * Non-service buckets pass through unchanged.
+ */
+const withForNetworkAccessor = (file: AggregateFile): AggregateFile => {
+	if (!isServiceBucket(file.outputPath)) return file;
+	const stem = bucketStem(file.outputPath);
+	const inner = file.exports[stem];
+	if (!isPlainObject(inner)) return file;
+	const usage = { ...EMPTY_DEPLOYMENT_USAGE };
+	scanDeploymentUsage(inner, usage);
+	const marker = new ForNetworkBucket(inner, usage.usesDep);
+	return { ...file, exports: { ...file.exports, [stem]: marker } };
+};
+
+/** Pull the app's declared package names + MVR placeholders out of the
+ *  committed `config.ts` aggregate's inner `config` object — the SAME data
+ *  the strict `deployment.ts` type narrows over. `config.packages.<name>`
+ *  gives the package names; `config.mvrOverrides.<mvr>` gives the placeholder
+ *  keys. Both come from the deep-merged bucket (no chain / no live data), so
+ *  this stays a pure projection over already-collected exports. Returns empty
+ *  arrays when there is no `config.ts` aggregate. */
+const strictTypeInputFrom = (
+	aggregateFiles: ReadonlyArray<AggregateFile>,
+): {
+	packageNames: ReadonlyArray<string>;
+	mvrPlaceholders: ReadonlyArray<string>;
+	mvrTypeTags: ReadonlyArray<string>;
+} => {
+	const empty = { packageNames: [], mvrPlaceholders: [], mvrTypeTags: [] };
+	const configFile = aggregateFiles.find((f) => f.outputPath === CONFIG_BUCKET);
+	if (configFile === undefined) return empty;
+	const inner = configFile.exports[bucketStem(CONFIG_BUCKET)];
+	if (!isPlainObject(inner)) return empty;
+	const packagesNode = inner['packages'];
+	// `mvrOverrides` is now the @mysten override shape `{ packages, types }`
+	// (the package plugin's `mvrOverrides.packages.<mvr>` + the orchestrator-
+	// folded `mvrOverrides.types.<tag>`). Read each sub-map's keys.
+	const mvrNode = isPlainObject(inner['mvrOverrides']) ? inner['mvrOverrides'] : {};
+	const mvrPackagesNode = mvrNode['packages'];
+	const mvrTypesNode = mvrNode['types'];
+	const packageNames = isPlainObject(packagesNode) ? Object.keys(packagesNode).sort() : [];
+	const mvrPlaceholders = isPlainObject(mvrPackagesNode) ? Object.keys(mvrPackagesNode).sort() : [];
+	const mvrTypeTags = isPlainObject(mvrTypesNode) ? Object.keys(mvrTypesNode).sort() : [];
+	return { packageNames, mvrPlaceholders, mvrTypeTags };
+};
+
+/**
+ * Derive the structured SERVICE-VALUE channel `values[namespace][key] = <tsType>`
+ * for the strict `deployment.ts` — every generic (non-sugar) RESOLVED
+ * config-binding the contributions declare. Computed from the SAME contribution
+ * decls the cycle emits: a binding lands here exactly when it would land in the
+ * live deployment's generic `values` channel (a `resolved` binding with NO
+ * `sugar`), so the required `AppNetworkDeployment.values` shape matches what a
+ * resolved deployment actually carries. The tsType is read off each contribution's
+ * `aggregate.valueTypes` (added in config-bindings); a binding with no declared
+ * tsType contributes `'unknown'`. Empty for a service-less app.
+ */
+const serviceValuesFrom = (
+	contributions: ReadonlyArray<Codegenable>,
+): Record<string, Record<string, string>> => {
+	const out: Record<string, Record<string, string>> = {};
+	for (const decl of contributions) {
+		const valueTypes = decl.aggregate?.valueTypes;
+		if (valueTypes === undefined) continue;
+		for (const [ns, keys] of Object.entries(valueTypes)) {
+			const nsOut = (out[ns] ??= {});
+			for (const [key, tsType] of Object.entries(keys)) {
+				nsOut[key] = tsType;
+			}
 		}
+	}
+	return out;
+};
+
+/** Which `config-runtime.ts` deployment symbols an aggregate's emitted raw
+ *  expressions reference. Drives BOTH the `./config-runtime.js` import line
+ *  (oxlint is pinned and flags unused imports — emit only what's used) AND the
+ *  module-level preamble the emitted file needs:
+ *    `const __deployment = loadDeployment();`
+ *    `const dep = __deployment.forNetwork(__deployment.defaultNetwork);`
+ *
+ *  - `usesDep`: any expr references the `dep` identifier
+ *    (`requireId(dep, …)`, `requireValue(dep, …)`, `dep.network`, …) — needs
+ *    the `dep` preamble line (and therefore `__deployment` + `loadDeployment`).
+ *  - `usesDeployment`: any expr references `__deployment` (the `networks`
+ *    sugar's `Object.fromEntries(__deployment.networkNames.map(...))`) — needs
+ *    the `__deployment` preamble line (and `loadDeployment`).
+ *  - `requireId` / `requireValue` / `optionalValue`: the named helper appears
+ *    in some expr — import it. */
+interface DeploymentUsage {
+	readonly usesDep: boolean;
+	readonly usesDeployment: boolean;
+	readonly requireId: boolean;
+	readonly requireValue: boolean;
+	readonly optionalValue: boolean;
+}
+
+const EMPTY_DEPLOYMENT_USAGE: DeploymentUsage = {
+	usesDep: false,
+	usesDeployment: false,
+	requireId: false,
+	requireValue: false,
+	optionalValue: false,
+};
+
+const deploymentUsageEmpty = (u: DeploymentUsage): boolean =>
+	!u.usesDep && !u.usesDeployment && !u.requireId && !u.requireValue && !u.optionalValue;
+
+/** Recursively scan an exports value's raw expressions, OR-ing in the
+ *  deployment symbols each references. */
+const scanDeploymentUsage = (
+	value: unknown,
+	acc: { -readonly [K in keyof DeploymentUsage]: boolean },
+): void => {
+	if (isRawExpr(value)) {
+		const e = value.expr;
+		// `dep` as a standalone identifier (not a substring of e.g. `__deployment`).
+		if (/\bdep\b/.test(e)) acc.usesDep = true;
+		if (e.includes('__deployment')) acc.usesDeployment = true;
+		if (e.includes('requireId(')) acc.requireId = true;
+		if (e.includes('requireValue')) acc.requireValue = true;
+		if (e.includes('optionalValue(')) acc.optionalValue = true;
+		return;
+	}
+	// A per-network service bucket carries its `dep` references inside the
+	// `forNetwork` accessor's `inner` object — recurse so the import scan sees
+	// the `requireValue` / `loadDeployment` symbols (the accessor's body calls
+	// `loadDeployment().forNetwork(network)`, so a bucket with resolved fields
+	// always needs `loadDeployment`).
+	if (isForNetworkBucket(value)) {
+		scanDeploymentUsage(value.inner, acc);
 		return;
 	}
 	if (Array.isArray(value)) {
-		for (const v of value) collectResolversInValue(v, found);
+		for (const v of value) scanDeploymentUsage(v, acc);
 		return;
 	}
 	if (isPlainObject(value)) {
-		for (const v of Object.values(value)) collectResolversInValue(v, found);
+		for (const v of Object.values(value)) scanDeploymentUsage(v, acc);
 	}
 };
 
-/** The ordered set of config-runtime resolvers an aggregate's exports use
- *  (empty when none — the aggregate needs no resolver import). */
-const resolversUsedBy = (exports: {
-	readonly [key: string]: unknown;
-}): ReadonlyArray<ConfigRuntimeResolver> => {
-	const found = new Set<ConfigRuntimeResolver>();
-	for (const v of Object.values(exports)) collectResolversInValue(v, found);
-	return CONFIG_RUNTIME_RESOLVERS.filter((name) => found.has(name));
+/** True when any raw expression in the exports references the `NETWORK_NAMES`
+ *  identifier (the strict `deployment.ts` tuple `config.ts` types against).
+ *  Drives the `./deployment.js` import injection. */
+const referencesNetworkNames = (value: unknown): boolean => {
+	if (isRawExpr(value)) return /\bNETWORK_NAMES\b/.test(value.expr);
+	if (Array.isArray(value)) return value.some(referencesNetworkNames);
+	if (isPlainObject(value)) return Object.values(value).some(referencesNetworkNames);
+	return false;
+};
+
+/** The deployment symbols an aggregate's exports use (all-false when the
+ *  aggregate carries no deployment expressions — pure literals). */
+const deploymentUsageOf = (exports: { readonly [key: string]: unknown }): DeploymentUsage => {
+	const acc = { ...EMPTY_DEPLOYMENT_USAGE };
+	for (const v of Object.values(exports)) scanDeploymentUsage(v, acc);
+	return acc;
+};
+
+/** The `./config-runtime.js` named imports the usage requires, in a stable
+ *  order. Only symbols actually used are imported (oxlint flags unused). */
+const deploymentImportsFor = (u: DeploymentUsage): ReadonlyArray<string> => {
+	const names: Array<string> = [];
+	if (u.usesDep || u.usesDeployment) names.push('loadDeployment');
+	if (u.requireId) names.push('requireId');
+	if (u.requireValue) names.push('requireValue');
+	if (u.optionalValue) names.push('optionalValue');
+	return names;
+};
+
+/** The module-level preamble lines the usage requires (`loadDeployment()`
+ *  once, then the active-network `dep`). */
+const deploymentPreambleFor = (u: DeploymentUsage): ReadonlyArray<string> => {
+	const lines: Array<string> = [];
+	if (u.usesDep || u.usesDeployment) lines.push('const __deployment = loadDeployment();');
+	if (u.usesDep) lines.push('const dep = __deployment.forNetwork(__deployment.defaultNetwork);');
+	return lines;
 };
 
 // -----------------------------------------------------------------------------
@@ -916,7 +1225,7 @@ const resolversUsedBy = (exports: {
  * `devstack codegen` verb (which calls `runEmitCycle` directly off the
  * config-derived `staticCodegen` decls). This service keeps the dispatcher
  * seam closed: every `codegenable` contribution still has a handler, so
- * plugins emit decls uniformly even though boot writes the id-config (not
+ * plugins emit decls uniformly even though boot writes the deployment (not
  * the committed tree).
  */
 export interface CodegenOrchestrator {
@@ -928,29 +1237,18 @@ export interface CodegenOrchestrator {
 		decl: Codegenable,
 	) => Effect.Effect<void, never, Scope.Scope>;
 
-	/** Assemble the id-config from the currently-registered (live-resolved)
-	 *  contributions. Boot calls this in its post-acquire hook to WRITE the
-	 *  id-config file (the same `networks` / `packages` / `mvrOverrides`
-	 *  data that fed `config.ts`, but as loadable JSON the Vite plugin
-	 *  injects). `network` is the active network name (`ctx.identity.network`).
-	 *  Pure projection over the registered decls — no I/O, no chain. */
-	readonly assembleIdConfig: (network: string) => Effect.Effect<IdConfig, CodegenEmitFailed>;
-
-	/** Flush ONLY the `generated-extras` contributions (the dev wallet's
-	 *  `dev-wallet.ts` + the account plugin's `accounts.ts`) to the
-	 *  gitignored `.devstack/stacks/<stack>/generated-extras` tree. These
-	 *  are acquire-resolved (can't be statically derived by the `codegen`
-	 *  verb), so boot writes them — but ONLY when the resolved network's
-	 *  `devWallet` flag is on. The committed `src/generated` tree is NEVER
-	 *  touched (no `generated`-located decl is emitted). Reuses the emit
-	 *  renderer + aggregate logic; skips the stage-and-swap of the runtime
-	 *  tree (extras live outside it). No-op (empty result) when nothing is
-	 *  routed to `generated-extras`. */
-	readonly emitExtras: () => Effect.Effect<
-		RunEmitCycleResult,
-		CodegenError,
-		FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
-	>;
+	/** Assemble the deployment ENVELOPE from the currently-registered
+	 *  (live-resolved) contributions. Boot calls this in its post-acquire hook
+	 *  to WRITE the deployment file (the same `networks` / `packages` /
+	 *  `mvrOverrides` data that fed `config.ts`, but as loadable JSON the Vite
+	 *  plugin injects). A single-network dev stack yields a one-entry envelope
+	 *  `{ defaultNetwork: <net>, networks: { <net>: <NetworkDeployment, local:true> } }`
+	 *  — the live LOCAL network the Vite plugin overlays in dev. `network` is the
+	 *  active network name (`ctx.identity.network`). Pure projection over the
+	 *  registered decls — no I/O, no chain. */
+	readonly assembleDeployment: (
+		network: string,
+	) => Effect.Effect<DevstackDeployment, CodegenEmitFailed>;
 
 	/** Emit the COMMITTED `src/generated` tree (config.ts + Move bindings +
 	 *  coins/deepbook/… ) from the caller-supplied STATIC contributions — the
@@ -958,7 +1256,7 @@ export interface CodegenOrchestrator {
 	 *  member's `staticCodegen()` hook, NOT the live registered ones. This is
 	 *  load-bearing: the live decls bake the resolved on-chain ids into
 	 *  `config.ts`, but the committed tree MUST stay id-free (ids resolve at
-	 *  app build time via `__DEVSTACK_IDS__`) — baking a live id breaks a fresh
+	 *  app build time via `__DEVSTACK_DEPLOYMENT__`) — baking a live id breaks a fresh
 	 *  clone and any OTHER stack reading the tree. Runs the canonical
 	 *  {@link runEmitCycle} (per-process lock + content-addressed
 	 *  stage-and-swap), so config.ts re-emits to its unchanged id-free form
@@ -981,28 +1279,42 @@ export class CodegenOrchestratorService extends Context.Service<
 >()('@devstack/orchestrators/Codegen') {}
 
 /**
- * Slice the deep-merged `config.ts` aggregate bucket into the loadable
- * `IdConfig` interchange shape. The bucket is the live codegen
- * accumulation (sui `networks`, per-package `packages`/`objects`/
- * `mvrOverrides`, account `accounts`); this picks the id-bearing fields
- * the Vite plugin injects. Reads are defensive — any missing slice
- * collapses to an empty record so a partial stack still writes a valid
- * (if sparse) id-config.
+ * Slice the deep-merged `config.ts` aggregate bucket into a single
+ * loadable `NetworkDeployment` (the LIVE LOCAL network unit). The bucket is
+ * the live codegen accumulation (sui `networks`, per-package `packages`/
+ * `objects`/`mvrOverrides`); this picks the id-bearing
+ * fields the Vite plugin injects and FLATTENS the chosen network's
+ * connection coordinates (rpc/chainId/faucet/graphql) inline. Reads are
+ * defensive — any missing slice collapses to an empty record so a partial
+ * stack still writes a valid (if sparse) network deployment. Single-network
+ * only here: `assembleDeployment` keys the envelope under this unit's network.
+ * Per-network package ids for live networks come from the committed
+ * `deployments/<net>.ts` files merged into the envelope at app build/dev time.
  */
-const idConfigFromBucket = (
+const deploymentFromBucket = (
 	bucket: Record<string, unknown>,
 	network: string,
-	values: IdConfigValues,
-): IdConfig => {
+	values: DeploymentValues,
+): NetworkDeployment => {
 	const asRecord = (v: unknown): Record<string, unknown> => (isPlainObject(v) ? v : {});
 	const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
-	const networks: Record<string, IdConfigNetwork> = {};
+	// The bucket's `networks` map is keyed by what the sui binding emitted
+	// (`"localnet"` for every local mode); each entry carries the connection
+	// coordinates. We flatten ONE entry's coordinates into the per-network
+	// unit. Collect them first so we can pick the active network.
+	interface Conn {
+		readonly rpc: string;
+		readonly chainId?: string;
+		readonly faucet?: string | null;
+		readonly graphql?: string | null;
+	}
+	const conns: Record<string, Conn> = {};
 	for (const [name, raw] of Object.entries(asRecord(bucket['networks']))) {
 		const entry = asRecord(raw);
 		const rpc = asString(entry['rpc']);
 		if (rpc === undefined) continue;
-		networks[name] = {
+		conns[name] = {
 			rpc,
 			...(asString(entry['chainId']) !== undefined ? { chainId: asString(entry['chainId']) } : {}),
 			...(entry['faucet'] !== undefined ? { faucet: asString(entry['faucet']) ?? null } : {}),
@@ -1010,13 +1322,13 @@ const idConfigFromBucket = (
 		};
 	}
 
-	const packages: Record<string, IdConfigPackage> = {};
+	const packages: Record<string, DeploymentPackage> = {};
 	for (const [name, raw] of Object.entries(asRecord(bucket['packages']))) {
 		const entry = asRecord(raw);
-		// The active-network id is `packageId` (convenience field the package
-		// projection sets = `byNetwork[activeNetwork]`). An empty/missing
-		// packageId maps to the UNRESOLVED_ID sentinel — an empty string would
-		// slip past `isUnresolvedId` and ship as a real, resolved id.
+		// The local network's id is `packageId` (the convenience field the
+		// package projection sets). An empty/missing packageId maps to the
+		// UNRESOLVED_ID sentinel — an empty string would slip past
+		// `isUnresolvedId` and ship as a real, resolved id.
 		const rawId = asString(entry['packageId']);
 		const id = rawId === undefined || rawId === '' ? UNRESOLVED_ID : rawId;
 		const objectsRaw = asRecord(entry['objects']);
@@ -1031,47 +1343,64 @@ const idConfigFromBucket = (
 		};
 	}
 
-	const accounts: Record<string, string> = {};
-	for (const [name, v] of Object.entries(asRecord(bucket['accounts']))) {
-		// Account bindings are an object keyed by name; the injectable id is
-		// the `address`. Tolerate a bare string too (a pinned known-config).
-		const address = asString(v) ?? asString(asRecord(v)['address']);
-		if (address !== undefined) accounts[name] = address;
-	}
-
-	const mvrOverrides: Record<string, string> = {};
-	for (const [mvr, v] of Object.entries(asRecord(bucket['mvrOverrides']))) {
+	// `mvrOverrides` is the @mysten override shape `{ packages, types }`. The
+	// live bucket carries `mvrOverrides.packages.<mvr>` (each package plugin's
+	// resolved active-network id). `types` is OPT-IN and lives ONLY in the
+	// COMMITTED `config.ts` (each developer-declared `mvrTypes` entry projects a
+	// `requireId(dep, "<mvr>")`-resolved tag there); the live deployment slice
+	// ships `types: {}`, since the generated `config.ts` rebuilds the full
+	// `{ packages, types }` override at runtime over `mvrOverrides.packages`.
+	const mvrPackages: Record<string, string> = {};
+	const mvrNode = asRecord(bucket['mvrOverrides']);
+	for (const [mvr, v] of Object.entries(asRecord(mvrNode['packages']))) {
 		const s = asString(v);
-		if (s !== undefined) mvrOverrides[mvr] = s;
+		if (s !== undefined) mvrPackages[mvr] = s;
 	}
+	const mvrOverrides = { packages: mvrPackages, types: {} as Record<string, string> };
 
-	// The active `network` field MUST be a key present in `networks` — the
-	// committed `config-runtime.ts` `resolveActiveNetwork()` does
-	// `resolveNetworks()[network]`, and the Vite dev-wallet injection reads
-	// `networks[network].rpc`. The `network` PARAM is the identity's network
-	// name (e.g. `"testnet-fork"`), but the sui binding keys the `networks`
-	// map by what it emitted (`"localnet"` for every mode). So PREFER the
-	// network the binding stamped into the bucket (`bucket['network']`, which
-	// matches the `networks` key); fall back to the param, then — if neither
-	// is a known key but exactly one network exists — that sole key. This
-	// keeps `network` in agreement with `networks` so resolution never
-	// dereferences `undefined`.
-	const networkKeys = Object.keys(networks);
+	// The unit's `network` field MUST be a key present in the bucket's
+	// connection map — the Vite dev-wallet injection reads
+	// `networks[network].rpc` off the envelope. The `network` PARAM is the
+	// identity's network name (e.g. `"testnet-fork"`), but the sui binding
+	// keys the connection map by what it emitted (`"localnet"` for every
+	// mode). A single-network local stack contributes exactly ONE connection,
+	// so PREFER the network the binding stamped into the bucket
+	// (`bucket['network']`, which matches the connection key); fall back to
+	// that sole connection key, then the param. This keeps `network` in
+	// agreement with the connection map so resolution never dereferences
+	// `undefined`.
+	//
+	// Consumer note: the resulting envelope is keyed by the BINDING's connection
+	// key (`"localnet"` for every local mode — fork modes included), NOT the
+	// identity's network name. Callers resolving per-network data off the
+	// envelope must key by this connection name and must NOT assume the identity
+	// network name appears as a key (a `"testnet-fork"` identity still keys its
+	// connection under `"localnet"`). This keying is intentional — do not change.
+	const connKeys = Object.keys(conns);
 	const bucketNetwork = asString(bucket['network']);
 	const activeNetwork =
-		bucketNetwork !== undefined && networkKeys.includes(bucketNetwork)
+		bucketNetwork !== undefined && connKeys.includes(bucketNetwork)
 			? bucketNetwork
-			: networkKeys.includes(network)
-				? network
-				: networkKeys.length === 1
-					? networkKeys[0]!
-					: (bucketNetwork ?? network);
+			: connKeys.length === 1
+				? connKeys[0]!
+				: (bucketNetwork ?? network);
+
+	// Flatten the active network's connection coordinates inline. A bucket
+	// with no connection at all (network-only / partial stack) still yields a
+	// well-formed unit with an empty `rpc` — the resolvers throw their
+	// actionable error rather than a raw TypeError.
+	const conn = conns[activeNetwork] ?? { rpc: '' };
 
 	return {
 		network: activeNetwork,
-		networks,
+		rpc: conn.rpc,
+		...(conn.chainId !== undefined ? { chainId: conn.chainId } : {}),
+		...(conn.faucet !== undefined ? { faucet: conn.faucet } : {}),
+		...(conn.graphql !== undefined ? { graphql: conn.graphql } : {}),
+		// Live LOCAL network — the deploy filter (`command === 'build'`)
+		// drops it; dev overlays it as the default network.
+		local: true,
 		packages,
-		accounts,
 		mvrOverrides,
 		...(Object.keys(values).length > 0 ? { values } : {}),
 	};
@@ -1102,7 +1431,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				);
 			}) as Effect.Effect<void, never, Scope.Scope>;
 
-		const assembleIdConfig: CodegenOrchestrator['assembleIdConfig'] = (network) =>
+		const assembleDeployment: CodegenOrchestrator['assembleDeployment'] = (network) =>
 			Effect.gen(function* () {
 				const registered = (yield* Ref.get(contributionsRef)).map((e) => e.decl);
 				// Deep-merge every contribution's `config.ts` aggregate
@@ -1111,12 +1440,13 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				// package's `packages.<name>` / `objects` / `mvrOverrides`,
 				// the account plugin's `accounts`). The merged bucket carries
 				// real (live-`acquire`-resolved) ids; we then slice it into the
-				// loadable `IdConfig` shape.
+				// loadable `Deployment` shape.
 				const bucket: Record<string, unknown> = {};
-				// `accounts.ts` is a SEPARATE aggregate bucket (the account
-				// plugin routes it to `generated-extras`); fold its projection
-				// under an `accounts` key so the id-config carries account
-				// addresses alongside the `config.ts`-derived ids.
+				// `accounts.ts` is a SEPARATE aggregate bucket (the values-only
+				// account decl); fold its projection into the ENVELOPE-level
+				// `accounts` map. Accounts are a network-AGNOSTIC dev concept, so
+				// they ride the envelope, NOT any per-network unit (the
+				// per-network shape a prod author writes has no accounts at all).
 				const accounts: Record<string, unknown> = {};
 				// The generic resolver channel — `values[namespace][key]` —
 				// accumulated from any LIVE config-binding aggregate that
@@ -1131,63 +1461,47 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 					// walrus.ts, seal.ts, ...) may declare `idConfigValues`. Fold
 					// every contributor's so the committed-tree `resolveValue` calls
 					// those buckets emit resolve at app build/dev time -- not just the
-					// `config.ts` plugins'. Slicing the TYPED id-config fields
+					// `config.ts` plugins'. Slicing the TYPED deployment fields
 					// (`networks` / `packages` / `mvrOverrides`) stays scoped to the
 					// `config.ts` bucket below.
 					if (decl.aggregate.idConfigValues !== undefined) {
 						deepMerge(values, decl.aggregate.idConfigValues);
 					}
-					if (decl.aggregate.bucket === 'config.ts') {
+					if (decl.aggregate.bucket === CONFIG_BUCKET) {
 						const emission = yield* runEmitter(decl);
 						const projected = decl.aggregate.project(emission.exports);
 						if (projected !== null) deepMerge(bucket, projected);
-					} else if (decl.aggregate.bucket === 'accounts.ts') {
+					} else if (decl.aggregate.bucket === ACCOUNTS_BUCKET) {
 						const emission = yield* runEmitter(decl);
 						const projected = decl.aggregate.project(emission.exports);
 						if (projected !== null) deepMerge(accounts, projected);
 					}
 				}
-				bucket['accounts'] = accounts;
-				return idConfigFromBucket(bucket, network, values as IdConfigValues);
-			});
-
-		const emitExtras: CodegenOrchestrator['emitExtras'] = () =>
-			Effect.gen(function* () {
-				const registered = (yield* Ref.get(contributionsRef)).map((e) => e.decl);
-				const extras = registered.filter(isExtrasDecl);
-				if (extras.length === 0) {
-					// Nothing routed to the dev tree (no wallet/accounts mounted).
-					return { filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null };
+				// Normalize the account-bucket projection (`{ <name>:
+				// { address } }`, tolerating a bare string) into the
+				// envelope-level name → address map.
+				const envelopeAccounts: Record<string, string> = {};
+				for (const [name, v] of Object.entries(accounts)) {
+					const address =
+						typeof v === 'string'
+							? v
+							: isPlainObject(v) && typeof v['address'] === 'string'
+								? v['address']
+								: undefined;
+					if (address !== undefined) envelopeAccounts[name] = address;
 				}
-				// Validate the extras-only set up front (mirrors `runEmitCycle`'s
-				// pre-flight), then emit DIRECTLY against the real paths — no
-				// stage-and-swap, since the extras tree lives outside the runtime
-				// `outputDir`. Every `generated-extras` decl routes through
-				// `paths.resolveExtras`; no `generated`-located decl is present,
-				// so the committed `src/generated` tree is untouched.
-				yield* validateUniqueness(extras);
-				yield* validateAggregatePathAvailability(extras);
-				const paths = yield* CodegenPathsService;
-				// Acquire the dedicated `codegenLockFile` for symmetry with
-				// `runEmitCycle` — the extras emit writes into the shared stack
-				// tree (`generated-extras`) and a concurrent codegen cycle could
-				// otherwise interleave. Scoped so the lock releases when the emit
-				// completes (or fails).
-				return yield* Effect.scoped(
-					Effect.gen(function* () {
-						yield* acquireStackLock(paths.codegenLockFile, CODEGEN_CYCLE_LOCK_TIMEOUT_MS).pipe(
-							Effect.mapError(
-								(cause) =>
-									new CodegenWriteFailed({
-										outputPath: paths.codegenLockFile,
-										stage: 'write',
-										cause,
-									}),
-							),
-						);
-						return yield* runEmitCycleInner({ contributions: extras, trackTree: false }, paths);
-					}),
-				);
+				// The single-network slice — the live LOCAL network unit.
+				const unit = deploymentFromBucket(bucket, network, values as DeploymentValues);
+				// Wrap it in the multi-network envelope keyed by the unit's own
+				// (bucket-derived) network, so the on-disk shape is uniform with a
+				// multi-network deployment. A single-network dev stack ⇒ one entry.
+				// `accounts` ride the ENVELOPE (network-agnostic dev identities).
+				const unitNetwork = unit.network ?? network;
+				return {
+					defaultNetwork: unitNetwork,
+					networks: { [unitNetwork]: unit },
+					accounts: envelopeAccounts,
+				} satisfies DevstackDeployment;
 			});
 
 		const emitBindings: CodegenOrchestrator['emitBindings'] = (contributions) =>
@@ -1206,8 +1520,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 
 		return CodegenOrchestratorService.of({
 			registerContribution,
-			assembleIdConfig,
-			emitExtras,
+			assembleDeployment,
 			emitBindings,
 		});
 	}),

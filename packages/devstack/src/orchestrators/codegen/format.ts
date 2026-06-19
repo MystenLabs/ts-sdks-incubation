@@ -29,7 +29,7 @@
 // hook is a no-op on emitted bytes — that's load-bearing for the
 // "no mtime touch on identical content" idempotency invariant.
 
-import { isRawExpr } from '../../contracts/codegenable.ts';
+import { isForNetworkBucket, isRawExpr } from '../../contracts/codegenable.ts';
 
 import { CodegenRenderError } from './errors.ts';
 
@@ -66,6 +66,13 @@ export interface RenderInput {
 	 *  type import from `@mysten/dapp-kit` for the wallet config).
 	 *  Each entry is a raw import statement string. */
 	readonly imports?: ReadonlyArray<string>;
+	/** Optional module-level statements emitted AFTER the imports block and
+	 *  BEFORE the exports (e.g. the deployment preamble
+	 *  `const __deployment = loadDeployment();` /
+	 *  `const dep = __deployment.forNetwork(__deployment.defaultNetwork);` the
+	 *  committed `config.ts` + service buckets share). One line per entry,
+	 *  followed by a single blank line. Literal-only buckets pass no preamble. */
+	readonly preamble?: ReadonlyArray<string>;
 }
 
 /** Result of a render attempt. Discriminated so callers can dispatch
@@ -103,6 +110,12 @@ export const renderFile = (input: RenderInput): RenderResult => {
 				return renderErr(input, `generated files must not import devstack source: ${imp}`);
 			}
 			lines.push(imp);
+		}
+		lines.push('');
+	}
+	if (input.preamble && input.preamble.length > 0) {
+		for (const stmt of input.preamble) {
+			lines.push(stmt);
 		}
 		lines.push('');
 	}
@@ -152,6 +165,36 @@ const tryRender = (value: unknown, seen: Set<object>, depth = 1): TryRenderResul
 	// LOADED CONFIG DATA injected at app build time, not codegen output, so
 	// the config calls a runtime resolver rather than embedding a literal id.
 	if (isRawExpr(value)) return tryOk(value.expr);
+	// Per-network service bucket: emit a `{ forNetwork(network) { … } }`
+	// accessor whose body resolves `dep` for the requested network and returns
+	// the inner bucket object. The inner object carries the SAME literals +
+	// `requireValue(dep, …)` raw expressions as before; `dep` is now the
+	// accessor's per-call local rather than a module-level default-network
+	// constant, so a runtime `switchNetwork` flips service ids in lockstep.
+	if (isForNetworkBucket(value)) {
+		// Mirror the object-literal indentation convention: the `forNetwork`
+		// method sits at `depth`, its body at `depth + 1`, the closing brace at
+		// `depth - 1`. The inner bucket object renders one level deeper than the
+		// `return` it follows.
+		const inner = tryRender(value.inner, seen, depth + 2);
+		if (!inner.ok) return inner;
+		const method = INDENT.repeat(depth);
+		const body = INDENT.repeat(depth + 1);
+		const close = INDENT.repeat(depth - 1);
+		// A pure-literal bucket (e.g. a known/live seal, builtin-only coin) does
+		// not reference `dep`; prefix the param with `_` so it reads as
+		// intentionally-unused and omit the `const dep = …` line.
+		const param = value.needsDep ? 'network' : '_network';
+		const lines: Array<string> = ['{'];
+		lines.push(`${method}forNetwork(${param}: string) {`);
+		if (value.needsDep) {
+			lines.push(`${body}const dep = loadDeployment().forNetwork(network);`);
+		}
+		lines.push(`${body}return ${inner.text} as const;`);
+		lines.push(`${method}},`);
+		lines.push(`${close}}`);
+		return tryOk(lines.join('\n'));
+	}
 	const t = typeof value;
 	if (t === 'string') return tryOk(JSON.stringify(value));
 	if (t === 'number') {

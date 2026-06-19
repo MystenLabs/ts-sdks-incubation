@@ -189,7 +189,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 		pluginKey: sealPluginKey(resolved.name),
 		// Stack-free codegen: the key-server object id / URL / committee are
 		// LOADED CONFIG DATA -- the committed `seal.ts` stub emits
-		// `resolveValue('seal:<name>', '<key>')`, never a baked object id.
+		// `requireValue(dep, 'seal:<name>', '<key>')`, never a baked object id.
 		staticCodegen: () => [makeSealStaticCodegen({ name: resolved.name, mode: 'local-keygen' })],
 		// `deps` auto-infers the resolved `{ sui, signer }` dependency
 		// object from seal's `dependsOn: { sui: suiResource, signer:

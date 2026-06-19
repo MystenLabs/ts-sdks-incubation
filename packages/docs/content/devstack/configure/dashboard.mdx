@@ -1,0 +1,67 @@
+---
+title: Web Dashboard
+description: A web UI to explore your stack's chain and drive a few live controls.
+---
+
+Add `dashboard()` to get a web UI for your stack — a Sui explorer plus a small control panel for
+restarting, funding accounts, and capturing snapshots. It's a normal stack member: add it like any
+other plugin and open it in a browser.
+
+```ts title="devstack.config.ts"
+import { defineDevstack, sui, account, dashboard } from '@mysten-incubation/devstack';
+
+export default defineDevstack({
+	members: [sui(), account('alice'), account('bob'), dashboard()],
+	stackName: 'main',
+});
+```
+
+## Opening the UI
+
+Like the wallet and other service endpoints, the dashboard is reached through a stable, stack-scoped
+router hostname rather than its raw process port. The default-stack URL is:
+
+```txt
+http://api.<app>.localhost:9810
+```
+
+Non-default stacks insert the stack segment: `http://api.<stack>.<app>.localhost:9810`. The plugin
+also resolves to a direct loopback `url` for tooling that bypasses the router, but the hostname
+above is the one to open in a browser.
+
+## What you can see and do
+
+The dashboard is read-mostly, with a small set of guarded controls:
+
+- **Sui explorer** — addresses, objects, packages, and transactions, with resolve-first search.
+- **Walrus & Seal panels** — service status and live data for the storage and key-server plugins.
+- **Logs** — the cross-service log store.
+- **Snapshot & restore progress** — capture and restore narrated live, with each snapshot marked
+  `current`, `stale`, or `unknown` against the running stack.
+- **Controls** — restart, shutdown, and advance-clock, each behind a confirmation.
+- **Faucet fund** — a one-click fund action: SUI funds a fixed amount; WAL and DEEP take an editable
+  amount. See [Faucet and Funding Strategies](/devstack/configure/faucet).
+
+## Options
+
+All fields are optional.
+
+- `port` — preferred loopback port for the dashboard's server. Devstack picks another free port if
+  it's busy.
+- `bindAddress` — the address the server binds, default `'0.0.0.0'`. The public URL stays
+  router-fronted and stack-scoped regardless.
+- `allowedOrigins` — extra CORS origins to allow alongside this stack's own origins, for headless
+  test runners and custom dev hosts.
+
+Tune how much log history the dashboard keeps with environment variables:
+
+- `DEVSTACK_DASHBOARD_LOG_CAPACITY` — per-service record cap, default `2000`.
+- `DEVSTACK_DASHBOARD_LOG_MAX_SERVICES` — distinct-service ring cap, default `256`.
+
+## Security
+
+<Callout type="info">
+	The dashboard's controls (restart, shutdown, advance-clock, fund) are guarded by a stack-scoped
+	CORS allowlist. Only this stack's own origins — its router-fronted URL, its direct loopback URLs,
+	and any `allowedOrigins` you add — can drive them. A sibling stack's origin cannot.
+</Callout>

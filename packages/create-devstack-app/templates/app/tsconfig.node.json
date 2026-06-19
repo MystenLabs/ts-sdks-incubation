@@ -9,5 +9,5 @@
 		"module": "ESNext",
 		"allowImportingTsExtensions": true
 	},
-	"include": ["devstack.config.ts", "vite.config.ts", "vitest.config.ts"]
+	"include": ["devstack.config.ts", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"]
 }

@@ -7,10 +7,12 @@ name that a developer should reach for.
 The bindings under `src/generated/` are committed: `devstack codegen` writes
 id-free Move/config bindings plus a runtime resolver (`config-runtime.ts`),
 which reads on-chain ids at app build/dev time via the injected
-`__DEVSTACK_IDS__` global. Because the tree carries no stack-specific ids, the
-same committed bindings serve every stack. (Dev-only secret artifacts — the dev
-wallet and managed accounts — stay out of the tree, in the gitignored
-`.devstack/stacks/<stack>/generated-extras/`.)
+`__DEVSTACK_DEPLOYMENT__` global. Because the tree carries no stack-specific
+ids, the same committed bindings serve every stack. Dev-only data — the managed
+account name→address map and the dev-wallet connection — rides the injected
+deployment envelope itself (`resolveAccounts()` / `values['dev-wallet']`); the
+secret dev-wallet pairing token stays in a `0o600` side-channel file the Vite
+dev server reads at serve time. Nothing dev-only lands in the committed tree.
 
 ## Runnable Apps
 

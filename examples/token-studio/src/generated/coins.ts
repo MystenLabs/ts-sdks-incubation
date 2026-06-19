@@ -3,14 +3,19 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveValue } from './config-runtime.js';
+import { loadDeployment, requireValue } from './config-runtime.js';
 
 export const coins = {
-	managed_coin: {
-		decimals: resolveValue("coin:managed_coin", "decimals") as number,
-		fullCoinType: resolveValue("coin:managed_coin", "fullCoinType") as string,
-		packageId: resolveValue("coin:managed_coin", "packageId") as string | null,
-		source: "registry",
-		symbol: "managed_coin",
+	forNetwork(network: string) {
+		const dep = loadDeployment().forNetwork(network);
+		return {
+			managed_coin: {
+				decimals: requireValue<number>(dep, "coin:managed_coin", "decimals"),
+				fullCoinType: requireValue<string>(dep, "coin:managed_coin", "fullCoinType"),
+				packageId: requireValue<string | null>(dep, "coin:managed_coin", "packageId"),
+				source: "registry",
+				symbol: "managed_coin",
+			},
+		} as const;
 	},
 } as const;

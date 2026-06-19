@@ -1,7 +1,7 @@
 // Guard: the UNIFIED config-binding path.
 //
 // Each config-emitting plugin must declare its `config.ts` contributions
-// ONCE as a `ConfigBindingSet` from which BOTH the live (boot id-config) and
+// ONCE as a `ConfigBindingSet` from which BOTH the live (boot deployment) and
 // the static (committed `config.ts`) behaviors are derived. The old failure
 // mode was a plugin shipping a LIVE-only config field with NO matching
 // static emission → an incomplete committed tree → a broken clean-clone
@@ -46,7 +46,7 @@ const leafPaths = (value: unknown, prefix = ''): ReadonlyArray<string> => {
 
 // No baked on-chain id (`0x…`) nor literal http rpc URL survives anywhere in
 // the static projection — those are LOADED CONFIG DATA, resolved at app
-// build/dev time via the injected `__DEVSTACK_IDS__` global.
+// build/dev time via the injected `__DEVSTACK_DEPLOYMENT__` global.
 const containsBakedRuntimeValue = (value: unknown): boolean => {
 	if (isRawExpr(value)) return false;
 	if (typeof value === 'string')
@@ -129,7 +129,7 @@ describe('contracts/config-bindings — unified derivation', () => {
 	it('generic `values` channel carries ONLY non-sugar resolved bindings', () => {
 		const values = liveValuesOf(demoSet, state);
 		// `demo.poolId` (no sugar) lands in the generic channel; the sugar id
-		// binding feeds the typed id-config field, not `values`.
+		// binding feeds the typed deployment field, not `values`.
 		expect(values).toEqual({ demo: { poolId: state.poolId } });
 	});
 
@@ -217,14 +217,15 @@ describe('contracts/config-bindings — config-emitting plugins expose the stati
 // -----------------------------------------------------------------------------
 //
 // These plugins resolve their bucket fields through the GENERIC
-// `resolveValue(ns, key)` channel (the typed id-config channel only carries
-// network/packages/mvrOverrides). That channel returns `unknown`, which used
-// to erase the static type of every field they emit. The fix carries each
-// resolved field's concrete TS type as a `tsType` on the binding, emitted as
-// `resolveValue(...) as <Type>`. This section locks BOTH halves of the class:
+// `requireValue(dep, ns, key)` channel (the typed deployment channel only
+// carries network/packages/mvrOverrides). That channel returns `unknown`,
+// which used to erase the static type of every field they emit. The fix
+// carries each resolved field's concrete TS type as a `tsType` on the binding,
+// emitted as `requireValue<Type>(dep, …)`. This section locks BOTH halves of
+// the class:
 //   1. no baked runtime value / literal `0x…` survives the static projection
 //      (still LOADED CONFIG DATA), and
-//   2. every resolved leaf is a TYPED `resolveValue(...) as …` cast, so the
+//   2. every resolved leaf is a TYPED `requireValue<Type>(dep, …)` read, so the
 //      committed bucket typechecks against the app's usage (not `unknown`).
 
 describe('contracts/config-bindings — own-bucket static path is type-preserving', () => {
@@ -357,9 +358,9 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 			expect(containsBakedRuntimeValue(projected)).toBe(false);
 		});
 
-		it(`${name}: every resolved leaf is a TYPED resolveValue cast (not unknown)`, () => {
+		it(`${name}: every resolved leaf is a TYPED requireValue (not unknown)`, () => {
 			// `literalOnly` modes (builtin coin, known/pinned deployments) bake
-			// their declared values as literals — they may carry no resolveValue
+			// their declared values as literals — they may carry no requireValue
 			// leaf, so they are exempt here.
 			if (literalOnly === true) return;
 			const projected = decl.aggregate?.project({}) ?? {};
@@ -367,11 +368,13 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 			// At least one resolved field per bucket (every instance carries ids).
 			expect(exprs.length).toBeGreaterThan(0);
 			for (const expr of exprs) {
-				// Each raw expr is a generic-channel resolveValue call …
-				expect(expr.startsWith('resolveValue(')).toBe(true);
-				// … carrying an explicit `as <Type>` cast so the committed value
-				// is NOT `unknown` (the bug this regression-locks).
-				expect(expr).toMatch(/\bas\b/);
+				// Each raw expr is a generic-channel `requireValue<Type>(dep, …)`
+				// read off the loaded deployment's active network …
+				expect(expr.startsWith('requireValue<')).toBe(true);
+				// … carrying an explicit `<Type>` type argument so the committed
+				// value is NOT `unknown` (the bug this regression-locks), and it
+				// reads off the `dep` deployment accessor.
+				expect(expr).toMatch(/^requireValue<.+>\(dep, /);
 			}
 		});
 	}

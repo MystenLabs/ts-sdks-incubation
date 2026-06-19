@@ -150,16 +150,20 @@ const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 
 const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 	registerContribution: () => Effect.void,
-	assembleIdConfig: (network) =>
+	assembleDeployment: (network) =>
 		Effect.succeed({
-			network,
-			networks: {},
-			packages: {},
+			defaultNetwork: network,
+			networks: {
+				[network]: {
+					network,
+					rpc: '',
+					local: true,
+					packages: {},
+					mvrOverrides: { packages: {}, types: {} },
+				},
+			},
 			accounts: {},
-			mvrOverrides: {},
 		}),
-	emitExtras: () =>
-		Effect.succeed({ filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null }),
 	emitBindings: () =>
 		Effect.succeed({ filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null }),
 } satisfies CodegenOrchestrator);
@@ -459,7 +463,6 @@ describe('buildProductionContributionDispatcher', () => {
 						layerCodegenRoot({
 							outputDir: join(runtimeRoot, 'generated'),
 							stackSubdir: null,
-							extrasDir: join(runtimeRoot, 'generated-extras'),
 						}),
 					),
 				),
@@ -524,7 +527,6 @@ describe('buildProductionContributionDispatcher', () => {
 							layerCodegenRoot({
 								outputDir: join(runtimeRoot, 'generated'),
 								stackSubdir: null,
-								extrasDir: join(runtimeRoot, 'generated-extras'),
 							}),
 						),
 					),
@@ -580,72 +582,56 @@ describe('resolveProductionCodegenOptions', () => {
 	it('passes includePhantomTypeParameters through verbatim', () => {
 		const resolved = resolveProductionCodegenOptions({
 			appRoot: '/app',
-			effectiveStack: 'main',
 			codegen: { includePhantomTypeParameters: true },
 		});
 		expect(resolved.includePhantomTypeParameters).toBe(true);
-		// The flag rides along without disturbing the extras-dir resolution.
-		// Boot writes only the per-stack `generated-extras` dev tree (the
-		// committed `src/generated` tree is owned by the stack-free `codegen`
-		// verb), so the production options carry only `extrasDir`.
-		expect(resolved.extrasDir).toBe(
-			join('/app', '.devstack', 'stacks', 'main', 'generated-extras'),
-		);
+		expect(resolved.appRoot).toBe('/app');
 	});
 
 	it('leaves includePhantomTypeParameters unset when the config omits it', () => {
 		const resolved = resolveProductionCodegenOptions({
 			appRoot: '/app',
-			effectiveStack: 'main',
 		});
 		// Unset stays unset — `@mysten/codegen`'s own default (false)
 		// applies at the generateFromPackageSummary call site, so default
 		// behavior is unchanged.
 		expect('includePhantomTypeParameters' in resolved).toBe(false);
-		expect(resolved.extrasDir).toBe(
-			join('/app', '.devstack', 'stacks', 'main', 'generated-extras'),
-		);
+		expect(resolved.appRoot).toBe('/app');
 	});
 });
 
-describe('buildProductionPostAcquireHook — generated-extras flush gate', () => {
-	// The conditional flush wires TWO halves the rest of the suite tests in
-	// isolation: `resolveNetworkOptions(network, networkOptions).devWallet`
-	// and `codegen.emitExtras()`. These tests pin the WIRING — that the
-	// resolved `devWallet` flag actually gates the `emitExtras` call AND that
-	// the extras files propagate into the returned `codegen.emitted` event.
+describe('buildProductionPostAcquireHook — committed-bindings (`emitBindings`) gate', () => {
+	// Boot's only acquire-resolved codegen write is the deployment file (values
+	// only — the dev-wallet connection + dev accounts ride the envelope's
+	// `values` / `accounts` channels, no separate dev tree). The dev-`up`
+	// committed-bindings refresh is gated on the threaded `emitBindings`
+	// contributions; these tests pin that WIRING.
 
-	// A known extras file the recording `emitExtras` "writes" — distinct from
-	// the `idsFile` boot always emits, so we can assert inclusion/exclusion.
-	const EXTRAS_FILE = '/generated-extras/dev-wallet.ts';
-	const EXTRAS_CHMOD = '/generated-extras/.secret';
-
-	/** A codegen layer whose `emitExtras` records each call and returns a
-	 *  known non-empty result, so the post-acquire hook's `codegen.emitted`
-	 *  files can be asserted. Returns the call-count holder + the layer. */
+	// A known committed-bindings file the recording `emitBindings` "writes" —
+	// distinct from the `deploymentFile` boot always emits, so we can assert
+	// inclusion/exclusion.
 	const BINDINGS_FILE = '/generated/counter/counter.ts';
 
+	/** A codegen layer whose `emitBindings` records each call and returns a
+	 *  known non-empty result, so the post-acquire hook's `codegen.emitted`
+	 *  files can be asserted. Returns the call-count holder + the layer. */
 	const recordingCodegen = () => {
-		const calls = { emitExtras: 0, emitBindings: 0 };
+		const calls = { emitBindings: 0 };
 		const layer = Layer.succeed(CodegenOrchestratorService)({
 			registerContribution: () => Effect.void,
-			assembleIdConfig: (network) =>
+			assembleDeployment: (network) =>
 				Effect.succeed({
-					network,
-					networks: {},
-					packages: {},
+					defaultNetwork: network,
+					networks: {
+						[network]: {
+							network,
+							rpc: '',
+							local: true,
+							packages: {},
+							mvrOverrides: { packages: {}, types: {} },
+						},
+					},
 					accounts: {},
-					mvrOverrides: {},
-				}),
-			emitExtras: () =>
-				Effect.sync(() => {
-					calls.emitExtras += 1;
-					return {
-						filesWritten: [EXTRAS_FILE],
-						filesUnchanged: [],
-						filesChmod: [EXTRAS_CHMOD],
-						bindings: null,
-					};
 				}),
 			emitBindings: () =>
 				Effect.sync(() => {
@@ -662,15 +648,11 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 	};
 
 	/** Drive `buildProductionPostAcquireHook` against an EMPTY-graph
-	 *  post-acquire ctx whose `identity.network` is `network`, returning the
-	 *  recorded `emitExtras` call count and the `codegen.emitted` files. */
-	const runHook = (
-		network: string,
-		networkOptions: Readonly<Record<string, unknown>> | undefined,
-		emitBindings?: ReadonlyArray<Codegenable>,
-	) =>
+	 *  post-acquire ctx, returning the recorded `emitBindings` call count and
+	 *  the `codegen.emitted` files. */
+	const runHook = (emitBindings?: ReadonlyArray<Codegenable>) =>
 		Effect.gen(function* () {
-			const runtimeRoot = mkdtempSync(join(tmpdir(), 'extras-flush-gate-'));
+			const runtimeRoot = mkdtempSync(join(tmpdir(), 'emit-bindings-gate-'));
 			const { calls, layer: codegen } = recordingCodegen();
 			const layer = Layer.mergeAll(
 				snapshotLayer,
@@ -682,7 +664,6 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 						layerCodegenRoot({
 							outputDir: join(runtimeRoot, 'generated'),
 							stackSubdir: null,
-							extrasDir: join(runtimeRoot, 'generated-extras'),
 						}),
 					),
 				),
@@ -697,12 +678,10 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 			try {
 				const events = yield* Effect.scoped(
 					Effect.gen(function* () {
-						const hook = yield* buildProductionPostAcquireHook({
-							...(networkOptions === undefined ? {} : { networkOptions }),
-							...(emitBindings === undefined ? {} : { emitBindings }),
-						});
-						// Empty graph → no routable/operational endpoints and no
-						// extras-context lookups; isolates the flush gate.
+						const hook = yield* buildProductionPostAcquireHook(
+							emitBindings === undefined ? {} : { emitBindings },
+						);
+						// Empty graph → no routable/operational endpoints; isolates the gate.
 						const ctx: SupervisorPostAcquireContext = {
 							graph: {
 								nodes: new Map(),
@@ -710,7 +689,7 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 								downstream: new Map(),
 							} satisfies ResolvedGraph,
 							registry: {} as unknown as PluginRegistry,
-							identity: { ...identity, network },
+							identity: { ...identity, network: 'localnet' },
 							runtimeRoot,
 						};
 						return yield* hook(ctx);
@@ -722,7 +701,6 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 					return yield* Effect.die('expected a codegen.emitted event');
 				}
 				return {
-					emitExtrasCalls: calls.emitExtras,
 					emitBindingsCalls: calls.emitBindings,
 					files: emitted.files,
 				};
@@ -731,44 +709,13 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 			}
 		});
 
-	it.effect('localnet (devWallet ON by default) → emitExtras called, files include extras', () =>
-		Effect.gen(function* () {
-			const { emitExtrasCalls, files } = yield* runHook('localnet', undefined);
-			expect(emitExtrasCalls).toBe(1);
-			expect(files).toContain(EXTRAS_FILE);
-			expect(files).toContain(EXTRAS_CHMOD);
-		}),
-	);
-
-	it.effect(
-		'mainnet (devWallet OFF by default) → emitExtras NOT called, files exclude extras',
-		() =>
-			Effect.gen(function* () {
-				const { emitExtrasCalls, files } = yield* runHook('mainnet', undefined);
-				expect(emitExtrasCalls).toBe(0);
-				expect(files).not.toContain(EXTRAS_FILE);
-				expect(files).not.toContain(EXTRAS_CHMOD);
-				// Only the always-emitted id-config file remains.
-				expect(files).toHaveLength(1);
-			}),
-	);
-
-	it.effect('localnet with devWallet:false override → emitExtras NOT called', () =>
-		Effect.gen(function* () {
-			const { emitExtrasCalls, files } = yield* runHook('localnet', {
-				localnet: { devWallet: false },
-			});
-			expect(emitExtrasCalls).toBe(0);
-			expect(files).not.toContain(EXTRAS_FILE);
-			expect(files).toHaveLength(1);
-		}),
-	);
-
 	it.effect('emitBindings off (default) → committed bindings NOT regenerated', () =>
 		Effect.gen(function* () {
-			const { emitBindingsCalls, files } = yield* runHook('localnet', undefined);
+			const { emitBindingsCalls, files } = yield* runHook();
 			expect(emitBindingsCalls).toBe(0);
 			expect(files).not.toContain(BINDINGS_FILE);
+			// Only the always-emitted deployment file remains.
+			expect(files).toHaveLength(1);
 		}),
 	);
 
@@ -777,9 +724,7 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 			// A non-empty contributions array represents a real dev-`up` reacquire
 			// (vs. the empty no-op the real impl short-circuits). The mocked
 			// orchestrator ignores the contents and just records that it was called.
-			const { emitBindingsCalls, files } = yield* runHook('localnet', undefined, [
-				{} as unknown as Codegenable,
-			]);
+			const { emitBindingsCalls, files } = yield* runHook([{} as unknown as Codegenable]);
 			expect(emitBindingsCalls).toBe(1);
 			expect(files).toContain(BINDINGS_FILE);
 		}),

@@ -615,7 +615,7 @@ const buildLocalPlugin = <
 		pluginKey: deepbookPluginKey(name),
 		// Stack-free codegen: a local deployment's ids / pools / pyth feeds
 		// are LOADED CONFIG DATA -- the committed `deepbook.ts` stub emits
-		// `resolveValue('deepbook:<name>', '<key>')`, never a baked id.
+		// `requireValue(dep, 'deepbook:<name>', '<key>')`, never a baked id.
 		staticCodegen: () => [makeDeepbookStaticCodegen({ name, network: LOCAL_NETWORK_NAME })],
 		// `deps` auto-infers from the runtime-built `dependsOn`; it
 		// resolves to a heterogeneous tuple the body re-narrows via the

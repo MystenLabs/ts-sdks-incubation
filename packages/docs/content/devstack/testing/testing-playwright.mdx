@@ -1,0 +1,139 @@
+---
+title: Playwright
+description: Config helpers and dev-wallet helpers for browser tests.
+---
+
+Use the `playwright` subpath to wire up your Playwright config and to drive the dev wallet from your
+specs.
+
+```ts title="playwright.config.ts"
+import { defineConfig } from '@playwright/test';
+import {
+	devstackPlaywrightBaseConfig,
+	devstackPlaywrightProjects,
+	devstackPlaywrightUse,
+	devstackPlaywrightWebServer,
+} from '@mysten-incubation/devstack/playwright';
+
+export default defineConfig({
+	...devstackPlaywrightBaseConfig(),
+	use: devstackPlaywrightUse(),
+	projects: devstackPlaywrightProjects(),
+	webServer: devstackPlaywrightWebServer(),
+});
+```
+
+These helpers run a single worker, start `pnpm dev`, and point Playwright's `baseURL` at the app
+endpoint read from the devstack manifest. Before the manifest exists, they fall back to the
+conventional dev-server route on port `5175`; pass your own `baseURL` if your stack serves the app
+elsewhere.
+
+To require a ready manifest before any spec runs, add a thin global setup module:
+
+```ts title="e2e/global-setup.ts"
+import { buildGlobalSetup } from '@mysten-incubation/devstack/playwright';
+
+export default buildGlobalSetup({
+	requireEndpoints: ['app', 'wallet'],
+});
+```
+
+Then point the config at it:
+
+```ts title="playwright.config.ts"
+import { defineConfig } from '@playwright/test';
+import {
+	devstackPlaywrightBaseConfig,
+	devstackPlaywrightProjects,
+	devstackPlaywrightUse,
+	devstackPlaywrightWebServer,
+} from '@mysten-incubation/devstack/playwright';
+
+export default defineConfig({
+	...devstackPlaywrightBaseConfig({ globalSetup: './e2e/global-setup.ts' }),
+	use: devstackPlaywrightUse(),
+	projects: devstackPlaywrightProjects(),
+	webServer: devstackPlaywrightWebServer(),
+});
+```
+
+The spec-side helpers let you drive the dev wallet and read the stack:
+
+- `connectAs(page, name)` — switch the dev wallet to a named account from your config.
+- `selectAccount` — select an account on an adapter you already hold.
+- `createWalletAdapter` — get a wallet adapter to inspect accounts (for example, to list them).
+- `loadStackManifest` / `readStackContext` — read the booted stack's manifest and context (endpoints
+  and ids) from a spec.
+
+```ts title="e2e/connect.spec.ts"
+import { expect, test } from '@playwright/test';
+import { connectAs, createWalletAdapter } from '@mysten-incubation/devstack/playwright';
+
+test('connects alice', async ({ page }) => {
+	await page.goto('/');
+	await connectAs(page, 'alice');
+
+	const wallet = createWalletAdapter();
+	const accounts = await wallet.listAccounts();
+	expect(accounts.some((entry) => entry.name === 'alice')).toBe(true);
+});
+```
+
+To let `connectAs` switch accounts without clicking through the wallet UI, expose your dapp-kit
+account switcher to the test by setting `globalThis.__devstackDAppKit__ = { selectAccount }` in your
+app's dapp-kit setup. This is a test-only bridge, not a general app API.
+
+## Asserting a signed transaction
+
+Clicking a button and watching the UI update tells you the app re-rendered — not that a transaction
+was signed and landed on chain. To prove the round-trip, sign through the dev wallet explicitly and
+then read the result straight off the stack's RPC.
+
+`createWalletAdapter()` returns an HTTP client over the dev wallet's endpoint. `signTransaction`
+signs and executes a serialized transaction as a named account and returns the executed `digest`;
+`loadStackManifest().endpoint('sui-rpc')` resolves the live stack's fullnode so you can read the
+object the transaction created.
+
+```ts title="e2e/signed-tx.spec.ts"
+import { Transaction } from '@mysten/sui/transactions';
+import { SuiClient } from '@mysten/sui/client';
+import { expect, test } from '@playwright/test';
+import { createWalletAdapter, loadStackManifest } from '@mysten-incubation/devstack/playwright';
+import { config } from '@generated/config.js';
+
+test('signs a create-counter transaction and reads it back on chain', async ({ page }) => {
+	// Loading the app populates the wallet endpoint in the manifest the helpers read.
+	await page.goto('/');
+
+	const net = config.forNetwork(config.defaultNetwork);
+	const wallet = createWalletAdapter();
+	const rpc = new SuiClient({ url: loadStackManifest().endpoint('sui-rpc')! });
+
+	// Build the same transaction the app's "Create counter" button would.
+	const tx = new Transaction();
+	tx.moveCall({ target: `${net.mvrOverrides.packages['@local/counter']}::counter::create` });
+	const txBytesBase64 = Buffer.from(await tx.build({ client: rpc })).toString('base64');
+
+	// Sign + execute through the dev wallet as `alice` (DEVSTACK_AUTO_APPROVE=1, no UI step).
+	const { digest } = await wallet.signTransaction({ accountName: 'alice', txBytesBase64 });
+
+	// Read the on-chain effects of THAT digest — proof it was signed and executed.
+	const { effects } = await rpc.waitForTransaction({
+		digest,
+		options: { showEffects: true },
+	});
+	expect(effects?.status.status).toBe('success');
+	const created = effects?.created ?? [];
+	expect(created.length).toBeGreaterThan(0);
+
+	// And read the created object's content back.
+	const counterId = created[0]!.reference.objectId;
+	const object = await rpc.getObject({ id: counterId, options: { showContent: true } });
+	expect(object.data?.content).toBeTruthy();
+});
+```
+
+`signTransaction` POSTs the serialized bytes to the dev wallet, which holds the keys and signs
+server-side — the wallet adapter never sees the keypair. Because the assertions read `effects` and
+the object content for the returned `digest` off the live RPC, the test fails if the app never
+actually executed, not just if the UI didn't change.

@@ -1,8 +1,8 @@
 // Manifest `codegen` field — round-trip + optional-field coverage.
 //
-// The supervisor records the resolved absolute dev-extras dir at
-// `manifest.codegen.extrasDir` so the read-side Vite plugin aliases
-// `@devstack-dev` at the EXACT dir codegen emitted into for this stack.
+// The supervisor records the resolved absolute `deployment.json` path at
+// `manifest.codegen.deploymentFile` so the read-side Vite plugin injects
+// the EXACT live deployment this stack wrote as `__DEVSTACK_DEPLOYMENT__`.
 // The field is optional (src/substrate/manifest.ts):
 //   - `buildEnvelope` spreads `codegen` ONLY when supplied, so an
 //     omitted `codegen` leaves serialized JSON clean.
@@ -30,27 +30,27 @@ import {
 import { withTempRoot } from '../helpers/with-temp-root.ts';
 
 const IDENTITY = { app: 'demo', stack: 'main', network: 'localnet' } as const;
-const EXTRAS_DIR = '/abs/x';
+const DEPLOYMENT_FILE = '/abs/deployment.json';
 
 describe('manifest codegen field', () => {
 	it.effect(
-		'round-trips codegen.extrasDir through write → read (decode/re-encode preserves it)',
+		'round-trips codegen.deploymentFile through write → read (decode/re-encode preserves it)',
 		() =>
 			withTempRoot('devstack-manifest-codegen', (tmp) =>
 				Effect.gen(function* () {
 					const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
 					const envelope = yield* buildEnvelope({
 						identity: IDENTITY,
-						codegen: { extrasDir: EXTRAS_DIR },
+						codegen: { deploymentFile: DEPLOYMENT_FILE },
 					});
 					// buildEnvelope carries the field into the in-memory envelope.
-					expect(envelope.codegen).toEqual({ extrasDir: EXTRAS_DIR });
+					expect(envelope.codegen).toEqual({ deploymentFile: DEPLOYMENT_FILE });
 
 					yield* writeManifest(envelope, manifestPath);
 					// readManifest decodes through ManifestEnvelopeSchema — the
 					// optional `codegen` struct survives the decode round-trip.
 					const decoded = yield* readManifest(manifestPath);
-					expect(decoded.codegen).toEqual({ extrasDir: EXTRAS_DIR });
+					expect(decoded.codegen).toEqual({ deploymentFile: DEPLOYMENT_FILE });
 					expect(decoded.manifestVersion).toBe(CURRENT_MANIFEST_VERSION);
 				}).pipe(Effect.provide(NodeFileSystem.layer)),
 			),

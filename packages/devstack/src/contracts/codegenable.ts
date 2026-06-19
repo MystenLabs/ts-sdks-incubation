@@ -16,10 +16,10 @@ import type { Effect } from 'effect';
  * A value the codegen renderer emits VERBATIM (not as a quoted literal).
  *
  * The one authorized use is id resolution in the emitted `config.ts`:
- * `byNetwork` / `mvrOverrides` / `packageId` entries hold a
- * `RawExpr('resolveId("@local/foo")')` so the COMMITTED config carries NO
+ * `mvrOverrides` / `packageId` entries hold a
+ * `RawExpr('requireId(dep, "@local/foo")')` so the COMMITTED config carries NO
  * on-chain id. The id resolves at app build/dev time through the injected
- * `__DEVSTACK_IDS__` global (see the emitted `config-runtime.ts`), which
+ * `__DEVSTACK_DEPLOYMENT__` global (see the emitted `config-runtime.ts`), which
  * throws loudly when an id is unresolved. Lives at the L0 contract layer
  * so both the package plugin (producer) and the renderer (consumer) can
  * reach it without a layering cycle.
@@ -35,6 +35,40 @@ export const rawExpr = (expr: string): RawExpr => new RawExpr(expr);
 /** Type guard for `RawExpr` — the renderer's verbatim-emit branch. */
 export const isRawExpr = (v: unknown): v is RawExpr =>
 	typeof v === 'object' && v !== null && (v as { __rawExpr?: unknown }).__rawExpr === true;
+
+/**
+ * A PER-NETWORK service bucket value. The renderer wraps `inner` in a
+ * `{ forNetwork(network) { const dep = loadDeployment().forNetwork(network);
+ * return <inner> as const; } }` accessor so a service bucket (coins / deepbook
+ * / seal / walrus) resolves its ids for whichever network the app's dapp-kit
+ * has selected — a runtime `switchNetwork` flips service ids in lockstep with
+ * rpc / packages, instead of baking the default network at module load.
+ *
+ * `inner` is the SAME object the bucket projected before (literals + the
+ * resolved `requireValue(dep, …)` raw expressions); the only change is WHERE
+ * `dep` comes from — a per-call `loadDeployment().forNetwork(network)` local
+ * inside the accessor, not the module-level default-network `dep`. The
+ * orchestrator therefore suppresses the module-level `dep` preamble for these
+ * buckets (the accessor declares its own) while still importing
+ * `loadDeployment` / `requireValue`.
+ *
+ * `needsDep` records whether `inner` actually references `dep` (a pure-literal
+ * bucket — e.g. a known/live seal or a builtin-only coin — does not, so the
+ * accessor omits the `const dep = …` line and ignores its `network` param).
+ */
+export class ForNetworkBucket {
+	readonly __forNetworkBucket = true as const;
+	constructor(
+		readonly inner: Record<string, unknown>,
+		readonly needsDep: boolean,
+	) {}
+}
+
+/** Type guard for `ForNetworkBucket` — the renderer's per-network-accessor branch. */
+export const isForNetworkBucket = (v: unknown): v is ForNetworkBucket =>
+	typeof v === 'object' &&
+	v !== null &&
+	(v as { __forNetworkBucket?: unknown }).__forNetworkBucket === true;
 
 /**
  * Opaque per-file emission context.
@@ -93,36 +127,34 @@ export interface AggregateContribution {
 	 *  orchestrator MUST NOT branch on this value — it is annotation-
 	 *  only. */
 	readonly kind?: string;
-	/** Where the synthesized aggregate file lands. `'generated'` is
-	 *  the canonical runtime tree (`src/generated/`); `'generated-extras'`
-	 *  routes the aggregate to the gitignored
-	 *  `.devstack/stacks/<stack>/generated-extras/` tree (dev-only +
-	 *  secret artifacts). All decls contributing to one bucket MUST
-	 *  agree on this; the orchestrator reads it from the first
-	 *  contributor it sees for the bucket. Defaults to `'generated'`. */
-	readonly outputLocation?: OutputLocation;
 	/** When `true`, the synthesized aggregate file is written with
 	 *  tightened `0o600` perms and injected into `.gitignore`. Mirrors
 	 *  `CodegenableDecl.sensitive` for aggregate files. Defaults to
 	 *  `false`. */
 	readonly sensitive?: boolean;
-	/** Generic-channel contributions for the loadable id-config. Only the
+	/** Generic-channel contributions for the loadable deployment. Only the
 	 *  LIVE (boot) aggregate of a unified config-binding set sets this;
-	 *  boot's `assembleIdConfig` folds it into `idConfig.values[ns][key]`.
-	 *  Carries the live plugin JSON the typed id-config fields can't (pool
+	 *  boot's `assembleDeployment` folds it into `deployment.values[ns][key]`.
+	 *  Carries the live plugin JSON the typed deployment fields can't (pool
 	 *  ids, coin types, walrus/seal endpoints). The committed-tree (static)
 	 *  aggregate omits it — those values resolve at app build time. */
 	readonly idConfigValues?: {
 		readonly [namespace: string]: { readonly [key: string]: unknown };
 	};
+	/** The STATIC TS type of each generic-channel (`values[ns][key]`)
+	 *  contribution, as a source-string map `valueTypes[namespace][key] =
+	 *  '<tsType>'`. Derived from the SAME config-binding set as `idConfigValues`
+	 *  (every `resolved` binding WITHOUT a `sugar` resolver), but carries the
+	 *  field's declared TS type rather than its live value — so it is present on
+	 *  BOTH the static AND live aggregates (the type is config-known, not
+	 *  resolution-dependent). The codegen orchestrator folds it into the strict
+	 *  `deployment.ts`'s required `values` shape, so a hand-written
+	 *  `deployments/<net>.ts` is compile-checked for every service value. A
+	 *  binding with no declared tsType contributes `'unknown'`. */
+	readonly valueTypes?: {
+		readonly [namespace: string]: { readonly [key: string]: string };
+	};
 }
-
-/** Which codegen output tree a decl (or aggregate) emits into.
- *  `'generated'` is the runtime-imported `src/generated/` tree;
- *  `'generated-extras'` is the gitignored
- *  `.devstack/stacks/<stack>/generated-extras/` dev-only tree reached
- *  via the `@devstack-dev` alias. */
-export type OutputLocation = 'generated' | 'generated-extras';
 
 /**
  * Static, stack-free codegen-decl source. A plugin that can describe its
@@ -132,9 +164,10 @@ export type OutputLocation = 'generated' | 'generated-extras';
  * the live `acquire` would emit, but stack-free — KNOWN package ids come
  * from the declared `networks` literals, LOCAL ids stay the all-zero
  * sentinel (`UNRESOLVED_ID`) resolved at app build/dev time through the
- * injected `__DEVSTACK_IDS__` global. Plugins whose contributions genuinely
- * require live resolution (or which only land in the gitignored
- * `generated-extras` dev tree) omit this — the verb simply skips them.
+ * injected `__DEVSTACK_DEPLOYMENT__` global. Plugins whose contributions genuinely
+ * require live resolution (e.g. the values-only account / dev-wallet decls,
+ * which feed the deployment envelope rather than a committed file) omit this
+ * — the verb simply skips them.
  */
 export type StaticCodegenSource = () => ReadonlyArray<CodegenableDecl>;
 
@@ -147,11 +180,6 @@ export interface CodegenableDecl<Emitter extends string = string> {
 	readonly emitterName: Emitter;
 	/** Relative path under the codegen staging dir. */
 	readonly outputPath: string;
-	/** Which codegen tree this decl's standalone file emits into.
-	 *  `'generated'` (default) → `src/generated/`; `'generated-extras'`
-	 *  → the gitignored `.devstack/stacks/<stack>/generated-extras/`
-	 *  dev-only tree (reached via the `@devstack-dev` alias). */
-	readonly outputLocation?: OutputLocation;
 	/** When `true`, this decl contributes ONLY to its `aggregate`
 	 *  bucket — the orchestrator skips emitting the standalone
 	 *  per-decl file. Use when the per-decl singleton has no consumer

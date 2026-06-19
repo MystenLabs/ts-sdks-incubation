@@ -315,6 +315,7 @@ const kv = (record: Readonly<Record<string, unknown>>): string =>
 // otherwise inject an ANSI escape sequence into the plain-renderer's
 // stdout, corrupting subsequent terminal state for callers tailing
 // `--format plain` output.
+// eslint-disable-next-line no-control-regex -- intentionally detects control chars that require quoting
 const quoteIfNeeded = (s: string): string => (/[\s"\x00-\x1f]/.test(s) ? quote(s) : s);
 
 const quote = (s: string): string => `"${s.replace(/"/g, '\\"')}"`;

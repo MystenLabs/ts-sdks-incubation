@@ -1,4 +1,4 @@
-import { useCurrentClient } from '@mysten/dapp-kit-react';
+import { useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
 import { useState } from 'react';
 
 import { bytesToString, shortAddress } from '../lib/format.js';
@@ -42,6 +42,7 @@ export function FilesList({ self }: { self: string }) {
 
 function FileRow({ cap, self }: { cap: VaultCap; self: string }) {
 	const client = useCurrentClient();
+	const network = useCurrentNetwork();
 	const file = useFile(cap.fileId);
 	const [plaintext, setPlaintext] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -52,9 +53,10 @@ function FileRow({ cap, self }: { cap: VaultCap; self: string }) {
 		setError(null);
 		setBusy(true);
 		try {
-			const encrypted = await readBlob({ suiClient: client, blobId: file.data.blobId });
+			const encrypted = await readBlob({ suiClient: client, network, blobId: file.data.blobId });
 			const bytes = await decryptForFile({
 				suiClient: client,
+				network,
 				address: self,
 				fileId: file.data.id,
 				sealIdHex: file.data.sealIdHex,

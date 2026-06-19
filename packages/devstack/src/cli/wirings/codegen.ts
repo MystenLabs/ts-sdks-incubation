@@ -15,8 +15,8 @@
 // committed tree carries the all-zero sentinel for every LOCAL id (and
 // declared literals for KNOWN packages); the committed `config.ts`
 // resolver throws loudly at runtime if a sentinel id is used. The Vite
-// plugin injects the real ids in dev (live `devstack-ids.json`) and prod
-// (a committed id-config file via the `ids` option / `DEVSTACK_IDS_FILE`).
+// plugin injects the real ids in dev (live `deployment.json`) and prod
+// (the committed per-network `deployments` thunks).
 // So `git status` shows NO churn under
 // `src/generated` after a `devstack up` — ids land only in the
 // gitignored `.devstack/`.
@@ -55,7 +55,7 @@ import { makeConfigLoader } from './config-loader.ts';
  *  hook (skipping plugins that lack one) to derive the committed-tree
  *  contributions from config alone. KNOWN package ids come from the
  *  declared `networks` literals; LOCAL ids stay the all-zero sentinel
- *  (resolved at app build/dev time through `__DEVSTACK_IDS__`). */
+ *  (resolved at app build/dev time through `__DEVSTACK_DEPLOYMENT__`). */
 export const deriveContributions = (
 	members: ReadonlyArray<AnyPlugin>,
 ): ReadonlyArray<CodegenableDecl> => {
@@ -103,10 +103,6 @@ const buildCodegenLayer = (appRoot: string) => {
 			layerCodegenRoot({
 				outputDir: generatedDir,
 				stackSubdir: null,
-				// Static contributions never target `generated-extras` (those
-				// decls are dev-only and carry no `staticCodegen`), so this
-				// path is declared but never written.
-				extrasDir: resolvePath(appRoot, 'src', 'generated-extras'),
 			}),
 		),
 	);

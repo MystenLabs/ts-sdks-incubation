@@ -3,14 +3,19 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveValue } from './config-runtime.js';
+import { loadDeployment, requireValue } from './config-runtime.js';
 
 export const seal = {
-	seal: {
-		keyServerUrl: resolveValue("seal:seal", "keyServerUrl") as string,
-		mode: "local-keygen",
-		name: "seal",
-		objectId: resolveValue("seal:seal", "objectId") as string,
-		serverConfigs: resolveValue("seal:seal", "serverConfigs") as ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly aggregatorUrl?: string }>,
+	forNetwork(network: string) {
+		const dep = loadDeployment().forNetwork(network);
+		return {
+			seal: {
+				keyServerUrl: requireValue<string>(dep, "seal:seal", "keyServerUrl"),
+				mode: "local-keygen",
+				name: "seal",
+				objectId: requireValue<string>(dep, "seal:seal", "objectId"),
+				serverConfigs: requireValue<ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly aggregatorUrl?: string }>>(dep, "seal:seal", "serverConfigs"),
+			},
+		} as const;
 	},
 } as const;

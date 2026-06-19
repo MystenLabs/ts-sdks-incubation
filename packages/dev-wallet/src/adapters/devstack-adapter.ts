@@ -16,7 +16,7 @@ import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
 import type { ManagedAccount } from '../types.js';
 import { BaseSignerAdapter } from './base-adapter.js';
-import { buildManagedAccount } from './build-managed-account.js';
+import { buildManagedAccount, chainsForNetworks } from './build-managed-account.js';
 import { DEVSTACK_WALLET_HTTP_PATH } from './devstack-paths.js';
 
 const DEVSTACK_WALLET_FEATURES = [
@@ -191,6 +191,11 @@ export interface DevstackSignerAdapterOptions {
 	token?: string | null;
 	/** Override the adapter's display name. Defaults to `'Devstack'`. */
 	name?: string;
+	/** The configured network names the wallet operates on. Each is advertised
+	 *  on every account as the wallet-standard chain `sui:<name>` (unioned with
+	 *  the standard Sui chains) so fork/custom networks are signable. Defaults
+	 *  to the standard chains only. */
+	networks?: readonly string[];
 }
 
 /**
@@ -199,10 +204,9 @@ export interface DevstackSignerAdapterOptions {
  * shipping their private keys into the frontend bundle. All signing happens
  * server-side via the `wallet()` plugin.
  *
- * The simplest construction uses devstack's generated `dapp-kit-config.ts`,
- * which bakes the wallet adapter wiring at codegen time — apps spread
- * `devstackDappKitConfig` into `createDAppKit(...)` and never touch the
- * adapter directly.
+ * The dev wallet that devstack injects at serve time registers this adapter
+ * automatically from the wallet connection devstack publishes — apps wire
+ * dapp-kit in their own `dapp-kit.ts` and never touch the adapter directly.
  *
  * To construct one manually (e.g. from a non-manifest source):
  *
@@ -220,6 +224,7 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 
 	#serverOrigin: string;
 	#authToken: string | null;
+	#chains: readonly `sui:${string}`[];
 
 	constructor(options: DevstackSignerAdapterOptions) {
 		super();
@@ -231,6 +236,7 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 		this.#serverOrigin = options.serverOrigin;
 		this.#authToken = options.token ?? null;
 		this.name = options.name ?? 'Devstack';
+		this.#chains = chainsForNetworks(options.networks);
 	}
 
 	async initialize(): Promise<void> {
@@ -273,7 +279,13 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 				serverOrigin: this.#serverOrigin,
 				authToken: this.#authToken,
 			});
-			return buildManagedAccount(signer, info.address, info.name, DEVSTACK_WALLET_FEATURES);
+			return buildManagedAccount(
+				signer,
+				info.address,
+				info.name,
+				DEVSTACK_WALLET_FEATURES,
+				this.#chains,
+			);
 		});
 	}
 }
@@ -303,8 +315,8 @@ export function parseDevstackToken(pairedUrl: string | undefined): string | null
 }
 
 /** Narrow input — the only field the adapter consumes is
- *  `app.wallet.{url, pairUrl}`. Codegen emits exactly this shape so
- *  generated `dapp-kit-config.ts` doesn't have to fabricate placeholder
+ *  `app.wallet.{url, pairUrl}`. Codegen emits exactly this shape so the
+ *  generated wiring doesn't have to fabricate placeholder
  *  manifest fields (`stack.app`, `coins`, etc.) just to satisfy the
  *  full `Manifest` type. Mirrors a slice of `AppManifest` from
  *  `@mysten-incubation/devstack` without importing it (dev-wallet
@@ -329,14 +341,22 @@ export interface DevstackAdapterManifest {
  * {@link DevstackAdapterManifest}, so
  * `createDevstackAdapterFromManifest(devstackManifest)` typechecks
  * without a cast.
+ *
+ * The narrow manifest shape carries no network set, so pass
+ * `options.networks` (e.g. the generated `config.networkNames`) to advertise
+ * fork/custom networks as `sui:<name>` on every account — matching what the
+ * devstack-injected dev wallet does via the constructor. Omit it and accounts
+ * advertise the standard Sui chains only.
  */
 export function createDevstackAdapterFromManifest(
 	manifest: DevstackAdapterManifest,
+	options?: { readonly networks?: readonly string[] },
 ): DevstackSignerAdapter | null {
 	const wallet = manifest.app?.wallet;
 	if (wallet === undefined) return null;
 	return new DevstackSignerAdapter({
 		serverOrigin: wallet.url,
 		token: parseDevstackToken(wallet.pairUrl),
+		networks: options?.networks,
 	});
 }

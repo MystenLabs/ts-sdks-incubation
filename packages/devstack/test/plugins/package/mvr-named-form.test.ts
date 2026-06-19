@@ -22,7 +22,7 @@ import { Effect } from 'effect';
 // that looks like an MVR name fails it, so the emitted placeholder must
 // pass it or the named-packages plugin rejects the override outright. It is
 // exported from the public `@mysten/sui/utils` entry.
-import { isValidNamedPackage } from '@mysten/sui/utils';
+import { isValidNamedPackage, isValidNamedType } from '@mysten/sui/utils';
 
 // `hasMvrName` (the predicate that decides whether the resolver attempts
 // resolution at all) is NOT re-exported from any public `@mysten/sui` entry
@@ -101,8 +101,8 @@ describe('package codegen emits the named form as binding default AND config.mvr
 
 				const bindings = exported['packageBindings'] as { mvrPlaceholder: string };
 				const projected = decl.aggregate!.project(exported) as {
-					packages: Record<string, { mvr: string; byNetwork: Record<string, string> }>;
-					mvrOverrides: Record<string, string>;
+					packages: Record<string, { mvr: string; packageId: string }>;
+					mvrOverrides: { packages: Record<string, string>; types?: Record<string, string> };
 				};
 
 				const expected = '@local/connect-four';
@@ -117,16 +117,82 @@ describe('package codegen emits the named form as binding default AND config.mvr
 				expect(hasMvrName(expected)).toBe(true);
 				expect(isValidNamedPackage(expected)).toBe(true);
 
-				// `config.mvrOverrides` contribution is the active-network
-				// (`localnet`) name→id entry — exactly what the old per-app
-				// `mvrOverrides()` helper computed for this package. Keyed by
-				// the package's `mvr` placeholder, valued by `byNetwork.localnet`.
-				expect(projected.mvrOverrides).toEqual({ '@local/connect-four': '0xpkg' });
-				expect(projected.mvrOverrides[expected]).toBe(
-					projected.packages['connect-four']!.byNetwork['localnet'],
+				// `config.mvrOverrides` is now the @mysten override shape
+				// `{ packages, types }`. The package plugin emits ONLY the
+				// active-network (`localnet`) `packages.<mvr> → id` entry — keyed
+				// by the package's `mvr` placeholder, valued by the resolved id.
+				// The sibling `types` map is folded in by the codegen orchestrator
+				// from the rendered bindings, so it is absent at the per-decl
+				// projection here.
+				expect(projected.mvrOverrides.packages).toEqual({ '@local/connect-four': '0xpkg' });
+				expect(projected.mvrOverrides.packages[expected]).toBe(
+					projected.packages['connect-four']!.packageId,
 				);
+				// The `packages` map KEY is a valid named package, and substituting
+				// its resolved id into a `<module>::<Name>` tag yields a valid
+				// `isValidNamedType` key — the invariant the declared `types`
+				// entries rely on.
+				expect(isValidNamedType(`${expected}::game::Lobby`)).toBe(true);
+
+				// MVR `types` is OPT-IN: with no `mvrTypes` declared, the projection
+				// carries NO `mvrOverrides.types` entries.
+				expect(projected.mvrOverrides.types).toBeUndefined();
 			}),
 	);
+});
+
+describe('package codegen — OPT-IN mvrOverrides.types', () => {
+	const resolved: ResolvedLocalPackage = {
+		kind: 'local',
+		name: 'connect-four',
+		packageId: '0xpkg',
+		sourcePath: '/abs/connect-four',
+		mvrPlaceholder: mvrNamedForm('connect-four'),
+		captured: {},
+	};
+
+	it.effect('declared mvrTypes project into config.mvrOverrides.types keyed by the named tag', () =>
+		Effect.gen(function* () {
+			const decl = makeLocalCodegenable(resolved, {
+				excluded: false,
+				mvrTypes: ['game::Lobby', 'game::Game'],
+			});
+			const exported: Record<string, unknown> = {};
+			const ctx = {
+				exportConst: (name: string, value: unknown) => {
+					exported[name] = value;
+				},
+				done: () => undefined,
+			};
+			yield* decl.emit(ctx as never);
+			const projected = decl.aggregate!.project(exported) as {
+				mvrOverrides: { types: Record<string, unknown> };
+			};
+			// Exactly the two DECLARED tags appear — fully-qualified by the
+			// `@local/<slug>` prefix. Each key passes `isValidNamedType`.
+			const keys = Object.keys(projected.mvrOverrides.types).sort();
+			expect(keys).toEqual(['@local/connect-four::game::Game', '@local/connect-four::game::Lobby']);
+			for (const tag of keys) expect(isValidNamedType(tag)).toBe(true);
+		}),
+	);
+
+	it('a malformed mvrTypes entry (not <module>::<Name>) throws at config time', () => {
+		expect(() => makeLocalCodegenable(resolved, { excluded: false, mvrTypes: ['Lobby'] })).toThrow(
+			/must be '<module>::<Name>'/,
+		);
+	});
+
+	it('a redundant @local/<slug>:: prefix on an entry is tolerated', () => {
+		const decl = makeLocalCodegenable(resolved, {
+			excluded: false,
+			mvrTypes: ['@local/connect-four::game::Lobby'],
+		});
+		const exported: Record<string, unknown> = { packageBindings: undefined };
+		const projected = decl.aggregate!.project(exported) as {
+			mvrOverrides: { types: Record<string, unknown> };
+		};
+		expect(Object.keys(projected.mvrOverrides.types)).toEqual(['@local/connect-four::game::Lobby']);
+	});
 });
 
 describe('stale bare-slug mvrPlaceholder is corrected to the named form at the emit seam', () => {

@@ -3,57 +3,54 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveId, resolveNetwork, resolveNetworks, resolveValue } from './config-runtime.js';
+import { loadDeployment, requireId, requireValue } from './config-runtime.js';
+import { NETWORK_NAMES } from './deployment.js';
+
+const __deployment = loadDeployment();
+const dep = __deployment.forNetwork(__deployment.defaultNetwork);
 
 export const config = {
+	defaultNetwork: __deployment.defaultNetwork as (typeof NETWORK_NAMES)[number],
+	forNetwork: __deployment.forNetwork,
 	mvrOverrides: {
-		"@local/deepbook": resolveId("@local/deepbook"),
-		"@local/demo-coins": resolveId("@local/demo-coins"),
-		"@local/dusdc": resolveId("@local/dusdc"),
-		"@local/pyth": resolveId("@local/pyth"),
+		packages: {
+			"@local/deepbook": requireId(dep, "@local/deepbook"),
+			"@local/demo-coins": requireId(dep, "@local/demo-coins"),
+			"@local/dusdc": requireId(dep, "@local/dusdc"),
+			"@local/pyth": requireId(dep, "@local/pyth"),
+		},
 	},
-	network: resolveNetwork(),
-	networks: resolveNetworks(),
+	network: dep.network,
+	networkNames: NETWORK_NAMES,
+	networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)])),
 	objects: {
 		deepbook: {
-			adminCapId: resolveValue("package:deepbook:objects", "adminCapId"),
-			deepTreasuryId: resolveValue("package:deepbook:objects", "deepTreasuryId"),
-			registryId: resolveValue("package:deepbook:objects", "registryId"),
+			adminCapId: requireValue(dep, "package:deepbook:objects", "adminCapId"),
+			deepTreasuryId: requireValue(dep, "package:deepbook:objects", "deepTreasuryId"),
+			registryId: requireValue(dep, "package:deepbook:objects", "registryId"),
 		},
 	},
 	packages: {
 		deepbook: {
-			byNetwork: {
-				localnet: resolveId("@local/deepbook"),
-			},
 			mvr: "@local/deepbook",
 			objects: {
-				adminCapId: resolveValue("package:deepbook:objects", "adminCapId"),
-				deepTreasuryId: resolveValue("package:deepbook:objects", "deepTreasuryId"),
-				registryId: resolveValue("package:deepbook:objects", "registryId"),
+				adminCapId: requireValue(dep, "package:deepbook:objects", "adminCapId"),
+				deepTreasuryId: requireValue(dep, "package:deepbook:objects", "deepTreasuryId"),
+				registryId: requireValue(dep, "package:deepbook:objects", "registryId"),
 			},
-			packageId: resolveId("@local/deepbook"),
+			packageId: requireId(dep, "@local/deepbook"),
 		},
 		demo_coins: {
-			byNetwork: {
-				localnet: resolveId("@local/demo-coins"),
-			},
 			mvr: "@local/demo-coins",
-			packageId: resolveId("@local/demo-coins"),
+			packageId: requireId(dep, "@local/demo-coins"),
 		},
 		dusdc: {
-			byNetwork: {
-				localnet: resolveId("@local/dusdc"),
-			},
 			mvr: "@local/dusdc",
-			packageId: resolveId("@local/dusdc"),
+			packageId: requireId(dep, "@local/dusdc"),
 		},
 		pyth: {
-			byNetwork: {
-				localnet: resolveId("@local/pyth"),
-			},
 			mvr: "@local/pyth",
-			packageId: resolveId("@local/pyth"),
+			packageId: requireId(dep, "@local/pyth"),
 		},
 	},
 } as const;

@@ -14,8 +14,8 @@
 // contributions ONCE as a `ConfigBindingSet`; the framework's
 // `projectLiveConfig` / `projectStaticConfig` derive both behaviors:
 //   - LIVE (boot): bakes the resolved package id literal — boot's
-//     `assembleIdConfig` reads it into the loadable id-config.
-//   - STATIC (committed-tree): emits `resolveId('<mvr>')` so the committed
+//     `assembleDeployment` reads it into the loadable deployment.
+//   - STATIC (committed-tree): emits `requireId(dep, '<mvr>')` so the committed
 //     `config.ts` carries NO on-chain id (resolved at app build/dev time).
 //
 // The package contribution is `aggregateOnly`: it projects into the combined
@@ -25,7 +25,6 @@
 // orchestrator's `isPackageBindings` seam forwards it to the Move-bindings
 // emitter (bindings stay in `generated/bindings/`).
 
-import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import type { CodegenableDecl, StaticCodegenSource } from '../../contracts/codegenable.ts';
 import {
 	configCodegenable,
@@ -33,18 +32,9 @@ import {
 	type ConfigBindingSet,
 } from '../../contracts/config-bindings.ts';
 import type { PackageBindings } from '../../orchestrators/codegen/bindings.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 import { mvrNamedForm, mvrNamedFormFrom } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
-
-/** Per-network declared ids — pure literals the user supplies for
- *  prod-targeting (`testnet`/`mainnet`). No resolution. */
-export interface PackageNetworkEntry {
-	readonly packageId: string;
-	readonly objects?: Readonly<Record<string, string>>;
-}
-
-export type PackageNetworks = Readonly<Record<string, PackageNetworkEntry>>;
 
 /** Codegenable shape — what each Package contributes to the codegen
  *  orchestrator. Defined once on the orchestrator's `emitBindings` consumer
@@ -52,15 +42,17 @@ export type PackageNetworks = Readonly<Record<string, PackageNetworkEntry>>;
  *  package plugin's public surface. */
 export type { PackageBindings };
 
-/** The typed shape one `config.packages.<name>` entry exports. */
+/** The typed shape one `config.packages.<name>` entry exports. Per-network
+ *  package ids now live in the injected deployment envelope (live local +
+ *  committed `deployments/<net>.ts`), resolved via
+ *  `config.forNetwork(net).packages.<name>.id` — so this entry carries only
+ *  the MVR placeholder + the default-network convenience id. */
 export interface PackageConfigEntry {
 	readonly mvr: string;
-	/** Convenience = `byNetwork[config.network]` (the active network's
-	 *  id). */
+	/** The default (local) network's resolved id. */
 	readonly packageId: string;
-	readonly byNetwork: Readonly<Record<string, string>>;
-	/** Resolved (local) + declared (prod) object ids for the active
-	 *  network. Present only when at least one object is known. */
+	/** Resolved (local) object ids for the default network. Present only
+	 *  when at least one object is known. */
 	readonly objects?: Readonly<Record<string, string>>;
 }
 
@@ -77,35 +69,62 @@ interface PackageBindingInput {
 	/** Pinned literal id (KNOWN package with a declared id). When set, the
 	 *  active-network id is a LITERAL binding (identical in both paths). When
 	 *  absent (a LOCAL package, or a KNOWN-shaped local stub), the id is a
-	 *  RESOLVED binding: static emits `resolveId('<mvr>')`, live computes the
+	 *  RESOLVED binding: static emits `requireId(dep, '<mvr>')`, live computes the
 	 *  real resolved id from acquired state. */
 	readonly pinnedId?: string | undefined;
 	/** Resolved local object captures (keyed by user `capture` name).
 	 *  Surfaced into `config.objects.<name>` + `packages.<name>.objects`
 	 *  for the active (local) network. Empty on the committed-stub path —
 	 *  the captured IDS are loaded config data (resolved at app build/dev
-	 *  time), so the static path emits `resolveValue` from `objectKeys`. */
+	 *  time), so the static path emits `requireValue` from `objectKeys`. */
 	readonly captured: Readonly<Record<string, string>>;
 	/** The capture KEYS this package declares (the user `capture` option's
 	 *  key set, known at config time). Drives the object-id bindings on BOTH
-	 *  paths so the committed stub carries `resolveValue('package:<name>:
+	 *  paths so the committed stub carries `requireValue(dep, 'package:<name>:
 	 *  objects', '<key>')` references rather than a live-only `objects` field.
 	 *  When omitted, falls back to the keys present in `captured` (live path).
 	 */
 	readonly objectKeys?: ReadonlyArray<string> | undefined;
-	/** Declared per-network literals (testnet/mainnet). */
-	readonly networks?: PackageNetworks | undefined;
+	/** OPT-IN Move datatypes to expose as MVR `types` overrides. Each entry is a
+	 *  `'<module>::<Name>'` suffix relative to this package (the `@local/<slug>`
+	 *  prefix is implied). Each emits one
+	 *  `mvrOverrides.types['@local/<slug>::<module>::<Name>']` whose static value
+	 *  resolves per-network as `` `${requireId(dep, "<mvr>")}::<module>::<Name>` ``.
+	 *  Absent / empty ⇒ no `types` entries (the orchestrator emits `types: {}`).
+	 *  Identical on the live and static paths (config-known, resolution-
+	 *  independent); the live deployment slice ignores the value (keeps
+	 *  `types: {}`). */
+	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }
+
+/** Validate + normalize a declared MVR-type suffix. Entries are
+ *  `'<module>::<Name>'` relative to the package; we reject anything that does
+ *  not parse as two `::`-joined Move identifiers so a typo fails at config time
+ *  rather than emitting an `isValidNamedType`-rejected key into the override
+ *  map. The `@local/<slug>::` prefix is implied (and stripped if the developer
+ *  redundantly included it). */
+const normalizeMvrTypeSuffix = (packageName: string, mvr: string, entry: string): string => {
+	// Tolerate a redundant `@local/<slug>::` prefix the developer may have
+	// pasted from a fully-qualified tag.
+	const suffix = entry.startsWith(`${mvr}::`) ? entry.slice(mvr.length + 2) : entry;
+	if (!/^[A-Za-z_][\w]*::[A-Za-z_][\w]*$/.test(suffix)) {
+		throw new Error(
+			`localPackage('${packageName}') mvrTypes entry '${entry}' must be '<module>::<Name>' ` +
+				`(two Move identifiers joined by '::'); the '${mvr}' package prefix is implied.`,
+		);
+	}
+	return suffix;
+};
 
 /**
  * Build the package's config-binding set, declared ONCE. The `name` keys the
  * `config.packages.<name>` entry; `mvrPlaceholder` is a literal in both paths;
- * the active-network id is a RESOLVED binding (sugar `resolveId('<mvr>')` when
+ * the active-network id is a RESOLVED binding (sugar `requireId(dep, '<mvr>')` when
  * `resolveViaRuntime`, otherwise a literal already-known id). Declared
  * per-network literals (testnet/mainnet) and captured objects are literals.
  *
  * The same set drives `projectStaticConfig` (committed tree) and
- * `projectLiveConfig` (boot id-config) — no parallel projectors.
+ * `projectLiveConfig` (boot deployment) — no parallel projectors.
  */
 const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<PackageLiveState> => {
 	const { name, mvrPlaceholder } = input;
@@ -121,12 +140,12 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 
 	// The active-network id binding. Two cases:
 	//   - no pinned id (LOCAL, or KNOWN-shaped local stub) → RESOLVED (sugar
-	//     `resolveId('<mvr>')` static; live = the concrete resolved id from
+	//     `requireId(dep, '<mvr>')` static; live = the concrete resolved id from
 	//     `state.packageId`).
 	//   - pinned literal (KNOWN with a declared id) → LITERAL (the id stands
 	//     identically in both paths).
-	// Reused for `packages.<name>.packageId`, `byNetwork.localnet`, and the
-	// `mvrOverrides` entry so all three agree.
+	// Reused for `packages.<name>.packageId` and the `mvrOverrides` entry so
+	// both agree.
 	const pinned = input.pinnedId;
 	const idBinding = (configPath: ReadonlyArray<string>): ConfigBinding<PackageLiveState> =>
 		pinned === undefined
@@ -141,22 +160,12 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 			: { variant: 'literal', configPath, value: pinned };
 
 	bindings.push(idBinding(['packages', name, 'packageId']));
-	bindings.push(idBinding(['packages', name, 'byNetwork', LOCAL_NETWORK_NAME]));
-
-	// Declared per-network literals (testnet/mainnet) — pure literals.
-	for (const [net, entry] of Object.entries(input.networks ?? {})) {
-		bindings.push({
-			variant: 'literal',
-			configPath: ['packages', name, 'byNetwork', net],
-			value: entry.packageId,
-		});
-	}
 
 	// Active-network objects — captured ids (local). The captured ids are
 	// LOADED CONFIG DATA, so each is a RESOLVED binding on the generic
-	// `resolveValue('package:<name>:objects', '<key>')` channel: the static
+	// `requireValue(dep, 'package:<name>:objects', '<key>')` channel: the static
 	// committed stub emits the resolver expr, the live path bakes the real
-	// captured id AND feeds the id-config `values` channel. The key set comes
+	// captured id AND feeds the deployment `values` channel. The key set comes
 	// from `objectKeys` (config-known) so BOTH paths emit identical paths —
 	// no live-only `objects` field. Falls back to the live capture keys when
 	// `objectKeys` is absent (the live emit path).
@@ -179,11 +188,37 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 		}
 	}
 
-	// Active-network MVR override entry — `{ [mvr]: <active id> }`. A
-	// resolved binding always emits (the resolver expr / live id); a pinned
-	// literal emits only when non-empty.
+	// Active-network MVR override entry — `mvrOverrides.packages.<mvr> = <active
+	// id>` (the @mysten MVR override shape's `packages` map). The sibling `types`
+	// map is OPT-IN — populated below ONLY from developer-declared `mvrTypes`
+	// (the change from auto-enumerating every package type). A resolved binding
+	// always emits (the resolver expr / live id); a pinned literal emits only
+	// when non-empty.
 	if (pinned === undefined || pinned.length > 0) {
-		bindings.push(idBinding(['mvrOverrides', mvrPlaceholder]));
+		bindings.push(idBinding(['mvrOverrides', 'packages', mvrPlaceholder]));
+	}
+
+	// OPT-IN MVR `types` overrides — `mvrOverrides.types['<mvr>::<module>::<Name>']`
+	// for each developer-declared `<module>::<Name>`. The static path emits the
+	// per-network type tag `` `${requireId(dep, "<mvr>")}::<module>::<Name>` ``
+	// (the `mvrType` sugar); the live path's value is ignored by the live
+	// deployment slice (`deploymentFromBucket` keeps `types: {}`). Sugar bindings
+	// never touch the generic `values` channel. No declared types ⇒ no entries
+	// here (the orchestrator emits `types: {}`).
+	for (const entry of input.mvrTypes ?? []) {
+		const typeSuffix = normalizeMvrTypeSuffix(name, mvrPlaceholder, entry);
+		const tag = `${mvrPlaceholder}::${typeSuffix}`;
+		bindings.push({
+			variant: 'resolved',
+			configPath: ['mvrOverrides', 'types', tag],
+			namespace: 'package',
+			key: `${name}:mvrType:${tag}`,
+			sugar: { kind: 'mvrType', mvrPlaceholder, typeSuffix },
+			// Ignored by the live deployment slice; a value is required by the
+			// binding shape. The resolved per-network tag is what the static
+			// committed `config.ts` emits via the sugar.
+			live: () => tag,
+		});
 	}
 
 	return {
@@ -201,7 +236,7 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 /**
  * Build the package's `CodegenableDecl` from its binding set via the unified
  * `configCodegenable` derivation. Mode `'live'` bakes concrete values + feeds
- * the id-config; `'static'` emits resolver expressions. The decl ALSO exports
+ * the deployment; `'static'` emits resolver expressions. The decl ALSO exports
  * `packageBindings` (the `extraExports` hook) so the orchestrator's
  * `isPackageBindings` seam forwards it to the Move-bindings emitter (bindings
  * stay in `generated/bindings/`).
@@ -221,7 +256,8 @@ export const makeLocalCodegenable = (
 	resolved: ResolvedLocalPackage,
 	options: {
 		readonly excluded: boolean;
-		readonly networks?: PackageNetworks;
+		/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
+		readonly mvrTypes?: ReadonlyArray<string> | undefined;
 	},
 ): CodegenableDecl<'package'> => {
 	// Coerce the resolved placeholder into the current `@local/<slug>` named
@@ -230,13 +266,13 @@ export const makeLocalCodegenable = (
 	// deterministic; computed ONCE so the binding default and `config.mvr`
 	// stay equal. A LOCAL package has NO pinned id — the active-network id is
 	// always a RESOLVED binding (live bakes the real id; static emits
-	// `resolveId`).
+	// `requireId`).
 	const mvrPlaceholder = mvrNamedFormFrom(resolved.mvrPlaceholder);
 	const set = packageConfigBindings({
 		name: resolved.name,
 		mvrPlaceholder,
 		captured: resolved.captured,
-		...(options.networks !== undefined ? { networks: options.networks } : {}),
+		...(options.mvrTypes !== undefined ? { mvrTypes: options.mvrTypes } : {}),
 	});
 	const bindings: PackageBindings = {
 		name: resolved.name,
@@ -257,7 +293,7 @@ export const makeLocalCodegenable = (
  *  live and static paths. */
 export const makeKnownCodegenable = (
 	resolved: ResolvedKnownPackage,
-	options: { readonly networks?: PackageNetworks } = {},
+	options: { readonly mvrTypes?: ReadonlyArray<string> | undefined } = {},
 ): CodegenableDecl<'package'> => {
 	// Defensive parity with the local emit seam: coerce to the current
 	// `@local/<slug>` named form (preserving an already-named override).
@@ -267,7 +303,7 @@ export const makeKnownCodegenable = (
 		mvrPlaceholder,
 		captured: {},
 		pinnedId: resolved.packageId,
-		...(options.networks !== undefined ? { networks: options.networks } : {}),
+		...(options.mvrTypes !== undefined ? { mvrTypes: options.mvrTypes } : {}),
 	});
 	const bindings: PackageBindings = {
 		name: resolved.name,
@@ -301,12 +337,13 @@ export const makeLocalStaticCodegen = (config: {
 	readonly sourcePath: string | null;
 	readonly mvrPlaceholder?: string | undefined;
 	readonly excluded: boolean;
-	readonly networks?: PackageNetworks | undefined;
 	/** Capture KEYS declared by the user `capture` option (config-known).
-	 *  The static stub emits `resolveValue('package:<name>:objects', '<key>')`
+	 *  The static stub emits `requireValue(dep, 'package:<name>:objects', '<key>')`
 	 *  for each so the committed tree carries object-id references with NO
 	 *  baked id and NO live-only `objects` field. */
 	readonly objectKeys?: ReadonlyArray<string> | undefined;
+	/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
+	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }): StaticCodegenSource => {
 	const mvrPlaceholder = mvrNamedForm(config.mvrPlaceholder ?? config.name);
 	return () => {
@@ -320,7 +357,7 @@ export const makeLocalStaticCodegen = (config: {
 			mvrPlaceholder,
 			captured: {},
 			...(config.objectKeys !== undefined ? { objectKeys: config.objectKeys } : {}),
-			...(config.networks !== undefined ? { networks: config.networks } : {}),
+			...(config.mvrTypes !== undefined ? { mvrTypes: config.mvrTypes } : {}),
 			// No pinned id — the active id resolves at app build/dev time.
 		});
 		const bindings: PackageBindings = {
@@ -344,7 +381,8 @@ export const makeKnownStaticCodegen = (config: {
 	readonly packageId: string;
 	readonly upgradeCapId?: string | undefined;
 	readonly mvrPlaceholder?: string | undefined;
-	readonly networks?: PackageNetworks | undefined;
+	/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
+	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }): StaticCodegenSource => {
 	const mvrPlaceholder = mvrNamedForm(config.mvrPlaceholder ?? config.name);
 	return () => {
@@ -353,7 +391,7 @@ export const makeKnownStaticCodegen = (config: {
 			mvrPlaceholder,
 			captured: {},
 			pinnedId: config.packageId,
-			...(config.networks !== undefined ? { networks: config.networks } : {}),
+			...(config.mvrTypes !== undefined ? { mvrTypes: config.mvrTypes } : {}),
 		});
 		const bindings: PackageBindings = {
 			name: config.name,

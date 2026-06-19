@@ -3,29 +3,35 @@
 // `devstack up` cycle. Apps consume codegen output; codegen output never
 // imports from devstack.
 
-import { resolveId, resolveNetwork, resolveNetworks, resolveValue } from './config-runtime.js';
+import { loadDeployment, requireId, requireValue } from './config-runtime.js';
+import { NETWORK_NAMES } from './deployment.js';
+
+const __deployment = loadDeployment();
+const dep = __deployment.forNetwork(__deployment.defaultNetwork);
 
 export const config = {
+	defaultNetwork: __deployment.defaultNetwork as (typeof NETWORK_NAMES)[number],
+	forNetwork: __deployment.forNetwork,
 	mvrOverrides: {
-		"@local/greeting": resolveId("@local/greeting"),
+		packages: {
+			"@local/greeting": requireId(dep, "@local/greeting"),
+		},
 	},
-	network: resolveNetwork(),
-	networks: resolveNetworks(),
+	network: dep.network,
+	networkNames: NETWORK_NAMES,
+	networks: Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)])),
 	objects: {
 		greeting: {
-			boardId: resolveValue("package:greeting:objects", "boardId"),
+			boardId: requireValue(dep, "package:greeting:objects", "boardId"),
 		},
 	},
 	packages: {
 		greeting: {
-			byNetwork: {
-				localnet: resolveId("@local/greeting"),
-			},
 			mvr: "@local/greeting",
 			objects: {
-				boardId: resolveValue("package:greeting:objects", "boardId"),
+				boardId: requireValue(dep, "package:greeting:objects", "boardId"),
 			},
-			packageId: resolveId("@local/greeting"),
+			packageId: requireId(dep, "@local/greeting"),
 		},
 	},
 } as const;

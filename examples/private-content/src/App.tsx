@@ -1,14 +1,15 @@
-import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useCurrentNetwork } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 
 import { FilesList } from './components/FilesList.js';
 import { GrantForm } from './components/GrantForm.js';
 import { UploadForm } from './components/UploadForm.js';
-import { isDeployed } from './lib/deployment.js';
+import { isDeployedForNetwork } from './lib/deployment.js';
 import { shortAddress } from './lib/format.js';
 
 export function App() {
-	const deployed = isDeployed;
+	const network = useCurrentNetwork();
+	const deployed = isDeployedForNetwork(network);
 	return (
 		<div className="min-h-screen flex flex-col">
 			<header className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 bg-white/50 dark:bg-neutral-950/50 backdrop-blur sticky top-0 z-10">

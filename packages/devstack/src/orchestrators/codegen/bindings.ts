@@ -79,6 +79,12 @@ export class MoveSummaryRunnerService extends Context.Service<
 	MoveSummaryRunner
 >()('@devstack/orchestrator/MoveSummaryRunner') {}
 
+/** One rendered binding file — relative path + TS content. */
+export interface GeneratedBindingFile {
+	readonly relPath: string;
+	readonly content: string;
+}
+
 /** Shape of the `@mysten/codegen` invocation. Returns the rendered
  *  TS files (path → content) for one package. */
 export interface MoveCodegen {
@@ -88,10 +94,7 @@ export interface MoveCodegen {
 		readonly summary: MoveSummary;
 		readonly mvrPlaceholder: string;
 		readonly importExtension: '.ts' | '.js' | '';
-	}) => Effect.Effect<
-		ReadonlyArray<{ readonly relPath: string; readonly content: string }>,
-		CodegenBindingsFailed
-	>;
+	}) => Effect.Effect<ReadonlyArray<GeneratedBindingFile>, CodegenBindingsFailed>;
 }
 
 export class MoveCodegenService extends Context.Service<MoveCodegenService, MoveCodegen>()(

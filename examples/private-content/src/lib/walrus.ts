@@ -8,25 +8,35 @@ import { walrus } from '@generated/walrus.js';
 
 const DEFAULT_EPOCHS = 1;
 
+/** The per-network walrus binding (`walrus.forNetwork(network)`). */
+type WalrusConfig = ReturnType<typeof walrus.forNetwork>;
+
 let cachedClient: WalrusClient | null = null;
 let cachedSuiClient: ClientWithCoreApi | null = null;
+let cachedNetwork: string | null = null;
 
-async function getClient(suiClient: ClientWithCoreApi): Promise<WalrusClient> {
-	if (cachedClient !== null && cachedSuiClient === suiClient) return cachedClient;
+async function getClient(
+	suiClient: ClientWithCoreApi,
+	network: string,
+	walrusConfig: WalrusConfig,
+): Promise<WalrusClient> {
+	if (cachedClient !== null && cachedSuiClient === suiClient && cachedNetwork === network)
+		return cachedClient;
 	const client = new WalrusClient({
 		suiClient,
 		packageConfig: {
-			systemObjectId: walrus.packageConfig.systemObjectId,
-			stakingPoolId: walrus.packageConfig.stakingPoolId,
-			...(walrus.packageConfig.exchangeIds
-				? { exchangeIds: [...walrus.packageConfig.exchangeIds] }
+			systemObjectId: walrusConfig.packageConfig.systemObjectId,
+			stakingPoolId: walrusConfig.packageConfig.stakingPoolId,
+			...(walrusConfig.packageConfig.exchangeIds
+				? { exchangeIds: [...walrusConfig.packageConfig.exchangeIds] }
 				: {}),
 		},
-		storageNodeUrlScheme: walrus.mode === 'local' ? 'http' : 'https',
+		storageNodeUrlScheme: walrusConfig.mode === 'local' ? 'http' : 'https',
 		wasmUrl: walrusWasmUrl,
 	});
 	cachedClient = client;
 	cachedSuiClient = suiClient;
+	cachedNetwork = network;
 	return client;
 }
 
@@ -42,11 +52,12 @@ export interface StoreBlobResult {
  */
 export async function storeBlob(args: {
 	suiClient: ClientWithCoreApi;
+	network: string;
 	signer: Signer;
 	data: Uint8Array;
 	epochs?: number;
 }): Promise<StoreBlobResult> {
-	const client = await getClient(args.suiClient);
+	const client = await getClient(args.suiClient, args.network, walrus.forNetwork(args.network));
 	const result = await client.writeBlob({
 		blob: args.data,
 		signer: args.signer,
@@ -66,9 +77,10 @@ export async function storeBlob(args: {
  */
 export async function readBlob(args: {
 	suiClient: ClientWithCoreApi;
+	network: string;
 	blobId: string;
 }): Promise<Uint8Array> {
-	const client = await getClient(args.suiClient);
+	const client = await getClient(args.suiClient, args.network, walrus.forNetwork(args.network));
 	return await client.readBlob({ blobId: args.blobId });
 }
 

@@ -1,0 +1,299 @@
+---
+title: DeepBook
+description:
+  Local DeepBook deployments, pools, seed liquidity, Pyth price feeds, and known deployments.
+---
+
+Trade on a [DeepBook](https://github.com/MystenLabs/deepbookv3) central-limit order-book DEX running
+on your local network. Add `deepbook(...)` to your stack, then read the resolved pool and coin ids
+from the generated bindings and drive trades with the DeepBook SDK. It runs in one of three modes:
+
+- **`local`** — publish the DeepBook Move package onto your local Sui network, create pools, and
+  (optionally) seed them with resting liquidity and local Pyth price feeds. This is the mode you use
+  for development: the whole DEX is created from scratch every boot and torn down with the stack.
+- **`known`** — point at an existing DeepBook deployment (testnet / mainnet) by network shortcut or
+  explicit ids. Nothing is published; your app reads and trades against the live DEX.
+- **`override`** — wrap deployment ids you manage yourself, without publishing or managing DeepBook.
+
+## Local mode
+
+Local mode publishes the DeepBook package, initializes optional Pyth feeds, creates pools, and seeds
+those pools. Use the generic [`coin`](/devstack/configure/coins-and-funding) helper for every pool
+coin so funding, generated bindings, and app code all read the same resolved coin metadata.
+
+```ts title="devstack.config.ts"
+import {
+	DEEP_PRICE_FEED_ID,
+	SUI_PRICE_FEED_ID,
+	account,
+	coin,
+	deepbook,
+	defineDevstack,
+	localPackage,
+	sui,
+} from '@mysten-incubation/devstack';
+
+const localnet = sui();
+
+// The publisher both deploys DeepBook and seeds the pool, so fund it with ample
+// SUI for the publish + pool-creation gas and the quote-side seed deposit.
+const publisher = account('publisher', {
+	kind: 'ephemeral',
+	funding: [{ coin: 'sui', amount: 1_000_000_000_000n }],
+});
+
+// DeepBook's Move tree is pulled straight from upstream and cached host-side per
+// (url, rev) — no vendored copy to maintain. Pin `rev` to a concrete SHA for
+// reproducible bindings. (You can also use `sourcePath: './move/deepbook'` to
+// publish a local checkout instead.)
+const deepbookPackage = localPackage('deepbook', {
+	git: {
+		url: 'https://github.com/MystenLabs/deepbookv3.git',
+		subdir: 'packages/deepbook',
+		rev: 'main',
+	},
+	publisher,
+	capture: {
+		registryId: '::registry::Registry',
+		adminCapId: '::registry::DeepbookAdminCap',
+	},
+});
+const pythPackage = localPackage('pyth', {
+	git: {
+		url: 'https://github.com/MystenLabs/deepbook-sandbox.git',
+		subdir: 'sandbox/packages/pyth',
+		rev: 'main',
+	},
+	publisher,
+});
+
+const suiCoin = coin.builtin('sui');
+const deep = coin.fromPackage(deepbookPackage, 'DEEP');
+
+const dex = deepbook({
+	mode: 'local',
+	publisher,
+	package: deepbookPackage,
+	pyth: {
+		package: pythPackage,
+		pusher: publisher,
+		feeds: [
+			{ symbol: 'DEEP', feedId: DEEP_PRICE_FEED_ID, initialPrice: 2_000_000n, expo: -8 },
+			{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },
+		],
+	},
+	pools: [
+		{
+			name: 'DEEP_SUI',
+			base: { key: 'DEEP', coin: deep },
+			quote: { key: 'SUI', coin: suiCoin },
+			tickSize: 1_000_000n,
+			lotSize: 1_000_000n,
+			minSize: 10_000_000n,
+			seed: {
+				baseAmount: 1_000_000_000n,
+				quoteAmount: 10_000_000_000n,
+				orders: [
+					{ side: 'ask', price: 6_000_000n, quantity: 1_000_000_000n },
+					{ side: 'bid', price: 5_000_000n, quantity: 1_000_000_000n },
+				],
+			},
+		},
+	],
+});
+
+export default defineDevstack({ members: [localnet, dex] });
+```
+
+### Pools
+
+Each entry in `pools` creates one whitelisted pool. The three sizing fields are DeepBook's on-chain
+trading granularity, all expressed in the base/quote coins' smallest units:
+
+- **`tickSize`** — the minimum price increment. Every order `price` must be a multiple of it.
+- **`lotSize`** — the minimum quantity increment. Every order `quantity` must be a multiple of it.
+- **`minSize`** — the smallest order quantity allowed.
+
+Pools are `whitelisted: true` by default, which means they charge zero fees and don't require DEEP
+to trade — ideal for local development. `deepbook(...)` validates that every seed order is tick- and
+lot-aligned and at least `minSize`, and fails fast with a `DeepbookConfigError` otherwise.
+
+### Seeding liquidity
+
+A freshly created pool has an **empty order book** — nothing to trade against. The optional `seed`
+field fixes that: it deposits base + quote into a publisher-owned `BalanceManager` and rests the
+listed limit orders, so the book is tradeable the moment the stack finishes booting.
+
+```ts
+seed: {
+	baseAmount: 1_000_000_000n,   // base (DEEP) deposited into the BalanceManager
+	quoteAmount: 10_000_000_000n, // quote (SUI) deposited into the BalanceManager
+	orders: [
+		{ side: 'ask', price: 6_000_000n, quantity: 1_000_000_000n }, // sell DEEP — needs DEEP inventory
+		{ side: 'bid', price: 5_000_000n, quantity: 1_000_000_000n }, // buy DEEP — needs SUI inventory
+	],
+},
+```
+
+Seeding works because the publisher already **owns the coins it deposits**:
+
+- **DEEP** — publishing the DeepBook token package mints the entire DEEP supply to the deployer, so
+  the `publisher` holds DEEP with no extra configuration. You do **not** need a DEEP faucet, a
+  treasury cap, or `deepTreasuryIdKey` to seed (that capture is only used for SDK bindings).
+- **SUI** — the quote side is funded from the publisher's own SUI balance, so fund the publisher
+  generously (the example above uses 1,000 SUI).
+
+For other coins, seeding works whenever the deposited coin has a funding strategy — for example a
+local package coin that keeps its `TreasuryCap` with the publisher, or a SUI-faucet-funded coin. The
+resolved `dex` value exposes `hasSeedLiquidity: true` once any pool placed its seed orders.
+
+> `seed` is for **local demos** only. In `known` / `override` mode you trade against whatever
+> liquidity the live DEX already has.
+
+### Reading pools and prices from your app
+
+`deepbook(...)` generates typed bindings into `src/generated/deepbook.ts`. DeepBook is a per-network
+service: `deepbook.forNetwork(net).deepbook` returns the bindings for the network your wallet is on,
+so the pool, coin, and feed ids stay in lockstep with a runtime `switchNetwork`. Read them to get
+the created pool ids and Pyth feed prices without hard-coding anything:
+
+```ts title="src/market.ts"
+import { useCurrentNetwork } from '@mysten/dapp-kit-react';
+
+import { deepbook } from '@generated/deepbook.js';
+
+const network = useCurrentNetwork();
+const dex = deepbook.forNetwork(network).deepbook;
+
+// Pool ids, resolved at boot — pass these to the DeepBook SDK.
+const deepSui = dex.pools.find((p) => p.name === 'DEEP_SUI');
+// deepSui?.poolId / .baseCoinType / .quoteCoinType
+
+// Pyth prices. `price` is an integer in feed-native scale; apply `expo` to get
+// a human number: 345_000_000 * 10**-8 = 3.45.
+const sui = dex.pyth?.feeds.find((f) => f.symbol === 'SUI');
+const suiPrice = sui ? Number(sui.price) * 10 ** sui.expo : undefined; // 3.45
+```
+
+To place orders, build transactions with the
+[`@mysten/deepbook-v3`](https://www.npmjs.com/package/@mysten/deepbook-v3) SDK, using the resolved
+`poolId` and coin types from the bindings, and sign them with your wallet / dapp-kit.
+
+### Connect the SDK
+
+To place orders, extend your Sui client with the DeepBook extension built from the same per-network
+bindings — `deepbook.forNetwork(network).deepbook` — so the package, pool, and coin ids flip with a
+runtime `switchNetwork`:
+
+```ts title="src/App.tsx"
+import { useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
+import { deepbook as deepbookExtension } from '@mysten/deepbook-v3';
+
+import { deepbook } from '@generated/deepbook.js';
+
+const suiClient = useCurrentClient();
+const network = useCurrentNetwork();
+const bindings = deepbook.forNetwork(network).deepbook;
+
+const deepbookClient = suiClient.$extend(
+	deepbookExtension({
+		address: account.address,
+		// `packageIds`, `coins`, and `pools` map the bindings' resolved ids
+		// (bindings.packageId, bindings.registryId, bindings.pools[].poolId)
+		// into the extension's shapes.
+		packageIds: buildPackageIds(bindings),
+		coins: buildCoinMap(coins),
+		pools: buildPoolMap(bindings),
+	}),
+);
+```
+
+The extension carries DeepBook's package, registry, coin, and pool ids — all read from the bindings,
+nothing hard-coded — so `deepbookClient.deepbook.deepBook.swapExactQuoteForBase(...)` and the rest
+of the SDK target the pools your stack just created. See
+[`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader/src/App.tsx)
+for the `buildPackageIds` / `buildCoinMap` / `buildPoolMap` helpers and a complete trading UI —
+multiple pools, multiple feeds, and swap execution.
+
+## Pyth price feeds
+
+[Pyth](https://pyth.network/) is a price oracle: it publishes signed, frequently-updated prices for
+assets like SUI, USDC, and BTC. DeepBook's `pyth` option wires those feeds into your stack so your
+app, UI, or indexer can display prices and your config can reference oracle-priced assets. **Pyth is
+optional and independent of pools** — pools trade fine without it; feeds are consumed off-chain by
+your app, not by the on-chain order book.
+
+In **`local` mode** the stack publishes the DeepBook sandbox's **mock** Pyth package and creates a
+price object for each feed you list, initialized to the price you give it. You fully control these
+prices — there is no live oracle on a local network. In **`known` mode** (testnet / mainnet) the
+feeds resolve to Pyth's **live** on-chain deployment, so prices come from the real network.
+
+### Configuring a feed
+
+```ts
+{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 }
+```
+
+- **`symbol`** — a label you choose; how you'll look the feed up in app code
+  (`feeds.find(f => f.symbol === 'SUI')`).
+- **`feedId`** — Pyth's **global** price-feed identifier (a 32-byte hex string). It's the _same_ id
+  on every network, so the same feed id you use locally is the one that resolves on mainnet. The
+  package exports the common ones as constants: `SUI_PRICE_FEED_ID`, `USDC_PRICE_FEED_ID`,
+  `DEEP_PRICE_FEED_ID`.
+- **`initialPrice`** — the starting price for the local mock feed, as an integer in feed-native
+  scale. Ignored by live (`known`-mode) feeds, which carry real prices.
+- **`expo`** — the decimal exponent. The real-world price is `price * 10 ** expo`. Pyth feeds are
+  conventionally `expo: -8`, so `345_000_000n` with `expo: -8` is `3.45`. (Also accepts optional
+  `confidence` and `emaPrice`, both defaulting sensibly for deterministic local feeds.)
+
+### Custom feeds
+
+For an asset not in the well-known set, wrap its Pyth feed id with `pythPriceFeedId(...)`. You can
+find feed ids in the [Pyth price-feed registry](https://www.pyth.network/developers/price-feed-ids):
+
+```ts
+import { pythPriceFeedId } from '@mysten-incubation/devstack';
+
+const BTC_PRICE_FEED_ID = pythPriceFeedId(
+	'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+);
+
+// ...then add it to `feeds`:
+{ symbol: 'BTC', feedId: BTC_PRICE_FEED_ID, initialPrice: 6_500_000_000_000n, expo: -8 }
+```
+
+## Known mode
+
+Known mode references an existing DeepBook deployment. Pass explicit ids, or use a supported network
+shortcut when available. Pyth resolves to the live network deployment automatically — you don't pass
+a `pyth` block.
+
+```ts title="devstack.config.ts"
+import { deepbook, defineDevstack, sui } from '@mysten-incubation/devstack';
+
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const dex = deepbook({
+	mode: 'known',
+	packageId: '0x...',
+	registryId: '0x...',
+});
+
+export default defineDevstack({ members: [liveSui, dex] });
+```
+
+## Override mode
+
+Override mode wraps explicit deployment ids when you already manage the deployment yourself. It does
+not publish or manage DeepBook locally.
+
+```ts title="devstack.config.ts"
+const dex = deepbook({
+	mode: 'override',
+	packageId: '0x...',
+	registryId: '0x...',
+	adminCapId: '0x...',
+});
+```
+
+`deepbook(...)` returns a service member you add to `members`. Known testnet/mainnet helpers may
+also contribute funding strategies for service-owned coins when the mode supports them.
