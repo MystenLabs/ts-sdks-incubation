@@ -1,6 +1,6 @@
 ---
 title: Local Development
-description: How the local supervisor, manifest, and generated files fit together.
+description: Stack state, on-disk outputs, and the day-to-day local commands.
 ---
 
 Local mode is the default. `sui()` starts an in-stack local network; include it once in any stack
@@ -44,6 +44,8 @@ const app = hostService({
 export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 ```
 
+## Stack state
+
 State is scoped by app and stack name:
 
 ```txt
@@ -52,27 +54,29 @@ State is scoped by app and stack name:
     main/
       manifest.json
       projection.v3.json
+      deployment.json
       snapshots/
       runtime/
 ```
 
-## Routing
+A `hostService(...)` dev server is reached through a stable routed endpoint —
+`http://dev.<app>.localhost:5175` by default — even though its raw process port may change between
+runs. The router model behind these stable hostnames (and how plugins publish named endpoints into
+the manifest) is covered in [Refs and dependencies](/devstack/reference/internals/refs-and-tags) and
+[Lifecycle](/devstack/reference/internals/lifecycle).
 
-Devstack routes stack endpoints through stable localhost hostnames. A `hostService(...)` dev server
-may bind an automatically assigned process port, but the default routed endpoint remains
-`http://dev.<app>.localhost:5175`. That stable route is what generated config, Playwright helpers,
-wallet origin policy, and the manifest should use.
+## Outputs
 
-The same router model is used for service endpoints such as wallet, Sui RPC/faucet, Walrus, and
-Seal: plugins publish named endpoints into the manifest, and the router maps those names to the
-current upstream process or container port.
+Two kinds of output live in different places:
 
-Generated files are separate. The committed `src/generated` tree is written by `devstack codegen`,
-is id-free, and is shared across every stack — it is not per-stack. Only the live ids file
-(`deployment.json`) and the dev `generated-extras` are written per stack under
-`.devstack/stacks/<stack>/`. See [Codegen](/devstack/codegen) for the full model.
+- The committed `src/generated` tree, written by `devstack codegen`. It is id-free and shared across
+  every stack.
+- The per-stack `deployment.json` and the dev-only extras, written under `.devstack/stacks/<stack>/`
+  by `devstack up` / `devstack apply`. These carry the live ids and dev-wallet state for one stack.
 
-Useful commands:
+See [Codegen](/devstack/codegen) for the full model.
+
+## Commands
 
 ```bash
 devstack up --renderer tui
@@ -82,12 +86,12 @@ devstack status --json
 ```
 
 `devstack apply` is safe to run while `devstack up` owns the same stack: it publishes a reconcile
-request to the live supervisor and waits, then re-emits the per-stack ids file and dev extras. If
-the stack is not live, it performs the reconcile in a one-shot run. It never rewrites the committed
-`src/generated` tree (that is `devstack codegen`).
+request to the live supervisor and waits, then re-emits the per-stack deployment file and dev
+extras. If the stack is not live, it performs the reconcile in a one-shot run. The committed
+`src/generated` tree stays the domain of `devstack codegen`.
 
-Use a different stack name when you want independent keys, snapshots, runtime state, and ids file —
-the committed `src/generated` tree stays shared across all of them:
+Use a different stack name when you want independent keys, snapshots, runtime state, and deployment
+file — the committed `src/generated` tree stays shared across all of them:
 
 ```bash
 DEVSTACK_STACK=ci devstack apply

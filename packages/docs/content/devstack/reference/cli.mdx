@@ -18,10 +18,9 @@ Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app
 
 ### `devstack apply [options]`
 
-Re-emit the per-stack ids file and dev extras from a live or one-shot stack. The ids file is
-`deployment.json`; dev extras are the `generated-extras` tree. Reconciles through a live supervisor
-when present; otherwise boots once, emits, and exits. Never writes the committed `src/generated`
-tree — that is `devstack codegen`'s job.
+Re-emit the per-stack deployment file and dev extras from a live or one-shot stack. The deployment
+file is `deployment.json`. Reconciles through a live supervisor when present; otherwise boots once,
+emits, and exits. The committed `src/generated` tree is `devstack codegen`'s job.
 
 Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
@@ -30,8 +29,7 @@ Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--a
 
 Regenerate committed bindings from Move source (no stack boot). The committed tree is
 `src/generated`. Deterministic and stack-free: no Docker, no on-chain ids. Requires the `sui` CLI on
-`PATH` (the `sui move summary` step has no Docker fallback). Writes the committed tree only — never
-the ids file.
+`PATH` for the `sui move summary` step. Writes the committed tree only.
 
 Lifecycle: one-shot. Side effects: write. Docker: no. Requires: host `sui` CLI. Options: `--json`,
 `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
@@ -39,9 +37,12 @@ Lifecycle: one-shot. Side effects: write. Docker: no. Requires: host `sui` CLI. 
 
 ### `devstack dump-deployment [options]`
 
-Emit the stack deployment (deployment.json) for a real-network deploy. Writes the current (or
-booted) stack's `deployment.json` to `--out` or stdout — use it to obtain a committed deployment for
-the deploy (see [Codegen](/devstack/codegen)).
+Emit the stack deployment for a real-network deploy. With `--network <name>`, write a typed
+`deployments/<name>.ts` (`export const deployment = {…} satisfies AppNetworkDeployment`) next to
+your app's `src/` — the committed, `tsc`-checked authoring surface for going to production (see
+[Going to production](/devstack/going-to-production)). Without `--network`, emit the raw deployment
+envelope JSON to `--out` or stdout (see
+[Config & deployments](/devstack/codegen/config-and-deployments)).
 
 Lifecycle: live-aware. Side effects: write (or stdout). Docker: yes (boots one-shot if no live
 supervisor). Options: `--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`,
@@ -139,8 +140,8 @@ devstack apply
 `up` boots the stack and stays attached until you quit the TUI or interrupt the process. `apply`
 checks the selected stack first: if `devstack up` is live, it asks that supervisor to reconcile and
 waits for completion; if no supervisor is live, it boots the stack in one-shot mode, reconciles,
-re-emits the per-stack ids file and dev extras, and exits. `apply` does not touch the committed
-`src/generated` tree — run `devstack codegen` for that.
+re-emits the per-stack deployment file and dev extras, and exits. Run `devstack codegen` to refresh
+the committed `src/generated` tree.
 
 Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
 `--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`,
@@ -225,9 +226,9 @@ loading a config — pass `--state-dir`, set `$DEVSTACK_STATE_DIR`, or run from 
 
 Every CLI failure carries one of the codes below in `process.exitCode`, and under `--json` it also
 appears in the structured error envelope as `error.exitCode` (numeric) and `error.code` (the name).
-"1 for everything" is not used. The devstack-domain block (40–43) is a private extension carved out
-below the standard sysexits range so it never collides with the OS table; numbers are stable and
-never reused. `devstack schema --json` emits this table for automation.
+Each failure maps to a specific code. The devstack-domain block (40–43) is a private extension
+carved out below the standard sysexits range so it never collides with the OS table; numbers are
+stable and never reused. `devstack schema --json` emits this table for automation.
 
 | Code | Name                 | Meaning                                                             |
 | ---- | -------------------- | ------------------------------------------------------------------- |
@@ -247,5 +248,5 @@ never reused. `devstack schema --json` emits this table for automation.
 | `78` | `CONFIG`             | User configuration error.                                           |
 
 Argv and usage parse failures — unknown flags, malformed args, mutually-exclusive flag pairs, or
-ambiguous references — exit `64` (not `1`). Under `--json`, a parse failure still emits the
-structured error envelope with `error.exitCode` of `64` and `error.code` of `USAGE`.
+ambiguous references — exit `64`. Under `--json`, a parse failure emits the structured error
+envelope with `error.exitCode` of `64` and `error.code` of `USAGE`.

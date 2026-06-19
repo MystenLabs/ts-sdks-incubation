@@ -54,14 +54,12 @@ All fields are optional.
 
 - `port` — preferred loopback port for the dashboard's HTTP/GraphQL server. The port broker
   forward-scans if it's busy.
-- `bindAddress` — the NIC the server binds, default `'0.0.0.0'`. The router runs in Docker and must
-  reach this host process through the host-gateway address on native Linux, so a `127.0.0.1`-only
-  listener would be unreachable (and 502 through the router). The public URL stays router-fronted
-  and stack-scoped regardless.
+- `bindAddress` — the NIC the server binds, default `'0.0.0.0'`. The router runs in Docker and
+  reaches this host process through the host-gateway address on native Linux, so the default binds
+  broadly enough for that path. The public URL stays router-fronted and stack-scoped regardless.
 - `allowedOrigins` — extra CORS origins merged onto the stack-scoped allowlist, for headless test
-  runners and custom dev hosts. This deliberately does **not** auto-allow a bare `*.localhost` form:
-  that is not stack-scoped, so a sibling stack could otherwise drive the destructive control-plane
-  mutations cross-origin.
+  runners and custom dev hosts. The allowlist stays stack-scoped: it does not include a bare
+  `*.localhost` form, so a sibling stack's origin cannot drive the control-plane mutations.
 
 The queryable cross-service log store the dashboard reads is owned by the supervisor, not this
 plugin. Tune its retention with environment variables:
@@ -71,8 +69,9 @@ plugin. Tune its retention with environment variables:
 
 ## Security
 
-The dashboard's destructive control-plane mutations (restart, shutdown, advance-clock, fund) are
-guarded by a **stack-scoped CORS allowlist** owned by the dashboard server itself. The allowlist
-covers this stack's own router-fronted origin, the direct loopback origins, and any caller-supplied
-`allowedOrigins` — but not a bare `*.localhost`. A sibling stack's origin therefore cannot drive
-these mutations cross-origin.
+<Callout type="info">
+	The dashboard's control-plane mutations (restart, shutdown, advance-clock, fund) are guarded by a
+	**stack-scoped CORS allowlist** owned by the dashboard server. It covers this stack's own
+	router-fronted origin, the direct loopback origins, and any caller-supplied `allowedOrigins`. Only
+	those origins can drive the mutations.
+</Callout>

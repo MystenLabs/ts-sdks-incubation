@@ -151,13 +151,18 @@ resolved `dex` value exposes `hasSeedLiquidity: true` once any pool placed its s
 
 ### Reading pools and prices from your app
 
-`deepbook(...)` generates typed bindings into `src/generated/deepbook.ts`. Import them to read the
-created pool ids and Pyth feed prices without hard-coding anything:
+`deepbook(...)` generates typed bindings into `src/generated/deepbook.ts`. DeepBook is a per-network
+service: `deepbook.forNetwork(net).deepbook` returns the bindings for the network your wallet is on,
+so the pool, coin, and feed ids stay in lockstep with a runtime `switchNetwork`. Read them to get
+the created pool ids and Pyth feed prices without hard-coding anything:
 
 ```ts title="src/market.ts"
-import { deepbook } from './generated/deepbook.js';
+import { useCurrentNetwork } from '@mysten/dapp-kit-react';
 
-const dex = deepbook.deepbook;
+import { deepbook } from '@generated/deepbook.js';
+
+const network = useCurrentNetwork();
+const dex = deepbook.forNetwork(network).deepbook;
 
 // Pool ids, resolved at boot — pass these to the DeepBook SDK.
 const deepSui = dex.pools.find((p) => p.name === 'DEEP_SUI');
@@ -203,8 +208,8 @@ const deepbookClient = suiClient.$extend(
 ```
 
 The extension carries DeepBook's package, registry, coin, and pool ids — all read from the bindings,
-nothing hard-coded — so `deepbookClient.deepbook.deepBook.swapExactQuoteForBase(...)` and the rest of
-the SDK target the pools your stack just created. See
+nothing hard-coded — so `deepbookClient.deepbook.deepBook.swapExactQuoteForBase(...)` and the rest
+of the SDK target the pools your stack just created. See
 [`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader/src/App.tsx)
 for the `buildPackageIds` / `buildCoinMap` / `buildPoolMap` helpers and a complete trading UI —
 multiple pools, multiple feeds, and swap execution.

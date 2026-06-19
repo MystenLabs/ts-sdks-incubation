@@ -1,6 +1,8 @@
 ---
 title: Get started
-description: Boot a local Sui stack, fund accounts, publish packages, wire your app, and generate typed bindings — all from one TypeScript config.
+description:
+  Boot a local Sui stack, fund accounts, publish packages, wire your app, and generate typed
+  bindings — all from one TypeScript config.
 ---
 
 Devstack composes a local Sui development stack from one TypeScript config. From a single
@@ -91,10 +93,10 @@ export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
 ```
 
 The generated files are importable from application code through the `@generated` alias. The
-generated config is a flat set of buckets — the active network and the package MVR overrides both
-live in the single `config.ts` bucket. Wire dapp-kit from `@generated/config.js` (the typed config
-object) and `@generated/config-runtime.js` (the loud-failing id resolvers). The dev wallet is
-**not** wired in app code: in dev the devstack Vite plugin injects it on the page and dApp Kit
+generated config is a flat set of buckets; the network set and the package MVR overrides both live
+in the single `config.ts` bucket. Wire dapp-kit from `@generated/config.js` — the typed config
+object exposes `config.networkNames`, `config.defaultNetwork`, and `config.forNetwork(net)`. The dev
+wallet is injected automatically: in dev the devstack Vite plugin puts it on the page and dApp Kit
 auto-discovers it via wallet-standard, and a production build carries no dev wallet.
 
 ```ts title="src/dapp-kit.ts"
@@ -102,30 +104,28 @@ import { createDAppKit } from '@mysten/dapp-kit-react';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
-import { resolveActiveNetwork } from '@generated/config-runtime.js';
-
-const devstackNetwork = 'localnet' as const;
-
-// The active network's connection is runtime-resolved (injected via
-// `__DEVSTACK_IDS__`, never baked into the committed tree).
-// `resolveActiveNetwork()` returns the active entry and fails loudly if absent.
-const activeNetwork = resolveActiveNetwork();
 
 export const dAppKit = createDAppKit({
-	networks: [devstackNetwork],
-	defaultNetwork: devstackNetwork,
+	networks: [...config.networkNames],
+	defaultNetwork: config.defaultNetwork,
 	autoConnect: import.meta.env.DEV,
-	createClient() {
+	createClient(network) {
+		// `config.forNetwork(net)` returns the resolved deployment for the
+		// selected network, so a runtime `switchNetwork` flips ids in lockstep.
+		const net = config.forNetwork(network);
 		return new SuiGrpcClient({
-			network: devstackNetwork,
-			baseUrl: activeNetwork.rpc,
+			network,
+			baseUrl: net.rpc,
 			// Generated bindings default `package` to `@local/<name>`;
-			// `config.mvrOverrides` points each name at its deployed id.
-			mvr: { overrides: { packages: config.mvrOverrides } },
+			// `mvrOverrides` points each name at its deployed id.
+			mvr: { overrides: { packages: net.mvrOverrides } },
 		});
 	},
 });
 ```
+
+See [Config & deployments](/devstack/codegen/config-and-deployments) for the full config surface and
+the loud-fail behavior.
 
 ## First boot
 
@@ -135,14 +135,14 @@ Run the stack:
 pnpm devstack up
 ```
 
-Reconcile from another shell, CI, or before typechecking:
+Reconcile from another shell or CI:
 
 ```bash
 pnpm devstack apply
 ```
 
 If `pnpm devstack up` is already live for this stack, `apply` reuses that supervisor and waits for
-it to finish. Without a live supervisor, it runs the same setup in one-shot mode.
+it to finish; without a live supervisor, it runs the same setup in one-shot mode.
 
 Use the generated files from `src/generated`, and treat `.devstack/` as runtime state only.
 
@@ -165,8 +165,8 @@ The public package surface is:
 - Build integrations: `@mysten-incubation/devstack/vitest`, `/vitest/setup`, `/playwright`,
   `/playwright/global-setup`, `/vite`, and `/runtime`.
 
-There are no exported `contracts`, `substrate`, `advanced`, or `dapp-kit` package subpaths. App code
-reads generated files and the runtime manifest instead of importing private helpers.
+App code reads the generated files and the runtime manifest; the internal `contracts`, `substrate`,
+and `advanced` modules are not part of the public surface.
 
 ## Where to go next
 

@@ -6,10 +6,9 @@ description: Current generated-file behavior.
 `devstack codegen` writes the committed `src/generated` tree. It is deterministic and stack-free: no
 stack boots, no Docker, no on-chain ids — running it twice on the same Move source produces the same
 files. It does require the
-[Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install) (`sui`) on your `PATH` —
-the `sui move summary` step has no Docker fallback, and codegen fails fast with an actionable error
-if `sui` is missing. The committed tree lives at a single, fixed location, shared across every
-stack:
+[Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install) (`sui`) on your `PATH`
+for the `sui move summary` step. The committed tree lives at a single, fixed location, shared across
+every stack:
 
 ```txt
 src/generated/
@@ -19,8 +18,9 @@ The output is a **flat set of aggregate buckets**, one per plugin domain — not
 tree. The committed set:
 
 ```txt
-config.ts            # sui networks + package handles (id-free; resolver calls)
-config-runtime.ts    # resolver implementations (fixed; reads __DEVSTACK_IDS__)
+config.ts            # sui networks + package handles (id-free; deployment lookups)
+config-runtime.ts    # deployment loader (fixed; reads __DEVSTACK_DEPLOYMENT__)
+deployment.ts        # the strict app-specific deployment type
 coins.ts             # coin types and metadata
 deepbook.ts          # pool ids and market config
 seal.ts              # seal key-server / vault handles
@@ -28,9 +28,12 @@ walrus.ts            # walrus endpoints and config
 bindings/<pkg>/<module>.ts   # generated Move bindings, one file per module
 ```
 
-Two more buckets — `accounts.ts` (generated test accounts) and `dev-wallet.ts` (dev-wallet config) —
-are **dev-only** and carry live per-stack state, so they are **not** part of the committed
-`src/generated` tree. See [Dev-only extras](#dev-only-extras) below.
+The `bindings/` tree is standard Sui Move codegen — `MoveStruct` BCS definitions and typed function
+builders, one file per module. Devstack drives the
+[`@mysten/codegen`](https://github.com/MystenLabs/ts-sdks/blob/main/packages/codegen#readme)
+generator for these; see its docs for how Move types, BCS, and function builders map to TypeScript.
+This page covers the devstack-specific layer on top: the bucket layout, the `@generated` alias, the
+`includePhantomTypeParameters` knob, and how on-chain ids reach the committed tree.
 
 ## Importing generated code
 
@@ -44,8 +47,8 @@ import { Vault } from '@generated/bindings/my_pkg/vault.js';
 ```
 
 The alias is wired by `devstackVitePlugin()` and a matching `tsconfig` `paths` entry. Because the
-committed tree is id-free (see [On-chain ids](#on-chain-ids-never-baked-into-codegen)), the same
-import works under every stack — only the injected ids differ, never the file location.
+committed tree is id-free (see [On-chain ids](#on-chain-ids)), the same import works under every
+stack — only the injected deployment differs, never the file location.
 
 ```ts title="vite.config.ts"
 import react from '@vitejs/plugin-react';
@@ -64,150 +67,50 @@ The alias prefix is coordinated in two places, both pointing at the same fixed `
    { "compilerOptions": { "paths": { "@generated/*": ["./src/generated/*"] } } }
    ```
 
-The dev-only extras (`accounts.ts`, `dev-wallet.ts`) live elsewhere and are reached through a
-separate `@devstack-dev` alias — see [Dev-only extras](#dev-only-extras).
-
 To regenerate the committed tree after changing Move source, run codegen:
 
 ```bash
 devstack codegen
 ```
 
-`devstack codegen` never boots a stack and never touches the ids file — it only rewrites
-`src/generated`. To refresh the live ids (and dev extras) for a running stack, use
-[`devstack apply`](#regenerating-ids-with-apply) instead.
+`devstack codegen` never boots a stack and never touches the deployment file — it only rewrites
+`src/generated`. To refresh the live deployment (real ids) for a running stack, use
+[`devstack apply`](#regenerating-the-deployment-with-apply) instead.
 
-### Regenerating ids with apply
+### Regenerating the deployment with apply
 
-`devstack apply` re-emits the per-stack `deployment.json` and the dev `generated-extras`
-(`accounts.ts`, `dev-wallet.ts`) from a live or one-shot stack. It **never** writes the committed
-`src/generated` tree — that is `devstack codegen`'s job alone.
+`devstack apply` re-emits the per-stack `deployment.json` from a live or one-shot stack. It writes
+the per-stack deployment, never the committed `src/generated` tree — that is `devstack codegen`'s
+job alone.
 
 ```bash
 devstack apply
 ```
 
 When a matching `devstack up` supervisor is live, `apply` asks it to emit from the current runtime
-state. Otherwise, `apply` boots the stack once, emits the ids file and extras, and exits.
+state. Otherwise, `apply` boots the stack once, emits the deployment, and exits.
 
-## On-chain ids: never baked into codegen
+## On-chain ids
 
 Codegen output is deterministic and stack-free. The committed `config.ts` carries **no** on-chain
-ids — each id is a `resolveId(...)` call (see [Resolver API](#resolver-api)) into the generated
-`config-runtime.ts`, which reads a build-time-injected `__DEVSTACK_IDS__` global. This keeps the
-commands cleanly decoupled:
+ids — each id is resolved at runtime from a build-time-injected `__DEVSTACK_DEPLOYMENT__` global
+through the generated `config-runtime.ts`. This keeps the commands cleanly decoupled:
 
 - `pnpm codegen` / `devstack codegen` — regenerates the committed `src/generated` tree from Move
   source. Deterministic, stack-free, no Docker (requires the `sui` CLI on `PATH`). Writes the
-  committed tree only — never the ids file.
+  committed tree only — never the deployment file.
 - `pnpm dev` / `devstack up` — boots the stack and writes a gitignored, per-stack
   `.devstack/stacks/<stack>/deployment.json`; the [Vite plugin](#importing-generated-code) injects
-  those live ids automatically in dev. It does **not** rewrite the committed tree.
-- `devstack apply` — re-emits **only** the per-stack ids file and the dev `generated-extras` from a
-  live (or one-shot) stack. It never writes the committed `src/generated` tree.
+  it automatically in dev. It does not rewrite the committed tree.
+- `devstack apply` — re-emits the per-stack deployment from a live (or one-shot) stack. It never
+  writes the committed `src/generated` tree.
 - `pnpm build` (`tsc -b && vite build`) — stack-free and sub-second; works on a clean clone.
 
-A build with **no** injected ids throws `DevstackConfigMissingError` at runtime — loud and
-actionable, never a silent all-zero id.
+The deployment loader, the strict `deployment.ts` type, the loud-fail behavior, and the dapp-kit
+handoff are covered in [Config & deployments](/devstack/codegen/config-and-deployments). To author a
+deployment for a real network, see [Going to production](/devstack/going-to-production).
 
-## Dev-only extras
-
-`accounts.ts` (generated test accounts) and `dev-wallet.ts` (dev-wallet config) carry live,
-per-stack state, so they are **not** committed. They are emitted into a per-stack directory under
-`.devstack` and reached through a separate `@devstack-dev` alias:
-
-```txt
-.devstack/stacks/<stack>/generated-extras/
-  accounts.ts
-  dev-wallet.ts
-```
-
-```ts
-import { accounts } from '@devstack-dev/accounts.js';
-```
-
-The per-stack manifest records where these two pieces live: `codegen.deploymentFile` (the
-`deployment.json` path) and `codegen.extrasDir` (the `generated-extras` directory). The committed
-`src/generated` tree is shared and stack-invariant; only the ids file and dev extras vary per stack.
-Two stacks of the same app (for example `pnpm dev` on the default stack and `pnpm test:e2e` on an
-`e2e` stack) coexist with distinct ids files and extras dirs but the **same** committed
-`src/generated`.
-
-## Resolver API
-
-The committed `config.ts` (and your own code, if you need it) reach on-chain values through resolver
-functions exported from the generated `config-runtime.ts`. Each reads the build-injected
-`__DEVSTACK_IDS__` global and throws a `DevstackConfigMissingError` when a required value is absent
-— never a silent zero.
-
-| Resolver                        | Returns                                                                        |
-| ------------------------------- | ------------------------------------------------------------------------------ |
-| `resolveId(mvrPlaceholder)`     | The on-chain package id for an MVR placeholder (`@local/<slug>`).              |
-| `resolveValue(ns, key)`         | A namespaced value (object ids, pool ids, coin types, walrus/seal endpoints).  |
-| `resolveValueOptional(ns, key)` | Same as `resolveValue`, but returns `undefined` instead of throwing.           |
-| `resolveNetwork()`              | The active network's name (e.g. `'localnet'`).                                 |
-| `resolveNetworks()`             | All resolved networks as a `{ [name]: { rpc, … } }` map.                       |
-| `resolveActiveNetwork()`        | The active network's connection entry: `{ rpc, chainId?, faucet?, graphql? }`. |
-
-```ts title="src/generated/config.ts (excerpt)"
-import { resolveId, resolveValue, resolveNetworks } from './config-runtime.js';
-
-export const helloPackageId = resolveId('@local/hello');
-export const vaultObjectId = resolveValue('package:hello:objects', 'vault');
-export const usdcType = resolveValue('coin:USDC', 'fullCoinType');
-export const networks = resolveNetworks();
-```
-
-`config-runtime.ts` is **fixed** — codegen writes it once and never re-emits it with ids baked in.
-All variation flows through `__DEVSTACK_IDS__`, which the [Vite plugin](#importing-generated-code)
-injects at build time from the ids file (live dev) or a committed deployment (production builds).
-
-## Deploy to a real network
-
-Production ids come from a **committed deployment file** for the known deployment — the same
-`deployment.json` schema the boot writes, selected at build time. The supported way to obtain one is
-`devstack dump-deployment`, which emits the current (or booted) stack's ids to a file you commit:
-
-```bash
-# Option A: boot against the target network, then dump its ids to a committed file
-devstack up --network testnet
-devstack dump-deployment --network testnet --out config/testnet.ids.json
-```
-
-`dump-deployment` writes the same `deployment.json` that boot persists to
-`.devstack/stacks/<stack>/deployment.json`; with no `--out` it prints to stdout. You can also copy
-the underlying file directly, but `dump-deployment` is the supported, network-selectable path.
-
-```jsonc
-// Option B: hand-author config/testnet.ids.json (the deployment.json schema)
-{
-	"network": "testnet",
-	"networks": { "testnet": { "rpc": "https://fullnode.testnet.sui.io:443" } },
-	"packages": { "<name>": { "id": "0x…", "objects": { "<key>": "0x…" } } },
-	"accounts": { "<name>": "0x…" },
-	"mvrOverrides": { "<mvr-placeholder>": "0x…" },
-	"values": { "<namespace>": { "<key>": "…" } }, // optional: pool ids, coin types, walrus/seal endpoints
-}
-```
-
-Commit the file, then point the build at it — via the Vite plugin `ids` option (relative to the Vite
-root) or the `DEVSTACK_DEPLOYMENT_FILE` env path pointer (**not** a JSON env blob):
-
-```ts title="vite.config.ts"
-import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
-
-export default defineConfig({
-	plugins: [devstackVitePlugin({ ids: './config/mainnet.ids.json' })],
-});
-```
-
-```bash
-DEVSTACK_DEPLOYMENT_FILE=./config/mainnet.ids.json pnpm build
-```
-
-Then deploy the static bundle as usual.
-
-## Phantom type parameters and type tags
+## Phantom type parameters
 
 Move structs routinely carry `phantom` type parameters — `Vault<phantom T>`, coin and pool markers,
 capability types. By default the generated bindings **drop** them: a struct whose type parameters
@@ -242,9 +145,8 @@ export function Vault<T extends BcsType<any>>(...typeParameters: [T]) {
 }
 ```
 
-This is what makes the generated classes work well as type tags: you can no longer forget the
-phantom, the tag is tracked at the type level (not widened to `string`), and tags compose by
-nesting.
+This lets the generated classes double as type tags: the phantom is tracked at the type level (not
+widened to `string`), and tags compose by nesting.
 
 ### Type arguments: strings or generated classes
 

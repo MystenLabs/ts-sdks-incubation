@@ -58,11 +58,11 @@ rather than calling `ensureContainer` directly — the helper stamps the `Contai
 - `ensureContainer(spec)` — idempotent container create with a `recreate` policy enum
   (`'on-failure' | 'never' | 'on-config-change'`). Returns a `ContainerHandle` whose scope owns the
   finalizer.
-- `exec(handle, argv, opts?)` — one-shot command inside a running container. The runtime does NOT
-  promote a non-zero exit to failure — the caller is the policy holder (for example, Sui's internal
-  indexer-db sidecar treats `pg_isready` non-zero as "retry").
+- `exec(handle, argv, opts?)` — one-shot command inside a running container. The caller is the
+  policy holder for a non-zero exit (for example, Sui's internal indexer-db sidecar treats
+  `pg_isready` non-zero as "retry").
 - `runOneShot(spec)` — `docker run --rm` for transient containers (e.g. the Move build path).
-- `inspectByLabels(labels)` — enumerate by ownership labels, never by tag prefix alone.
+- `inspectByLabels(labels)` — enumerate by ownership labels.
 - `followLogs(handle)` — `Stream<string, ContainerRuntimeError>`.
 - `pause(handle)`, `unpause(handle)`, `stop(handle, grace)` — explicit lifecycle.
 - `pauseAndCommit(handle)` — snapshot commit; running containers are paused first.
@@ -70,8 +70,8 @@ rather than calling `ensureContainer` directly — the helper stamps the `Contai
   `tagImage(src, newTag, opts?)`, `removeImage(ref)` — snapshot image transport.
 - `sweepOrphans(labelMatch)`, `removeManagedContainers(labelMatch)`,
   `removeManagedImages(labelMatch)`, `removeManagedNetworks(labelMatch)`,
-  `removeManagedVolumes(labelMatch)` — `prune` and `wipe` use these. Implementations MUST enumerate
-  by ownership labels.
+  `removeManagedVolumes(labelMatch)` — `prune` and `wipe` use these, enumerating by ownership
+  labels.
 
 ## Abstraction boundaries
 

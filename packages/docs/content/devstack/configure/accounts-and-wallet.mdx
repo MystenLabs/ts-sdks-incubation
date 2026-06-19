@@ -25,7 +25,7 @@ const demo = account('demo', {
 });
 ```
 
-Cross-coin funding uses direct coin members, not string records:
+Cross-coin funding takes a list of `{ coin, amount }` members:
 
 ```ts
 import { account } from '@mysten-incubation/devstack';
@@ -69,7 +69,6 @@ export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 
 `wallet({ accounts: 'all' })` expands to every account member in the final `defineDevstack(...)`
 call. The wallet binds to `0.0.0.0` by default, stores its pairing token under the stack runtime
-root, emits its dapp-kit handles into the dev-only (gitignored) `generated-extras` tree — never the
-committed `src/generated/config.ts` — and automatically allows the stack-scoped dev-server route
-such as `http://dev.<app>.localhost:5175`. Add `allowedOrigins` only for nonstandard browser
-origins.
+root, emits its dapp-kit handles into the dev-only (gitignored) extras under
+`.devstack/stacks/<stack>/`, and allows the stack-scoped dev-server route such as
+`http://dev.<app>.localhost:5175`. Add `allowedOrigins` for nonstandard browser origins.

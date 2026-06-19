@@ -64,19 +64,17 @@ already live, `apply` reuses it instead of starting a second stack.
 
 ## How live ids reach a test
 
-The committed `src/generated` tree is id-free — every on-chain value is a resolver call that reads
-the build-injected `__DEVSTACK_IDS__` global (see [Codegen](/devstack/codegen)). Under
-Vitest there is a timing problem: Vite's `define` evaluates `__DEVSTACK_IDS__` **before**
-`globalSetup` boots the stack, so it bakes to `null` in the Node test environment.
+The committed `src/generated` tree is id-free — every on-chain value resolves at runtime through
+`loadDeployment()`, which reads the build-injected `__DEVSTACK_DEPLOYMENT__` global (see
+[Codegen](/devstack/codegen)). Under Vitest, Vite's `define` evaluates `__DEVSTACK_DEPLOYMENT__`
+before `globalSetup` boots the stack, so the injected blob is `null` in the Node test environment. A
+Node-only fallback bridges that:
 
-The handoff closes that gap:
-
-1. Vitest's `globalSetup` boots the stack and publishes the booted stack's ids-file path as
+1. Vitest's `globalSetup` boots the stack and publishes the booted stack's deployment-file path as
    `process.env.DEVSTACK_DEPLOYMENT_FILE`.
-2. The generated `config-runtime.ts` carries a Node-only lazy fallback: when `__DEVSTACK_IDS__` is
-   `null` and `process.env.DEVSTACK_DEPLOYMENT_FILE` is set, it reads that file the first time a
-   resolver is called.
+2. The generated `config-runtime.ts` reads that file the first time `loadDeployment()` is called,
+   when `__DEVSTACK_DEPLOYMENT__` is `null` and `process.env.DEVSTACK_DEPLOYMENT_FILE` is set.
 
-The net effect is that resolver calls inside a test pick up the **live** ids of the stack that
-`globalSetup` booted, with no extra wiring. This fallback is Node-only; the browser build still
-relies on the injected `__DEVSTACK_IDS__` value.
+The net effect is that config reads inside a test pick up the **live** ids of the stack that
+`globalSetup` booted, with no extra wiring. This fallback is Node-only; the browser build uses the
+injected `__DEVSTACK_DEPLOYMENT__` value.

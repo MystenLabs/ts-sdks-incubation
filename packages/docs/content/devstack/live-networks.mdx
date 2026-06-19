@@ -54,178 +54,40 @@ devstack up --network mainnet
 devstack up --network testnet-fork
 ```
 
-Fork mode runs a local `sui-fork` container against an upstream public network, serving a **gRPC**
-endpoint (not legacy JSON-RPC) on the same devstack Sui RPC route. It does not expose a GraphQL
-endpoint, and the balance APIs (`getBalance` / `listBalances` / `getCoinInfo`) intentionally panic
-in fork mode — read balances through `ChainProbe`, and fund accounts through the fork faucet
-(below).
-
-First boot compiles `sui-fork` from a pinned Sui revision — a one-time, multi-minute build that the
-supervisor row narrates so it doesn't look hung; the content-addressed image is reused on later
-boots. To skip the build entirely, point at a prebuilt image with `image: { pull: '…' }` or set the
-`DEVSTACK_SUI_FORK_IMAGE` environment variable.
-
-If a slow first build or a large upstream checkpoint trips the ready probe, raise `readyTimeout` (a
-`sui()` option, `Duration`; default 180s) or inspect the `sui-fork` container logs with
-`docker logs <container>` — the ready-probe timeout message points at both.
-
-```ts
-import { defineDevstack, sui, account, localPackage } from '@mysten-incubation/devstack';
-
-const publisherAddress = process.env.PUBLISHER_ADDRESS!;
-const aliceAddress = process.env.ALICE_ADDRESS!;
-
-const forkedTestnet = sui({
-	mode: 'fork',
-	upstream: 'testnet',
-	seed: { addresses: [publisherAddress, aliceAddress] },
-});
-const publisher = account('publisher', {
-	kind: 'impersonate',
-	address: publisherAddress,
-});
-const alice = account('alice', {
-	kind: 'impersonate',
-	address: aliceAddress,
-});
-
-const pkg = localPackage('demo', {
-	sourcePath: './move/demo',
-	publisher,
-});
-
-export default defineDevstack({
-	members: [forkedTestnet, pkg],
-	stackName: 'fork-demo',
-});
-```
-
-`kind: 'impersonate'` accounts submit empty-signature transactions through the fork admin surface,
-which is useful for deterministic local replay, but no private key exists and direct signing APIs
-intentionally fail.
-
-Fork mode is for replaying against real upstream state while keeping writes local. Use it when a
-bug, package interaction, or funding shape only appears on a public network, but the test still
-needs repeatable local transactions and local snapshot/dev-wallet workflows. The
-`examples/fork-greeting` example is the smallest runnable stack: it forks testnet, faucet-funds
-ephemeral accounts from a default whale, publishes a Move package, and captures the published object
-id.
-
-The fork-specific knobs are:
-
-- `checkpoint` — pin the upstream checkpoint used to initialize the fork.
-- `seed.addresses` / `seed.objects` — preload upstream addresses or objects the local fork should
-  materialize.
-- `autoTick` — advance the fork clock periodically; pass `true` for the default cadence or
-  `{ intervalMs }` for a custom interval.
-
-```ts
-const forkedTestnet = sui({
-	mode: 'fork',
-	upstream: 'testnet',
-	checkpoint: 64_000_000,
-	seed: { addresses: [publisherAddress] },
-	autoTick: { intervalMs: 1_000 },
-});
-```
-
-Plugins that depend on the forked Sui member can use the mode-narrowed `ForkAdminSurface` through
-`sui.fork`: `status`, `advanceClock`, `advanceCheckpoint`, and `impersonate`.
-
-```ts
-import { Effect } from 'effect';
-import { definePlugin } from '@mysten-incubation/devstack';
-
-const forkProbe = definePlugin({
-	id: 'fork-probe',
-	role: 'task',
-	section: 'action',
-	dependsOn: { sui: forkedTestnet },
-	start: ({ sui }) =>
-		Effect.gen(function* () {
-			const fork = sui.fork;
-			if (fork === null) return null;
-			const before = yield* fork.status;
-			yield* fork.advanceCheckpoint;
-			yield* fork.advanceClock(1_000);
-			return { before, after: yield* fork.status };
-		}),
-});
-```
-
-Use `impersonate` when the test must act as a specific upstream address; use ephemeral accounts when
-the test only needs funded local signers. Ephemeral accounts have local private keys, work with the
-dev wallet, and receive SUI from the fork faucet. Impersonated accounts have no private key:
-devstack builds a transaction and submits it through the fork admin surface with an empty signature.
-
-### Funding test accounts (fork faucet)
-
-Fork networks have no HTTP faucet, so devstack funds accounts by **impersonating a large-reserve
-"whale" address** on the forked upstream and transferring SUI from it. For `testnet`, `mainnet`, and
-`devnet` a default whale ships built in, so **fork funding works with zero config** — ephemeral
-accounts auto-fund exactly like on localnet:
-
-```ts
-const forkedTestnet = sui({ mode: 'fork', upstream: 'testnet' });
-
-// Auto-funded from the default whale — no env vars, pre-funded addresses,
-// or impersonation needed:
-const publisher = account('publisher', { kind: 'ephemeral' });
-```
-
-To use your own funding source — or for an upstream with no default — set `faucet.whale` to an
-address holding a large single SUI coin. It's auto-added to the fork seed and validated at boot:
-
-```ts
-const forkedTestnet = sui({
-	mode: 'fork',
-	upstream: 'testnet',
-	faucet: { whale: process.env.FORK_WHALE! }, // large-reserve upstream address
-});
-```
-
-Funding flows through the normal faucet pathway, so ephemeral-account auto-funding and explicit SUI
-top-ups behave exactly as on localnet. `faucet.perRequestCapMist` caps a single request (default
-1000 SUI); `faucet: { enabled: false }` turns the faucet off. Point `faucet.whale` at any address
-holding a large single SUI coin (an active validator or a treasury address — find one via a block
-explorer); at boot the faucet checks that the whale has a SUI coin large enough to cover a default
-fund plus gas, and emits an actionable error if none does.
-
-Faucet-funded **real** (ephemeral) accounts are first-class in fork mode: they can publish packages,
-run actions, mint coins, and transfer value. Because `sui-fork` has no `simulate_transaction`, these
-transactions are built offline with an explicit gas budget (0.1 SUI), which also leaves a funded
-account headroom to move value rather than reserving its whole coin for gas.
-
 Network names accepted by `--network` and `DEVSTACK_NETWORK` are `localnet`, `testnet`, `mainnet`,
 `devnet`, `testnet-fork`, `mainnet-fork`, and `devnet-fork`; the same names are accepted with a
 `sui:` prefix. The `local` alias maps to `localnet`.
 
+## Forking a public network
+
+The `*-fork` networks run a local fork of an upstream public network — replaying against real
+on-chain state while keeping all writes local. Forking has its own configuration surface (the fork
+container, the impersonation faucet, the admin surface, and the seed/checkpoint knobs). See
+[Forking](/devstack/forking) for the full guide.
+
+## Live accounts
+
+Live accounts should use the `signer` variant: pass a `Keypair` built from an env-var secret, an
+inline `suiprivkey1...` literal, or a hardware/KMS `Signer`. The default ephemeral form is designed
+for local development, not custody of real assets.
+
+## Live-mode service factories
+
 Local-only services may refuse live or fork modes. Use the mode-specific factories when you want the
-type system to narrow available branches:
+type system to narrow available branches to a live chain:
 
 ```ts
 import { chainId, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
 
 const live = { mode: 'live', chain: chainId('sui:testnet') } as const;
-const fork = { mode: 'fork', chain: chainId('sui:testnet-fork') } as const;
 
 const wal = walrusFor(live).known({
 	systemObjectId: '0x...',
 	stakingPoolId: '0x...',
 	nodes: [],
 });
-const forkWal = walrusFor(fork).known({
-	systemObjectId: '0x...',
-	stakingPoolId: '0x...',
-	nodes: [],
-});
 
 const keyServer = sealFor(live).testnet({
-	objectId: '0x...',
-	keyServerUrl: 'https://example.test/key',
-});
-const forkKeyServer = sealFor(fork).forkKnown({
-	upstream: 'testnet',
 	objectId: '0x...',
 	keyServerUrl: 'https://example.test/key',
 });
@@ -236,26 +98,25 @@ const dex = deepbookFor(live).known({
 });
 ```
 
-Live accounts should use the `signer` variant: pass a `Keypair` built from an env-var secret, an
-inline `suiprivkey1...` literal, or a hardware/KMS `Signer`. Fork replay accounts can use
-`impersonate`. The default ephemeral form is designed for local development, not custody of real
-assets.
+See [Forking](/devstack/forking) for the fork-mode variants of these factories.
 
-### Network-options policy
+## Network-options policy
 
-The `devWallet` and `faucet` conveniences default **on** for every network **except live mainnet**,
-where they are hard-clamped **off**. This keeps localnet, fork, and even live testnet ergonomic for
-development while ensuring a build pointed at live mainnet can never ship a dev wallet or a faucet.
+The `devWallet` and `faucet` conveniences default **on** for every network except live mainnet,
+where they are clamped **off**. This keeps localnet, fork, and even live testnet ergonomic for
+development.
 
-`autoApproveSigning` defaults **off** on every network. A real app should exercise the actual
-connect and approve flow, so `pnpm dev` shows the wallet prompts rather than silently signing. Opt
-in where you want it:
+<Callout type="info">
+	On live mainnet, `devWallet`, `faucet`, and `autoApproveSigning` are clamped off regardless of
+	overrides — the clamp applies whenever the resolved surface network is live mainnet. A build
+	pointed at live mainnet ships no dev wallet, no faucet, and never auto-approves a real-funds
+	signature.
+</Callout>
+
+`autoApproveSigning` defaults **off** on every network. A real app exercises the actual connect and
+approve flow, so `pnpm dev` shows the wallet prompts. Opt in where you want it:
 
 - **Headless e2e** — set `DEVSTACK_AUTO_APPROVE=1` (the Vite plugin reads it ahead of the policy),
   or pass `autoApprove: true` to `devstackVitePlugin(...)`.
 - **Fast local iteration** — re-enable it for a network with a per-network override, e.g.
   `networkOptions: { localnet: { autoApproveSigning: true } }`.
-
-All three conveniences are hard-clamped **off** on live mainnet regardless of overrides — a
-real-funds signature is never auto-approved, and the clamp is not opt-out: it applies whenever the
-resolved surface network is live mainnet.

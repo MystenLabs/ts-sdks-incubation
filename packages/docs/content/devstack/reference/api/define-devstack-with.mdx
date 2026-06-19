@@ -63,9 +63,9 @@ illegal-mode factory access at the call site, before the stack runs.
   the returned tuple.
 - A `MissingProviders<...>` branded error surfaces at the call site if any plugin's `dependsOn`
   reference is not provided by the tuple.
-- A defensive runtime check verifies every element returned by the builder carries the plugin brand.
-  If you reach for `as unknown as AnyPlugin` and skip `definePlugin`, the composer throws
-  immediately with a clear message.
+- A runtime check verifies every element returned by the builder carries the plugin brand, so a
+  value that skips `definePlugin` (e.g. cast through `as unknown as AnyPlugin`) is rejected at
+  composition with a clear message.
 
 ## When to use which composer
 

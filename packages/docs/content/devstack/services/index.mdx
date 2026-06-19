@@ -1,42 +1,16 @@
 ---
 title: Services
-description: Walrus, Seal, DeepBook, host dev servers, and known on-chain dependencies.
+description: Walrus, Seal, and DeepBook stack services.
 ---
 
-The root package exports current service factories in lowercase. Compose only the behavior the
-options actually support, and include a dev server when the stack backs a browser app.
+The root package exports service factories in lowercase: `walrus()`, `seal()`, and `deepbook()`.
+Each runs in a local mode that publishes and manages the service on your local network, plus live
+modes that point at an existing deployment. Compose the mode the options support for the network
+you're targeting.
 
-## Dev server
-
-Use `hostService(...)` for the frontend process so `devstack up` starts and stops the app with the
-rest of the stack.
-
-```ts
-import {
-	HOST_SERVICE_PORT_TOKEN,
-	defineDevstack,
-	hostService,
-	sui,
-	wallet,
-} from '@mysten-incubation/devstack';
-
-const localnet = sui();
-const devWallet = wallet({ accounts: 'all' });
-const app = hostService({
-	name: 'app',
-	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
-	port: 5173,
-	ready: { kind: 'http' },
-	after: [devWallet] as const,
-});
-
-export default defineDevstack({ members: [localnet, app] });
-```
-
-The dev server binds the allocated process port injected through `HOST_SERVICE_PORT_TOKEN`, while
-the router exposes the stable dev endpoint on `http://dev.<app>.localhost:5175`. See
-[Dev servers](/devstack/configure/dev-server#port-assignment-and-routing) for the port
-assignment details.
+For the frontend dev server and fixed on-chain dependencies, see
+[Dev servers](/devstack/configure/dev-server) and
+[Known packages](/devstack/configure/known-packages) under Configure.
 
 ## Walrus
 
@@ -116,26 +90,7 @@ export default defineDevstack({
 });
 ```
 
-The current DeepBook surface only claims local pool creation, Pyth, margin, or market-maker behavior
-when those fields are present in the resolved value. Known mode still requires explicit deployed ids
-such as `packageId` and `registryId`, or a supported network shortcut. Local Pyth feeds are
-generated into the DeepBook bindings so app and Playwright code can assert the feed ids and initial
-prices that the stack created. See [DeepBook](/devstack/services/deepbook).
-
-## Known on-chain dependencies
-
-Use `knownPackage(name, { packageId })` for fixed deployed modules:
-
-```ts
-import { defineDevstack, knownPackage, sui } from '@mysten-incubation/devstack';
-
-const liveSui = sui({ mode: 'live', network: 'testnet' });
-const registry = knownPackage('registry', {
-	packageId: '0x...',
-	mvrPlaceholder: '@demo/registry',
-});
-
-export default defineDevstack({ members: [liveSui, registry] });
-```
-
-See [Known packages](/devstack/configure/known-packages).
+Known mode requires explicit deployed ids such as `packageId` and `registryId`, or a supported
+network shortcut. Local Pyth feeds are generated into the DeepBook bindings so app and Playwright
+code can assert the feed ids and initial prices that the stack created. See
+[DeepBook](/devstack/services/deepbook).

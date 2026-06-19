@@ -16,8 +16,8 @@ A plugin returned by `definePlugin(...)` is a
   (account, action, package publish). The supervisor uses the role to decide stop semantics.
 - `section` — **required** dashboard bucket the plugin's rows belong to:
   `'service' | 'package' | 'account' | 'action' | 'app' | 'other'`. The supervisor stamps this onto
-  every row at acquire-time so the renderer never has to pattern-match on plugin-name substrings. A
-  long-lived resource is usually `'service'`.
+  every row at acquire-time, so the renderer groups rows by section directly. A long-lived resource
+  is usually `'service'`.
 - `dependsOn` — a single plugin/ref, an array, or an object of plugin/refs. Resolved upstream values
   are passed to `start` in the same shape — single, positional array, or keyed object.
 - `start` — the `Effect` that produces the resolved value. May yield substrate services

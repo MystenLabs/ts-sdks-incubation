@@ -33,9 +33,21 @@ The package factory records `publisher` in `dependsOn`. The supervisor then orde
 before the publish step, and TypeScript can report a missing provider at the `defineDevstack(...)`
 call site.
 
-Package exports:
+## Endpoint routing
+
+Stack endpoints are reached through stable localhost hostnames rather than raw process or container
+ports. A `hostService(...)` dev server binds an automatically assigned process port, while its
+routed endpoint stays `http://dev.<app>.localhost:5175`. That stable route is what generated config,
+Playwright helpers, wallet origin policy, and the manifest use.
+
+The same router model covers service endpoints such as wallet, Sui RPC/faucet, Walrus, and Seal:
+plugins publish named endpoints into the manifest, and the router maps those names to the current
+upstream process or container port. Non-default stacks insert a stack segment into the hostname so
+parallel stacks coexist.
+
+## Package exports
 
 - The root package exports plugin-author helpers, capability declaration types, brands, lifecycle
   types, and manifest types.
 - `/contracts` and `/substrate` are not package exports. Internal modules may still exist in source,
-  but app and plugin-author code should import from the root package or build-integration subpaths.
+  but app and plugin-author code imports from the root package or build-integration subpaths.

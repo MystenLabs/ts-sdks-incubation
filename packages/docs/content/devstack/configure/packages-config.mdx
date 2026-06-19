@@ -1,20 +1,111 @@
 ---
 title: Packages
-description: Declaring local Move packages, the per-stack registry, and how packages are published and discovered.
+description:
+  Declaring local Move packages, the per-stack registry, and how package ids reach app code.
 ---
 
 Local Move packages are declared with `localPackage(...)` and published into the stack on boot. Each
-package gets an id in the per-stack registry, and that id is injected into the generated config at
-runtime.
+package's on-chain id is recorded in the per-stack registry, mapped to an MVR placeholder, and
+injected into the generated config at runtime — so app code references packages by name, never by a
+hard-coded `0x…`.
 
-{/* TODO(Phase 3): write the full Packages config page. Scope (from the docs restructure plan, Phase 3
-"Packages & coins"):
-- What packages *do*: publish + discover (local packages) vs verify (known packages).
-- The per-stack registry: how each package gets an id per stack, and how `DEVSTACK_STACK` swaps it.
-- How package ids reach app code: generated `config.packages.*` (for introspection) vs
-  `config.mvrOverrides` (what app/dapp-kit code actually uses) — note `packageId` is introspection
-  only.
-- Cross-link Codegen & ids (config-and-deployments) for the deployment/id channel, and
-  Configure > Known packages for fixed on-chain packages.
-- State the positive behavior once (Phase 3 tone rule).
-*/}
+```ts title="devstack.config.ts"
+import {
+	account,
+	coin,
+	defineDevstack,
+	localPackage,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+const localnet = sui();
+const alice = account('alice');
+
+const managedCoin = localPackage('managed_coin', {
+	sourcePath: resolve(HERE, 'move/managed_coin'),
+	publisher: alice,
+});
+
+export default defineDevstack({ members: [localnet, managedCoin], stackName: 'token-studio' });
+```
+
+## Publish + discover, vs verify
+
+`localPackage(...)` and `knownPackage(...)` are the two ways a package enters a stack — devstack
+either publishes it for you, or verifies one that already exists.
+
+- **`localPackage(name, opts)` — publish + discover.** Devstack builds the Move source, publishes it
+  with `opts.publisher` as the signer, and parses the on-chain package id, upgrade cap, and any
+  `capture`d object ids from the publish output. It also discovers coins the package mints (treasury
+  cap + metadata), so [`coin.fromPackage(...)`](/devstack/configure/coins-and-funding) and funding
+  work without extra wiring. Source comes from `sourcePath` (a local checkout) or `git` (a remote
+  repo cloned and cached per `url`/`rev`). Publishing is cached by content + chain, so an unchanged
+  package is reused across boots rather than republished.
+
+- **`knownPackage(name, opts)` — verify.** Devstack reads `opts.packageId` from the network to
+  confirm it exists and is the right kind of object — nothing is built or published. Use it for
+  modules that already live on-chain. See [Known packages](/devstack/configure/known-packages).
+
+### `localPackage` options
+
+| Option               | Purpose                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `sourcePath`         | Path to a local Move package root. Mutually exclusive with `git`.                                            |
+| `git`                | Remote source: `{ url, subdir?, rev? }`. Cloned and cached per `url`/`rev`.                                  |
+| `publisher`          | The account that signs the publish (an `account(...)` ref). Required.                                        |
+| `capture`            | Map keys to Move type suffixes (`{ boardId: '::board::Board' }`) to grab object ids from the publish output. |
+| `mvrPlaceholder`     | Override the default `@local/<slug>` placeholder.                                                            |
+| `excludeFromCodegen` | Keep the package out of generated Move bindings (still in `config`).                                         |
+
+## The per-stack registry
+
+Every package in a stack shares one registry, keyed by the name you give it (`'managed_coin'`). The
+registry maps that name to the resolved id for the **active stack**, so switching stacks with
+`DEVSTACK_STACK` re-publishes into a separate registry and yields a separate id — the same config
+code reads whichever stack is live, no edits required.
+
+## How package ids reach app code
+
+Each package gets an **MVR placeholder** — by default `@local/<slug>`, where the slug is the name
+lower-cased with underscores dashed (`managed_coin` → `@local/managed-coin`). That placeholder is
+the stable handle; the on-chain id is resolved against it at runtime. The generated `config.ts`
+exposes both, keyed off the active network's deployment:
+
+```ts title="src/generated/config.ts"
+import { loadDeployment, requireId } from './config-runtime.js';
+
+const __deployment = loadDeployment();
+const dep = __deployment.forNetwork(__deployment.defaultNetwork);
+
+export const config = {
+	forNetwork: __deployment.forNetwork,
+	mvrOverrides: {
+		'@local/managed-coin': requireId(dep, '@local/managed-coin'),
+	},
+	packages: {
+		managed_coin: {
+			mvr: '@local/managed-coin',
+			packageId: requireId(dep, '@local/managed-coin'),
+		},
+	},
+} as const;
+```
+
+- **`config.mvrOverrides`** is what app and dapp-kit code hands to the SDK — it maps each
+  placeholder to the active network's package id, so MVR-named calls resolve to the package your
+  stack published.
+- **`config.packages.<name>.packageId`** is for introspection (logging, debugging, reading the id
+  directly). App code routes through `mvrOverrides`, not `packageId`.
+
+`requireId` reads the injected deployment and fails loudly with `DevstackConfigMissingError` if a
+package's id is missing — never a silent zero. Packages declared with `capture` also expose their
+captured object ids at `config.packages.<name>.objects.<key>`.
+
+The deployment that backs `requireId` / `forNetwork` — the per-network unit, the envelope, and the
+strict generated type used for production — is documented in
+[Config & deployments](/devstack/codegen/config-and-deployments).

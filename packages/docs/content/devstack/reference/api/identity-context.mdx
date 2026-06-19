@@ -20,12 +20,11 @@ interface Identity {
 ```
 
 `app` and `stack` are brand-typed string aliases so they cannot be confused with each other at the
-type level. `network` is a plain string: an **opaque, substrate-blind label** the caller supplies
-once at boot. The substrate NEVER parses it or branches on its value — it carries no network/mode
-semantics at this layer; it is threaded purely as a correlation/display label (supervisor labels,
-span attributes, snapshot provenance). The CLI / `runStack` happen to set it to the resolved network
-name (`'localnet'`, `'testnet'`, `'mainnet-fork'`, …), but that is a producer convention, not a
-substrate primitive.
+type level. `network` is a plain string: an **opaque label** the caller supplies once at boot. The
+substrate threads it purely as a correlation/display value (supervisor labels, span attributes,
+snapshot provenance) and stores it verbatim — it carries no network/mode semantics at this layer.
+The CLI / `runStack` set it to the resolved network name (`'localnet'`, `'testnet'`,
+`'mainnet-fork'`, …) by convention.
 
 ## Where identity comes from
 
@@ -33,8 +32,7 @@ substrate primitive.
   `defineDevstack({ appName })` or the `--app` CLI flag overrides it.
 - `stack` — `defineDevstack({ stackName })` or the `--stack` CLI flag. Defaults to `'main'`.
 - `network` — the resolved network name, supplied by the CLI / `runStack` after the `sui()` plugin
-  contributes its mode (`--network`, `$DEVSTACK_NETWORK`, or the config default). The substrate
-  stores it verbatim and never interprets it.
+  contributes its mode (`--network`, `$DEVSTACK_NETWORK`, or the config default).
 
 `app` and `stack` are validated once before any plugin body runs. Invalid identities (empty app
 name, illegal characters, conflicting `--app` / package.json values) surface as typed config errors
@@ -69,10 +67,10 @@ body runs. Inside a plugin you can rely on the values being final.
   every managed container, image, and network. `prune` / `wipe` enumerate by these labels.
 - **DNS aliases.** Per-stack containers register under `<app>-<stack>-<name>` plus an in-network
   alias so siblings in the same stack can dial each other while parallel stacks coexist.
-- **Per-stack runtime state.** The deployment file and the dev-only `generated-extras` tree live
-  under `.devstack/stacks/<stack>/`, so two stacks of the same app keep distinct on-chain ids and
-  dev-wallet state without collision. (The committed `src/generated` tree is NOT keyed by identity —
-  it is stack-invariant and id-free; see [Generated Outputs](/devstack/codegen).)
+- **Per-stack runtime state.** The deployment file and the dev-only extras live under
+  `.devstack/stacks/<stack>/`, so two stacks of the same app keep distinct on-chain ids and
+  dev-wallet state. (The committed `src/generated` tree is stack-invariant and id-free; see
+  [Generated Outputs](/devstack/codegen).)
 - **Snapshot metadata.** Snapshots record the full identity triple; `restore` refuses identity drift
   before destructive changes.
 

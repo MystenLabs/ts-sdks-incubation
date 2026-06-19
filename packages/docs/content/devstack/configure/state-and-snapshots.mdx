@@ -14,8 +14,8 @@ Runtime state is stack-scoped:
 ```
 
 `projection.v3.json` is the persisted operator read model used by `devstack status`, the TUI, and
-plain renderer startup sweeps. If the file is missing, malformed, or from an unsupported shape,
-devstack treats it as absent and rebuilds status from the next running stack rather than crashing.
+plain renderer startup sweeps. A missing, malformed, or unsupported file is treated as absent;
+devstack rebuilds status from the next running stack.
 
 The usual snapshot flow is a one-shot CLI capture when no attached `devstack up` session is running:
 
@@ -94,19 +94,15 @@ Supported behavior:
 
 Important caveats:
 
-- Do not rely on cross-stack restore. Snapshot metadata carries app, stack, network, and plugin
-  identity slices (including a Sui `mode` discriminator); restore refuses identity drift with a
-  fail-closed `IdentityMismatchError` before any destructive change, never a silent restore.
+- Snapshots are stack-scoped. Snapshot metadata carries app, stack, network, and plugin identity
+  slices (including a Sui `mode` discriminator); restore raises `IdentityMismatchError` on identity
+  drift before any destructive change.
 - Snapshots also record a graph input id derived from the stack graph, selected options, devstack
   version, and plugin-authored input identity. A mismatch means the snapshot was captured for
   different inputs; restore warns by default because it may create inconsistent state.
-- Product evidence for non-empty wallet, Seal, Walrus, and DeepBook roundtrips is still incomplete.
-  These docs describe the supported CLI and artifact contract, not a claim that every service has
-  full restore proof.
-- The supported snapshot surface is the CLI and the on-disk artifact described above. Treat
-  `meta.json`, `state.json`, `host-tree.tar`, and `containers/images.tar` as the artifact contract;
-  everything else under the snapshot directory is implementation detail and not load-bearing for app
-  or plugin-author code.
+- The supported snapshot surface is the CLI and the on-disk artifact described above. `meta.json`,
+  `state.json`, `host-tree.tar`, and `containers/images.tar` are the artifact contract; everything
+  else under the snapshot directory is implementation detail.
 
 Use `devstack wipe --yes --stack <name>` to remove all state for a selected stack in non-interactive
 shells. In a TTY, omitting `--yes` prompts for `y` before deleting state.
