@@ -21,6 +21,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5173;
 
 const localnet = sui();
+// Makes every account available in your app — in dev, devstack injects the
+// wallet onto the page and dApp Kit auto-discovers it via wallet-standard.
 const devWallet = wallet({
 	accounts: 'all',
 });

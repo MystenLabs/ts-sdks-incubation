@@ -39,9 +39,9 @@ strategy.
 ## Connect the SDK
 
 The stack config above runs the cluster; the [generated bindings](/devstack/codegen) carry its
-resolved ids into your app. Walrus is a per-network service: `walrus.forNetwork(network)` returns the
-bucket for the network your wallet is connected to, so a runtime `switchNetwork` flips the cluster
-ids in lockstep. Build a `WalrusClient` from that bucket:
+resolved ids into your app. Walrus is a per-network service: `walrus.forNetwork(network)` returns
+the bucket for the network your wallet is connected to, so a runtime `switchNetwork` flips the
+cluster ids in lockstep. Build a `WalrusClient` from that bucket:
 
 ```ts title="src/lib/walrus.ts"
 import { useCurrentNetwork } from '@mysten/dapp-kit-react';

@@ -119,7 +119,7 @@ Devstack detects more coins than it can fund. A coin is **fundable** when someth
 funding strategy for it:
 
 - **SUI** is fundable when the active Sui network contributes a faucet strategy. Explicit SUI
-  funding fails loudly if none exists, because default account funding depends on it.
+  funding throws if none exists, because default account funding depends on it.
 - **Managed local-package coins** are fundable from their treasury cap, as above.
 - **Service coins** like `walCoin(localWalrus)` are fundable when their service contributes a
   matching `coinType:<fullCoinType>` strategy.

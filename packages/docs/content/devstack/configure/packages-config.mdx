@@ -102,9 +102,9 @@ export const config = {
 - **`config.packages.<name>.packageId`** is for introspection (logging, debugging, reading the id
   directly). App code routes through `mvrOverrides`, not `packageId`.
 
-`requireId` reads the injected deployment and fails loudly with `DevstackConfigMissingError` if a
-package's id is missing — never a silent zero. Packages declared with `capture` also expose their
-captured object ids at `config.packages.<name>.objects.<key>`.
+`requireId` reads the injected deployment and throws `DevstackConfigMissingError` if a package's id
+is missing. Packages declared with `capture` also expose their captured object ids at
+`config.packages.<name>.objects.<key>`.
 
 The deployment that backs `requireId` / `forNetwork` — the per-network unit, the envelope, and the
 strict generated type used for production — is documented in

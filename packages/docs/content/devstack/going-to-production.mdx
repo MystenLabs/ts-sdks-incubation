@@ -1,6 +1,8 @@
 ---
 title: Going to production
-description: Take a devstack app to production — declare the network set, scaffold typed deployments, switch networks in dapp-kit, and ship a build with no local artifacts.
+description:
+  Take a devstack app to production — declare the network set, scaffold typed deployments, switch
+  networks in dapp-kit, and ship a build with no local artifacts.
 ---
 
 Going to production is a first-class devstack path. The same multi-network config that runs your
@@ -8,9 +10,9 @@ local stack also drives a production build: you declare the live network set by 
 scaffold a typed `deployments/<net>.ts` from a real deploy, wire dapp-kit to switch between networks
 at runtime, and ship a build where local-mode networks and the dev wallet are dropped.
 
-The whole story is one config flowing through five steps. The [connect-four
-example](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four) ships a
-worked devnet deployment as the capstone — it's referenced throughout below.
+The whole story is one config flowing through five steps. The
+[connect-four example](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four)
+ships a worked devnet deployment as the capstone — it's referenced throughout below.
 
 ## 1. Declare the live network set
 
@@ -28,15 +30,15 @@ my-app/
 
 Codegen derives the live-network set from the `deployments/*.ts` **filenames** (not their contents —
 ids load at build time, so there's no chicken-and-egg with the generated type the files import).
-`localnet` is implicit — it's your dev stack. Your `src/generated/deployment.ts` reflects exactly the
-files present:
+`localnet` is implicit — it's your dev stack. Your `src/generated/deployment.ts` reflects exactly
+the files present:
 
 ```ts title="src/generated/deployment.ts"
 /** The LIVE network names this app ships — the `deployments/*.ts` filenames. */
-export type ProvidedNetwork = "devnet";
+export type ProvidedNetwork = 'devnet';
 
 /** The full network-name set, local-first: `[<local>, ...<provided>]`. */
-export const NETWORK_NAMES = ["localnet", "devnet"] as const;
+export const NETWORK_NAMES = ['localnet', 'devnet'] as const;
 ```
 
 ## 2. Scaffold a typed deployment from a live deploy
@@ -48,8 +50,9 @@ You don't hand-type 0x-strings. Publish your package to the target network, then
 devstack dump-deployment --network devnet
 ```
 
-This writes `deployments/devnet.ts` as typed TypeScript — `export const deployment = {…} satisfies
-AppNetworkDeployment` — sourced from the resolved envelope's `devnet` entry:
+This writes `deployments/devnet.ts` as typed TypeScript —
+`export const deployment = {…} satisfies AppNetworkDeployment` — sourced from the resolved
+envelope's `devnet` entry:
 
 ```ts title="deployments/devnet.ts (connect-four)"
 import type { AppNetworkDeployment } from '../src/generated/deployment.js';
@@ -67,15 +70,19 @@ export const deployment = {
 		connect_four: { id: CONNECT_FOUR_PACKAGE_ID },
 	},
 	mvrOverrides: {
-		'@local/connect-four': CONNECT_FOUR_PACKAGE_ID,
+		packages: {
+			'@local/connect-four': CONNECT_FOUR_PACKAGE_ID,
+		},
+		types: {},
 	},
 } satisfies AppNetworkDeployment;
 ```
 
 From here you hand-edit and complete it like any source file. The `satisfies AppNetworkDeployment`
-ties it to the app's strict generated type ([Config & deployments](/devstack/codegen/config-and-deployments)),
-so `packages` must be exhaustive over your declared packages and `mvrOverrides` must carry every
-`@local/<slug>` placeholder. A missing or mistyped id fails `tsc`.
+ties it to the app's strict generated type
+([Config & deployments](/devstack/codegen/config-and-deployments)), so `packages` must be exhaustive
+over your declared packages and `mvrOverrides.packages` must carry every `@local/<slug>`
+placeholder. A missing or mistyped id fails `tsc`.
 
 <Callout type="info">
 	**Guarantees.** Completeness is enforced at compile time. A committed `deployments/<net>.ts` that's
@@ -87,8 +94,8 @@ envelope, never the committed authoring surface.
 
 ## 3. The multi-network envelope and the Vite merge
 
-The [Vite plugin](/devstack/codegen/config-and-deployments) assembles a `DevstackDeployment` envelope
-— every supported network keyed by name, plus the default — and injects it as
+The [Vite plugin](/devstack/codegen/config-and-deployments) assembles a `DevstackDeployment`
+envelope — every supported network keyed by name, plus the default — and injects it as
 `__DEVSTACK_DEPLOYMENT__`. It auto-discovers `deployments/*.ts` by default, so the standard config
 needs nothing extra:
 
@@ -102,19 +109,20 @@ export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
 
 The merge depends on the Vite command:
 
-- **Dev `serve`** — the committed networks (each `deployments/<net>.ts`) overlaid with the live local
-  stack, the live local network winning as the default. The app lists `[localnet, devnet]`.
-- **Production `build`** — the committed, non-local networks only. The live local network is dropped.
+- **Dev `serve`** — the committed networks (each `deployments/<net>.ts`) overlaid with the live
+  local stack, the live local network winning as the default. The app lists `[localnet, devnet]`.
+- **Production `build`** — the committed, non-local networks only. The live local network is
+  dropped.
 
 Each committed file is validated against the deployment schema at config-load, so a malformed file
-fails loudly rather than silently injecting a broken network. To point at a custom directory or
-explicit paths, pass the `deployments` option a per-network map of `() => import('./…')` thunks; it
-overrides auto-discovery entirely.
+fails the build rather than injecting a broken network. To point at a custom directory or explicit
+paths, pass the `deployments` option a per-network map of `() => import('./…')` thunks; it overrides
+auto-discovery entirely.
 
 ## 4. Switch networks in dapp-kit
 
-Because the envelope carries every network, dapp-kit builds a client per network and switches between
-them at runtime. The wiring reads straight off `config`:
+Because the envelope carries every network, dapp-kit builds a client per network and switches
+between them at runtime. The wiring reads straight off `config`:
 
 ```ts title="src/dapp-kit.ts (connect-four)"
 export const dAppKit = createDAppKit({
@@ -125,7 +133,7 @@ export const dAppKit = createDAppKit({
 		return new SuiGrpcClient({
 			network,
 			baseUrl: net.rpc,
-			mvr: { overrides: { packages: net.mvrOverrides } },
+			mvr: { overrides: net.mvrOverrides },
 		});
 	},
 });
@@ -162,22 +170,25 @@ pnpm build
 grep -r "127.0.0.1\|localhost\|dev-wallet\|__DEVSTACK_DEPLOYMENT_LIVE__" dist/ || echo "clean"
 ```
 
-A clean grep confirms the localnet RPC, the dev wallet, and the dev-only live global are all dropped.
-Serving the built bundle and confirming it connects to the live network's RPC, reads the real package
-id, and lands a tx (signed by an external wallet) closes the loop.
+A clean grep confirms the localnet RPC, the dev wallet, and the dev-only live global are all
+dropped. Serving the built bundle and confirming it connects to the live network's RPC, reads the
+real package id, and lands a tx (signed by an external wallet) closes the loop.
 
 ## Worked example: the connect-four devnet capstone
 
 connect-four ships the full path as a runnable capstone. `deployments/devnet.ts` (above) is its
 committed live network, published to Sui devnet. Two browser scenarios prove it:
 
-- **Switch** ([`tests/browser/network-switch.spec.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four/tests/browser/network-switch.spec.ts))
-  — connect on the live localnet, then `switchNetwork('devnet')`. dApp Kit's current network flips to
-  devnet, the dev wallet stays connected across the switch, and the app repoints to the devnet client.
-- **Real devnet tx** ([`tests/browser/devnet-tx.spec.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four/tests/browser/devnet-tx.spec.ts))
+- **Switch**
+  ([`tests/browser/network-switch.spec.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four/tests/browser/network-switch.spec.ts))
+  — connect on the live localnet, then `switchNetwork('devnet')`. dApp Kit's current network flips
+  to devnet, the dev wallet stays connected across the switch, and the app repoints to the devnet
+  client.
+- **Real devnet tx**
+  ([`tests/browser/devnet-tx.spec.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four/tests/browser/devnet-tx.spec.ts))
   — after the switch, fund the dev wallet's account on the public devnet faucet and sign a real
   `create_lobby` against the committed devnet package, asserting the tx landed on devnet.
 
-For the per-network types, the loud-fail loader, and the full dapp-kit handoff surface, see
+For the per-network types, the deployment loader, and the full dapp-kit handoff surface, see
 [Config & deployments](/devstack/codegen/config-and-deployments). For pointing devstack at a forked
 or live network during development, see [Live networks & forking](/devstack/live-networks).

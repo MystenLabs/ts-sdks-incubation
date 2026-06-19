@@ -19,8 +19,8 @@ faucet:request:<chainId>
 
 where `<chainId>` is the resolved network identifier — `sui:localnet`, `sui:testnet`,
 `sui:mainnet-fork@<height>`, etc. If a strategy is registered for that key, devstack dispatches the
-request through it; otherwise SUI funding fails loudly with the substrate `StrategyNotFoundError`,
-listing the registered keys so you can see "I asked for X, only Y is wired".
+request through it; otherwise SUI funding raises the substrate `StrategyNotFoundError`, listing the
+registered keys so you can see "I asked for X, only Y is wired".
 
 Non-SUI coin funding (managed local-package coins, `walCoin(localWalrus)`, etc.) uses the same
 mechanism with a `coinType:<fullCoinType>` capability key. Missing non-SUI strategies are treated as
@@ -45,7 +45,7 @@ What breaks when this is bypassed:
   cannot tell from `devstack status` which faucet they are actually pointed at.
 - Mounting with a stale chain id (e.g. hardcoded `'sui:localnet'` when the stack is in
   `mainnet-fork` mode) registers the wrong key, the registry resolves the wrong strategy, and the
-  account silently funds against the wrong network.
+  account funds against the wrong network.
 
 Always contribute through `defineFaucetStrategy(...)` and pass the real resolved `chainId`.
 
@@ -86,15 +86,13 @@ Defaults:
 
 ## Wire-level invariants
 
-A faucet strategy MUST surface failure as a tagged error, not as silent success. The two
-load-bearing rules:
+A faucet strategy raises a tagged error on each failure path. The two load-bearing rules:
 
-- A non-2xx HTTP status MUST raise `FaucetUnreachable` or `FaucetBodyError`. The Sui faucet binary
-  binds its socket before its validator can transfer coins, so the warm-up window returns 5xx; a
-  permissive implementation marks accounts funded when no coins moved.
-- A 200 OK body carrying `{ status: { Failure: ... } }` MUST raise `FaucetBodyError`. During warm-up
-  the faucet accepts requests it cannot execute; treating those bodies as success is the most common
-  silent-funding failure.
+- A non-2xx HTTP status raises `FaucetUnreachable` or `FaucetBodyError`. The Sui faucet binary binds
+  its socket before its validator can transfer coins, so the warm-up window returns 5xx; a
+  permissive implementation would mark accounts funded when no coins moved.
+- A 200 OK body carrying `{ status: { Failure: ... } }` raises `FaucetBodyError`. During warm-up the
+  faucet accepts requests it cannot execute, so those bodies are treated as failures.
 
 A custom strategy is responsible for raising the right tagged error on each failure path; the
 substrate-level dispatch does not retry for you. Wrap your `fetch` call so non-2xx surfaces as

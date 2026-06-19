@@ -118,18 +118,27 @@ export const dAppKit = createDAppKit({
 			baseUrl: net.rpc,
 			// Generated bindings default `package` to `@local/<name>`;
 			// `mvrOverrides` points each name at its deployed id.
-			mvr: { overrides: { packages: net.mvrOverrides } },
+			mvr: { overrides: net.mvrOverrides },
 		});
 	},
 });
 ```
 
 See [Config & deployments](/devstack/codegen/config-and-deployments) for the full config surface and
-the loud-fail behavior.
+how the deployment loader resolves ids.
 
 ## First boot
 
-Run the stack:
+Generate the typed bindings your app builds against:
+
+```bash
+pnpm devstack codegen
+```
+
+This writes the committed `src/generated` tree — typed Move bindings and the runtime config your app
+imports — from your Move source. It needs no running stack; run it whenever the Move source changes.
+
+Then run the stack:
 
 ```bash
 pnpm devstack up
@@ -150,11 +159,14 @@ Use the generated files from `src/generated`, and treat `.devstack/` as runtime 
 
 1. Put stack members in `devstack.config.ts`.
 2. Include your dev server as a `hostService(...)` member when the stack backs a browser app.
-3. Run `devstack up` for an attached local supervisor, or `devstack apply` to reconcile through the
-   live supervisor when one exists and one-shot otherwise.
-4. Generated files land under `src/generated` by default. Runtime state, manifests, snapshots, and
-   logs stay under `.devstack/stacks/<stack>`.
-5. Use the Vitest, Playwright, Vite, or runtime subpaths from application tooling.
+3. Run `devstack codegen` to write the committed `src/generated` tree — the typed bindings and
+   runtime config your app builds against. Rerun it when the Move source changes.
+4. Run `devstack up` for an attached local supervisor, or `devstack apply` to reconcile through the
+   live supervisor when one exists and one-shot otherwise. `apply` refreshes the runtime deployment
+   ids; `codegen` produces the committed typed tree.
+5. The generated files live under `src/generated`. Runtime state, manifests, snapshots, and logs
+   stay under `.devstack/stacks/<stack>`.
+6. Use the Vitest, Playwright, Vite, or runtime subpaths from application tooling.
 
 ## Package surface
 
