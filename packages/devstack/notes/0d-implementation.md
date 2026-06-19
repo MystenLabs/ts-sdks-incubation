@@ -7,6 +7,13 @@ lives at the injected-blob / Vite MERGE layer — the stack stays single-network
 ## Sub-decisions (taken)
 - **D1** boot writes the ENVELOPE on disk (`{ defaultNetwork, networks: { <net>: NetworkDeployment } }`) — one key for a single-network stack; uniform merge.
 - **D2** `config.networkNames` / `config.defaultNetwork` typed as a LITERAL tuple/union (emitted into `src/generated/deployment.ts`) so dapp-kit `switchNetwork` is type-checked. Consequence accepted: switching to an un-deployed network throws in dev.
+- **D7 (network-set source, owner-decided): CONVENTION — the `deployments/` directory.** Drop a
+  `deployments/<net>.ts` file → it's supported. No config field, no manual wiring ("easy to use").
+  Codegen derives the live-network set from the `deployments/*.ts` FILENAMES (not contents — ids load at
+  build via Vite, so no chicken-and-egg with the generated type the files import). `localnet` is implicit
+  (the dev stack). A prod build then ships exactly the networks that have files (local dropped). The Vite
+  `deployments` option (commit 2's explicit map) becomes AUTO-DISCOVERY of `./deployments/*.ts` by
+  default; the option remains as an override for a custom dir/paths.
 - **D3** rename manifest field `codegen.idsFile` → `codegen.deploymentFile`.
 - **D4** load committed `deployments/<net>.ts` via dynamic `import()` in an async Vite `config` hook; esbuild-transform fallback if bootstrap import is fragile.
 - **D5** keep the deprecated single-file `ids` Vite option one release as a fallback path.
