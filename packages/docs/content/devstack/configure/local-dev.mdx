@@ -71,8 +71,8 @@ Two kinds of output live in different places:
 
 - The committed `src/generated` tree, written by `devstack codegen`. It is id-free and shared across
   every stack.
-- The per-stack `deployment.json` and the dev-only extras, written under `.devstack/stacks/<stack>/`
-  by `devstack up` / `devstack apply`. These carry the live ids and dev-wallet state for one stack.
+- The per-stack `deployment.json`, written under `.devstack/stacks/<stack>/` by `devstack up` /
+  `devstack apply`. It carries the live ids, accounts, and dev-wallet connection for one stack.
 
 See [Codegen](/devstack/codegen) for the full model.
 

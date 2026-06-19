@@ -83,7 +83,7 @@ const commands = [
 	},
 	{
 		name: 'apply',
-		summary: 'Re-emit the per-stack ids file and dev extras from a live or one-shot stack.',
+		summary: 'Re-emit the per-stack deployment file from a live or one-shot stack.',
 		usage: 'devstack apply [options]',
 		lifecycle: 'live-aware',
 		sideEffects: 'write',
@@ -103,7 +103,7 @@ const commands = [
 	},
 	{
 		name: 'dump-deployment',
-		summary: 'Emit the stack deployment (deployment.json) for a real-network deploy.',
+		summary: 'Emit the stack deployment for a real-network deploy.',
 		usage: 'devstack dump-deployment [options]',
 		lifecycle: 'live-aware',
 		sideEffects: 'write',

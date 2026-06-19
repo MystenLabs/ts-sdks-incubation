@@ -18,9 +18,10 @@ Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app
 
 ### `devstack apply [options]`
 
-Re-emit the per-stack deployment file and dev extras from a live or one-shot stack. The deployment
-file is `deployment.json`. Reconciles through a live supervisor when present; otherwise boots once,
-emits, and exits. The committed `src/generated` tree is `devstack codegen`'s job.
+Re-emit the per-stack deployment file from a live or one-shot stack. The deployment file is
+`deployment.json` and carries the resolved ids, accounts, and dev-wallet connection. Reconciles
+through a live supervisor when present; otherwise boots once, emits, and exits. The committed
+`src/generated` tree is `devstack codegen`'s job.
 
 Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
@@ -140,8 +141,8 @@ devstack apply
 `up` boots the stack and stays attached until you quit the TUI or interrupt the process. `apply`
 checks the selected stack first: if `devstack up` is live, it asks that supervisor to reconcile and
 waits for completion; if no supervisor is live, it boots the stack in one-shot mode, reconciles,
-re-emits the per-stack deployment file and dev extras, and exits. Run `devstack codegen` to refresh
-the committed `src/generated` tree.
+re-emits the per-stack deployment file, and exits. Run `devstack codegen` to refresh the committed
+`src/generated` tree.
 
 Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
 `--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`,
