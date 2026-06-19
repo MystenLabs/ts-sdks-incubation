@@ -104,6 +104,15 @@ wallet is a network-agnostic signer.
   it once those accounts are manually funded. A pure prod build (not run through devstack) ships NO dev
   wallet. **Add a test asserting the dev wallet survives `switchNetwork`** (no per-network gate drops
   it). 0b / build-integrations/dapp-kit concern.
+- **The dev wallet is just `account providers` + `networks` (name → rpc, + optional faucet); it does
+  NOT know live vs local.** At injection devstack hands it the FULL network set the app supports — both
+  localnet and the live networks from the deployment envelope (`config.networks`, each with its
+  rpc/faucet) — plus the account providers. The wallet signs/operates on whichever network dapp-kit has
+  selected; its faucet feature funds the SELECTED network's account (so manual devnet funding can go
+  through the wallet rather than `sui client faucet`). Implication: the injection payload becomes
+  MULTI-network (today it passes a single `rpcUrl`/`network` — change to the networks map), and the
+  dev-wallet package (`dev-wallet/inject` + adapter/server) accepts a networks map + advertises each as
+  a wallet-standard chain. 0b + dev-wallet package change.
 - **Strict type (0d.4):** `accounts` OPTIONAL / excluded from completeness (names knowable, addresses
   runtime). A hand-written `deployments/<net>.ts` never supplies accounts.
 - **`resolveAccounts()` surface (0b):** reads the envelope-level `accounts` (network-invariant).
