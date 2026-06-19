@@ -5,12 +5,14 @@ import { useEffect, useState } from 'react';
 
 import { mint } from '@generated/bindings/token_studio/managed_coin.js';
 import { useCurrentWallet } from '@mysten/dapp-kit-react';
-import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
+import { parseStudioAmount, shortAddress } from '../lib/coin.js';
+import { useDeployment } from '../lib/deployment.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
 export function MintForm() {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
+	const { treasuryCapId } = useDeployment();
 
 	// The connected wallet's accounts (in DEV: alice/bob/carol), each carrying a
 	// `label` = the devstack account name.
@@ -43,7 +45,7 @@ export function MintForm() {
 			tx.add(
 				mint({
 					arguments: {
-						treasury: TREASURY_CAP_ID,
+						treasury: treasuryCapId,
 						amount: raw,
 						recipient,
 					},

@@ -9,6 +9,7 @@ import { describe, expect, it } from '@effect/vitest';
 
 import { renderFile } from '../../../src/orchestrators/codegen/format.ts';
 import { CodegenRenderError } from '../../../src/orchestrators/codegen/errors.ts';
+import { ForNetworkBucket, rawExpr } from '../../../src/contracts/codegenable.ts';
 
 const expectOk = (result: ReturnType<typeof renderFile>): string => {
 	if (!result.ok) throw new Error(`expected ok render; got error: ${result.error.detail}`);
@@ -191,5 +192,62 @@ describe('format/renderFile', () => {
 		);
 		expect(out).toContain('present');
 		expect(out).not.toContain('absent');
+	});
+
+	it('wraps a ForNetworkBucket in a per-network forNetwork(network) accessor', () => {
+		const out = expectOk(
+			renderFile({
+				emitterName: 'aggregate/coins',
+				outputPath: 'coins.ts',
+				sensitive: false,
+				exports: {
+					coins: new ForNetworkBucket(
+						{
+							managed_coin: {
+								fullCoinType: rawExpr(
+									'requireValue<string>(dep, "coin:managed_coin", "fullCoinType")',
+								),
+								source: 'registry',
+								symbol: 'managed_coin',
+							},
+						},
+						true,
+					),
+				},
+				imports: ["import { loadDeployment, requireValue } from './config-runtime.js';"],
+			}),
+		);
+		// The bucket exports a `forNetwork(network)` accessor whose body resolves
+		// `dep` per-call (NOT a module-level default-network `dep`) and returns
+		// the inner bucket object `as const`.
+		expect(out).toContain('export const coins = {');
+		expect(out).toContain('\tforNetwork(network: string) {');
+		expect(out).toContain('\t\tconst dep = loadDeployment().forNetwork(network);');
+		expect(out).toContain('\t\treturn {');
+		expect(out).toContain('requireValue<string>(dep, "coin:managed_coin", "fullCoinType")');
+		// No module-level `const dep = …forNetwork(defaultNetwork)` baked in.
+		expect(out).not.toContain('defaultNetwork');
+	});
+
+	it('a pure-literal ForNetworkBucket omits the dep line and marks the param unused', () => {
+		const out = expectOk(
+			renderFile({
+				emitterName: 'aggregate/seal',
+				outputPath: 'seal.ts',
+				sensitive: false,
+				exports: {
+					seal: new ForNetworkBucket(
+						{ seal: { mode: 'live', name: 'seal', objectId: '0xabc' } },
+						false,
+					),
+				},
+			}),
+		);
+		// A literal-only bucket needs no `dep` — the accessor ignores `_network`
+		// and carries no `loadDeployment` reference.
+		expect(out).toContain('forNetwork(_network: string) {');
+		expect(out).not.toContain('const dep =');
+		expect(out).not.toContain('loadDeployment');
+		expect(out).toContain('objectId: "0xabc"');
 	});
 });

@@ -1,9 +1,10 @@
-import { deployment } from '../lib/deployment.js';
+import { useDeployment } from '../lib/deployment.js';
 import { formatStudio, shortAddress } from '../lib/coin.js';
 import { useCoinMetadata, useTotalSupply } from '../lib/queries.js';
 import { Card } from '../ui/Card.js';
 
 export function CoinHeader() {
+	const deployment = useDeployment();
 	const metadata = useCoinMetadata();
 	const supply = useTotalSupply();
 	const meta = metadata.data?.coinMetadata ?? null;

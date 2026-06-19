@@ -37,6 +37,40 @@ export const isRawExpr = (v: unknown): v is RawExpr =>
 	typeof v === 'object' && v !== null && (v as { __rawExpr?: unknown }).__rawExpr === true;
 
 /**
+ * A PER-NETWORK service bucket value. The renderer wraps `inner` in a
+ * `{ forNetwork(network) { const dep = loadDeployment().forNetwork(network);
+ * return <inner> as const; } }` accessor so a service bucket (coins / deepbook
+ * / seal / walrus) resolves its ids for whichever network the app's dapp-kit
+ * has selected — a runtime `switchNetwork` flips service ids in lockstep with
+ * rpc / packages, instead of baking the default network at module load.
+ *
+ * `inner` is the SAME object the bucket projected before (literals + the
+ * resolved `requireValue(dep, …)` raw expressions); the only change is WHERE
+ * `dep` comes from — a per-call `loadDeployment().forNetwork(network)` local
+ * inside the accessor, not the module-level default-network `dep`. The
+ * orchestrator therefore suppresses the module-level `dep` preamble for these
+ * buckets (the accessor declares its own) while still importing
+ * `loadDeployment` / `requireValue`.
+ *
+ * `needsDep` records whether `inner` actually references `dep` (a pure-literal
+ * bucket — e.g. a known/live seal or a builtin-only coin — does not, so the
+ * accessor omits the `const dep = …` line and ignores its `network` param).
+ */
+export class ForNetworkBucket {
+	readonly __forNetworkBucket = true as const;
+	constructor(
+		readonly inner: Record<string, unknown>,
+		readonly needsDep: boolean,
+	) {}
+}
+
+/** Type guard for `ForNetworkBucket` — the renderer's per-network-accessor branch. */
+export const isForNetworkBucket = (v: unknown): v is ForNetworkBucket =>
+	typeof v === 'object' &&
+	v !== null &&
+	(v as { __forNetworkBucket?: unknown }).__forNetworkBucket === true;
+
+/**
  * Opaque per-file emission context.
  *
  * Plugin authors declare named generated exports by calling

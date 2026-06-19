@@ -5,18 +5,20 @@
 
 import { loadDeployment, requireValue } from './config-runtime.js';
 
-const __deployment = loadDeployment();
-const dep = __deployment.forNetwork(__deployment.defaultNetwork);
-
 export const walrus = {
-	aggregatorUrl: requireValue<string | null>(dep, "walrus", "aggregatorUrl"),
-	mode: "local",
-	network: "localnet",
-	nodes: requireValue<ReadonlyArray<{ readonly nodeIndex: number; readonly publicHostname: string; readonly rpcUrl: string }>>(dep, "walrus", "nodes"),
-	packageConfig: requireValue<{ readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> }>(dep, "walrus", "packageConfig"),
-	proxyUrl: requireValue<string | null>(dep, "walrus", "proxyUrl"),
-	publisherUrl: requireValue<string | null>(dep, "walrus", "publisherUrl"),
-	walCoinType: requireValue<string | null>(dep, "walrus", "walCoinType"),
-	walPackageId: requireValue<string | null>(dep, "walrus", "walPackageId"),
-	walrusPackageId: requireValue<string | null>(dep, "walrus", "walrusPackageId"),
+	forNetwork(network: string) {
+		const dep = loadDeployment().forNetwork(network);
+		return {
+			aggregatorUrl: requireValue<string | null>(dep, "walrus", "aggregatorUrl"),
+			mode: "local",
+			network: "localnet",
+			nodes: requireValue<ReadonlyArray<{ readonly nodeIndex: number; readonly publicHostname: string; readonly rpcUrl: string }>>(dep, "walrus", "nodes"),
+			packageConfig: requireValue<{ readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> }>(dep, "walrus", "packageConfig"),
+			proxyUrl: requireValue<string | null>(dep, "walrus", "proxyUrl"),
+			publisherUrl: requireValue<string | null>(dep, "walrus", "publisherUrl"),
+			walCoinType: requireValue<string | null>(dep, "walrus", "walCoinType"),
+			walPackageId: requireValue<string | null>(dep, "walrus", "walPackageId"),
+			walrusPackageId: requireValue<string | null>(dep, "walrus", "walrusPackageId"),
+		} as const;
+	},
 } as const;

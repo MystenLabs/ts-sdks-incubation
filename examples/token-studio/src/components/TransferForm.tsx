@@ -4,10 +4,12 @@ import { Field } from '../ui/Field.js';
 import { useEffect, useState } from 'react';
 
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
+import { useDeployment } from '../lib/deployment.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
 export function TransferForm({ self }: { self: string }) {
 	const client = useCurrentClient();
+	const { managedCoinType } = useDeployment();
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
@@ -38,6 +40,7 @@ export function TransferForm({ self }: { self: string }) {
 				sender: self,
 				amount: raw,
 				recipient,
+				coinType: managedCoinType,
 			});
 			const result = await mutateAsync(transaction);
 			invalidate();

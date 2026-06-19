@@ -13,16 +13,17 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { config } from '@generated/config.js';
 
 /**
- * The MVR-resolved vault package id for the active network. Used by the
- * Seal IBE callsites (`SealClient.encrypt` / `SessionKey.create`) and the
+ * The MVR-resolved vault package id for a given network. Used by the Seal
+ * IBE callsites (`SealClient.encrypt` / `SessionKey.create`) and the
  * Cap-type query string — consumers that are NOT tx moveCalls and so are
- * not resolved by the grpc client's MVR overrides. Sourced from the
- * codegen-emitted `mvrOverrides` (the active-network name→id map) rather
- * than indexing `byNetwork` by the runtime network name (whose key set is
- * the committed-tree literal, not an index signature). `undefined` when the
- * `@local/vault` placeholder is absent from the injected ids.
+ * not resolved by the grpc client's MVR overrides. Resolved PER NETWORK
+ * (`config.forNetwork(network).mvrOverrides`) so a runtime `switchNetwork`
+ * flips the vault id in lockstep with the rest of the service config.
+ * `undefined` when the `@local/vault` placeholder is absent from that
+ * network's injected ids.
  */
-export const vaultPackageId: string | undefined = config.mvrOverrides['@local/vault'];
+export const vaultPackageIdFor = (network: string): string | undefined =>
+	config.forNetwork(network).mvrOverrides['@local/vault'];
 
 export const dAppKit = createDAppKit({
 	// The full network set the app supports comes from the generated runtime

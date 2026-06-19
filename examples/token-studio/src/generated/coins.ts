@@ -5,15 +5,17 @@
 
 import { loadDeployment, requireValue } from './config-runtime.js';
 
-const __deployment = loadDeployment();
-const dep = __deployment.forNetwork(__deployment.defaultNetwork);
-
 export const coins = {
-	managed_coin: {
-		decimals: requireValue<number>(dep, "coin:managed_coin", "decimals"),
-		fullCoinType: requireValue<string>(dep, "coin:managed_coin", "fullCoinType"),
-		packageId: requireValue<string | null>(dep, "coin:managed_coin", "packageId"),
-		source: "registry",
-		symbol: "managed_coin",
+	forNetwork(network: string) {
+		const dep = loadDeployment().forNetwork(network);
+		return {
+			managed_coin: {
+				decimals: requireValue<number>(dep, "coin:managed_coin", "decimals"),
+				fullCoinType: requireValue<string>(dep, "coin:managed_coin", "fullCoinType"),
+				packageId: requireValue<string | null>(dep, "coin:managed_coin", "packageId"),
+				source: "registry",
+				symbol: "managed_coin",
+			},
+		} as const;
 	},
 } as const;

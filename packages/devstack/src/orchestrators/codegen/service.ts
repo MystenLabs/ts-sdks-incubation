@@ -50,6 +50,8 @@ import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
+	ForNetworkBucket,
+	isForNetworkBucket,
 	isRawExpr,
 	rawExpr,
 	type CodegenableDecl,
@@ -532,11 +534,13 @@ const runEmitCycleInner = (
 		}
 
 		// Inject the static-only DEPLOYMENT envelope accessors into the
-		// committed `config.ts` aggregate BEFORE usage scanning, so the added
-		// `__deployment` / `dep` references drive the import + preamble below.
-		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta).map(
-			withConfigEnvelopeAccessors,
-		);
+		// committed `config.ts` aggregate, and wrap each SERVICE bucket
+		// (coins/deepbook/seal/walrus) in its per-network `forNetwork(network)`
+		// accessor — BEFORE usage scanning, so the resulting `__deployment` /
+		// `dep` references drive the import + preamble below.
+		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta)
+			.map(withConfigEnvelopeAccessors)
+			.map(withForNetworkAccessor);
 		// True once any aggregate references a `config-runtime.ts` deployment
 		// symbol (the committed `config.ts` + service buckets): then we ALSO emit
 		// the fixed `config-runtime.ts` and import + preamble exactly what each
@@ -546,7 +550,14 @@ const runEmitCycleInner = (
 			const usage = deploymentUsageOf(aggregate.exports);
 			if (!deploymentUsageEmpty(usage)) needsConfigRuntime = true;
 			const imports = deploymentImportsFor(usage);
-			const preamble = deploymentPreambleFor(usage);
+			// A SERVICE bucket carries its `dep` inside the `forNetwork(network)`
+			// accessor (a per-call `loadDeployment().forNetwork(network)` local),
+			// so it imports `loadDeployment` but emits NO module-level `dep` /
+			// `__deployment` preamble. Non-service buckets (config.ts) keep the
+			// module-level preamble.
+			const preamble = SERVICE_BUCKETS.has(aggregate.outputPath)
+				? []
+				: deploymentPreambleFor(usage);
 			// `config.ts` references the app-specific `NETWORK_NAMES` tuple (D2)
 			// for `defaultNetwork`/`networkNames`; import it from the strict
 			// `deployment.ts` we emit alongside `config-runtime.ts`. Scan for the
@@ -1014,6 +1025,42 @@ const withConfigEnvelopeAccessors = (file: AggregateFile): AggregateFile => {
 	return { ...file, exports: { ...file.exports, [stem]: augmented } };
 };
 
+/** The own-bucket SERVICE buckets (coin → `coins.ts`, deepbook →
+ *  `deepbook.ts`, seal → `seal.ts`, walrus → `walrus.ts`). Each is wrapped in
+ *  a per-network `forNetwork(network)` accessor so its ids resolve for the
+ *  dapp-kit-selected network (not the default network baked at module load).
+ *  `config.ts` / `accounts.ts` are NOT service buckets (config carries its own
+ *  per-network `forNetwork` field; accounts are network-agnostic). */
+const SERVICE_BUCKETS: ReadonlySet<string> = new Set([
+	'coins.ts',
+	'deepbook.ts',
+	'seal.ts',
+	'walrus.ts',
+]);
+
+/**
+ * Wrap a SERVICE bucket's inner object in a `forNetwork(network)` accessor.
+ *
+ * The aggregate file's `exports` is `{ <stem>: <merged bucket object> }`. We
+ * replace the merged object with a {@link ForNetworkBucket} marker the renderer
+ * emits as `{ forNetwork(network) { const dep = …; return <object> as const; } }`.
+ * `needsDep` is true when the merged object actually references `dep` (a
+ * pure-literal bucket — known/live seal, builtin-only coin — does not, so the
+ * accessor omits the `const dep` line and ignores its `network` param).
+ *
+ * Non-service buckets pass through unchanged.
+ */
+const withForNetworkAccessor = (file: AggregateFile): AggregateFile => {
+	if (!SERVICE_BUCKETS.has(file.outputPath)) return file;
+	const stem = bucketStem(file.outputPath);
+	const inner = file.exports[stem];
+	if (!isPlainObject(inner)) return file;
+	const usage = { ...EMPTY_DEPLOYMENT_USAGE };
+	scanDeploymentUsage(inner, usage);
+	const marker = new ForNetworkBucket(inner, usage.usesDep);
+	return { ...file, exports: { ...file.exports, [stem]: marker } };
+};
+
 /** Pull the app's declared package names + MVR placeholders out of the
  *  committed `config.ts` aggregate's inner `config` object — the SAME data
  *  the strict `deployment.ts` type narrows over. `config.packages.<name>`
@@ -1083,6 +1130,15 @@ const scanDeploymentUsage = (
 		if (e.includes('requireId(')) acc.requireId = true;
 		if (e.includes('requireValue')) acc.requireValue = true;
 		if (e.includes('optionalValue(')) acc.optionalValue = true;
+		return;
+	}
+	// A per-network service bucket carries its `dep` references inside the
+	// `forNetwork` accessor's `inner` object — recurse so the import scan sees
+	// the `requireValue` / `loadDeployment` symbols (the accessor's body calls
+	// `loadDeployment().forNetwork(network)`, so a bucket with resolved fields
+	// always needs `loadDeployment`).
+	if (isForNetworkBucket(value)) {
+		scanDeploymentUsage(value.inner, acc);
 		return;
 	}
 	if (Array.isArray(value)) {

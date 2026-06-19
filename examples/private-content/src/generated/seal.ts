@@ -5,15 +5,17 @@
 
 import { loadDeployment, requireValue } from './config-runtime.js';
 
-const __deployment = loadDeployment();
-const dep = __deployment.forNetwork(__deployment.defaultNetwork);
-
 export const seal = {
-	seal: {
-		keyServerUrl: requireValue<string>(dep, "seal:seal", "keyServerUrl"),
-		mode: "local-keygen",
-		name: "seal",
-		objectId: requireValue<string>(dep, "seal:seal", "objectId"),
-		serverConfigs: requireValue<ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly aggregatorUrl?: string }>>(dep, "seal:seal", "serverConfigs"),
+	forNetwork(network: string) {
+		const dep = loadDeployment().forNetwork(network);
+		return {
+			seal: {
+				keyServerUrl: requireValue<string>(dep, "seal:seal", "keyServerUrl"),
+				mode: "local-keygen",
+				name: "seal",
+				objectId: requireValue<string>(dep, "seal:seal", "objectId"),
+				serverConfigs: requireValue<ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly aggregatorUrl?: string }>>(dep, "seal:seal", "serverConfigs"),
+			},
+		} as const;
 	},
 } as const;

@@ -547,7 +547,11 @@ describe('codegen.runEmitCycle', () => {
 					const coinsModule = yield* Effect.promise(
 						() =>
 							import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
-								readonly coins: { readonly mock_usdc: { readonly fullCoinType: string } };
+								readonly coins: {
+									readonly forNetwork: (network: string) => {
+										readonly mock_usdc: { readonly fullCoinType: string };
+									};
+								};
 							}>,
 					);
 					const accountsModule = yield* Effect.promise(
@@ -585,7 +589,13 @@ describe('codegen.runEmitCycle', () => {
 					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
 						configModule.config.packages.mock_usdc.packageId,
 					);
-					expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
+					// The coins bucket is a per-network accessor: switching the
+					// app's network re-resolves coin ids in lockstep with rpc /
+					// packages. `forNetwork('localnet')` reads the injected
+					// localnet entry.
+					expect(coinsModule.coins.forNetwork('localnet').mock_usdc.fullCoinType).toBe(
+						'0x1::mock_usdc::MOCK_USDC',
+					);
 					expect(accountsModule.accounts.alice.address).toBe('0xabc');
 				}).pipe(Effect.provide(baseLayer(root))),
 			),

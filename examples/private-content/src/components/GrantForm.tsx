@@ -1,13 +1,15 @@
+import { useCurrentNetwork } from '@mysten/dapp-kit-react';
 import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
 import { useMemo, useState } from 'react';
 
-import { vaultPackageId } from '../dapp-kit.js';
+import { vaultPackageIdFor } from '../dapp-kit.js';
 import { shortAddress } from '../lib/format.js';
 import { useFile, useOwnedCaps, useSignAndExecute } from '../lib/queries.js';
 import { buildVaultGrantTransaction } from '../lib/vault-transactions.js';
 
 export function GrantForm({ self }: { self: string }) {
+	const network = useCurrentNetwork();
 	const caps = useOwnedCaps(self);
 	const ownedFiles = useMemo(() => caps.data ?? [], [caps.data]);
 	const [fileId, setFileId] = useState('');
@@ -37,7 +39,7 @@ export function GrantForm({ self }: { self: string }) {
 			if (selectedFile.data && selectedFile.data.owner !== self) {
 				throw new Error('Only the file owner can grant new caps');
 			}
-			if (!vaultPackageId) {
+			if (!vaultPackageIdFor(network)) {
 				throw new Error('Vault package is not deployed. Did `devstack apply` complete?');
 			}
 			const tx = buildVaultGrantTransaction({
