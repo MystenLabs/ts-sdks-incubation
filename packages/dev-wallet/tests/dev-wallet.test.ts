@@ -784,6 +784,55 @@ describe('DevWallet', () => {
 			expect(wallet.activeNetwork).toBe('devnet');
 		});
 
+		it('exposes per-network faucet endpoints and resolves the active faucet', () => {
+			const wallet = new DevWallet(
+				createDefaultConfig({
+					networks: { localnet: 'http://127.0.0.1:9000', devnet: 'https://devnet.example' },
+					faucets: { localnet: 'http://127.0.0.1:9123/gas', devnet: 'https://devnet.faucet' },
+					activeNetwork: 'localnet',
+				}),
+			);
+
+			expect(wallet.faucetUrls).toEqual({
+				localnet: 'http://127.0.0.1:9123/gas',
+				devnet: 'https://devnet.faucet',
+			});
+			expect(wallet.getFaucet('devnet')).toBe('https://devnet.faucet');
+			// The active faucet tracks the SELECTED network.
+			expect(wallet.activeFaucet).toBe('http://127.0.0.1:9123/gas');
+			wallet.setActiveNetwork('devnet');
+			expect(wallet.activeFaucet).toBe('https://devnet.faucet');
+		});
+
+		it('activeFaucet is null for a network without a faucet (live mainnet)', () => {
+			const wallet = new DevWallet(
+				createDefaultConfig({
+					networks: { mainnet: 'https://mainnet.example', localnet: 'http://127.0.0.1:9000' },
+					faucets: { localnet: 'http://127.0.0.1:9123/gas' },
+					activeNetwork: 'mainnet',
+				}),
+			);
+			expect(wallet.activeFaucet).toBeNull();
+			expect(wallet.getFaucet('mainnet')).toBeNull();
+		});
+
+		it('removeNetwork drops the network faucet', () => {
+			const wallet = new DevWallet(
+				createDefaultConfig({
+					networks: { devnet: 'https://devnet.example', testnet: 'https://testnet.example' },
+					faucets: { devnet: 'https://devnet.faucet', testnet: 'https://testnet.faucet' },
+				}),
+			);
+			wallet.removeNetwork('testnet');
+			expect(wallet.faucetUrls).toEqual({ devnet: 'https://devnet.faucet' });
+		});
+
+		it('addNetwork records an optional faucet', () => {
+			const wallet = new DevWallet(createDefaultConfig());
+			wallet.addNetwork('devnet', 'https://fullnode.devnet.sui.io:443', 'https://devnet.faucet');
+			expect(wallet.getFaucet('devnet')).toBe('https://devnet.faucet');
+		});
+
 		it('activeClient returns client for active network', () => {
 			const clientFactory = vi.fn((_network, _url) => ({ core: {} }) as any);
 			const wallet = new DevWallet(createDefaultConfig({ clientFactory }));

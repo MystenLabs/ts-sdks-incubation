@@ -32,6 +32,22 @@ export interface DevstackAccountInfo {
 	readonly name?: string;
 }
 
+/** One network the dev wallet operates on — its routed RPC endpoint plus an
+ *  optional faucet. The wallet advertises every key as the wallet-standard
+ *  chain `sui:<name>` and routes signing/execution to whichever network dApp
+ *  Kit has selected; the active network's `faucet` drives a fund flow. The
+ *  `rpc` MUST be the SAME routed RPC the app's dApp Kit client uses for that
+ *  network (a raw `127.0.0.1:9000` is CORS-blocked from the routed page
+ *  origin). The wallet is agnostic to live-vs-local — local and live networks
+ *  are passed through the same map. */
+export interface DevstackNetworkInfo {
+	/** Routed RPC endpoint for this network. */
+	readonly rpc: string;
+	/** Optional faucet endpoint for this network (absent on live mainnet /
+	 *  fork stacks). */
+	readonly faucet?: string | null;
+}
+
 export interface RegisterDevstackDevWalletConfig {
 	/** Wallet-app origin (`devWallet.walletUrl`). */
 	readonly serverOrigin: string;
@@ -39,16 +55,19 @@ export interface RegisterDevstackDevWalletConfig {
 	readonly token?: string | null;
 	/** Generated name→account map (`accounts` from `generated-extras/accounts.ts`). */
 	readonly accounts: Readonly<Record<string, DevstackAccountInfo>>;
-	/** RPC endpoint the wallet uses to execute `signAndExecuteTransaction`
-	 *  (and simulate). MUST be the SAME routed RPC the app's dApp Kit client
-	 *  uses (`config.networks[config.network].rpc`) — a raw `127.0.0.1:9000`
-	 *  is CORS-blocked from the routed page origin. When omitted the wallet
-	 *  falls back to localnet defaults (only correct for non-routed setups). */
-	readonly rpcUrl?: string;
-	/** Network name the wallet's accounts are scoped to (e.g. `'localnet'`
-	 *  from `devWallet.network`). The wallet advertises the wallet-standard
-	 *  chain `sui:<network>` derived from it; defaults to `localnet`. */
-	readonly network?: string;
+	/** The FULL network set the app supports — `{ <name>: { rpc, faucet? } }`,
+	 *  covering BOTH the live local network and any live (devnet/testnet/…)
+	 *  networks the deployment envelope carries. The wallet advertises each as
+	 *  the wallet-standard chain `sui:<name>` and operates on whichever one
+	 *  dApp Kit has selected, so it persists across a UI `switchNetwork` (only
+	 *  the active chain changes — the wallet is registered once). When omitted
+	 *  the wallet falls back to a single localnet entry (the non-routed default
+	 *  — only correct for a bare localnet setup). */
+	readonly networks?: Readonly<Record<string, DevstackNetworkInfo>>;
+	/** The network the wallet opens on (its initial active network). Must be a
+	 *  key of `networks`; defaults to the first `networks` key (`'localnet'`
+	 *  when `networks` is omitted). */
+	readonly defaultNetwork?: string;
 	/** Auto-approve all signing requests (headless e2e). Defaults to false. */
 	readonly autoApprove?: AutoApprovePolicy;
 	/** Mount the floating wallet drawer UI. Defaults to true. */
@@ -129,15 +148,34 @@ async function registerDevstackDevWalletImpl(
 	// hit the same routed RPC the app's dApp Kit uses (a raw 127.0.0.1 RPC
 	// is CORS-blocked from the routed page origin).
 	//
-	// Expose a SINGLE network — the active stack's — so the wallet's network
-	// switcher shows one entry that matches dApp Kit, not a list of unused
-	// devnet/testnet/mainnet. `mountAndRegisterDevWallet` advertises the
-	// wallet-standard chain `sui:<network>` derived from this key, matching the
-	// `sui:<network>` dApp Kit forwards for signing — the `sui:` prefix lives
-	// only here, at the wallet-standard boundary.
-	const rpcUrl = config.rpcUrl ?? 'http://127.0.0.1:9000';
-	const activeNetwork = config.network ?? 'localnet';
-	const networks: Record<string, string> = { [activeNetwork]: rpcUrl };
+	// Expose the FULL network set the app supports (local + any live networks
+	// from the deployment envelope) so the wallet operates on whichever
+	// network dApp Kit has selected. The wallet is registered ONCE via
+	// wallet-standard and advertises each key as the wallet-standard chain
+	// `sui:<network>` (matching the `sui:<network>` dApp Kit forwards for
+	// signing — the `sui:` prefix lives only at the wallet-standard boundary);
+	// a UI `switchNetwork` just changes the active chain, it never
+	// re-registers. The wallet does NOT know live-vs-local — both flow through
+	// the same map. Omitting `networks` falls back to a single localnet entry
+	// (the legacy non-routed default).
+	const networkInfos: Readonly<Record<string, DevstackNetworkInfo>> =
+		config.networks !== undefined && Object.keys(config.networks).length > 0
+			? config.networks
+			: { localnet: { rpc: 'http://127.0.0.1:9000' } };
+	const networks: Record<string, string> = {};
+	const faucets: Record<string, string> = {};
+	for (const [net, info] of Object.entries(networkInfos)) {
+		networks[net] = info.rpc;
+		if (info.faucet !== undefined && info.faucet !== null && info.faucet.length > 0) {
+			faucets[net] = info.faucet;
+		}
+	}
+	// The wallet opens on the requested default (the dApp-Kit default network),
+	// falling back to the first declared network.
+	const activeNetwork =
+		config.defaultNetwork !== undefined && networks[config.defaultNetwork] !== undefined
+			? config.defaultNetwork
+			: (Object.keys(networks)[0] ?? 'localnet');
 
 	// Delegate the construct → init-adapter → mount-UI → register → dispose
 	// sequence to the shared dev-wallet core helper. The `DevstackSignerAdapter`
@@ -176,6 +214,7 @@ async function registerDevstackDevWalletImpl(
 		// comes. In normal dev (no auto-approve) a human approves the connect.
 		autoConnect: Boolean(autoApprove),
 		networks,
+		faucets,
 		activeNetwork,
 		mountUI,
 	});
