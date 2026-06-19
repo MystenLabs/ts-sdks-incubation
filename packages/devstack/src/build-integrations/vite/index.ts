@@ -702,17 +702,29 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 				`import { parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';`,
 				`import { devWallet } from '${devExtrasAlias}/dev-wallet.js';`,
 				`import { accounts } from '${devExtrasAlias}/accounts.js';`,
-				// The wallet EXECUTES (and simulates) against the same routed
-				// RPC the app's dApp Kit client uses — a raw 127.0.0.1 RPC is
-				// CORS-blocked from the routed page origin. Sourced from the
-				// generated runtime config (active network's `rpc`).
+				// Hand the wallet the FULL network set the app supports — every
+				// network in the injected deployment envelope (the live local
+				// network AND any committed live networks), each with its routed
+				// `rpc` + optional `faucet`. The wallet advertises each as a
+				// wallet-standard chain and operates on whichever dApp Kit has
+				// selected, so it PERSISTS across a UI `switchNetwork` (registered
+				// once; only the active chain changes). The RPCs are the SAME
+				// routed endpoints dApp Kit uses (a raw 127.0.0.1 RPC is
+				// CORS-blocked from the routed page origin) — sourced from the
+				// generated runtime config's per-network `networks` map.
 				`import { config as __devstackConfig } from '${alias}/config.js';`,
+				`const __devstackNetworks = Object.fromEntries(`,
+				`  Object.entries(__devstackConfig.networks).map(([__net, __dep]) => [`,
+				`    __net,`,
+				`    { rpc: __dep.rpc, faucet: __dep.faucet ?? null },`,
+				`  ]),`,
+				`);`,
 				`registerDevstackDevWallet({`,
 				`  serverOrigin: devWallet.walletUrl,`,
 				`  token: parseDevstackToken(devWallet.pairUrl),`,
 				`  accounts,`,
-				`  rpcUrl: __devstackConfig.networks[__devstackConfig.network].rpc,`,
-				`  network: devWallet.network,`,
+				`  networks: __devstackNetworks,`,
+				`  defaultNetwork: __devstackConfig.defaultNetwork,`,
 				`  autoApprove: ${autoApprove ? 'true' : 'false'},`,
 				`  mountUI: true,`,
 				`}).catch((err) => console.error('[devstack] dev-wallet injection failed:', err));`,
