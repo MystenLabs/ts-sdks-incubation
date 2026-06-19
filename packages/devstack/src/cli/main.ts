@@ -221,6 +221,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 				runDumpDeployment(identity, {
 					configPath: flags.configPath,
 					out: flags.out,
+					network: flags.network,
 					io: flags.io,
 					outputMode: flags.outputMode,
 				}),

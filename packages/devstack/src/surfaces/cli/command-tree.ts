@@ -109,7 +109,7 @@ const commands = [
 		sideEffects: 'write',
 		requiresDocker: true,
 		description:
-			'Emits the stack deployment.json deployment to --out (or stdout). Reads the existing file when a supervisor is live; otherwise runs a one-shot boot to produce it, then tears down. The supported way to obtain a committed deployment file for a real-network deploy.',
+			'Emits the stack deployment.json deployment to --out (or stdout). Reads the existing file when a supervisor is live; otherwise runs a one-shot boot to produce it, then tears down. With --network <net>, instead emits a typed deployments/<net>.ts (satisfies AppNetworkDeployment) from that network entry. The supported way to obtain a committed deployment file for a real-network deploy.',
 		options: [
 			...configOptions,
 			{

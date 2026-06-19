@@ -28,6 +28,11 @@ interface Harness {
 	readonly exitCode: number | null;
 	readonly upRuns: ReadonlyArray<GlobalFlags>;
 	readonly applyRuns: ReadonlyArray<GlobalFlags>;
+	readonly dumpRuns: ReadonlyArray<{
+		readonly configPath: string | undefined;
+		readonly out: string | undefined;
+		readonly network: string | undefined;
+	}>;
 	readonly captures: ReadonlyArray<{
 		readonly snapshotId?: string;
 		readonly name?: string;
@@ -80,6 +85,11 @@ const makeHarness = (
 	let exitCode: number | null = null;
 	const upRuns: Array<GlobalFlags> = [];
 	const applyRuns: Array<GlobalFlags> = [];
+	const dumpRuns: Array<{
+		configPath: string | undefined;
+		out: string | undefined;
+		network: string | undefined;
+	}> = [];
 	const captures: Array<{
 		snapshotId?: string;
 		name?: string;
@@ -136,7 +146,15 @@ const makeHarness = (
 			run: () => Effect.sync(() => ({ exitCode: 0 })),
 		},
 		dumpDeployment: {
-			run: () => Effect.sync(() => ({ exitCode: 0 })),
+			run: (flags) =>
+				Effect.sync(() => {
+					dumpRuns.push({
+						configPath: flags.configPath,
+						out: flags.out,
+						network: flags.network,
+					});
+					return { exitCode: 0 };
+				}),
 		},
 		status: {
 			reader: { readState: () => Effect.succeed(null) },
@@ -261,6 +279,7 @@ const makeHarness = (
 			exitCode,
 			upRuns,
 			applyRuns,
+			dumpRuns,
 			captures,
 			restores,
 			deletes,
@@ -464,6 +483,26 @@ describe('dispatch', () => {
 		expect(h.upRuns[0]!.configPath).toBe('devstack.ci.ts');
 		expect(h.applyRuns).toHaveLength(1);
 		expect(h.applyRuns[0]!.configPath).toBe('devstack.ci.ts');
+	});
+
+	it('dump-deployment threads --out and --network through to its run', async () => {
+		const { deps, read } = makeHarness();
+		await run(['dump-deployment', '--config', 'devstack.ci.ts'], deps, { io: read().io });
+		await run(['dump-deployment', '--network', 'devnet', '--json'], deps, { io: read().io });
+		await run(['dump-deployment', '--out', 'deployment.json', '--json'], deps, { io: read().io });
+		const h = read();
+		expect(h.exitCode).toBe(0);
+		expect(h.dumpRuns).toHaveLength(3);
+		// No flag → both undefined (raw-envelope-to-stdout path).
+		expect(h.dumpRuns[0]!.network).toBeUndefined();
+		expect(h.dumpRuns[0]!.out).toBeUndefined();
+		expect(h.dumpRuns[0]!.configPath).toBe('devstack.ci.ts');
+		// `--network` reaches the run (typed-file emit path).
+		expect(h.dumpRuns[1]!.network).toBe('devnet');
+		expect(h.dumpRuns[1]!.out).toBeUndefined();
+		// `--out` still routes independently.
+		expect(h.dumpRuns[2]!.out).toBe('deployment.json');
+		expect(h.dumpRuns[2]!.network).toBeUndefined();
 	});
 
 	it('command-scoped flags reject flags on commands that do not own them', async () => {

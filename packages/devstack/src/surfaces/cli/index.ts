@@ -69,6 +69,7 @@ export interface DumpDeploymentCommandDeps {
 	readonly run: (flags: {
 		readonly configPath: string | undefined;
 		readonly out: string | undefined;
+		readonly network: string | undefined;
 		readonly io: CliIO;
 		readonly outputMode: OutputMode;
 	}) => Effect.Effect<CommandResult, CliError>;
@@ -544,6 +545,10 @@ const dumpDeploymentCommand = buildCommand<DumpDeploymentFlags, [], DevstackCliC
 		flags: {
 			...configFlagParams,
 			out: stringFlag('Write the deployment JSON to this file instead of stdout', 'path'),
+			network: stringFlag(
+				'Emit a typed deployments/<network>.ts (satisfies AppNetworkDeployment) instead of the raw envelope',
+				'name',
+			),
 		},
 	},
 	docs: {
@@ -554,6 +559,7 @@ const dumpDeploymentCommand = buildCommand<DumpDeploymentFlags, [], DevstackCliC
 			this.deps.dumpDeployment.run({
 				configPath: global.configPath,
 				out: flags.out,
+				network: flags.network,
 				io: this.io,
 				outputMode: global.outputMode,
 			}),

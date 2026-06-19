@@ -22,14 +22,22 @@
 // verbatim and stdout prints them verbatim — the format matches the
 // boot-written file exactly.
 
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
 
 import { Effect, Exit } from 'effect';
 
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
-import { decodeDeployment, DEPLOYMENT_FILENAME } from '../../orchestrators/codegen/deployment.ts';
-import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
+import {
+	decodeDeployment,
+	DEPLOYMENT_FILENAME,
+	type DevstackDeployment,
+} from '../../orchestrators/codegen/deployment.ts';
+import {
+	DEPLOYMENTS_DIRNAME,
+	renderNetworkDeploymentFile,
+} from '../../orchestrators/codegen/deployment-network-file.ts';
+import { type CliError, CliInternalError, CliUsageError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult } from '../../surfaces/cli/commands/index.ts';
 import { probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
@@ -44,9 +52,15 @@ import { runApplyLive } from './apply.ts';
 
 export interface DumpDeploymentOptions {
 	readonly configPath: string | undefined;
-	/** Destination for the pretty deployment JSON. When omitted, the JSON
-	 *  is printed to stdout. */
+	/** Destination for the pretty deployment JSON. When omitted (and no
+	 *  `--network`), the JSON is printed to stdout. */
 	readonly out: string | undefined;
+	/** When set, write a TYPED single-network `deployments/<network>.ts`
+	 *  (`export const deployment = {…} satisfies AppNetworkDeployment`) sourced
+	 *  from the resolved envelope's `networks.<network>` entry, instead of
+	 *  dumping the raw envelope JSON. The committed, `tsc`-checked authoring
+	 *  surface for a real-network deploy. */
+	readonly network: string | undefined;
 	readonly io: CliIO;
 	readonly outputMode: OutputMode;
 }
@@ -80,11 +94,65 @@ const writeOutFile = (out: string, text: string): Effect.Effect<void, CliError> 
  *  envelope. (The file is written by `writeDeployment` from the same schema,
  *  so a conforming boot-written file always decodes; only a corrupt or
  *  hand-edited file trips the stricter validation.) */
-const parseDeployment = (text: string, deploymentFile: string): Effect.Effect<unknown, CliError> =>
+const parseDeployment = (
+	text: string,
+	deploymentFile: string,
+): Effect.Effect<DevstackDeployment, CliError> =>
 	Effect.try({
 		try: () => decodeDeployment(text),
 		catch: (cause) =>
 			new CliInternalError({ message: `deployment at ${deploymentFile} is not valid JSON`, cause }),
+	});
+
+/** The project root the `deployments/<net>.ts` file is written relative to:
+ *  the directory of the resolved `devstack.config.ts` (so a `--config` in a
+ *  subdir still lands `deployments/` next to that app's `src/`), else the
+ *  process cwd. */
+const projectRootOf = (configPath: string | undefined): string =>
+	configPath === undefined ? process.cwd() : dirname(resolvePath(configPath));
+
+/** Render + write the typed `deployments/<network>.ts` for `network` from the
+ *  resolved envelope, creating the `deployments/` dir if absent. Loud-fails
+ *  (usage error) when the envelope carries no such network — listing the ones
+ *  it does, so the operator can pick a valid name. */
+const writeNetworkDeploymentFile = (
+	envelope: DevstackDeployment,
+	network: string,
+	projectRoot: string,
+): Effect.Effect<string, CliError> =>
+	Effect.gen(function* () {
+		const unit = envelope.networks[network];
+		if (unit === undefined) {
+			const available = Object.keys(envelope.networks).sort().join(', ');
+			return yield* Effect.fail(
+				new CliUsageError({
+					message: `the resolved deployment has no network "${network}"`,
+					hint:
+						available.length > 0
+							? `available networks: ${available}`
+							: 'the deployment carries no networks',
+				}),
+			);
+		}
+		const rendered = renderNetworkDeploymentFile(network, unit);
+		if (!rendered.ok) {
+			return yield* Effect.fail(
+				new CliInternalError({
+					message: `failed to render deployments/${network}.ts`,
+					cause: rendered.error,
+				}),
+			);
+		}
+		const dir = resolvePath(projectRoot, DEPLOYMENTS_DIRNAME);
+		const outFile = resolvePath(dir, `${network}.ts`);
+		yield* Effect.try({
+			try: () => {
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(outFile, rendered.text, 'utf8');
+			},
+			catch: (cause) => new CliInternalError({ message: `failed to write ${outFile}`, cause }),
+		});
+		return outFile;
 	});
 
 export const runDumpDeployment = (
@@ -124,6 +192,22 @@ export const runDumpDeployment = (
 
 		const text = yield* readDeploymentText(deploymentFile);
 		const data = yield* parseDeployment(text, deploymentFile);
+
+		// `--network <net>`: emit a TYPED single-network `deployments/<net>.ts`
+		// (`satisfies AppNetworkDeployment`) instead of the raw envelope. Sourced
+		// from the resolved envelope's `networks.<net>` entry — the same data
+		// `assembleDeployment` produced — written next to the app's `src/`.
+		if (opts.network !== undefined) {
+			const projectRoot = projectRootOf(opts.configPath);
+			const outFile = yield* writeNetworkDeploymentFile(data, opts.network, projectRoot);
+			yield* emitSuccess(opts.io, opts.outputMode, {
+				command: 'dump-deployment',
+				elapsedMs: Date.now() - started,
+				data: data.networks[opts.network],
+				humanLines: [`wrote ${outFile}`],
+			});
+			return { exitCode: ExitCode.OK };
+		}
 
 		if (opts.out !== undefined) {
 			yield* writeOutFile(opts.out, text);
