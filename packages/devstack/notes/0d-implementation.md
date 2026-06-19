@@ -45,6 +45,10 @@ prod `deployments/<network>.ts`. `requireId` kept. App object stays `config`.
    `AppNetworkDeployment extends NetworkDeployment` (required packages/mvrOverrides), `ProvidedNetwork`
    (declared non-local network union), `ProvidedDeployments = Partial<Record<ProvidedNetwork, …>>`, and
    the literal `NETWORK_NAMES` tuple for D2. tsc-green on clean clone (Partial/empty). Regenerate.
+   **Also HOIST `accounts`** from per-`NetworkDeployment` to envelope-level `DevstackDeployment.accounts`
+   (network-invariant — see the accounts invariant above); update schema/config-runtime/assembleDeployment/
+   merge accordingly. (Funding accounts against a live faucet-backed net like devnet is separate runtime
+   work — fold into 0b / the account+faucet plugins, exercised by the capstone.)
 5. **Resolver removal (smaller than planned — sugar re-pointing was already done by the 0a flip).**
    The emitted `config.ts`/buckets already use the deployment API; `resolve*()` are now used ONLY by
    `templates/{app,ts}/tests/e2e/counter.test.ts` (`resolveActiveNetwork`). So: migrate those two e2e
@@ -83,26 +87,33 @@ Sequencing: lands after the core multi-network (commits 1–5); commit 4's stric
 `values` from the start (or a follow-up tightens it). Service bucket shape change (commit 8) is
 consumer-visible (`deepbook.pools` → `deepbook.forNetwork(net).pools`).
 
-## Dev-only surfaces are LOCAL-ONLY (accounts + dev wallet) — cross-cutting invariant
-A devstack account is an ephemeral faucet-funded test identity that exists ONLY on a local stack;
-the dev wallet signs with those local accounts. Live networks (devnet/testnet/mainnet) have NEITHER —
-you connect a real wallet there. So accounts/dev-wallet are "per-network" only in the sense of
-local-present / live-absent, NOT "a different value per network." Handle correctly:
-- **NetworkDeployment.accounts** stays present-but-defaulting-`{}` (commit 2 schema already defaults
-  it). Populated for local networks (live stack), `{}` for committed live networks.
-- **Strict type (0d.4):** `accounts` is OPTIONAL / excluded from the completeness check — a hand-written
-  `deployments/testnet.ts` must NOT be forced to provide accounts (it has none). Completeness covers
-  packages + service `values` only.
-- **`resolveAccounts()` / accounts surface (0b):** scoped to the LOCAL network — reads the local
-  stack's accounts; returns `{}` for a live network. The dev-wallet injection (serve-only, prod-stripped)
-  reads the local network's accounts and the `connectAs(alice)` test bridge is local-only.
-- **dump-deployment (0d.6):** scaffolds live `deployments/<net>.ts` with `accounts: {}` (no ephemeral
-  identities for a real network).
-- **On a dev network-switch (localnet→devnet):** the dev wallet's accounts are localnet identities (no
-  devnet gas) — switching must not break; the app uses a real wallet for the live network. Verify in the
-  capstone.
-- **Prod build (drop-local):** no accounts, no dev wallet — already guaranteed by deploy=drop-local +
-  the serve-only dev-wallet injection.
+## Accounts are NETWORK-AGNOSTIC identities; only FUNDING is per-network — cross-cutting invariant
+Key distinction (owner): an account is a keypair/address created WITHOUT any network — one address works
+on every network, and the dev wallet is a network-agnostic signer over the set of accounts. What needs a
+live network is FUNDING (gas), which needs that network's FAUCET. So accounts + dev wallet are a flat,
+network-invariant set; funding is the per-network, faucet-gated part. Handle correctly:
+- **`accounts` is network-invariant → hoist to the ENVELOPE level.** `DevstackDeployment.accounts`
+  (`name → address`), NOT per-`NetworkDeployment` (commit 2 put it per-network; move it up — accounts
+  don't vary by network). Created at stack/wallet runtime (keypair gen needs no network); runtime-
+  injected, never committed; `{}` in a pure prod build (no managed identities there).
+- **The dev wallet is a network-agnostic signer.** It holds the keypairs and can sign on whatever
+  network is selected; whether a tx SUCCEEDS depends on funding (gas) on that network. Injection is
+  serve-context (pure prod build ships none).
+- **Funding is per-network + faucet-gated.** `NetworkScopedOptions` already carries per-network
+  `faucet`/`devWallet`/`autoApproveSigning` (default on except `mainnet`). Funding an account on a
+  network requires that network's faucet + opt-in: ON for local + faucet-backed live nets
+  (devnet/testnet), OFF for `mainnet` (no faucet/real funds). devstack funds via THAT network's faucet —
+  the main new work is funding accounts against a live faucet-backed net (devnet), not just a local node.
+  (Open: explicit per-network `accounts`/`fund` toggle vs reuse `faucet` + `account(...)` members?
+  Default to reuse.)
+- **Strict type (0d.4):** `accounts` is OPTIONAL / excluded from the completeness check (network names
+  are knowable; addresses are runtime). A hand-written `deployments/<net>.ts` never supplies accounts.
+- **`resolveAccounts()` surface (0b):** reads the envelope-level `accounts` (network-invariant). The
+  dev-wallet injection respects the `devWallet`/`faucet` flags for the funded-network UX; `connectAs(alice)`
+  signs as alice on the selected network (funded there or not).
+- **Prod build (deploy=drop-local):** no dev wallet (serve-only), `accounts: {}` — the real prod path. A
+  devnet *test* serve/build with `devWallet` + `faucet` opted-in DOES inject the wallet + fund accounts,
+  which is how the capstone drives real txs on devnet.
 
 ## Capstone: live-network validation (MANUAL, owner-requested — run after 0d.7 + 0e)
 Typecheck/unit-green is necessary but NOT sufficient — a real deploy proves the prod path works.
