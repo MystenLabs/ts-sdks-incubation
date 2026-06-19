@@ -122,7 +122,7 @@ const projectRootOf = (configPath: string | undefined): string =>
  *  resolved envelope, creating the `deployments/` dir if absent. Loud-fails
  *  (usage error) when the envelope carries no such network — listing the ones
  *  it does, so the operator can pick a valid name. */
-const writeNetworkDeploymentFile = (
+export const writeNetworkDeploymentFile = (
 	envelope: DevstackDeployment,
 	network: string,
 	projectRoot: string,

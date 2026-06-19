@@ -552,20 +552,33 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 	// Per-republish cache of the live local envelope. `readLiveEnvelope` walks
 	// the manifest + reads/decodes `deployment.json` on every call, but the file
 	// only changes on a republish — which the `configureServer` watcher already
-	// observes. So we read it once (lazily, on the first `transformIndexHtml`)
-	// and reuse it until the watcher invalidates it, rather than re-reading per
-	// page load. `liveEnvelopeFresh === false` is the "needs (re)read" sentinel
-	// (a `null` envelope — no live stack — is a legitimately cacheable value).
+	// observes. So we read a PRESENT envelope once (lazily, on the first
+	// `transformIndexHtml`) and reuse it until the watcher invalidates it, rather
+	// than re-reading per page load. `liveEnvelopeFresh === false` is the
+	// "needs (re)read" sentinel.
 	let liveEnvelopeFresh = false;
 	let liveEnvelopeCache: DevstackDeployment | null = null;
 	const readLiveEnvelopeCached = (
 		env: Readonly<Record<string, string | undefined>>,
 	): DevstackDeployment | null => {
-		if (!liveEnvelopeFresh) {
-			liveEnvelopeCache = readLiveEnvelope(env, resolvedRoot);
+		if (liveEnvelopeFresh) return liveEnvelopeCache;
+		const live = readLiveEnvelope(env, resolvedRoot);
+		// Only memoize a PRESENT envelope. A `null` result (no live stack yet)
+		// must NOT stick: the `configureServer` watcher that invalidates this
+		// cache only registers when a manifest already exists at server start
+		// (`if (idsFile === null) return`), so a standalone `vite dev` launched
+		// BEFORE `devstack up` has no invalidation hook — caching `null` here
+		// would pin it forever, and the app would never pick up the stack even
+		// after it boots and the page reloads. Re-reading while absent is cheap
+		// (no `deployment.json` to decode) and lets the first post-boot reload
+		// resolve the freshly-written envelope.
+		if (live !== null) {
+			liveEnvelopeCache = live;
 			liveEnvelopeFresh = true;
+		} else {
+			liveEnvelopeCache = null;
 		}
-		return liveEnvelopeCache;
+		return live;
 	};
 
 	return {
