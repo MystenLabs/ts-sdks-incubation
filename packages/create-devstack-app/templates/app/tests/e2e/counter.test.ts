@@ -37,7 +37,7 @@ describe('counter (local devstack)', () => {
 			baseUrl: net.rpc,
 			// Resolves the bindings' default `@local/counter` package name to the
 			// deployed id at tx-build time (same wiring as `dapp-kit.ts`).
-			mvr: { overrides: { packages: config.mvrOverrides } },
+			mvr: { overrides: config.mvrOverrides },
 		});
 
 		// Throwaway on-chain actor, funded by the stack's local faucet.

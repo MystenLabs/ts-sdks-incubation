@@ -40,6 +40,7 @@
 			"picomatch": "^4.0.4",
 			"path-to-regexp": "^8.4.0",
 			"protobufjs": "7.5.9",
+			"undici": "^8.5.0",
 			"vite": "catalog:"
 		}
 	},

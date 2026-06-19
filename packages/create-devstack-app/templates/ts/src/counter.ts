@@ -8,8 +8,8 @@
 //
 // No package id is threaded here: the generated builders default `package`
 // to `@local/counter`; construct your client with
-// `mvr: { overrides: { packages: config.mvrOverrides } }` (see
-// `@generated/config.ts`) and the name resolves to the deployed id.
+// `mvr: { overrides: config.mvrOverrides }` (see `@generated/config.ts`)
+// and the name resolves to the deployed id.
 //
 // Imports go through the `@generated` alias (NOT `./generated`) so the
 // devstack Vite plugin can point it at the ACTIVE stack's codegen output:
