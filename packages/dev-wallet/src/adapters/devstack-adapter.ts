@@ -341,14 +341,22 @@ export interface DevstackAdapterManifest {
  * {@link DevstackAdapterManifest}, so
  * `createDevstackAdapterFromManifest(devstackManifest)` typechecks
  * without a cast.
+ *
+ * The narrow manifest shape carries no network set, so pass
+ * `options.networks` (e.g. the generated `config.networkNames`) to advertise
+ * fork/custom networks as `sui:<name>` on every account — matching what the
+ * devstack-injected dev wallet does via the constructor. Omit it and accounts
+ * advertise the standard Sui chains only.
  */
 export function createDevstackAdapterFromManifest(
 	manifest: DevstackAdapterManifest,
+	options?: { readonly networks?: readonly string[] },
 ): DevstackSignerAdapter | null {
 	const wallet = manifest.app?.wallet;
 	if (wallet === undefined) return null;
 	return new DevstackSignerAdapter({
 		serverOrigin: wallet.url,
 		token: parseDevstackToken(wallet.pairUrl),
+		networks: options?.networks,
 	});
 }
