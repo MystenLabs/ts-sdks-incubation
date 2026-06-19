@@ -40,6 +40,9 @@ const ENV_KEYS = [
 	'DEVSTACK_STATE_DIR',
 	'DEVSTACK_RUNTIME_ROOT',
 	'DEVSTACK_MANIFEST_PATH',
+	// Cleared per-test so the injected `__DEVSTACK_E2E__` global is deterministic
+	// (a stray `DEVSTACK_E2E` in the runner env would flip the default off-case).
+	'DEVSTACK_E2E',
 	// Cleared per-test so the plugin's vitest-vs-dev-server `define` branch is
 	// deterministic (these tests run UNDER vitest, which sets `VITEST`).
 	'VITEST',
@@ -62,11 +65,7 @@ afterEach(() => {
  *  (the live deployment the Vite plugin injects) at the supervisor-written
  *  path under an absolute state root. Bindings are not recorded in the
  *  manifest. */
-const writeStackManifest = (
-	stateRoot: string,
-	stack: string,
-	deploymentFile?: string,
-): string => {
+const writeStackManifest = (stateRoot: string, stack: string, deploymentFile?: string): string => {
 	const dir = join(stateRoot, 'stacks', stack);
 	mkdirSync(dir, { recursive: true });
 	const path = join(dir, 'manifest.json');
@@ -95,7 +94,7 @@ const writeLiveEnvelope = (tmp: string, stack: string, network: string, rpc: str
 		JSON.stringify({
 			defaultNetwork: network,
 			networks: {
-				[network]: { network, rpc, packages: {}, mvrOverrides: {} },
+				[network]: { network, rpc, packages: {}, mvrOverrides: { packages: {}, types: {} } },
 			},
 		}),
 	);
@@ -107,7 +106,7 @@ const writeLiveEnvelope = (tmp: string, stack: string, network: string, rpc: str
  *  merge stamps from the key). */
 const committedThunk = (rpc: string) => () =>
 	Promise.resolve({
-		deployment: { rpc, packages: {}, mvrOverrides: {} },
+		deployment: { rpc, packages: {}, mvrOverrides: { packages: {}, types: {} } },
 	});
 
 interface ParsedEnvelope {
@@ -213,16 +212,18 @@ describe('devstackVitePlugin', () => {
 		withTempRootAsync('devstack-vite', async (tmp) => {
 			// Vitest reports `command: 'serve'` too, but runs no `transformIndexHtml`,
 			// so the `__DEVSTACK_DEPLOYMENT_LIVE__` global is never set — and esbuild
-			// rejects the operator-expression `define`. The plugin must bake a literal
-			// so the resolver falls back to `DEVSTACK_DEPLOYMENT_FILE` (set by the
-			// vitest globalSetup).
+			// rejects the operator-expression `define`. The plugin must bake a literal;
+			// when it is `null`, the generated `config-runtime.ts` Node fallback reads
+			// the `DEVSTACK_DEPLOYMENT_FILE` env the vitest globalSetup points at the
+			// freshly-booted stack.
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 			process.env.VITEST = 'true';
 
 			const patch = await devstackVitePlugin().config({ root: tmp }, { command: 'serve' });
 			// The Vite config loads before the test stack boots, so no live ids are
-			// read → a plain `null` literal (esbuild-valid; triggers the env fallback).
+			// read → a plain `null` literal (esbuild-valid; the runtime config-runtime.ts
+			// resolver then takes the `DEVSTACK_DEPLOYMENT_FILE` Node fallback).
 			expect(patch.define.__DEVSTACK_DEPLOYMENT__).toBe('null');
 			expect(patch.define.__DEVSTACK_DEPLOYMENT__).not.toContain('__DEVSTACK_DEPLOYMENT_LIVE__');
 		}));
@@ -365,7 +366,7 @@ describe('devstackVitePlugin', () => {
 			mkdirSync(depsDir, { recursive: true });
 			writeFileSync(
 				join(depsDir, 'testnet.ts'),
-				`export const deployment = { rpc: 'http://auto-testnet', packages: {}, mvrOverrides: {} };\n`,
+				`export const deployment = { rpc: 'http://auto-testnet', packages: {}, mvrOverrides: { packages: {}, types: {} } };\n`,
 			);
 			// No explicit `deployments` option → auto-discovery picks up the file.
 			const plugin = devstackVitePlugin();
@@ -385,7 +386,7 @@ describe('devstackVitePlugin', () => {
 			mkdirSync(depsDir, { recursive: true });
 			writeFileSync(
 				join(depsDir, 'testnet.ts'),
-				`export const deployment = { rpc: 'http://auto', packages: {}, mvrOverrides: {} };\n`,
+				`export const deployment = { rpc: 'http://auto', packages: {}, mvrOverrides: { packages: {}, types: {} } };\n`,
 			);
 			const plugin = devstackVitePlugin({
 				deployments: { mainnet: committedThunk('http://explicit-mainnet') },
@@ -421,5 +422,33 @@ describe('devstackVitePlugin', () => {
 			});
 			const patch = await plugin.config({ root: tmp }, { command: 'build' });
 			expect(parseDefine(patch.define).defaultNetwork).toBe('mainnet');
+		}));
+
+	// --- __DEVSTACK_E2E__ gating (autoConnect ON only under Playwright e2e) ---
+
+	it('injects __DEVSTACK_E2E__ = true when DEVSTACK_E2E is set', () =>
+		withTempRootAsync('devstack-vite', async (tmp) => {
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+			process.env.DEVSTACK_E2E = '1';
+			const patch = await devstackVitePlugin().config({ root: tmp }, { command: 'serve' });
+			expect(patch.define.__DEVSTACK_E2E__).toBe('true');
+		}));
+
+	it('injects __DEVSTACK_E2E__ = false when DEVSTACK_E2E is unset', () =>
+		withTempRootAsync('devstack-vite', async (tmp) => {
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+			// `DEVSTACK_E2E` cleared by the per-test env reset.
+			const patch = await devstackVitePlugin().config({ root: tmp }, { command: 'serve' });
+			expect(patch.define.__DEVSTACK_E2E__).toBe('false');
+		}));
+
+	it('a prod build defines __DEVSTACK_E2E__ = false (tree-shakeable)', () =>
+		withTempRootAsync('devstack-vite', async (tmp) => {
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+			const patch = await devstackVitePlugin().config({ root: tmp }, { command: 'build' });
+			expect(patch.define.__DEVSTACK_E2E__).toBe('false');
 		}));
 });

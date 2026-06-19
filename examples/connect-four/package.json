@@ -12,7 +12,7 @@
 		"preview": "vite preview",
 		"typecheck": "tsc -b --noEmit && tsc --noEmit -p tsconfig.test.json",
 		"test": "vitest run",
-		"test:browser": "DEVSTACK_APP=connect-four DEVSTACK_STACK=e2e DEVSTACK_AUTO_APPROVE=1 playwright test",
+		"test:browser": "DEVSTACK_APP=connect-four DEVSTACK_STACK=e2e DEVSTACK_AUTO_APPROVE=1 DEVSTACK_E2E=1 playwright test",
 		"clean": "rm -rf .turbo node_modules/.tmp"
 	},
 	"dependencies": {

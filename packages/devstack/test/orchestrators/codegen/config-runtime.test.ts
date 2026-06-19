@@ -36,7 +36,7 @@ interface NetworkDeploymentLike {
 	readonly network: string;
 	readonly rpc: string;
 	readonly packages: Record<string, { id: string }>;
-	readonly mvrOverrides: Record<string, string>;
+	readonly mvrOverrides: { packages: Record<string, string>; types: Record<string, string> };
 	readonly values?: Record<string, Record<string, unknown>>;
 }
 interface LoadedDeploymentLike {
@@ -69,7 +69,7 @@ const envelope = (
 		network: string;
 		rpc: string;
 		packages?: Record<string, { id: string }>;
-		mvrOverrides?: Record<string, string>;
+		mvrOverrides?: { packages: Record<string, string>; types: Record<string, string> };
 		values?: Record<string, Record<string, unknown>>;
 		local?: boolean;
 	},
@@ -79,7 +79,7 @@ const envelope = (
 	networks: {
 		[unit.network]: {
 			packages: {},
-			mvrOverrides: {},
+			mvrOverrides: { packages: {}, types: {} },
 			...unit,
 		},
 	},
@@ -91,7 +91,7 @@ const localUnit = {
 	rpc: 'http://127.0.0.1:9000',
 	local: true,
 	packages: {},
-	mvrOverrides: { '@local/demo': '0xabc' },
+	mvrOverrides: { packages: { '@local/demo': '0xabc' }, types: {} },
 	values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
 };
 const idsBlob = envelope(localUnit, { alice: '0xa11ce' });
@@ -105,7 +105,7 @@ const multiBlob = {
 			rpc: 'http://127.0.0.1:9000',
 			local: true,
 			packages: {},
-			mvrOverrides: { '@local/demo': '0xabc' },
+			mvrOverrides: { packages: { '@local/demo': '0xabc' }, types: {} },
 			values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
 		},
 		testnet: {
@@ -113,7 +113,7 @@ const multiBlob = {
 			rpc: 'http://testnet.example',
 			local: false,
 			packages: {},
-			mvrOverrides: { '@local/demo': '0xdef' },
+			mvrOverrides: { packages: { '@local/demo': '0xdef' }, types: {} },
 			values: {},
 		},
 	},
@@ -187,7 +187,7 @@ describe('deployment API', () => {
 		expect(dep.networkNames).toEqual(['localnet']);
 		const net = dep.forNetwork('localnet');
 		expect(net.rpc).toBe('http://127.0.0.1:9000');
-		expect(net.mvrOverrides['@local/demo']).toBe('0xabc');
+		expect(net.mvrOverrides.packages['@local/demo']).toBe('0xabc');
 	});
 
 	it('loadDeployment honors a multi-network envelope (forNetwork + defaultNetwork)', () => {
@@ -226,7 +226,12 @@ describe('deployment API', () => {
 	});
 
 	it('requireId throws on the all-zero sentinel', () => {
-		const r = loadResolver(envelope({ ...localUnit, mvrOverrides: { '@local/demo': UNRESOLVED } }));
+		const r = loadResolver(
+			envelope({
+				...localUnit,
+				mvrOverrides: { packages: { '@local/demo': UNRESOLVED }, types: {} },
+			}),
+		);
 		const net = r.loadDeployment().forNetwork('localnet');
 		expect(() => r.requireId(net, '@local/demo')).toThrow(r.DevstackConfigMissingError);
 	});

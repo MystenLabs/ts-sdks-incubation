@@ -154,7 +154,13 @@ const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 		Effect.succeed({
 			defaultNetwork: network,
 			networks: {
-				[network]: { network, rpc: '', local: true, packages: {}, mvrOverrides: {} },
+				[network]: {
+					network,
+					rpc: '',
+					local: true,
+					packages: {},
+					mvrOverrides: { packages: {}, types: {} },
+				},
 			},
 			accounts: {},
 		}),
@@ -622,7 +628,7 @@ describe('buildProductionPostAcquireHook — committed-bindings (`emitBindings`)
 							rpc: '',
 							local: true,
 							packages: {},
-							mvrOverrides: {},
+							mvrOverrides: { packages: {}, types: {} },
 						},
 					},
 					accounts: {},

@@ -28,7 +28,10 @@ export interface NetworkDeployment {
 	readonly packages: {
 		readonly [name: string]: { readonly id: string; readonly objects?: { readonly [k: string]: string } };
 	};
-	readonly mvrOverrides: { readonly [mvrPlaceholder: string]: string };
+	readonly mvrOverrides: {
+		readonly packages: { readonly [mvrPlaceholder: string]: string };
+		readonly types: { readonly [namedType: string]: string };
+	};
 	readonly values?: { readonly [namespace: string]: { readonly [key: string]: unknown } };
 }
 `;
@@ -79,7 +82,10 @@ const testnetUnit: NetworkDeployment = {
 	faucet: 'https://faucet.testnet.sui.io',
 	local: true, // dev marker — the emitter must DROP this.
 	packages: { counter: { id: '0xabc', objects: { registry: '0xreg' } } },
-	mvrOverrides: { '@local/counter': '0xabc' },
+	mvrOverrides: {
+		packages: { '@local/counter': '0xabc' },
+		types: { '@local/counter::counter::Counter': '0xabc::counter::Counter' },
+	},
 	values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
 };
 
@@ -102,7 +108,11 @@ describe('renderNetworkDeploymentFile — shape', () => {
 	it('carries the network name + load-bearing rpc + packages + mvrOverrides', () => {
 		expect(src).toContain("network: 'testnet'");
 		expect(src).toContain("rpc: 'https://fullnode.testnet.sui.io'");
+		// `mvrOverrides` is the nested @mysten override shape `{ packages, types }`.
 		expect(src).toContain("'@local/counter': '0xabc'");
+		expect(src).toContain("'@local/counter::counter::Counter': '0xabc::counter::Counter'");
+		expect(src).toContain('packages:');
+		expect(src).toContain('types:');
 		expect(src).toContain('counter:');
 	});
 
@@ -120,7 +130,7 @@ describe('renderNetworkDeploymentFile — shape', () => {
 			network: 'devnet',
 			rpc: 'https://fullnode.devnet.sui.io',
 			packages: {},
-			mvrOverrides: {},
+			mvrOverrides: { packages: {}, types: {} },
 		});
 		if (!minimal.ok) throw new Error('render failed');
 		expect(minimal.text).not.toContain('chainId');
@@ -136,7 +146,9 @@ describe('renderNetworkDeploymentFile — round-trips against the generated depl
 		localNetworkName: 'localnet',
 		packageNames: ['counter'],
 		mvrPlaceholders: ['@local/counter'],
+		mvrTypeTags: ['@local/counter::counter::Counter'],
 		providedNetworks: ['testnet'],
+		serviceValues: {},
 	});
 
 	it('the emitted deployments/testnet.ts satisfies AppNetworkDeployment (clean tsc)', () => {

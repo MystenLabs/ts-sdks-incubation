@@ -16,7 +16,7 @@
 // declared literals for KNOWN packages); the committed `config.ts`
 // resolver throws loudly at runtime if a sentinel id is used. The Vite
 // plugin injects the real ids in dev (live `deployment.json`) and prod
-// (a committed deployment file via the `ids` option / `DEVSTACK_DEPLOYMENT_FILE`).
+// (the committed per-network `deployments` thunks).
 // So `git status` shows NO churn under
 // `src/generated` after a `devstack up` — ids land only in the
 // gitignored `.devstack/`.

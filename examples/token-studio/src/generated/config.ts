@@ -13,7 +13,9 @@ export const config = {
 	defaultNetwork: __deployment.defaultNetwork as (typeof NETWORK_NAMES)[number],
 	forNetwork: __deployment.forNetwork,
 	mvrOverrides: {
-		"@local/managed-coin": requireId(dep, "@local/managed-coin"),
+		packages: {
+			"@local/managed-coin": requireId(dep, "@local/managed-coin"),
+		},
 	},
 	network: dep.network,
 	networkNames: NETWORK_NAMES,

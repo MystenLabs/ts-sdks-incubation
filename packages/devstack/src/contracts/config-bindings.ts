@@ -39,14 +39,29 @@ import type { JsonValue } from '../orchestrators/codegen/deployment.ts';
  *  `requireValue(dep, namespace, key)` channel. Each maps to a deployment
  *  accessor: `id` → `requireId(dep, <arg>)`, `network` → `dep.network`,
  *  `networks` → `Object.fromEntries(__deployment.networkNames.map((n) =>
- *  [n, __deployment.forNetwork(n)]))`. Sugar bindings also feed the TYPED
+ *  [n, __deployment.forNetwork(n)]))`, `mvrType` →
+ *  `` `${requireId(dep, "<mvr>")}::<typeSuffix>` `` (an MVR `types` override
+ *  entry). Sugar bindings also feed the TYPED
  *  deployment fields (`mvrOverrides`/`network`/`networks`), not the generic
  *  `values` channel — that keeps `config.network`/`config.mvrOverrides`
  *  readable by apps exactly as before. */
 export type ConfigSugarResolver =
 	| { readonly kind: 'id'; readonly mvrPlaceholder: string }
 	| { readonly kind: 'network' }
-	| { readonly kind: 'networks' };
+	| { readonly kind: 'networks' }
+	| {
+			/** An MVR `types` override entry. The static path emits the
+			 *  per-network resolved type tag
+			 *  `` `${requireId(dep, "<mvrPlaceholder>")}::<typeSuffix>` `` (the
+			 *  `@local/<slug>` package prefix substituted with the active-network
+			 *  package id); the live path's value is IGNORED by the live deployment
+			 *  slice (`deploymentFromBucket` keeps `mvrOverrides.types: {}`), so the
+			 *  committed `config.ts` is the only carrier of the declared types. */
+			readonly kind: 'mvrType';
+			readonly mvrPlaceholder: string;
+			/** The `<module>::<Name>` suffix beneath the package prefix. */
+			readonly typeSuffix: string;
+	  };
 
 /**
  * One config-binding. A plugin returns a list of these ONCE; the framework
@@ -182,6 +197,12 @@ const staticExprFor = <State>(
 			return rawExpr(
 				'Object.fromEntries(__deployment.networkNames.map((n) => [n, __deployment.forNetwork(n)]))',
 			);
+		case 'mvrType':
+			// `` `${requireId(dep, "<mvr>")}::<module>::<Name>` `` — the package
+			// prefix substituted with the active-network resolved id, never baked.
+			return rawExpr(
+				`\`\${requireId(dep, ${JSON.stringify(sugar.mvrPlaceholder)})}::${sugar.typeSuffix}\``,
+			);
 	}
 };
 
@@ -234,6 +255,30 @@ export const liveValuesOf = <State>(
 };
 
 /**
+ * Derive the STATIC TS type of each generic-channel (`values[ns][key]`)
+ * contribution — `valueTypes[namespace][key] = '<tsType>'`. The SAME binding
+ * subset `liveValuesOf` covers (every `resolved` binding WITHOUT a `sugar`
+ * resolver — sugar bindings feed the typed deployment fields, not `values`),
+ * but carries each field's declared `tsType` source string (defaulting to
+ * `'unknown'`) instead of its live value. Pure over the binding set — the type
+ * is config-known, so this is identical on the live and static paths. The
+ * codegen orchestrator folds it into the strict `deployment.ts`'s required
+ * `values` shape so a hand-written deployment is compile-checked for every
+ * service value.
+ */
+export const valueTypesOf = <State>(
+	set: ConfigBindingSet<State>,
+): Record<string, Record<string, string>> => {
+	const out: Record<string, Record<string, string>> = {};
+	for (const binding of set.bindings) {
+		if (binding.variant !== 'resolved' || binding.sugar !== undefined) continue;
+		const ns = (out[binding.namespace] ??= {});
+		ns[binding.key] = binding.tsType ?? 'unknown';
+	}
+	return out;
+};
+
+/**
  * Derive a `CodegenableDecl` from a binding set.
  *
  * `'static'` → the committed-tree decl (stack-free `codegen` verb). Its
@@ -259,6 +304,9 @@ export const configCodegenable = <State, Emitter extends string = string>(
 	const live = how !== 'static';
 	const projected = live ? projectLiveConfig(set, how.state) : projectStaticConfig(set);
 	const idConfigValues = live ? liveValuesOf(set, how.state) : {};
+	// Present on BOTH paths — the TS type is config-known (resolution-
+	// independent). Drives the strict `deployment.ts`'s required `values` shape.
+	const valueTypes = valueTypesOf(set);
 	const extraExports = options.extraExports;
 	return {
 		kind: 'codegenable',
@@ -278,6 +326,10 @@ export const configCodegenable = <State, Emitter extends string = string>(
 			project: () => projected,
 			// Only the live aggregate feeds the generic deployment channel.
 			...(live && Object.keys(idConfigValues).length > 0 ? { idConfigValues } : {}),
+			// The static `valueTypes` channel is present on BOTH paths (the
+			// committed `codegen` verb runs the STATIC aggregates, so the strict
+			// `deployment.ts`'s required `values` shape must be derivable there).
+			...(Object.keys(valueTypes).length > 0 ? { valueTypes } : {}),
 		},
 		emit: (ctx) =>
 			Effect.sync(() => {

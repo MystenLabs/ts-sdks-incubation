@@ -141,12 +141,23 @@ export const NetworkDeploymentSchema = Schema.Struct({
 	packages: Schema.Record(Schema.String, DeploymentPackageSchema).pipe(
 		Schema.withDecodingDefaultKey(Effect.succeed({})),
 	),
-	/** MVR placeholder (`@local/<slug>`) → resolved id, for this network.
-	 *  An app feeds this straight into dapp-kit's `mvr.overrides.packages`.
-	 *  Optional, default `{}` (see `packages`). */
-	mvrOverrides: Schema.Record(Schema.String, Schema.String).pipe(
-		Schema.withDecodingDefaultKey(Effect.succeed({})),
-	),
+	/** The @mysten MVR override surface an app feeds straight into dapp-kit's
+	 *  `mvr.overrides`, for this network:
+	 *    - `packages`: `@local/<slug>` → resolved package id.
+	 *    - `types`:    `@local/<slug>::<module>::<Name>` → resolved
+	 *                  `<packageId>::<module>::<Name>` (each KEY passes
+	 *                  `isValidNamedType`, each VALUE a concrete struct tag).
+	 *  Both maps optional-default `{}` (a network may declare no packages, and
+	 *  an older injected unit / hand-written committed deployment may omit
+	 *  `types`). */
+	mvrOverrides: Schema.Struct({
+		packages: Schema.Record(Schema.String, Schema.String).pipe(
+			Schema.withDecodingDefaultKey(Effect.succeed({})),
+		),
+		types: Schema.Record(Schema.String, Schema.String).pipe(
+			Schema.withDecodingDefaultKey(Effect.succeed({})),
+		),
+	}).pipe(Schema.withDecodingDefaultKey(Effect.succeed({ packages: {}, types: {} }))),
 	/** Generic resolver channel — `values[namespace][key]` carries
 	 *  arbitrary live plugin JSON the typed fields above can't. Optional
 	 *  so older deployment files (no `values`) still decode. */

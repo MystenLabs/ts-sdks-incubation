@@ -13,10 +13,12 @@ export const config = {
 	defaultNetwork: __deployment.defaultNetwork as (typeof NETWORK_NAMES)[number],
 	forNetwork: __deployment.forNetwork,
 	mvrOverrides: {
-		"@local/deepbook": requireId(dep, "@local/deepbook"),
-		"@local/demo-coins": requireId(dep, "@local/demo-coins"),
-		"@local/dusdc": requireId(dep, "@local/dusdc"),
-		"@local/pyth": requireId(dep, "@local/pyth"),
+		packages: {
+			"@local/deepbook": requireId(dep, "@local/deepbook"),
+			"@local/demo-coins": requireId(dep, "@local/demo-coins"),
+			"@local/dusdc": requireId(dep, "@local/dusdc"),
+			"@local/pyth": requireId(dep, "@local/pyth"),
+		},
 	},
 	network: dep.network,
 	networkNames: NETWORK_NAMES,

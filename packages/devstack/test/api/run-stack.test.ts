@@ -360,9 +360,12 @@ describe('api/run-stack', () => {
 			const unit = envelope.networks['localnet']!;
 			expect(unit.network).toBe('localnet');
 			// A leaf-only stack contributes no codegen — the deployment is valid
-			// but empty.
+			// but empty. `mvrOverrides` is the @mysten override shape with empty
+			// `packages`/`types` maps (the live assembly always emits both keys;
+			// `types` is folded into the committed `config.ts` from rendered
+			// bindings, never the live unit).
 			expect(unit.packages).toEqual({});
-			expect(unit.mvrOverrides).toEqual({});
+			expect(unit.mvrOverrides).toEqual({ packages: {}, types: {} });
 		} finally {
 			await Effect.runPromise(handle.stop);
 			await Effect.runPromise(handle.awaitShutdown);

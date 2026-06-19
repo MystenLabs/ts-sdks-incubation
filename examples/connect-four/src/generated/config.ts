@@ -13,7 +13,9 @@ export const config = {
 	defaultNetwork: __deployment.defaultNetwork as (typeof NETWORK_NAMES)[number],
 	forNetwork: __deployment.forNetwork,
 	mvrOverrides: {
-		"@local/connect-four": requireId(dep, "@local/connect-four"),
+		packages: {
+			"@local/connect-four": requireId(dep, "@local/connect-four"),
+		},
 	},
 	network: dep.network,
 	networkNames: NETWORK_NAMES,

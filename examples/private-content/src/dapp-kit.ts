@@ -12,18 +12,22 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
 
+// Injected by the devstack Vite plugin (`true` iff `DEVSTACK_E2E` is set).
+// `undefined` in a normal prod build — used to gate e2e-only auto-connect.
+declare const __DEVSTACK_E2E__: boolean | undefined;
+
 /**
  * The MVR-resolved vault package id for a given network. Used by the Seal
  * IBE callsites (`SealClient.encrypt` / `SessionKey.create`) and the
  * Cap-type query string — consumers that are NOT tx moveCalls and so are
  * not resolved by the grpc client's MVR overrides. Resolved PER NETWORK
- * (`config.forNetwork(network).mvrOverrides`) so a runtime `switchNetwork`
+ * (`config.forNetwork(network).mvrOverrides.packages`) so a runtime `switchNetwork`
  * flips the vault id in lockstep with the rest of the service config.
  * `undefined` when the `@local/vault` placeholder is absent from that
  * network's injected ids.
  */
 export const vaultPackageIdFor = (network: string): string | undefined =>
-	config.forNetwork(network).mvrOverrides['@local/vault'];
+	config.forNetwork(network).mvrOverrides.packages['@local/vault'];
 
 export const dAppKit = createDAppKit({
 	// The full network set the app supports comes from the generated runtime
@@ -35,7 +39,7 @@ export const dAppKit = createDAppKit({
 	// `string`).
 	networks: [...config.networkNames],
 	defaultNetwork: config.defaultNetwork,
-	autoConnect: import.meta.env.DEV,
+	autoConnect: __DEVSTACK_E2E__ === true,
 	// `createClient` is called per network dApp Kit manages, with the network it
 	// is building a client for — so EVERYTHING flows through dApp Kit's selected
 	// network and stays in sync across a runtime `switchNetwork`. The connection
@@ -52,7 +56,7 @@ export const dAppKit = createDAppKit({
 			// bindings default `options.package ?? '@local/vault'`, and this map
 			// resolves that name to the deployed id so the app's Move calls
 			// never hard-code a package id.
-			mvr: { overrides: { packages: net.mvrOverrides } },
+			mvr: { overrides: net.mvrOverrides },
 		});
 	},
 });

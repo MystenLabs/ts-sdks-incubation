@@ -23,17 +23,64 @@ export interface AppPackages {
 
 /** The per-network shape a prod author hand-writes in
  *  `deployments/<net>.ts`: a `NetworkDeployment` narrowed so `packages` is
- *  exhaustive over this app's packages and `mvrOverrides` requires every
- *  declared `@local/<slug>` placeholder. NO `accounts` — dev accounts ride
- *  the runtime envelope, never the per-network authoring surface. */
-export interface AppNetworkDeployment extends Omit<NetworkDeployment, 'packages' | 'mvrOverrides'> {
+ *  exhaustive over this app's packages, `mvrOverrides` is the @mysten MVR
+ *  override surface (`{ packages, types }`) requiring every declared
+ *  `@local/<slug>` placeholder + named-type tag, and `values` requires every
+ *  service value namespace/key (when the app declares any). NO `accounts` —
+ *  dev accounts ride the runtime envelope, never the per-network authoring
+ *  surface. */
+export interface AppNetworkDeployment
+	extends Omit<NetworkDeployment, 'packages' | 'mvrOverrides' | 'values'> {
 	readonly packages: AppPackages;
 	readonly mvrOverrides: {
-		"@local/deepbook": string;
-		"@local/demo-coins": string;
-		"@local/dusdc": string;
-		"@local/pyth": string;
-	} & { readonly [mvrPlaceholder: string]: string };
+		readonly packages: {
+			"@local/deepbook": string;
+			"@local/demo-coins": string;
+			"@local/dusdc": string;
+			"@local/pyth": string;
+		} & { readonly [mvrPlaceholder: string]: string };
+		readonly types?: { readonly [namedType: string]: string };
+	};
+	readonly values: {
+		"coin:dbtc": {
+			"decimals": number;
+			"fullCoinType": string;
+			"packageId": string | null;
+		};
+		"coin:deep": {
+			"decimals": number;
+			"fullCoinType": string;
+			"packageId": string | null;
+		};
+		"coin:deth": {
+			"decimals": number;
+			"fullCoinType": string;
+			"packageId": string | null;
+		};
+		"coin:dusdc": {
+			"decimals": number;
+			"fullCoinType": string;
+			"packageId": string | null;
+		};
+		"deepbook:deepbook": {
+			"adminCapId": string | null;
+			"deepTreasuryId": string | null;
+			"indexerUrl": string | null;
+			"margin": { readonly packageId: string; readonly registryId: string } | null;
+			"packageId": string;
+			"pools": ReadonlyArray<{ readonly name: string; readonly poolId: string; readonly base: string; readonly quote: string; readonly baseCoinType: string; readonly quoteCoinType: string }>;
+			"pyth": { readonly packageId: string | null; readonly stateId: string | null; readonly wormholeStateId: string | null; readonly feeds: ReadonlyArray<{ readonly symbol: string; readonly feedId: string; readonly priceInfoObjectId: string; readonly price: string; readonly expo: number }> } | null;
+			"registryId": string;
+			"serverUrl": string | null;
+		};
+		"package:deepbook:objects": {
+			"adminCapId": unknown;
+			"deepTreasuryId": unknown;
+			"registryId": unknown;
+		};
+	} & {
+		readonly [namespace: string]: { readonly [key: string]: unknown };
+	};
 }
 
 /** The LIVE network names this app ships — the `deployments/*.ts` filenames

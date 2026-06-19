@@ -167,6 +167,16 @@ export interface LocalPackageOptions<
 	readonly git?: GitSource;
 	readonly mvrPlaceholder?: string;
 	readonly excludeFromCodegen?: boolean;
+	/** Move datatypes (struct / enum) to expose as MVR `types` overrides.
+	 *  OPT-IN: each entry is a `'<module>::<Name>'` relative to THIS package
+	 *  (the `@local/<slug>` prefix is implied), e.g. `['game::Lobby',
+	 *  'game::Game']`. Each declared type emits one
+	 *  `mvrOverrides.types['@local/<slug>::<module>::<Name>']` entry whose value
+	 *  resolves per-network to `` `${requireId(dep, "@local/<slug>")}::<module>::<Name>` ``
+	 *  (the resolved package id, never baked). Absent / empty ⇒ `types: {}` — we
+	 *  do NOT auto-enumerate every package type (that balloons the config + every
+	 *  committed `deployments/<net>.ts`). */
+	readonly mvrTypes?: readonly string[];
 	/** Capture created objects from the publish output. The record
 	 *  form maps output keys to object-type suffixes, e.g.
 	 *  `{ boardId: '::board::Board' }`. */
@@ -187,6 +197,10 @@ export interface KnownPackageOptions {
 	readonly packageId: string;
 	readonly upgradeCapId?: string;
 	readonly mvrPlaceholder?: string;
+	/** Move datatypes (struct / enum) to expose as MVR `types` overrides —
+	 *  see {@link LocalPackageOptions.mvrTypes}. Each entry is a
+	 *  `'<module>::<Name>'` relative to this package; OPT-IN, defaults to none. */
+	readonly mvrTypes?: readonly string[];
 }
 
 interface PackageRegistryProjectionContribution {
@@ -295,6 +309,7 @@ const buildLocalPlugin = <
 							sourceHash,
 							publisher: opts.publisher.id,
 							mvrPlaceholder: opts.mvrPlaceholder ?? null,
+							mvrTypes: opts.mvrTypes ?? null,
 							excludeFromCodegen: opts.excludeFromCodegen === true,
 							capture: opts.capture ?? null,
 							// url+rev change → new identity → re-clone + rebuild.
@@ -333,6 +348,7 @@ const buildLocalPlugin = <
 			sourcePath: opts.sourcePath ?? null,
 			mvrPlaceholder: opts.mvrPlaceholder,
 			excluded: opts.excludeFromCodegen ?? false,
+			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 			// Capture KEYS (config-known) so the committed stub carries
 			// `resolveValue('package:<name>:objects', '<key>')` references —
 			// no live-only `objects` field, no baked object id.
@@ -455,6 +471,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 			packageId: opts.packageId,
 			mvrPlaceholder: opts.mvrPlaceholder,
 			...(opts.upgradeCapId !== undefined ? { upgradeCapId: opts.upgradeCapId } : {}),
+			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 		}),
 		start: ({ sui }) =>
 			Effect.gen(function* () {
@@ -500,7 +517,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 
 const makeLocalCapabilities = (
 	name: string,
-	opts: { readonly excludeFromCodegen?: boolean },
+	opts: { readonly excludeFromCodegen?: boolean; readonly mvrTypes?: readonly string[] },
 	resolved: LocalPackageResolved,
 ): ReadonlyArray<Contribution> => {
 	// Snapshot + codegen lift their typed fields off the resolved
@@ -522,6 +539,7 @@ const makeLocalCapabilities = (
 		},
 		{
 			excluded: opts.excludeFromCodegen ?? false,
+			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 		},
 	);
 	// The plugin contributes to the package-registry strategy under a
@@ -553,13 +571,16 @@ const makeKnownCapabilities = (
 	resolved: KnownPackageResolved,
 ): ReadonlyArray<Contribution> => {
 	const snap: SnapshotableDecl = makeSnapshotable(name, `known:${resolved.packageId}`);
-	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable({
-		kind: 'known',
-		name,
-		packageId: resolved.packageId,
-		upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
-		mvrPlaceholder: resolved.mvrPlaceholder,
-	});
+	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable(
+		{
+			kind: 'known',
+			name,
+			packageId: resolved.packageId,
+			upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
+			mvrPlaceholder: resolved.mvrPlaceholder,
+		},
+		{ ...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}) },
+	);
 	const projection: PackageRegistryProjectionContribution = {
 		kind: 'known',
 		name,

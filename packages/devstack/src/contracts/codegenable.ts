@@ -141,6 +141,19 @@ export interface AggregateContribution {
 	readonly idConfigValues?: {
 		readonly [namespace: string]: { readonly [key: string]: unknown };
 	};
+	/** The STATIC TS type of each generic-channel (`values[ns][key]`)
+	 *  contribution, as a source-string map `valueTypes[namespace][key] =
+	 *  '<tsType>'`. Derived from the SAME config-binding set as `idConfigValues`
+	 *  (every `resolved` binding WITHOUT a `sugar` resolver), but carries the
+	 *  field's declared TS type rather than its live value — so it is present on
+	 *  BOTH the static AND live aggregates (the type is config-known, not
+	 *  resolution-dependent). The codegen orchestrator folds it into the strict
+	 *  `deployment.ts`'s required `values` shape, so a hand-written
+	 *  `deployments/<net>.ts` is compile-checked for every service value. A
+	 *  binding with no declared tsType contributes `'unknown'`. */
+	readonly valueTypes?: {
+		readonly [namespace: string]: { readonly [key: string]: string };
+	};
 }
 
 /**

@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import * as ts from 'typescript';
+import { isValidNamedType } from '@mysten/sui/utils';
 
 import {
 	renderDeploymentStrict,
@@ -18,7 +19,8 @@ import {
 
 // A minimal stand-in for the emitted `config-runtime.ts`'s `NetworkDeployment`
 // type — enough for the strict `deployment.ts` to import + narrow. Mirrors the
-// real interface's load-bearing fields.
+// real interface's load-bearing fields. `mvrOverrides` is the nested @mysten
+// override shape `{ packages, types }`.
 const CONFIG_RUNTIME_STUB = `
 export interface NetworkDeployment {
 	readonly network?: string;
@@ -30,7 +32,10 @@ export interface NetworkDeployment {
 	readonly packages: {
 		readonly [name: string]: { readonly id: string; readonly objects?: { readonly [k: string]: string } };
 	};
-	readonly mvrOverrides: { readonly [mvrPlaceholder: string]: string };
+	readonly mvrOverrides: {
+		readonly packages: { readonly [mvrPlaceholder: string]: string };
+		readonly types: { readonly [namedType: string]: string };
+	};
 	readonly values?: { readonly [namespace: string]: { readonly [key: string]: unknown } };
 }
 `;
@@ -72,11 +77,40 @@ const typeCheck = (deploymentTs: string, sampleTs: string): ReadonlyArray<string
 		.map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
 };
 
+// A counter-style app — one package, one named type, NO service values.
 const counterInput: DeploymentStrictInput = {
 	localNetworkName: 'localnet',
 	packageNames: ['counter'],
 	mvrPlaceholders: ['@local/counter'],
+	mvrTypeTags: ['@local/counter::counter::Counter'],
 	providedNetworks: [],
+	serviceValues: {},
+};
+
+// A service-bearing app — package + named types + required service values
+// (deepbook ids/pool, a coin's decimals + full type, a walrus endpoint).
+const serviceInput: DeploymentStrictInput = {
+	localNetworkName: 'localnet',
+	packageNames: ['trader'],
+	mvrPlaceholders: ['@local/trader'],
+	mvrTypeTags: ['@local/trader::market::Order'],
+	providedNetworks: ['testnet'],
+	serviceValues: {
+		'deepbook:DBTC_DUSDC': { poolId: 'string', registryId: 'string' },
+		'coin:DBTC': { decimals: 'number', fullCoinType: 'string' },
+		walrus: { aggregator: 'string', publisher: 'string | null' },
+	},
+};
+
+// A counter-style app that declares NO MVR types — `types` must be OPT-IN
+// (optional + loose), so a deployment need not write a `types` block.
+const noTypesInput: DeploymentStrictInput = {
+	localNetworkName: 'localnet',
+	packageNames: ['counter'],
+	mvrPlaceholders: ['@local/counter'],
+	mvrTypeTags: [],
+	providedNetworks: ['testnet'],
+	serviceValues: {},
 };
 
 describe('renderDeploymentStrict — shape', () => {
@@ -86,15 +120,54 @@ describe('renderDeploymentStrict — shape', () => {
 		expect(src).toContain('readonly "counter": { readonly id: string;');
 	});
 
-	it('requires every declared MVR placeholder in mvrOverrides', () => {
+	it('mvrOverrides is the nested { packages, types } @mysten override shape', () => {
 		const src = renderDeploymentStrict(counterInput);
+		expect(src).toContain('readonly mvrOverrides: {');
+		expect(src).toContain('readonly packages: {');
 		expect(src).toContain('"@local/counter": string;');
+		expect(src).toContain('readonly types: {');
+		expect(src).toContain('"@local/counter::counter::Counter": string;');
+	});
+
+	it('every emitted mvrOverrides.types key passes isValidNamedType', () => {
+		// Mirror mvr-named-form.test.ts's isValidNamedPackage usage: the @mysten
+		// MVR `types` channel rejects keys that fail `isValidNamedType`, so the
+		// emitted keys MUST pass it.
+		for (const tag of serviceInput.mvrTypeTags) {
+			expect(isValidNamedType(tag)).toBe(true);
+		}
+		const src = renderDeploymentStrict(serviceInput);
+		expect(src).toContain('"@local/trader::market::Order": string;');
+	});
+
+	it('with NO declared types, mvrOverrides.types is OPTIONAL + loose', () => {
+		const src = renderDeploymentStrict(noTypesInput);
+		expect(src).toContain('readonly types?: { readonly [namedType: string]: string };');
 	});
 
 	it('AppNetworkDeployment omits accounts (hoisted to the envelope)', () => {
 		const src = renderDeploymentStrict(counterInput);
-		expect(src).toContain("Omit<NetworkDeployment, 'packages' | 'mvrOverrides'>");
+		expect(src).toContain("Omit<NetworkDeployment, 'packages' | 'mvrOverrides' | 'values'>");
 		expect(src).not.toContain('accounts:');
+	});
+
+	it('a service-less app keeps values OPTIONAL + loose', () => {
+		const src = renderDeploymentStrict(counterInput);
+		expect(src).toContain("readonly values?: NetworkDeployment['values'];");
+	});
+
+	it('a service app requires each value namespace/key with its TS type', () => {
+		const src = renderDeploymentStrict(serviceInput);
+		expect(src).toContain('readonly values: {');
+		expect(src).toContain('"deepbook:DBTC_DUSDC": {');
+		expect(src).toContain('"poolId": string;');
+		expect(src).toContain('"coin:DBTC": {');
+		expect(src).toContain('"decimals": number;');
+		expect(src).toContain('"fullCoinType": string;');
+		expect(src).toContain('"walrus": {');
+		expect(src).toContain('"publisher": string | null;');
+		// Permissive trailing index so an app may carry extra namespaces.
+		expect(src).toContain('readonly [namespace: string]: { readonly [key: string]: unknown };');
 	});
 
 	it('ProvidedNetwork is never + NETWORK_NAMES is [<local>] with no committed networks', () => {
@@ -115,7 +188,7 @@ describe('renderDeploymentStrict — shape', () => {
 	});
 });
 
-describe('renderDeploymentStrict — type-level completeness', () => {
+describe('renderDeploymentStrict — type-level completeness (counter / no service values)', () => {
 	const deploymentTs = renderDeploymentStrict({ ...counterInput, providedNetworks: ['testnet'] });
 
 	it('a complete deployments/<net>.ts satisfies AppNetworkDeployment (clean tsc)', () => {
@@ -124,7 +197,10 @@ import type { AppNetworkDeployment } from './deployment';
 export const deployment = {
 	rpc: 'https://fullnode.testnet.sui.io',
 	packages: { counter: { id: '0xabc' } },
-	mvrOverrides: { '@local/counter': '0xabc' },
+	mvrOverrides: {
+		packages: { '@local/counter': '0xabc' },
+		types: { '@local/counter::counter::Counter': '0xabc::counter::Counter' },
+	},
 } satisfies AppNetworkDeployment;
 `;
 		expect(typeCheck(deploymentTs, sample)).toEqual([]);
@@ -136,22 +212,58 @@ import type { AppNetworkDeployment } from './deployment';
 export const deployment = {
 	rpc: 'https://fullnode.testnet.sui.io',
 	packages: {},
-	mvrOverrides: { '@local/counter': '0xabc' },
+	mvrOverrides: {
+		packages: { '@local/counter': '0xabc' },
+		types: { '@local/counter::counter::Counter': '0xabc::counter::Counter' },
+	},
 } satisfies AppNetworkDeployment;
 `;
 		expect(typeCheck(deploymentTs, sample).length).toBeGreaterThan(0);
 	});
 
-	it('a deployment MISSING the declared mvr placeholder fails tsc', () => {
+	it('a deployment MISSING the declared mvr package placeholder fails tsc', () => {
 		const sample = `
 import type { AppNetworkDeployment } from './deployment';
 export const deployment = {
 	rpc: 'https://fullnode.testnet.sui.io',
 	packages: { counter: { id: '0xabc' } },
-	mvrOverrides: {},
+	mvrOverrides: {
+		packages: {},
+		types: { '@local/counter::counter::Counter': '0xabc::counter::Counter' },
+	},
 } satisfies AppNetworkDeployment;
 `;
 		expect(typeCheck(deploymentTs, sample).length).toBeGreaterThan(0);
+	});
+
+	it('a deployment MISSING the declared mvr type tag fails tsc', () => {
+		const sample = `
+import type { AppNetworkDeployment } from './deployment';
+export const deployment = {
+	rpc: 'https://fullnode.testnet.sui.io',
+	packages: { counter: { id: '0xabc' } },
+	mvrOverrides: {
+		packages: { '@local/counter': '0xabc' },
+		types: {},
+	},
+} satisfies AppNetworkDeployment;
+`;
+		expect(typeCheck(deploymentTs, sample).length).toBeGreaterThan(0);
+	});
+
+	it('with NO declared types, a deployment OMITTING the types block satisfies tsc', () => {
+		const noTypesTs = renderDeploymentStrict(noTypesInput);
+		const sample = `
+import type { AppNetworkDeployment } from './deployment';
+export const deployment = {
+	rpc: 'https://fullnode.testnet.sui.io',
+	packages: { counter: { id: '0xabc' } },
+	mvrOverrides: {
+		packages: { '@local/counter': '0xabc' },
+	},
+} satisfies AppNetworkDeployment;
+`;
+		expect(typeCheck(noTypesTs, sample)).toEqual([]);
 	});
 
 	it('ProvidedDeployments is keyed by the committed network union', () => {
@@ -161,7 +273,10 @@ const dep: ProvidedDeployments = {
 	testnet: {
 		rpc: 'https://fullnode.testnet.sui.io',
 		packages: { counter: { id: '0xabc' } },
-		mvrOverrides: { '@local/counter': '0xabc' },
+		mvrOverrides: {
+			packages: { '@local/counter': '0xabc' },
+			types: { '@local/counter::counter::Counter': '0xabc::counter::Counter' },
+		},
 	},
 };
 void dep;
@@ -176,10 +291,96 @@ const dep: ProvidedDeployments = {
 	devnet: {
 		rpc: 'x',
 		packages: { counter: { id: '0xabc' } },
-		mvrOverrides: { '@local/counter': '0xabc' },
+		mvrOverrides: {
+			packages: { '@local/counter': '0xabc' },
+			types: { '@local/counter::counter::Counter': '0xabc::counter::Counter' },
+		},
 	},
 };
 void dep;
+`;
+		expect(typeCheck(deploymentTs, sample).length).toBeGreaterThan(0);
+	});
+});
+
+describe('renderDeploymentStrict — type-level completeness (service values required)', () => {
+	const deploymentTs = renderDeploymentStrict(serviceInput);
+
+	const completeBody = `
+	rpc: 'https://fullnode.testnet.sui.io',
+	packages: { trader: { id: '0xabc' } },
+	mvrOverrides: {
+		packages: { '@local/trader': '0xabc' },
+		types: { '@local/trader::market::Order': '0xabc::market::Order' },
+	},
+	values: {
+		'deepbook:DBTC_DUSDC': { poolId: '0xpool', registryId: '0xreg' },
+		'coin:DBTC': { decimals: 6, fullCoinType: '0xabc::dbtc::DBTC' },
+		walrus: { aggregator: 'https://agg', publisher: null },
+	},`;
+
+	it('a complete service deployment satisfies AppNetworkDeployment (clean tsc)', () => {
+		const sample = `
+import type { AppNetworkDeployment } from './deployment';
+export const deployment = {${completeBody}
+} satisfies AppNetworkDeployment;
+`;
+		expect(typeCheck(deploymentTs, sample)).toEqual([]);
+	});
+
+	it('a service deployment MISSING the values channel entirely fails tsc', () => {
+		const sample = `
+import type { AppNetworkDeployment } from './deployment';
+export const deployment = {
+	rpc: 'https://fullnode.testnet.sui.io',
+	packages: { trader: { id: '0xabc' } },
+	mvrOverrides: {
+		packages: { '@local/trader': '0xabc' },
+		types: { '@local/trader::market::Order': '0xabc::market::Order' },
+	},
+} satisfies AppNetworkDeployment;
+`;
+		expect(typeCheck(deploymentTs, sample).length).toBeGreaterThan(0);
+	});
+
+	it('a service deployment MISSING a required value key fails tsc', () => {
+		// Drop `coin:DBTC.fullCoinType` — completeness must reject it.
+		const sample = `
+import type { AppNetworkDeployment } from './deployment';
+export const deployment = {
+	rpc: 'https://fullnode.testnet.sui.io',
+	packages: { trader: { id: '0xabc' } },
+	mvrOverrides: {
+		packages: { '@local/trader': '0xabc' },
+		types: { '@local/trader::market::Order': '0xabc::market::Order' },
+	},
+	values: {
+		'deepbook:DBTC_DUSDC': { poolId: '0xpool', registryId: '0xreg' },
+		'coin:DBTC': { decimals: 6 },
+		walrus: { aggregator: 'https://agg', publisher: null },
+	},
+} satisfies AppNetworkDeployment;
+`;
+		expect(typeCheck(deploymentTs, sample).length).toBeGreaterThan(0);
+	});
+
+	it('a service deployment with the WRONG value TS type fails tsc', () => {
+		// `decimals` typed as `number`; supply a string.
+		const sample = `
+import type { AppNetworkDeployment } from './deployment';
+export const deployment = {
+	rpc: 'https://fullnode.testnet.sui.io',
+	packages: { trader: { id: '0xabc' } },
+	mvrOverrides: {
+		packages: { '@local/trader': '0xabc' },
+		types: { '@local/trader::market::Order': '0xabc::market::Order' },
+	},
+	values: {
+		'deepbook:DBTC_DUSDC': { poolId: '0xpool', registryId: '0xreg' },
+		'coin:DBTC': { decimals: 'six', fullCoinType: '0xabc::dbtc::DBTC' },
+		walrus: { aggregator: 'https://agg', publisher: null },
+	},
+} satisfies AppNetworkDeployment;
 `;
 		expect(typeCheck(deploymentTs, sample).length).toBeGreaterThan(0);
 	});

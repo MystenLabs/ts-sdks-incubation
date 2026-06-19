@@ -38,6 +38,7 @@ import {
 	layerCodegenOrchestrator,
 	runEmitCycle,
 } from '../../../src/orchestrators/codegen/service.ts';
+import { makeLocalStaticCodegen } from '../../../src/plugins/package/codegen.ts';
 
 // Helper — synthesise a Codegenable for tests.
 const writeExports = (
@@ -365,191 +366,287 @@ describe('codegen.runEmitCycle', () => {
 					contributions: [
 						fakeDecl({
 							emitterName: 'coin/mock_usdc',
-								outputPath: 'coins/mock_usdc.ts',
-								aggregate: {
-									bucket: 'coins.ts',
-									project: (e) => e,
+							outputPath: 'coins/mock_usdc.ts',
+							aggregate: {
+								bucket: 'coins.ts',
+								project: (e) => e,
+							},
+							exports: {
+								mock_usdc: {
+									symbol: 'mock_usdc',
+									fullCoinType: '0x1::mock_usdc::MOCK_USDC',
+									decimals: 6,
+									source: 'registry',
 								},
-								exports: {
-									mock_usdc: {
-										symbol: 'mock_usdc',
-										fullCoinType: '0x1::mock_usdc::MOCK_USDC',
-										decimals: 6,
-										source: 'registry',
-									},
-								},
-							}),
-							fakeDecl({
-								emitterName: 'sui-network',
-								outputPath: 'config.ts',
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'config.ts',
-									project: (e) => {
-										const n = e['__suiNetworkEntry'] as {
-											readonly rpc: string;
-										};
-										return { network: 'localnet', networks: { localnet: n } };
-									},
-								},
-								exports: {
-									__suiNetworkEntry: {
-										chain: 'sui:localnet',
-										mode: 'local',
-										rpc: 'http://127.0.0.1:9000',
-										faucet: 'http://127.0.0.1:9123',
-										graphql: null,
-										forkUpstream: null,
-									},
-								},
-							}),
-							fakeDecl({
-								emitterName: 'package',
-								outputPath: 'package/mock-usdc.ts',
-								allowEmitterNameRepetition: true,
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'config.ts',
-									project: (e) => {
-										const b = e['packageBindings'] as {
-											readonly name: string;
-											readonly mvrPlaceholder: string;
-										};
-										return {
-											// Mirror the real package projection shape:
-											// `{ mvr, packageId }` (per-network ids now live in
-											// the injected deployment envelope, not a `byNetwork`
-											// sub-key).
-											packages: {
-												[b.name]: { mvr: b.mvrPlaceholder, packageId: '0x1' },
-											},
-											// Mirror the real `projectPackageConfig`: each package
-											// folds its active-network id into the shared
-											// `mvrOverrides` map keyed by its `mvr` placeholder.
-											mvrOverrides: { [b.mvrPlaceholder]: '0x1' },
-										};
-									},
-								},
-								exports: {
-									packageBindings: {
-										name: 'mock_usdc',
-										packageId: '0x1',
-										mvrPlaceholder: 'mock-usdc',
-										sourcePath: null,
-										excluded: true,
-									},
-								},
-							}),
-						],
-					});
-					expect(result.filesWritten.some((path) => path.endsWith('/config.ts'))).toBe(true);
-					expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
-					// The strict app-specific `deployment.ts` is emitted alongside
-					// `config-runtime.ts` (config.ts resolves ids at runtime).
-					expect(result.filesWritten.some((path) => path.endsWith(`${root}/deployment.ts`))).toBe(
-						true,
-					);
-					expect(
-						result.filesWritten.some((path) => path.endsWith(`${root}/config-runtime.ts`)),
-					).toBe(true);
-					expect(result.bindings?.packagesEmitted).toEqual([]);
-
-					// The committed `config.ts` now opens with
-					// `const __deployment = loadDeployment();` — the loud-failing
-					// deployment accessor — so importing it requires an injected
-					// deployment. Stub `__DEVSTACK_DEPLOYMENT__` (the Vite `define`
-					// channel) with the multi-network ENVELOPE for the duration of the
-					// imports; restore it after so the global stays clean for sibling
-					// tests.
-					yield* Effect.acquireRelease(
-						Effect.sync(() => {
-							(globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'] = {
-								defaultNetwork: 'localnet',
-								networks: {
-									localnet: {
-										network: 'localnet',
-										rpc: 'http://127.0.0.1:9000',
-										local: true,
-										packages: { mock_usdc: { id: '0x1' } },
-										mvrOverrides: { 'mock-usdc': '0x1' },
-									},
-								},
-								// Dev accounts ride the ENVELOPE (network-agnostic), not the unit.
-								accounts: { alice: '0xabc' },
-							};
+							},
 						}),
-						() =>
-							Effect.sync(() => {
-								delete (globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'];
-							}),
-					);
+						fakeDecl({
+							emitterName: 'sui-network',
+							outputPath: 'config.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'config.ts',
+								project: (e) => {
+									const n = e['__suiNetworkEntry'] as {
+										readonly rpc: string;
+									};
+									return { network: 'localnet', networks: { localnet: n } };
+								},
+							},
+							exports: {
+								__suiNetworkEntry: {
+									chain: 'sui:localnet',
+									mode: 'local',
+									rpc: 'http://127.0.0.1:9000',
+									faucet: 'http://127.0.0.1:9123',
+									graphql: null,
+									forkUpstream: null,
+								},
+							},
+						}),
+						fakeDecl({
+							emitterName: 'package',
+							outputPath: 'package/mock-usdc.ts',
+							allowEmitterNameRepetition: true,
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'config.ts',
+								project: (e) => {
+									const b = e['packageBindings'] as {
+										readonly name: string;
+										readonly mvrPlaceholder: string;
+									};
+									return {
+										// Mirror the real package projection shape:
+										// `{ mvr, packageId }` (per-network ids now live in
+										// the injected deployment envelope, not a `byNetwork`
+										// sub-key).
+										packages: {
+											[b.name]: { mvr: b.mvrPlaceholder, packageId: '0x1' },
+										},
+										// Mirror the real `projectPackageConfig`: each package
+										// folds its active-network id into the shared
+										// `mvrOverrides` map keyed by its `mvr` placeholder.
+										mvrOverrides: { [b.mvrPlaceholder]: '0x1' },
+									};
+								},
+							},
+							exports: {
+								packageBindings: {
+									name: 'mock_usdc',
+									packageId: '0x1',
+									mvrPlaceholder: 'mock-usdc',
+									sourcePath: null,
+									excluded: true,
+								},
+							},
+						}),
+					],
+				});
+				expect(result.filesWritten.some((path) => path.endsWith('/config.ts'))).toBe(true);
+				expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
+				// The strict app-specific `deployment.ts` is emitted alongside
+				// `config-runtime.ts` (config.ts resolves ids at runtime).
+				expect(result.filesWritten.some((path) => path.endsWith(`${root}/deployment.ts`))).toBe(
+					true,
+				);
+				expect(result.filesWritten.some((path) => path.endsWith(`${root}/config-runtime.ts`))).toBe(
+					true,
+				);
+				expect(result.bindings?.packagesEmitted).toEqual([]);
 
-					const configModule = yield* Effect.promise(
-						() =>
-							import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
-								readonly config: {
-									readonly network: string;
-									readonly defaultNetwork: string;
-									readonly networkNames: readonly string[];
-									readonly forNetwork: (network: string) => { readonly rpc: string };
-									readonly networks: {
-										readonly localnet: { readonly rpc: string };
-									};
-									readonly packages: {
-										readonly mock_usdc: {
-											readonly packageId: string;
-										};
-									};
-									readonly mvrOverrides: Readonly<Record<string, string>>;
+				// The committed `config.ts` now opens with
+				// `const __deployment = loadDeployment();` — the loud-failing
+				// deployment accessor — so importing it requires an injected
+				// deployment. Stub `__DEVSTACK_DEPLOYMENT__` (the Vite `define`
+				// channel) with the multi-network ENVELOPE for the duration of the
+				// imports; restore it after so the global stays clean for sibling
+				// tests.
+				yield* Effect.acquireRelease(
+					Effect.sync(() => {
+						(globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'] = {
+							defaultNetwork: 'localnet',
+							networks: {
+								localnet: {
+									network: 'localnet',
+									rpc: 'http://127.0.0.1:9000',
+									local: true,
+									packages: { mock_usdc: { id: '0x1' } },
+									mvrOverrides: { 'mock-usdc': '0x1' },
+								},
+							},
+							// Dev accounts ride the ENVELOPE (network-agnostic), not the unit.
+							accounts: { alice: '0xabc' },
+						};
+					}),
+					() =>
+						Effect.sync(() => {
+							delete (globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'];
+						}),
+				);
+
+				const configModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly config: {
+								readonly network: string;
+								readonly defaultNetwork: string;
+								readonly networkNames: readonly string[];
+								readonly forNetwork: (network: string) => { readonly rpc: string };
+								readonly networks: {
+									readonly localnet: { readonly rpc: string };
 								};
-							}>,
-					);
-					const coinsModule = yield* Effect.promise(
-						() =>
-							import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
-								readonly coins: {
-									readonly forNetwork: (network: string) => {
-										readonly mock_usdc: { readonly fullCoinType: string };
+								readonly packages: {
+									readonly mock_usdc: {
+										readonly packageId: string;
 									};
 								};
-							}>,
-					);
-					// sui's `networks.localnet` and the package's `packages.*`
-					// coexist in ONE config.ts (deep-merge, not last-write-wins).
-					expect(configModule.config.network).toBe('localnet');
-					expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
-					// The static-only DEPLOYMENT envelope accessors are wired off
-					// the loaded deployment: default network, the available network
-					// names, and the per-network lookup. There is deliberately NO
-					// `activeNetwork` — apps resolve per-network data through
-					// `config.forNetwork(<dapp-kit-selected network>)` so nothing
-					// drifts out of sync with the runtime-selected network.
-					expect(configModule.config.defaultNetwork).toBe('localnet');
-					expect(configModule.config.networkNames).toEqual(['localnet']);
-					expect(configModule.config.forNetwork('localnet').rpc).toBe('http://127.0.0.1:9000');
-					expect('activeNetwork' in configModule.config).toBe(false);
-					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
-					// The package entry no longer carries a `byNetwork` sub-key —
-					// per-network ids live in the injected deployment envelope.
-					expect('byNetwork' in configModule.config.packages.mock_usdc).toBe(false);
-					// Top-level `mvrOverrides` is the active-network name→id map
-					// (what the old per-app `mvrOverrides()` helper computed):
-					// keyed by the package's `mvr` placeholder, valued by the
-					// default-network resolved id. Apps feed it straight into
-					// dapp-kit's `mvr.overrides.packages`.
-					expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
-					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
-						configModule.config.packages.mock_usdc.packageId,
-					);
-					// The coins bucket is a per-network accessor: switching the
-					// app's network re-resolves coin ids in lockstep with rpc /
-					// packages. `forNetwork('localnet')` reads the injected
-					// localnet entry.
-					expect(coinsModule.coins.forNetwork('localnet').mock_usdc.fullCoinType).toBe(
-						'0x1::mock_usdc::MOCK_USDC',
-					);
-				}).pipe(Effect.provide(baseLayer(root))),
-			),
+								readonly mvrOverrides: Readonly<Record<string, string>>;
+							};
+						}>,
+				);
+				const coinsModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly coins: {
+								readonly forNetwork: (network: string) => {
+									readonly mock_usdc: { readonly fullCoinType: string };
+								};
+							};
+						}>,
+				);
+				// sui's `networks.localnet` and the package's `packages.*`
+				// coexist in ONE config.ts (deep-merge, not last-write-wins).
+				expect(configModule.config.network).toBe('localnet');
+				expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
+				// The static-only DEPLOYMENT envelope accessors are wired off
+				// the loaded deployment: default network, the available network
+				// names, and the per-network lookup. There is deliberately NO
+				// `activeNetwork` — apps resolve per-network data through
+				// `config.forNetwork(<dapp-kit-selected network>)` so nothing
+				// drifts out of sync with the runtime-selected network.
+				expect(configModule.config.defaultNetwork).toBe('localnet');
+				expect(configModule.config.networkNames).toEqual(['localnet']);
+				expect(configModule.config.forNetwork('localnet').rpc).toBe('http://127.0.0.1:9000');
+				expect('activeNetwork' in configModule.config).toBe(false);
+				expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
+				// The package entry no longer carries a `byNetwork` sub-key —
+				// per-network ids live in the injected deployment envelope.
+				expect('byNetwork' in configModule.config.packages.mock_usdc).toBe(false);
+				// Top-level `mvrOverrides` is the active-network name→id map
+				// (what the old per-app `mvrOverrides()` helper computed):
+				// keyed by the package's `mvr` placeholder, valued by the
+				// default-network resolved id. Apps feed it straight into
+				// dapp-kit's `mvr.overrides.packages`.
+				expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
+				expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
+					configModule.config.packages.mock_usdc.packageId,
+				);
+				// The coins bucket is a per-network accessor: switching the
+				// app's network re-resolves coin ids in lockstep with rpc /
+				// packages. `forNetwork('localnet')` reads the injected
+				// localnet entry.
+				expect(coinsModule.coins.forNetwork('localnet').mock_usdc.fullCoinType).toBe(
+					'0x1::mock_usdc::MOCK_USDC',
+				);
+			}).pipe(Effect.provide(baseLayer(root))),
+		),
+	);
+
+	it.effect('emits config.mvrOverrides.types ONLY for developer-declared mvrTypes', () =>
+		withTempRoot('codegen-test', (root) => {
+			// A REAL local package decl (via `makeLocalStaticCodegen`) emits
+			// `config.mvrOverrides.packages.<mvr>` from config alone. The MVR
+			// `types` overrides are OPT-IN: each `<module>::<Name>` the developer
+			// declares via `mvrTypes` emits one
+			// `config.mvrOverrides.types['@local/<slug>::<module>::<Name>']` whose
+			// value resolves per-network via `requireId(dep, "<mvr>")`. Nothing is
+			// auto-enumerated from the rendered bindings. Stub the Move codegen so
+			// the bindings step runs (its output no longer feeds `types`).
+			const moveLayers = Layer.mergeAll(
+				Layer.succeed(MoveSummaryRunnerService)(
+					stubMoveSummaryRunner((sourcePath) => ({
+						packageName: sourcePath,
+						sourcePath,
+						summaryJson: {},
+					})),
+				),
+				Layer.succeed(MoveCodegenService)(
+					stubMoveCodegen(() => [
+						{
+							relPath: 'connect_four/game.ts',
+							content: [
+								"const $moduleName = '@local/connect-four::game';",
+								'export const Lobby = new MoveStruct({ name: `${$moduleName}::Lobby`, fields: {} });',
+								'export const Game = new MoveStruct({ name: `${$moduleName}::Game`, fields: {} });',
+							].join('\n'),
+						},
+					]),
+				),
+			);
+			return Effect.gen(function* () {
+				// Use the STATIC (committed-tree) codegen source — the path the
+				// `codegen` verb runs — so `mvrOverrides.types` emits the per-network
+				// `requireId(dep, "<mvr>")`-resolved tags (the committed tree never
+				// bakes an id). OPT-IN: declare exactly the two types we want exposed.
+				const [packageDecl] = makeLocalStaticCodegen({
+					name: 'connect-four',
+					sourcePath: '/tmp/source/connect-four',
+					excluded: false,
+					mvrTypes: ['game::Game', 'game::Lobby'],
+				})();
+				const result = yield* runEmitCycle({ contributions: [packageDecl!] });
+				expect(result.bindings?.packagesEmitted).toEqual(['connect-four']);
+
+				// Read the emitted config.ts back through the injected deployment.
+				yield* Effect.acquireRelease(
+					Effect.sync(() => {
+						(globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'] = {
+							defaultNetwork: 'localnet',
+							networks: {
+								localnet: {
+									network: 'localnet',
+									rpc: 'http://127.0.0.1:9000',
+									local: true,
+									packages: { 'connect-four': { id: '0xpkg' } },
+									mvrOverrides: {
+										packages: { '@local/connect-four': '0xpkg' },
+										types: {},
+									},
+								},
+							},
+						};
+					}),
+					() =>
+						Effect.sync(() => {
+							delete (globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'];
+						}),
+				);
+				const configModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly config: {
+								readonly mvrOverrides: {
+									readonly packages: Readonly<Record<string, string>>;
+									readonly types: Readonly<Record<string, string>>;
+								};
+							};
+						}>,
+				);
+				// `mvrOverrides.packages` resolves the package id (via requireId).
+				expect(configModule.config.mvrOverrides.packages).toEqual({
+					'@local/connect-four': '0xpkg',
+				});
+				// `mvrOverrides.types` substitutes the resolved id into each
+				// DECLARED named tag — the `@local/...::game::<Name>` head replaced
+				// by `<packageId>::game::<Name>`. ONLY the developer-declared types
+				// appear (no auto-enumeration).
+				expect(configModule.config.mvrOverrides.types).toEqual({
+					'@local/connect-four::game::Game': '0xpkg::game::Game',
+					'@local/connect-four::game::Lobby': '0xpkg::game::Lobby',
+				});
+			}).pipe(Effect.provide(baseLayerWithMove(root, moveLayers)));
+		}),
 	);
 
 	it.effect(

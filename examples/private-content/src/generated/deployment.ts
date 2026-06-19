@@ -20,14 +20,40 @@ export interface AppPackages {
 
 /** The per-network shape a prod author hand-writes in
  *  `deployments/<net>.ts`: a `NetworkDeployment` narrowed so `packages` is
- *  exhaustive over this app's packages and `mvrOverrides` requires every
- *  declared `@local/<slug>` placeholder. NO `accounts` — dev accounts ride
- *  the runtime envelope, never the per-network authoring surface. */
-export interface AppNetworkDeployment extends Omit<NetworkDeployment, 'packages' | 'mvrOverrides'> {
+ *  exhaustive over this app's packages, `mvrOverrides` is the @mysten MVR
+ *  override surface (`{ packages, types }`) requiring every declared
+ *  `@local/<slug>` placeholder + named-type tag, and `values` requires every
+ *  service value namespace/key (when the app declares any). NO `accounts` —
+ *  dev accounts ride the runtime envelope, never the per-network authoring
+ *  surface. */
+export interface AppNetworkDeployment
+	extends Omit<NetworkDeployment, 'packages' | 'mvrOverrides' | 'values'> {
 	readonly packages: AppPackages;
 	readonly mvrOverrides: {
-		"@local/vault": string;
-	} & { readonly [mvrPlaceholder: string]: string };
+		readonly packages: {
+			"@local/vault": string;
+		} & { readonly [mvrPlaceholder: string]: string };
+		readonly types?: { readonly [namedType: string]: string };
+	};
+	readonly values: {
+		"seal:seal": {
+			"keyServerUrl": string;
+			"objectId": string;
+			"serverConfigs": ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly aggregatorUrl?: string }>;
+		};
+		"walrus": {
+			"aggregatorUrl": string | null;
+			"nodes": ReadonlyArray<{ readonly nodeIndex: number; readonly publicHostname: string; readonly rpcUrl: string }>;
+			"packageConfig": { readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> };
+			"proxyUrl": string | null;
+			"publisherUrl": string | null;
+			"walCoinType": string | null;
+			"walPackageId": string | null;
+			"walrusPackageId": string | null;
+		};
+	} & {
+		readonly [namespace: string]: { readonly [key: string]: unknown };
+	};
 }
 
 /** The LIVE network names this app ships — the `deployments/*.ts` filenames

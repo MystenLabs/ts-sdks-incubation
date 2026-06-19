@@ -26,7 +26,7 @@
 // machinery the playwright/vitest integrations use.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
@@ -105,13 +105,6 @@ export interface DevstackVitePluginOptions {
 	 *  networks). Defaults to the first committed network key. The live
 	 *  local network always wins as the default in dev. */
 	readonly defaultNetwork?: string;
-	/** DEPRECATED (kept one release): a single committed deployment FILE
-	 *  (the per-stack `deployment.json` ENVELOPE the dev stack writes).
-	 *  Used only for `command === 'build'` to inject `__DEVSTACK_DEPLOYMENT__`
-	 *  when no `deployments` thunks are supplied. Relative paths resolve
-	 *  against the Vite root; if omitted, the `DEVSTACK_DEPLOYMENT_FILE` env
-	 *  (a path pointer) is used. Prefer the per-network `deployments` option. */
-	readonly ids?: string;
 }
 
 /** A `vite` `Plugin`'s `config` hook receives the partial user config.
@@ -401,11 +394,9 @@ const mergeDeployment = (
 
 /** Resolve the deployment envelope to inject as `__DEVSTACK_DEPLOYMENT__` —
  *  the committed per-network `deployments` thunks merged with the live local
- *  stack (dev) / nothing (build). The legacy single-file `ids` option (or the
- *  `DEVSTACK_DEPLOYMENT_FILE` env) is honoured for `command === 'build'` ONLY
- *  when no `deployments` thunks are supplied (one-release fallback): its
- *  envelope's networks are shipped verbatim. Neither ⇒ `null`, so the
- *  generated resolver throws loudly at access time. */
+ *  stack (`command === 'serve'` and the config-load default) / nothing
+ *  (`command === 'build'`). No committed networks + no live stack ⇒ `null`, so
+ *  the generated resolver throws loudly at access time. */
 const resolveInjectedDeployment = async (
 	env: Readonly<Record<string, string | undefined>>,
 	root: string,
@@ -413,19 +404,6 @@ const resolveInjectedDeployment = async (
 	options: DevstackVitePluginOptions,
 ): Promise<DevstackDeployment | null> => {
 	const committed = await resolveCommittedNetworks(resolveDeploymentThunks(options, root));
-	// Legacy `ids` / `DEVSTACK_DEPLOYMENT_FILE` fallback (build only, no
-	// `deployments` supplied): fold the committed FILE's networks in.
-	if (command === 'build' && Object.keys(committed).length === 0) {
-		const pointer = options.ids ?? env['DEVSTACK_DEPLOYMENT_FILE'];
-		if (pointer !== undefined && pointer.length > 0) {
-			const envelope = readDeploymentFile(isAbsolute(pointer) ? pointer : resolve(root, pointer));
-			if (envelope !== null) {
-				for (const [net, dep] of Object.entries(envelope.networks)) {
-					committed[net] = { ...dep, network: net, local: false };
-				}
-			}
-		}
-	}
 	const live = command === 'build' ? null : readLiveEnvelope(env, root);
 	return mergeDeployment(command, committed, live, options.defaultNetwork);
 };
@@ -471,6 +449,17 @@ const readDevWalletToken = (
 /** Read the `DEVSTACK_AUTO_APPROVE` env (`'1'`/`'true'`, case-insensitive). */
 const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean => {
 	const raw = env['DEVSTACK_AUTO_APPROVE'];
+	return raw === '1' || raw?.toLowerCase() === 'true';
+};
+
+/** True under a Playwright e2e run (`DEVSTACK_E2E` set to `'1'`/`'true'`,
+ *  case-insensitive). DEDICATED signal — distinct from `DEVSTACK_AUTO_APPROVE`
+ *  — driving the injected `__DEVSTACK_E2E__` global. Gates dApp Kit's
+ *  `autoConnect` ON only under e2e, so a normal `pnpm dev` serve exercises the
+ *  real connect UX. A prod `vite build` never sets the env ⇒ injects `false`
+ *  (tree-shakeable). */
+const e2eFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean => {
+	const raw = env['DEVSTACK_E2E'];
 	return raw === '1' || raw?.toLowerCase() === 'true';
 };
 
@@ -612,6 +601,11 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 				},
 				define: {
 					__DEVSTACK_DEPLOYMENT__: deploymentDefine,
+					// `true` ONLY under a Playwright e2e run (`DEVSTACK_E2E`), so the
+					// app's dApp Kit `autoConnect` is on for headless e2e and OFF for a
+					// normal `pnpm dev` serve. A prod `vite build` never sets the env ⇒
+					// `false` (tree-shakeable). Distinct from `DEVSTACK_AUTO_APPROVE`.
+					__DEVSTACK_E2E__: JSON.stringify(e2eFromEnv(env)),
 				},
 				...(includeDevWallet
 					? { optimizeDeps: { include: [...DEV_WALLET_OPTIMIZE_ENTRIES] } }

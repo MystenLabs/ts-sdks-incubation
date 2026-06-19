@@ -12,6 +12,10 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
 
+// Injected by the devstack Vite plugin (`true` iff `DEVSTACK_E2E` is set).
+// `undefined` in a normal prod build — used to gate e2e-only auto-connect.
+declare const __DEVSTACK_E2E__: boolean | undefined;
+
 export const dAppKit = createDAppKit({
 	// The full network set the app supports comes from the generated runtime
 	// config (`NETWORK_NAMES` — local plus any committed `deployments/*.ts`),
@@ -22,7 +26,7 @@ export const dAppKit = createDAppKit({
 	// `string`).
 	networks: [...config.networkNames],
 	defaultNetwork: config.defaultNetwork,
-	autoConnect: import.meta.env.DEV,
+	autoConnect: __DEVSTACK_E2E__ === true,
 	// `createClient` is called per network dApp Kit manages, with the network it
 	// is building a client for — so EVERYTHING flows through dApp Kit's selected
 	// network and stays in sync across a runtime `switchNetwork`. The connection
@@ -40,7 +44,7 @@ export const dAppKit = createDAppKit({
 			// map points that name at the deployed id so no real MVR registry is
 			// hit. App code resolves packages by name and never touches
 			// `config.packages.*.packageId`.
-			mvr: { overrides: { packages: net.mvrOverrides } },
+			mvr: { overrides: net.mvrOverrides },
 		});
 	},
 });

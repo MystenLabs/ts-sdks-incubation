@@ -487,10 +487,14 @@ const runEmitCycleInner = (
 		}
 
 		// Inject the static-only DEPLOYMENT envelope accessors into the
-		// committed `config.ts` aggregate, and wrap each SERVICE bucket
+		// committed `config.ts` aggregate and wrap each SERVICE bucket
 		// (coins/deepbook/seal/walrus) in its per-network `forNetwork(network)`
 		// accessor — BEFORE usage scanning, so the resulting `__deployment` /
-		// `dep` references drive the import + preamble below.
+		// `dep` references drive the import + preamble below. The MVR `types`
+		// overrides are NOT folded here: they are OPT-IN and come from the
+		// package's own config bindings (each declared `mvrOverrides.types.<tag>`
+		// already projected into the `config.ts` aggregate), so no bindings-derived
+		// post-transform — and no dependency on the bindings having run first.
 		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta)
 			.map(withConfigEnvelopeAccessors)
 			.map(withForNetworkAccessor);
@@ -600,7 +604,9 @@ const runEmitCycleInner = (
 				localNetworkName: LOCAL_NETWORK_NAME,
 				packageNames: strictInput.packageNames,
 				mvrPlaceholders: strictInput.mvrPlaceholders,
+				mvrTypeTags: strictInput.mvrTypeTags,
 				providedNetworks: input.providedNetworks ?? [],
+				serviceValues: serviceValuesFrom(input.contributions),
 			});
 			const strictAbs = yield* paths.resolve(DEPLOYMENT_STRICT_OUTPUT_PATH);
 			const strictOutcome = yield* emitOne({
@@ -622,6 +628,12 @@ const runEmitCycleInner = (
 			}
 		}
 
+		// Run the Move-to-TS bindings step — render each local package's typed
+		// client modules into `generated/bindings/`. Order-independent of the
+		// aggregate emission above: the MVR `types` overrides are opt-in and come
+		// from the package's config bindings, not from the rendered bindings, so
+		// nothing downstream of this step depends on its result beyond the emitted
+		// files + the returned summary.
 		let bindings: EmitBindingsResult | null = null;
 		if (packageContribs.length > 0) {
 			bindings = yield* emitBindings({
@@ -992,16 +1004,55 @@ const withForNetworkAccessor = (file: AggregateFile): AggregateFile => {
  *  arrays when there is no `config.ts` aggregate. */
 const strictTypeInputFrom = (
 	aggregateFiles: ReadonlyArray<AggregateFile>,
-): { packageNames: ReadonlyArray<string>; mvrPlaceholders: ReadonlyArray<string> } => {
+): {
+	packageNames: ReadonlyArray<string>;
+	mvrPlaceholders: ReadonlyArray<string>;
+	mvrTypeTags: ReadonlyArray<string>;
+} => {
+	const empty = { packageNames: [], mvrPlaceholders: [], mvrTypeTags: [] };
 	const configFile = aggregateFiles.find((f) => f.outputPath === CONFIG_BUCKET);
-	if (configFile === undefined) return { packageNames: [], mvrPlaceholders: [] };
+	if (configFile === undefined) return empty;
 	const inner = configFile.exports[bucketStem(CONFIG_BUCKET)];
-	if (!isPlainObject(inner)) return { packageNames: [], mvrPlaceholders: [] };
+	if (!isPlainObject(inner)) return empty;
 	const packagesNode = inner['packages'];
-	const mvrNode = inner['mvrOverrides'];
+	// `mvrOverrides` is now the @mysten override shape `{ packages, types }`
+	// (the package plugin's `mvrOverrides.packages.<mvr>` + the orchestrator-
+	// folded `mvrOverrides.types.<tag>`). Read each sub-map's keys.
+	const mvrNode = isPlainObject(inner['mvrOverrides']) ? inner['mvrOverrides'] : {};
+	const mvrPackagesNode = mvrNode['packages'];
+	const mvrTypesNode = mvrNode['types'];
 	const packageNames = isPlainObject(packagesNode) ? Object.keys(packagesNode).sort() : [];
-	const mvrPlaceholders = isPlainObject(mvrNode) ? Object.keys(mvrNode).sort() : [];
-	return { packageNames, mvrPlaceholders };
+	const mvrPlaceholders = isPlainObject(mvrPackagesNode) ? Object.keys(mvrPackagesNode).sort() : [];
+	const mvrTypeTags = isPlainObject(mvrTypesNode) ? Object.keys(mvrTypesNode).sort() : [];
+	return { packageNames, mvrPlaceholders, mvrTypeTags };
+};
+
+/**
+ * Derive the structured SERVICE-VALUE channel `values[namespace][key] = <tsType>`
+ * for the strict `deployment.ts` — every generic (non-sugar) RESOLVED
+ * config-binding the contributions declare. Computed from the SAME contribution
+ * decls the cycle emits: a binding lands here exactly when it would land in the
+ * live deployment's generic `values` channel (a `resolved` binding with NO
+ * `sugar`), so the required `AppNetworkDeployment.values` shape matches what a
+ * resolved deployment actually carries. The tsType is read off each contribution's
+ * `aggregate.valueTypes` (added in config-bindings); a binding with no declared
+ * tsType contributes `'unknown'`. Empty for a service-less app.
+ */
+const serviceValuesFrom = (
+	contributions: ReadonlyArray<Codegenable>,
+): Record<string, Record<string, string>> => {
+	const out: Record<string, Record<string, string>> = {};
+	for (const decl of contributions) {
+		const valueTypes = decl.aggregate?.valueTypes;
+		if (valueTypes === undefined) continue;
+		for (const [ns, keys] of Object.entries(valueTypes)) {
+			const nsOut = (out[ns] ??= {});
+			for (const [key, tsType] of Object.entries(keys)) {
+				nsOut[key] = tsType;
+			}
+		}
+	}
+	return out;
 };
 
 /** Which `config-runtime.ts` deployment symbols an aggregate's emitted raw
@@ -1242,11 +1293,20 @@ const deploymentFromBucket = (
 		};
 	}
 
-	const mvrOverrides: Record<string, string> = {};
-	for (const [mvr, v] of Object.entries(asRecord(bucket['mvrOverrides']))) {
+	// `mvrOverrides` is the @mysten override shape `{ packages, types }`. The
+	// live bucket carries `mvrOverrides.packages.<mvr>` (each package plugin's
+	// resolved active-network id). `types` is OPT-IN and lives ONLY in the
+	// COMMITTED `config.ts` (each developer-declared `mvrTypes` entry projects a
+	// `requireId(dep, "<mvr>")`-resolved tag there); the live deployment slice
+	// ships `types: {}`, since the generated `config.ts` rebuilds the full
+	// `{ packages, types }` override at runtime over `mvrOverrides.packages`.
+	const mvrPackages: Record<string, string> = {};
+	const mvrNode = asRecord(bucket['mvrOverrides']);
+	for (const [mvr, v] of Object.entries(asRecord(mvrNode['packages']))) {
 		const s = asString(v);
-		if (s !== undefined) mvrOverrides[mvr] = s;
+		if (s !== undefined) mvrPackages[mvr] = s;
 	}
+	const mvrOverrides = { packages: mvrPackages, types: {} as Record<string, string> };
 
 	// The unit's `network` field MUST be a key present in the bucket's
 	// connection map — the Vite dev-wallet injection reads

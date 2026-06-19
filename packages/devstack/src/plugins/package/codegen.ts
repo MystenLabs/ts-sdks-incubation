@@ -85,7 +85,36 @@ interface PackageBindingInput {
 	 *  When omitted, falls back to the keys present in `captured` (live path).
 	 */
 	readonly objectKeys?: ReadonlyArray<string> | undefined;
+	/** OPT-IN Move datatypes to expose as MVR `types` overrides. Each entry is a
+	 *  `'<module>::<Name>'` suffix relative to this package (the `@local/<slug>`
+	 *  prefix is implied). Each emits one
+	 *  `mvrOverrides.types['@local/<slug>::<module>::<Name>']` whose static value
+	 *  resolves per-network as `` `${requireId(dep, "<mvr>")}::<module>::<Name>` ``.
+	 *  Absent / empty ⇒ no `types` entries (the orchestrator emits `types: {}`).
+	 *  Identical on the live and static paths (config-known, resolution-
+	 *  independent); the live deployment slice ignores the value (keeps
+	 *  `types: {}`). */
+	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }
+
+/** Validate + normalize a declared MVR-type suffix. Entries are
+ *  `'<module>::<Name>'` relative to the package; we reject anything that does
+ *  not parse as two `::`-joined Move identifiers so a typo fails at config time
+ *  rather than emitting an `isValidNamedType`-rejected key into the override
+ *  map. The `@local/<slug>::` prefix is implied (and stripped if the developer
+ *  redundantly included it). */
+const normalizeMvrTypeSuffix = (packageName: string, mvr: string, entry: string): string => {
+	// Tolerate a redundant `@local/<slug>::` prefix the developer may have
+	// pasted from a fully-qualified tag.
+	const suffix = entry.startsWith(`${mvr}::`) ? entry.slice(mvr.length + 2) : entry;
+	if (!/^[A-Za-z_][\w]*::[A-Za-z_][\w]*$/.test(suffix)) {
+		throw new Error(
+			`localPackage('${packageName}') mvrTypes entry '${entry}' must be '<module>::<Name>' ` +
+				`(two Move identifiers joined by '::'); the '${mvr}' package prefix is implied.`,
+		);
+	}
+	return suffix;
+};
 
 /**
  * Build the package's config-binding set, declared ONCE. The `name` keys the
@@ -159,11 +188,37 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 		}
 	}
 
-	// Active-network MVR override entry — `{ [mvr]: <active id> }`. A
-	// resolved binding always emits (the resolver expr / live id); a pinned
-	// literal emits only when non-empty.
+	// Active-network MVR override entry — `mvrOverrides.packages.<mvr> = <active
+	// id>` (the @mysten MVR override shape's `packages` map). The sibling `types`
+	// map is OPT-IN — populated below ONLY from developer-declared `mvrTypes`
+	// (the change from auto-enumerating every package type). A resolved binding
+	// always emits (the resolver expr / live id); a pinned literal emits only
+	// when non-empty.
 	if (pinned === undefined || pinned.length > 0) {
-		bindings.push(idBinding(['mvrOverrides', mvrPlaceholder]));
+		bindings.push(idBinding(['mvrOverrides', 'packages', mvrPlaceholder]));
+	}
+
+	// OPT-IN MVR `types` overrides — `mvrOverrides.types['<mvr>::<module>::<Name>']`
+	// for each developer-declared `<module>::<Name>`. The static path emits the
+	// per-network type tag `` `${requireId(dep, "<mvr>")}::<module>::<Name>` ``
+	// (the `mvrType` sugar); the live path's value is ignored by the live
+	// deployment slice (`deploymentFromBucket` keeps `types: {}`). Sugar bindings
+	// never touch the generic `values` channel. No declared types ⇒ no entries
+	// here (the orchestrator emits `types: {}`).
+	for (const entry of input.mvrTypes ?? []) {
+		const typeSuffix = normalizeMvrTypeSuffix(name, mvrPlaceholder, entry);
+		const tag = `${mvrPlaceholder}::${typeSuffix}`;
+		bindings.push({
+			variant: 'resolved',
+			configPath: ['mvrOverrides', 'types', tag],
+			namespace: 'package',
+			key: `${name}:mvrType:${tag}`,
+			sugar: { kind: 'mvrType', mvrPlaceholder, typeSuffix },
+			// Ignored by the live deployment slice; a value is required by the
+			// binding shape. The resolved per-network tag is what the static
+			// committed `config.ts` emits via the sugar.
+			live: () => tag,
+		});
 	}
 
 	return {
@@ -201,6 +256,8 @@ export const makeLocalCodegenable = (
 	resolved: ResolvedLocalPackage,
 	options: {
 		readonly excluded: boolean;
+		/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
+		readonly mvrTypes?: ReadonlyArray<string> | undefined;
 	},
 ): CodegenableDecl<'package'> => {
 	// Coerce the resolved placeholder into the current `@local/<slug>` named
@@ -215,6 +272,7 @@ export const makeLocalCodegenable = (
 		name: resolved.name,
 		mvrPlaceholder,
 		captured: resolved.captured,
+		...(options.mvrTypes !== undefined ? { mvrTypes: options.mvrTypes } : {}),
 	});
 	const bindings: PackageBindings = {
 		name: resolved.name,
@@ -235,6 +293,7 @@ export const makeLocalCodegenable = (
  *  live and static paths. */
 export const makeKnownCodegenable = (
 	resolved: ResolvedKnownPackage,
+	options: { readonly mvrTypes?: ReadonlyArray<string> | undefined } = {},
 ): CodegenableDecl<'package'> => {
 	// Defensive parity with the local emit seam: coerce to the current
 	// `@local/<slug>` named form (preserving an already-named override).
@@ -244,6 +303,7 @@ export const makeKnownCodegenable = (
 		mvrPlaceholder,
 		captured: {},
 		pinnedId: resolved.packageId,
+		...(options.mvrTypes !== undefined ? { mvrTypes: options.mvrTypes } : {}),
 	});
 	const bindings: PackageBindings = {
 		name: resolved.name,
@@ -282,6 +342,8 @@ export const makeLocalStaticCodegen = (config: {
 	 *  for each so the committed tree carries object-id references with NO
 	 *  baked id and NO live-only `objects` field. */
 	readonly objectKeys?: ReadonlyArray<string> | undefined;
+	/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
+	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }): StaticCodegenSource => {
 	const mvrPlaceholder = mvrNamedForm(config.mvrPlaceholder ?? config.name);
 	return () => {
@@ -295,6 +357,7 @@ export const makeLocalStaticCodegen = (config: {
 			mvrPlaceholder,
 			captured: {},
 			...(config.objectKeys !== undefined ? { objectKeys: config.objectKeys } : {}),
+			...(config.mvrTypes !== undefined ? { mvrTypes: config.mvrTypes } : {}),
 			// No pinned id — the active id resolves at app build/dev time.
 		});
 		const bindings: PackageBindings = {
@@ -318,6 +381,8 @@ export const makeKnownStaticCodegen = (config: {
 	readonly packageId: string;
 	readonly upgradeCapId?: string | undefined;
 	readonly mvrPlaceholder?: string | undefined;
+	/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
+	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }): StaticCodegenSource => {
 	const mvrPlaceholder = mvrNamedForm(config.mvrPlaceholder ?? config.name);
 	return () => {
@@ -326,6 +391,7 @@ export const makeKnownStaticCodegen = (config: {
 			mvrPlaceholder,
 			captured: {},
 			pinnedId: config.packageId,
+			...(config.mvrTypes !== undefined ? { mvrTypes: config.mvrTypes } : {}),
 		});
 		const bindings: PackageBindings = {
 			name: config.name,

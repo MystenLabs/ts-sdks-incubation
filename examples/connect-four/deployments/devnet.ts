@@ -26,6 +26,9 @@ export const deployment = {
 		connect_four: { id: CONNECT_FOUR_PACKAGE_ID },
 	},
 	mvrOverrides: {
-		'@local/connect-four': CONNECT_FOUR_PACKAGE_ID,
+		packages: {
+			'@local/connect-four': CONNECT_FOUR_PACKAGE_ID,
+		},
+		types: {},
 	},
 } satisfies AppNetworkDeployment;

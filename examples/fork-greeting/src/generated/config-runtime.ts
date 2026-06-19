@@ -85,7 +85,10 @@ export interface NetworkDeployment {
 	readonly packages: {
 		readonly [name: string]: { readonly id: string; readonly objects?: { readonly [k: string]: string } };
 	};
-	readonly mvrOverrides: { readonly [mvrPlaceholder: string]: string };
+	readonly mvrOverrides: {
+		readonly packages: { readonly [mvrPlaceholder: string]: string };
+		readonly types: { readonly [namedType: string]: string };
+	};
 	/** Generic resolver channel: `values[namespace][key]` carries arbitrary
 	 *  plugin JSON the typed fields above can't (deepbook pool ids, coin
 	 *  types, walrus/seal endpoints). Optional — an older injected unit (no
@@ -186,7 +189,7 @@ export const resolveAccounts = (): { readonly [name: string]: string } => {
 /** Resolve a package id for an MVR placeholder off a loaded deployment.
  *  Throws on missing / all-zero sentinel — never a silent zero. */
 export const requireId = (deployment: NetworkDeployment, mvrPlaceholder: string): string => {
-	const id = deployment.mvrOverrides[mvrPlaceholder];
+	const id = deployment.mvrOverrides.packages[mvrPlaceholder];
 	if (id === undefined || id === UNRESOLVED_ID) {
 		throw new DevstackConfigMissingError(`id for "${mvrPlaceholder}" is unresolved`);
 	}
