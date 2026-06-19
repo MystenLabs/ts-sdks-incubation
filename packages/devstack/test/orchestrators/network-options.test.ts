@@ -7,12 +7,14 @@ import {
 
 describe('network-scoped options', () => {
 	describe('defaultNetworkOptions', () => {
-		it('turns dev conveniences ON for every non-mainnet network', () => {
+		it('turns dev wallet + faucet ON for every non-mainnet network, signing OFF', () => {
+			// `autoApproveSigning` defaults OFF even on dev networks so `pnpm dev`
+			// shows the real connect + approve UX; tests opt in via env/override.
 			for (const network of ['localnet', 'testnet', 'devnet']) {
 				expect(defaultNetworkOptions(network)).toEqual({
 					devWallet: true,
 					faucet: true,
-					autoApproveSigning: true,
+					autoApproveSigning: false,
 				});
 			}
 		});
@@ -43,8 +45,20 @@ describe('network-scoped options', () => {
 			expect(resolveNetworkOptions('localnet', { localnet: { devWallet: false } })).toEqual({
 				devWallet: false,
 				faucet: true,
-				autoApproveSigning: true,
+				autoApproveSigning: false,
 			});
+		});
+
+		it('lets an author opt back into auto-approve on a dev network', () => {
+			// The default is OFF, so a fast-iteration author can re-enable
+			// auto-signing for localnet without the env var.
+			expect(resolveNetworkOptions('localnet', { localnet: { autoApproveSigning: true } })).toEqual(
+				{
+					devWallet: true,
+					faucet: true,
+					autoApproveSigning: true,
+				},
+			);
 		});
 
 		it('HARD-CLAMPS devWallet OFF on mainnet even with an explicit opt-in', () => {

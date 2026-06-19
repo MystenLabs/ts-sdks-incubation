@@ -38,6 +38,7 @@ const APP_ALL = [
 	'',
 	'import {',
 	'\taccount,',
+	'\tcoin,',
 	'\tdashboard,',
 	'\tDEEP_PRICE_FEED_ID,',
 	'\tdeepbook,',
@@ -90,6 +91,8 @@ const APP_ALL = [
 	"\t\tadminCapId: '::registry::DeepbookAdminCap',",
 	'\t},',
 	'});',
+	"const suiCoin = coin.builtin('sui');",
+	"const deep = coin.fromPackage(deepbookPackage, 'DEEP');",
 	"const pythPackage = localPackage('pyth', {",
 	'\tgit: {',
 	"\t\turl: 'https://github.com/MystenLabs/deepbook-sandbox.git',",
@@ -110,6 +113,24 @@ const APP_ALL = [
 	"\t\t\t{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },",
 	'\t\t],',
 	'\t},',
+	'\tpools: [',
+	'\t\t{',
+	"\t\t\tname: 'DEEP_SUI',",
+	"\t\t\tbase: { key: 'DEEP', coin: deep },",
+	"\t\t\tquote: { key: 'SUI', coin: suiCoin },",
+	'\t\t\ttickSize: 1_000_000n,',
+	'\t\t\tlotSize: 1_000_000n,',
+	'\t\t\tminSize: 10_000_000n,',
+	'\t\t\tseed: {',
+	'\t\t\t\tbaseAmount: 1_000_000_000n,',
+	'\t\t\t\tquoteAmount: 10_000_000_000n,',
+	'\t\t\t\torders: [',
+	"\t\t\t\t\t{ side: 'ask', price: 6_000_000n, quantity: 1_000_000_000n },",
+	"\t\t\t\t\t{ side: 'bid', price: 5_000_000n, quantity: 1_000_000_000n },",
+	'\t\t\t\t],',
+	'\t\t\t},',
+	'\t\t},',
+	'\t],',
 	'});',
 	'const devWallet = wallet({ accounts: [alice, sealSigner] });',
 	'const app = hostService({',
@@ -190,6 +211,7 @@ const TS_ALL = [
 	'',
 	'import {',
 	'\taccount,',
+	'\tcoin,',
 	'\tdashboard,',
 	'\tDEEP_PRICE_FEED_ID,',
 	'\tdeepbook,',
@@ -239,6 +261,8 @@ const TS_ALL = [
 	"\t\tadminCapId: '::registry::DeepbookAdminCap',",
 	'\t},',
 	'});',
+	"const suiCoin = coin.builtin('sui');",
+	"const deep = coin.fromPackage(deepbookPackage, 'DEEP');",
 	"const pythPackage = localPackage('pyth', {",
 	'\tgit: {',
 	"\t\turl: 'https://github.com/MystenLabs/deepbook-sandbox.git',",
@@ -259,6 +283,24 @@ const TS_ALL = [
 	"\t\t\t{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },",
 	'\t\t],',
 	'\t},',
+	'\tpools: [',
+	'\t\t{',
+	"\t\t\tname: 'DEEP_SUI',",
+	"\t\t\tbase: { key: 'DEEP', coin: deep },",
+	"\t\t\tquote: { key: 'SUI', coin: suiCoin },",
+	'\t\t\ttickSize: 1_000_000n,',
+	'\t\t\tlotSize: 1_000_000n,',
+	'\t\t\tminSize: 10_000_000n,',
+	'\t\t\tseed: {',
+	'\t\t\t\tbaseAmount: 1_000_000_000n,',
+	'\t\t\t\tquoteAmount: 10_000_000_000n,',
+	'\t\t\t\torders: [',
+	"\t\t\t\t\t{ side: 'ask', price: 6_000_000n, quantity: 1_000_000_000n },",
+	"\t\t\t\t\t{ side: 'bid', price: 5_000_000n, quantity: 1_000_000_000n },",
+	'\t\t\t\t],',
+	'\t\t\t},',
+	'\t\t},',
+	'\t],',
 	'});',
 	'',
 	'const stack: Stack = defineDevstack({',
@@ -385,15 +427,25 @@ describe('renderDevstackConfig — every template × service combo', () => {
 				if (hasDeepbook) {
 					expect(out).toContain("const deepbookPublisher = account('deepbook_publisher', {");
 					expect(out).toContain("const deepbookPackage = localPackage('deepbook', {");
+					// The default DEEP/SUI pool is seeded with a resting ask + bid
+					// so the book is tradeable on boot, regardless of Pyth.
+					expect(out).toContain("const suiCoin = coin.builtin('sui');");
+					expect(out).toContain("const deep = coin.fromPackage(deepbookPackage, 'DEEP');");
+					expect(out).toContain("\t\t\tname: 'DEEP_SUI',");
+					expect(out).toContain('\t\t\tseed: {');
+					expect(out).toContain(
+						"\t\t\t\t\t{ side: 'ask', price: 6_000_000n, quantity: 1_000_000_000n },",
+					);
+					expect(out).toContain(
+						"\t\t\t\t\t{ side: 'bid', price: 5_000_000n, quantity: 1_000_000_000n },",
+					);
 					if (hasPyth) {
 						expect(out).toContain("const pythPackage = localPackage('pyth', {");
 						expect(out).toContain('\t\tpackage: pythPackage,');
 						expect(out).toContain('feedId: DEEP_PRICE_FEED_ID');
 						expect(out).toContain('feedId: SUI_PRICE_FEED_ID');
 					} else {
-						expect(out).toContain(
-							"const dex = deepbook({ mode: 'local', publisher: deepbookPublisher, package: deepbookPackage });",
-						);
+						expect(out).toContain('const dex = deepbook({');
 						expect(out).not.toContain('pyth');
 					}
 				} else {

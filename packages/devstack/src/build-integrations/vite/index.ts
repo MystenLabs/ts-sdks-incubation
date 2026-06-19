@@ -70,8 +70,9 @@ export interface DevstackVitePluginOptions {
 	/** Auto-approve all dev-wallet signing requests (headless Playwright /
 	 *  in-app "Open/Join as" buttons). Defaults to the `DEVSTACK_AUTO_APPROVE`
 	 *  env (`'1'`/`'true'`), then to the active network's `autoApproveSigning`
-	 *  per-network policy (ON for every network except live `mainnet`). A
-	 *  single switch, replacing per-app `VITE_*_AUTO_APPROVE`.
+	 *  per-network policy (OFF by default on every network — a normal `pnpm dev`
+	 *  shows the real connect + approve UX; opt in per-network). A single
+	 *  switch, replacing per-app `VITE_*_AUTO_APPROVE`.
 	 *
 	 *  HARD-CLAMP: on live `mainnet` the per-network policy forces
 	 *  auto-approve OFF — a real-funds signature is NEVER granted without a
@@ -84,7 +85,7 @@ export interface DevstackVitePluginOptions {
 	 *  `networkOptions` shape `defineDevstack` takes, forwarded verbatim).
 	 *  Only the `autoApproveSigning` field is read here, to resolve the
 	 *  auto-approve default for the active network. Omitted ⇒ the built-in
-	 *  policy (ON except live `mainnet`) applies. The override RECORD is not
+	 *  policy (OFF by default; opt in per-network) applies. The override RECORD is not
 	 *  otherwise on disk, so an app that customizes per-network signing must
 	 *  thread it here explicitly; the mainnet hard-clamp holds regardless. */
 	readonly networkOptions?: Readonly<Record<string, unknown>>;
@@ -492,9 +493,12 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// Auto-approve resolution (highest precedence first): explicit
 			// `options.autoApprove`, then the `DEVSTACK_AUTO_APPROVE` env, then
 			// the active network's `autoApproveSigning` per-network policy. The
-			// policy is ON for every network EXCEPT live `mainnet`, so a stack
-			// booted against real mainnet never silently auto-approves a
-			// real-funds signature. The active network comes from the manifest
+			// policy defaults OFF on every network — a normal `pnpm dev` exercises
+			// the real connect + approve UX, headless e2e sets the env, and an
+			// author can opt a network back in via `networkOptions`. Live
+			// `mainnet` is additionally hard-clamped OFF, so a stack booted
+			// against real mainnet never silently auto-approves a real-funds
+			// signature. The active network comes from the manifest
 			// boot wrote (`identity.network`); absent that we conservatively
 			// resolve as `mainnet` (auto-approve OFF) rather than assuming a
 			// dev network. The override RECORD isn't on disk — `networkOptions`

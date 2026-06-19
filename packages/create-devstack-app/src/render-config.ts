@@ -32,6 +32,7 @@ export function renderDevstackConfig(
 	// matching the repo's import-sort style). Filtered, never re-ordered.
 	const devstackImports: ReadonlyArray<string> = [
 		'account',
+		...(hasDeepbook ? ['coin'] : []),
 		'dashboard',
 		...(hasPyth ? ['DEEP_PRICE_FEED_ID'] : []),
 		...(hasDeepbook ? ['deepbook'] : []),
@@ -102,10 +103,13 @@ export function renderDevstackConfig(
 	}
 
 	if (hasDeepbook) {
-		// DeepBook's Move package is pulled from upstream (no vendored tree) and
-		// the pool list is omitted, so `deepbook(...)` synthesizes a default
-		// DEEP/SUI pool. The publisher needs ample SUI for the publish + pool
-		// creation gas. See examples/deepbook-trader for multi-pool + Pyth.
+		// DeepBook's Move package is pulled from upstream (no vendored tree). We
+		// declare a single whitelisted DEEP/SUI pool and seed it with a resting
+		// bid + ask so the order book is tradeable the moment the stack boots.
+		// The publisher holds the full DEEP supply minted when the package is
+		// published, and is funded with ample SUI for gas + the quote-side seed
+		// deposit. See examples/deepbook-trader for a multi-pool + multi-feed
+		// setup, and the DeepBook docs for the pool spec and seeding reference.
 		lines.push(
 			"const deepbookPublisher = account('deepbook_publisher', {",
 			"\tkind: 'ephemeral',",
@@ -123,11 +127,37 @@ export function renderDevstackConfig(
 			"\t\tadminCapId: '::registry::DeepbookAdminCap',",
 			'\t},',
 			'});',
+			"const suiCoin = coin.builtin('sui');",
+			"const deep = coin.fromPackage(deepbookPackage, 'DEEP');",
 		);
+		// A whitelisted DEEP/SUI pool seeded with one ask + one bid. `seed`
+		// deposits the base (DEEP) + quote (SUI) into a publisher-owned
+		// BalanceManager and rests the orders, so the book is immediately
+		// tradeable. Tune the prices/amounts or add pools to taste.
+		const pool: ReadonlyArray<string> = [
+			'\tpools: [',
+			'\t\t{',
+			"\t\t\tname: 'DEEP_SUI',",
+			"\t\t\tbase: { key: 'DEEP', coin: deep },",
+			"\t\t\tquote: { key: 'SUI', coin: suiCoin },",
+			'\t\t\ttickSize: 1_000_000n,',
+			'\t\t\tlotSize: 1_000_000n,',
+			'\t\t\tminSize: 10_000_000n,',
+			'\t\t\tseed: {',
+			'\t\t\t\tbaseAmount: 1_000_000_000n,',
+			'\t\t\t\tquoteAmount: 10_000_000_000n,',
+			'\t\t\t\torders: [',
+			"\t\t\t\t\t{ side: 'ask', price: 6_000_000n, quantity: 1_000_000_000n },",
+			"\t\t\t\t\t{ side: 'bid', price: 5_000_000n, quantity: 1_000_000_000n },",
+			'\t\t\t\t],',
+			'\t\t\t},',
+			'\t\t},',
+			'\t],',
+		];
 		if (hasPyth) {
 			// Local mock Pyth: publish the sandbox package from git, then feed
-			// DEEP + SUI prices for the default pool. The deepbook publisher
-			// doubles as the feed pusher.
+			// DEEP + SUI prices for the pool. The deepbook publisher doubles as
+			// the feed pusher.
 			lines.push(
 				"const pythPackage = localPackage('pyth', {",
 				'\tgit: {',
@@ -149,11 +179,17 @@ export function renderDevstackConfig(
 				"\t\t\t{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },",
 				'\t\t],',
 				'\t},',
+				...pool,
 				'});',
 			);
 		} else {
 			lines.push(
-				"const dex = deepbook({ mode: 'local', publisher: deepbookPublisher, package: deepbookPackage });",
+				'const dex = deepbook({',
+				"\tmode: 'local',",
+				'\tpublisher: deepbookPublisher,',
+				'\tpackage: deepbookPackage,',
+				...pool,
+				'});',
 			);
 		}
 	}

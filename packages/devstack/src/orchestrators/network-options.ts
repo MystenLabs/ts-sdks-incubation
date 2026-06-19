@@ -6,9 +6,11 @@
 
 /**
  * Per-network dev-convenience toggles. All optional — an unset field
- * defers to the default policy (on for every network EXCEPT live
- * `mainnet`). A CONSISTENT mechanism: declare these once per network in
- * the config instead of scattering one-off flags.
+ * defers to the default policy: the dev wallet and faucet are on for every
+ * network EXCEPT live `mainnet`, while `autoApproveSigning` defaults off
+ * everywhere (opt in for headless tests / fast local iteration). A
+ * CONSISTENT mechanism: declare these once per network in the config
+ * instead of scattering one-off flags.
  *
  *   - `devWallet` — per-network override is FORWARDED. Gates the
  *     dev-wallet `generated-extras` flush at boot (`orchestrators/boot.ts`,
@@ -45,11 +47,13 @@ export interface NetworkScopedOptions {
 	 *  strategy is exposed. */
 	readonly faucet?: boolean;
 	/** ENFORCED. Default the injected dev-wallet's auto-approve policy for
-	 *  this network (`build-integrations/vite/index.ts`). On → dev-wallet
-	 *  signing requests auto-approve (headless Playwright / in-app "Open as"
-	 *  ergonomics) unless an explicit `autoApprove` / `DEVSTACK_AUTO_APPROVE`
-	 *  overrides. Hard-clamped off on live `mainnet`, so a real-funds
-	 *  signature is never granted without a human in the loop. */
+	 *  this network (`build-integrations/vite/index.ts`). Defaults OFF on every
+	 *  network so a normal `pnpm dev` exercises the real connect + approve UX;
+	 *  set `true` to auto-approve signing requests for this network (headless
+	 *  Playwright / in-app "Open as" ergonomics). An explicit `autoApprove` /
+	 *  `DEVSTACK_AUTO_APPROVE` in the Vite plugin overrides this either way.
+	 *  Hard-clamped off on live `mainnet`, so a real-funds signature is never
+	 *  granted without a human in the loop. */
 	readonly autoApproveSigning?: boolean;
 }
 
@@ -57,14 +61,21 @@ export interface NetworkScopedOptions {
 export type ResolvedNetworkOptions = Required<NetworkScopedOptions>;
 
 /**
- * The default per-network policy: dev conveniences are ON for every
- * network EXCEPT live `mainnet`. Fork networks (`mainnet-fork`, …) are
- * local dev stacks, so they stay ON — only the real `mainnet` name opts
- * out.
+ * The default per-network policy: the dev wallet and faucet are ON for every
+ * network EXCEPT live `mainnet`. Fork networks (`mainnet-fork`, …) are local
+ * dev stacks, so they stay ON — only the real `mainnet` name opts out.
+ *
+ * `autoApproveSigning` defaults OFF on every network. A real app should
+ * exercise the actual connect + approve UX, so `pnpm dev` shows the wallet
+ * prompts rather than silently signing. Headless e2e opts back in via
+ * `DEVSTACK_AUTO_APPROVE=1` (read in the Vite plugin ahead of this policy), and
+ * an author can re-enable it for a specific network with a per-network
+ * `autoApproveSigning: true` override. Live `mainnet` stays hard-clamped off in
+ * {@link resolveNetworkOptions} regardless.
  */
 export const defaultNetworkOptions = (network: string): ResolvedNetworkOptions => {
 	const on = network !== 'mainnet';
-	return { devWallet: on, faucet: on, autoApproveSigning: on };
+	return { devWallet: on, faucet: on, autoApproveSigning: false };
 };
 
 const asBool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined);
