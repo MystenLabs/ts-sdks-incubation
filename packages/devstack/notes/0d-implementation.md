@@ -94,9 +94,12 @@ wallet is a network-agnostic signer.
 - **No devstack-powered funding on live networks.** devstack funds accounts on the LOCAL stack (local
   faucet) only. Funding accounts on a live net (devnet/testnet) is MANUAL — done by us during the
   capstone, NOT a devstack feature. (Drops the earlier "fund against a live faucet-backed net" work.)
-- **`accounts` is network-invariant → hoist to the ENVELOPE level** (`DevstackDeployment.accounts`,
-  `name → address`), not per-`NetworkDeployment` (commit 2 put it per-network; commit 4 moves it up).
-  Keypair gen needs no network; runtime-injected, never committed; `{}` in a pure prod build.
+- **`accounts` are a DEV CONCEPT (not a prod thing), network-invariant → hoist to the ENVELOPE level.**
+  `DevstackDeployment.accounts` (`name → address`), NOT per-`NetworkDeployment` (commit 2 put it
+  per-network; commit 4 moves it up). They exist only when running THROUGH devstack (dev serve) — keypair
+  gen needs no network; runtime-injected, never committed; absent/`{}` in a real prod deployment. Hoisting
+  them out of `NetworkDeployment` means the per-network shape a prod author writes has NO accounts field
+  at all — accounts simply aren't part of the prod-authoring surface.
 - **Dev wallet injection is serve-time + network-agnostic, and PERSISTS across a UI network switch.**
   Injected whenever you run THROUGH devstack with the dev-wallet plugin (Vite serve) — NOT per selected
   network. Switching the dapp-kit network in the UI (localnet → devnet) MUST NOT unmount / unregister it
@@ -113,8 +116,9 @@ wallet is a network-agnostic signer.
   MULTI-network (today it passes a single `rpcUrl`/`network` — change to the networks map), and the
   dev-wallet package (`dev-wallet/inject` + adapter/server) accepts a networks map + advertises each as
   a wallet-standard chain. 0b + dev-wallet package change.
-- **Strict type (0d.4):** `accounts` OPTIONAL / excluded from completeness (names knowable, addresses
-  runtime). A hand-written `deployments/<net>.ts` never supplies accounts.
+- **Strict type (0d.4):** the per-network `NetworkDeployment` / `AppNetworkDeployment` (what a prod
+  author writes in `deployments/<net>.ts`) has NO `accounts` field at all — accounts live only on the
+  runtime envelope and are dev-injected. Completeness covers packages + service `values`.
 - **`resolveAccounts()` surface (0b):** reads the envelope-level `accounts` (network-invariant).
 - **Prod build (deploy=drop-local):** no dev wallet, `accounts: {}` — the real prod path.
 
