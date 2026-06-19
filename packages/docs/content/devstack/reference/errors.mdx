@@ -9,8 +9,8 @@ Every plugin raises tagged errors with a `_tag` discriminator. `Effect.catchTag`
 identifies which stage of the lifecycle raised, so consumers can pin behavior by tag + phase rather
 than by message substring.
 
-This catalog enumerates the tags exported from each plugin. The fields shown are the load-bearing
-discriminator slots; full shapes (and the helper constructors) live in each plugin's `errors.ts`.
+This catalog lists the tags exported from each plugin. The fields shown are the discriminator slots
+you match on; full shapes and the helper constructors live in each plugin's `errors.ts`.
 
 ## Account
 
@@ -43,12 +43,12 @@ discriminator slots; full shapes (and the helper constructors) live in each plug
 ## Faucet
 
 - `FaucetUnreachable` — transport-level (ECONNREFUSED, DNS, TLS, AbortSignal timeout).
-- `FaucetExhausted` — wall-clock budget exhausted before a funding attempt landed. Carries
-  `attempts: number` and the underlying `lastCause`. The attempt-cap exhausting first re-raises the
-  last `FaucetUnreachable | FaucetBodyError` verbatim — only a wall-clock timeout surfaces as
+- `FaucetExhausted` — the wall-clock budget ran out before a funding attempt landed. Carries
+  `attempts: number` and the underlying `lastCause`. If the attempt cap is reached first, the last
+  `FaucetUnreachable | FaucetBodyError` is re-raised verbatim; only a wall-clock timeout surfaces as
   `FaucetExhausted`.
-- `FaucetBodyError` — `reason: 'failure-status' | 'invalid-json'`. The load-bearing wire invariant:
-  200 OK with `{ status: { Failure } }` MUST surface here, not as silent success.
+- `FaucetBodyError` — `reason: 'failure-status' | 'invalid-json'`. A 200 OK carrying
+  `{ status: { Failure } }` surfaces here rather than being treated as success.
 - `FaucetConfigError` — invalid strategy config.
 
 The "no strategy registered for this chain" case is not a faucet-plugin tag — it surfaces as the
@@ -104,8 +104,8 @@ substrate `StrategyNotFoundError` (see [Substrate](#substrate)).
 Errors raised by the shared substrate runtime rather than a single plugin. The one app-facing tag:
 
 - `StrategyNotFoundError` — no funding strategy is registered for the requested capability key.
-  Carries `capabilityKey` and `registeredKeys` so the renderer can show "I asked for X, only Y is
-  wired". This is what a missing SUI faucet strategy surfaces as — there is no `Faucet`-prefixed
+  Carries `capabilityKey` and `registeredKeys` so the renderer can report the requested key against
+  the registered ones. A missing SUI faucet strategy surfaces here; there is no `Faucet`-prefixed
   strategy-missing tag.
 
 ## Catching errors in app code

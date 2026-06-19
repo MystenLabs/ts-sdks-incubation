@@ -1,13 +1,14 @@
 ---
 title: Packages
 description:
-  Declaring local Move packages, the per-stack registry, and how package ids reach app code.
+  Declaring local Move packages, how devstack records their ids per stack, and how package ids reach
+  app code.
 ---
 
-Local Move packages are declared with `localPackage(...)` and published into the stack on boot. Each
-package's on-chain id is recorded in the per-stack registry, mapped to an MVR placeholder, and
-injected into the generated config at runtime — so app code references packages by name, never by a
-hard-coded `0x…`.
+Declare your Move packages with `localPackage(...)` and devstack publishes them on boot, then hands
+their on-chain ids to your app automatically — so you reference packages by name and never paste a
+`0x…` address. Each package's id is recorded per stack, mapped to an MVR placeholder, and injected
+into the generated config at runtime.
 
 ```ts title="devstack.config.ts"
 import {
@@ -62,19 +63,18 @@ either publishes it for you, or verifies one that already exists.
 | `mvrPlaceholder`     | Override the default `@local/<slug>` placeholder.                                                            |
 | `excludeFromCodegen` | Keep the package out of generated Move bindings (still in `config`).                                         |
 
-## The per-stack registry
+## One config, many stacks
 
-Every package in a stack shares one registry, keyed by the name you give it (`'managed_coin'`). The
-registry maps that name to the resolved id for the **active stack**, so switching stacks with
-`DEVSTACK_STACK` re-publishes into a separate registry and yields a separate id — the same config
-code reads whichever stack is live, no edits required.
+The same config works across stacks with no edits. Each package id is tracked per stack under the
+name you give it (`'managed_coin'`), so switching stacks with `DEVSTACK_STACK` republishes into a
+fresh stack and yields a fresh id — your config reads whichever stack is live.
 
 ## How package ids reach app code
 
 Each package gets an **MVR placeholder** — by default `@local/<slug>`, where the slug is the name
 lower-cased with underscores dashed (`managed_coin` → `@local/managed-coin`). That placeholder is
-the stable handle; the on-chain id is resolved against it at runtime. The generated `config.ts`
-exposes both, keyed off the active network's deployment:
+the stable handle you reference; the on-chain id is resolved against it at runtime. The generated
+`config.ts` exposes both, keyed off the active network's deployment:
 
 ```ts title="src/generated/config.ts"
 import { loadDeployment, requireId } from './config-runtime.js';
@@ -102,8 +102,8 @@ export const config = {
 - **`config.packages.<name>.packageId`** is for introspection (logging, debugging, reading the id
   directly). App code routes through `mvrOverrides`, not `packageId`.
 
-`requireId` reads the injected deployment and throws `DevstackConfigMissingError` if a package's id
-is missing. Packages declared with `capture` also expose their captured object ids at
+`requireId` reads the injected deployment and throws `DevstackConfigMissingError` when a package's
+id is missing. Packages declared with `capture` also expose their captured object ids at
 `config.packages.<name>.objects.<key>`.
 
 The deployment that backs `requireId` / `forNetwork` — the per-network unit, the envelope, and the

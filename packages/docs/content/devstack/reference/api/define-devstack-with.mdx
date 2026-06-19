@@ -38,9 +38,9 @@ function defineDevstackWith<Mode extends NetworkMode, Members extends ReadonlyAr
   carrying the resolved-narrow `NetworkConfig<Mode>`.
 - `build` — a callback that receives a `BuildCtx<Mode>` and returns the member tuple.
 
-The `stateDir` field on this options bag is now honored as of 0.1.0 — `runStack` resolves it as the
-state-directory source when no `runtimeRoot` and no `--state-dir` flag are supplied. In earlier
-releases it was declared but silently ignored.
+As of 0.1.0, the `stateDir` field on this options bag is honored: `runStack` resolves it as the
+state-directory source when no `runtimeRoot` and no `--state-dir` flag are supplied. Earlier
+releases declared the field but did not read it.
 
 ## `BuildCtx`
 
@@ -63,9 +63,9 @@ illegal-mode factory access at the call site, before the stack runs.
   the returned tuple.
 - A `MissingProviders<...>` branded error surfaces at the call site if any plugin's `dependsOn`
   reference is not provided by the tuple.
-- A runtime check verifies every element returned by the builder carries the plugin brand, so a
-  value that skips `definePlugin` (e.g. cast through `as unknown as AnyPlugin`) is rejected at
-  composition with a clear message.
+- A runtime check verifies every element returned by the builder carries the plugin brand. A value
+  that skips `definePlugin` (for example, one cast through `as unknown as AnyPlugin`) is rejected at
+  composition time.
 
 ## When to use which composer
 

@@ -19,12 +19,12 @@ interface Identity {
 }
 ```
 
-`app` and `stack` are brand-typed string aliases so they cannot be confused with each other at the
-type level. `network` is a plain string: an **opaque label** the caller supplies once at boot. The
-substrate threads it purely as a correlation/display value (supervisor labels, span attributes,
-snapshot provenance) and stores it verbatim — it carries no network/mode semantics at this layer.
-The CLI / `runStack` set it to the resolved network name (`'localnet'`, `'testnet'`,
-`'mainnet-fork'`, …) by convention.
+`app` and `stack` are brand-typed string aliases, so they cannot be confused with each other at the
+type level. `network` is a plain string — an opaque label the caller supplies once at boot. The
+substrate threads it as a correlation and display value (supervisor labels, span attributes,
+snapshot provenance) and stores it verbatim; it carries no network or mode semantics at this layer.
+By convention, the CLI and `runStack` set it to the resolved network name (`'localnet'`,
+`'testnet'`, `'mainnet-fork'`, and so on).
 
 ## Where identity comes from
 

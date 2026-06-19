@@ -3,7 +3,7 @@
 // `devstack codegen`. Apps consume codegen output; codegen output never
 // imports from devstack.
 //
-// Loud-failing on-chain deployment resolver. The committed `config.ts`
+// On-chain deployment resolver. The committed `config.ts`
 // carries no ids; it resolves each id through the deployment API here
 // (`loadDeployment()` / `requireId(dep, ...)`), which reads the build-time-
 // injected `__DEVSTACK_DEPLOYMENT__` envelope. Run `devstack up` for local
@@ -111,8 +111,8 @@ export interface DevstackDeployment {
 }
 
 /** Accessor returned by `loadDeployment()` — the default network, the set of
- *  available network names (for dapp-kit's network list), and a loud-failing
- *  per-network lookup. */
+ *  available network names (for dapp-kit's network list), and a per-network
+ *  lookup that throws when the network is unknown. */
 export interface LoadedDeployment {
 	readonly defaultNetwork: string;
 	readonly networkNames: readonly string[];
@@ -126,7 +126,7 @@ declare global {
 }
 
 /** Thrown when a generated config value needs an on-chain id but none was
- *  injected — actionable, not a silent zero. */
+ *  injected. */
 export class DevstackConfigMissingError extends Error {
 	constructor(detail: string) {
 		super(
@@ -156,7 +156,7 @@ const loadedFrom = (deployment: DevstackDeployment): LoadedDeployment => ({
 	},
 });
 
-/** Load the injected deployment envelope. Loud-fails ONCE here when nothing
+/** Load the injected deployment envelope. Throws once here when nothing
  *  was injected; the app then reads typed fields off `forNetwork(net)`. */
 export const loadDeployment = (): LoadedDeployment => {
 	const injected = injectedDeployment();
@@ -178,7 +178,7 @@ export const loadDeploymentOptional = (): LoadedDeployment | null => {
 /** The DEV-only account name → address map off the injected envelope.
  *  Accounts are network-AGNOSTIC dev identities (envelope-level, never
  *  per-network), injected only when running THROUGH devstack. Returns `{}`
- *  — NOT a loud failure — when no deployment was injected or none carries
+ *  — without throwing — when no deployment was injected or none carries
  *  accounts (a pure prod build), so a dev-only consumer (e.g. the dev
  *  wallet) no-ops gracefully. */
 export const resolveAccounts = (): { readonly [name: string]: string } => {
@@ -187,7 +187,7 @@ export const resolveAccounts = (): { readonly [name: string]: string } => {
 };
 
 /** Resolve a package id for an MVR placeholder off a loaded deployment.
- *  Throws on missing / all-zero sentinel — never a silent zero. */
+ *  Throws when the id is missing or unresolved. */
 export const requireId = (deployment: NetworkDeployment, mvrPlaceholder: string): string => {
 	const id = deployment.mvrOverrides.packages[mvrPlaceholder];
 	if (id === undefined || id === UNRESOLVED_ID) {
@@ -197,7 +197,7 @@ export const requireId = (deployment: NetworkDeployment, mvrPlaceholder: string)
 };
 
 /** Resolve a generic plugin value (`values[namespace][key]`) off a loaded
- *  deployment. Throws on missing / all-zero sentinel. */
+ *  deployment. Throws when the value is missing or unresolved. */
 export const requireValue = <T = unknown>(
 	deployment: NetworkDeployment,
 	namespace: string,
@@ -212,7 +212,7 @@ export const requireValue = <T = unknown>(
 };
 
 /** Non-throwing sibling of `requireValue` for discovery-only fields the app
- *  gates on (returns `undefined` on missing / all-zero / absent). */
+ *  gates on (returns `undefined` when missing, unresolved, or absent). */
 export const optionalValue = <T = unknown>(
 	deployment: NetworkDeployment,
 	namespace: string,

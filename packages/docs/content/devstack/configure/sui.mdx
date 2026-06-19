@@ -3,13 +3,13 @@ title: Sui config
 description: Declaring the local Sui network, RPC, faucet, indexer, and forking for a stack.
 ---
 
-The `sui()` member declares the network that backs a stack — the node, RPC endpoint, faucet, and
-GraphQL indexer. Every other member (packages, accounts, coins, services) wires on top of it,
-reading the resolved `SuiClient` it produces.
+`sui()` gives a stack its network — the node, RPC endpoint, faucet, and GraphQL indexer that every
+other member (packages, accounts, coins, services) builds on. Add one `sui()` member and the rest of
+your config has a chain to publish to, fund from, and read against.
 
-`sui()` with no options boots an **in-stack local validator** with RPC, a faucet, and the GraphQL
-indexer all on. That single line is the whole network for local development: created fresh each
-boot, torn down with the stack.
+With no options, `sui()` boots a local validator with RPC, a faucet, and the GraphQL indexer all on.
+That single line is the whole network for local development: created fresh each boot, torn down with
+the stack.
 
 ```ts title="devstack.config.ts"
 import { defineDevstack, sui } from '@mysten-incubation/devstack';
@@ -21,7 +21,7 @@ export default defineDevstack({ members: [localnet] });
 
 ## Modes
 
-`sui()` selects one of four modes by the option record you pass. Local is the default; the others
+`sui()` runs in one of four modes, chosen by the options you pass. Local is the default; the others
 point at networks you don't run.
 
 | Mode        | Selector                             | What it does                                                   |
@@ -31,9 +31,9 @@ point at networks you don't run.
 | `live`      | `sui({ mode: 'live', network })`     | Reads/trades against testnet, mainnet, devnet, or a custom RPC |
 | `fork`      | `sui({ mode: 'fork', upstream })`    | A `sui-fork` node mirroring a real chain at a checkpoint       |
 
-A stack stays **single-network** — one `sui()` member resolves one network. Apps that switch between
-local and live networks at runtime layer those deployments at the Vite merge layer, not inside the
-stack. See [Live networks & forking](/devstack/live-networks) and
+A stack is single-network: one `sui()` member, one network. To ship an app that switches between
+local and live networks at runtime, you layer those deployments at the Vite merge step rather than
+inside the stack — see [Live networks](/devstack/live-networks) and
 [Going to production](/devstack/going-to-production).
 
 ## Local mode
@@ -43,11 +43,11 @@ const localnet = sui(); // RPC + faucet + GraphQL indexer
 const rpcOnly = sui({ indexer: false }); // RPC + faucet, no GraphQL, no sidecar
 ```
 
-The GraphQL indexer is **on by default**. A bare `sui()` owns a Postgres sidecar container (labelled
-under sui, auto-creating its `sui_indexer` database) and runs the validator with `--with-graphql`
-against it — the full GraphQL surface comes up with no cross-plugin wiring.
+The GraphQL indexer is on by default, so a bare `sui()` gives you the full GraphQL surface with no
+extra wiring. To support it, devstack runs a Postgres sidecar (auto-creating its `sui_indexer`
+database) and starts the validator with `--with-graphql` against it.
 
-Two escape hatches:
+You can turn the indexer down or point it elsewhere:
 
 - **`indexer: false`** — RPC and faucet only. No GraphQL, no Postgres sidecar.
 - **`indexerDb`** — point GraphQL at a Postgres you already run, so devstack provisions no sidecar:
@@ -66,9 +66,9 @@ Other local-mode options:
 
 - **`image`** — override the validator image: `{ pull: '<ref>' }` skips the build, or
   `{ build: { context, dockerfile? } }` builds the bundled Dockerfile with a content-hashed tag.
-- **`ports`** — pin exact host ports keyed by container port (`{ 9000: 9000 }`). Omit it to let the
-  port broker assign private host ports and reassign on collision; the router owns the public `9000`
-  / `9123` / `9125` entrypoints.
+- **`ports`** — pin exact host ports keyed by container port (`{ 9000: 9000 }`). Omit it and
+  devstack assigns host ports for you, reassigning on collision; the public `9000` / `9123` / `9125`
+  entrypoints stay fixed through the router.
 - **`readyTimeout`** — the ready-probe timeout.
 
 ## Live mode
@@ -108,8 +108,8 @@ const fork = sui({
 });
 ```
 
-The fork faucet is enabled by default with a per-upstream whale that's validated at boot. See
-[Live networks & forking](/devstack/live-networks) for the full fork walkthrough.
+The fork faucet is enabled by default with a per-upstream whale. See [Forking](/devstack/forking)
+for the full fork walkthrough.
 
 ## The resolved network
 

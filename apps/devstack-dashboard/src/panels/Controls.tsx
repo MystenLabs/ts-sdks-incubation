@@ -363,6 +363,7 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 			setCapture(null);
 			setBusy(null);
 		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- snapshots is intentionally watched; side effects go through captureSideRef
 	}, [capture, snapshots]);
 
 	// Hard timeout. React-query's structural sharing can hand back the SAME

@@ -1,13 +1,11 @@
 ---
 title: Web Dashboard
-description:
-  A bundled-in-CLI control-plane and Sui explorer web UI with live data over an in-process GraphQL
-  server.
+description: A web UI to explore your stack's chain and drive a few live controls.
 ---
 
-The `dashboard()` plugin serves a web UI — a control plane plus a Sui explorer — backed by an
-in-process GraphQL server reading the stack's live projection. It's a normal stack member: add it
-like any other plugin and the router fronts it under a stack-scoped hostname.
+Add `dashboard()` to get a web UI for your stack — a Sui explorer plus a small control panel for
+restarting, funding accounts, and capturing snapshots. It's a normal stack member: add it like any
+other plugin and open it in a browser.
 
 ```ts title="devstack.config.ts"
 import { defineDevstack, sui, account, dashboard } from '@mysten-incubation/devstack';
@@ -21,17 +19,15 @@ export default defineDevstack({
 ## Opening the UI
 
 Like the wallet and other service endpoints, the dashboard is reached through a stable, stack-scoped
-router hostname rather than its raw process port. The dashboard route uses the `api` role on its own
-entrypoint port (`9810`), so the default-stack URL is:
+router hostname rather than its raw process port. The default-stack URL is:
 
 ```txt
 http://api.<app>.localhost:9810
 ```
 
 Non-default stacks insert the stack segment: `http://api.<stack>.<app>.localhost:9810`. The plugin
-also resolves to a direct loopback `url` (the broker-allocated port) for tooling that bypasses the
-router, but the router-fronted hostname above is the one to open in a browser — it's what the
-in-process CORS allowlist is keyed to.
+also resolves to a direct loopback `url` for tooling that bypasses the router, but the hostname
+above is the one to open in a browser.
 
 ## What you can see and do
 
@@ -41,28 +37,23 @@ The dashboard is read-mostly, with a small set of guarded controls:
 - **Walrus & Seal panels** — service status and live data for the storage and key-server plugins.
 - **Logs** — the cross-service log store.
 - **Snapshot & restore progress** — capture and restore narrated live, with each snapshot marked
-  `current`, `stale`, or `unknown` against the running stack's graph input id.
+  `current`, `stale`, or `unknown` against the running stack.
 - **Controls** — restart, shutdown, and advance-clock, each behind a confirmation.
 - **Faucet fund** — a one-click fund action: SUI funds a fixed amount; WAL and DEEP take an editable
-  amount. Funding reuses the same registered in-process funding strategies the boot-time
-  account-funding pass dispatches through. See
-  [Faucet and Funding Strategies](/devstack/configure/faucet).
+  amount. See [Faucet and Funding Strategies](/devstack/configure/faucet).
 
 ## Options
 
 All fields are optional.
 
-- `port` — preferred loopback port for the dashboard's HTTP/GraphQL server. The port broker
-  forward-scans if it's busy.
-- `bindAddress` — the NIC the server binds, default `'0.0.0.0'`. The router runs in Docker and
-  reaches this host process through the host-gateway address on native Linux, so the default binds
-  broadly enough for that path. The public URL stays router-fronted and stack-scoped regardless.
-- `allowedOrigins` — extra CORS origins merged onto the stack-scoped allowlist, for headless test
-  runners and custom dev hosts. The allowlist stays stack-scoped: it does not include a bare
-  `*.localhost` form, so a sibling stack's origin cannot drive the control-plane mutations.
+- `port` — preferred loopback port for the dashboard's server. Devstack picks another free port if
+  it's busy.
+- `bindAddress` — the address the server binds, default `'0.0.0.0'`. The public URL stays
+  router-fronted and stack-scoped regardless.
+- `allowedOrigins` — extra CORS origins to allow alongside this stack's own origins, for headless
+  test runners and custom dev hosts.
 
-The queryable cross-service log store the dashboard reads is owned by the supervisor, not this
-plugin. Tune its retention with environment variables:
+Tune how much log history the dashboard keeps with environment variables:
 
 - `DEVSTACK_DASHBOARD_LOG_CAPACITY` — per-service record cap, default `2000`.
 - `DEVSTACK_DASHBOARD_LOG_MAX_SERVICES` — distinct-service ring cap, default `256`.
@@ -70,8 +61,7 @@ plugin. Tune its retention with environment variables:
 ## Security
 
 <Callout type="info">
-	The dashboard's control-plane mutations (restart, shutdown, advance-clock, fund) are guarded by a
-	**stack-scoped CORS allowlist** owned by the dashboard server. It covers this stack's own
-	router-fronted origin, the direct loopback origins, and any caller-supplied `allowedOrigins`. Only
-	those origins can drive the mutations.
+	The dashboard's controls (restart, shutdown, advance-clock, fund) are guarded by a stack-scoped
+	CORS allowlist. Only this stack's own origins — its router-fronted URL, its direct loopback URLs,
+	and any `allowedOrigins` you add — can drive them. A sibling stack's origin cannot.
 </Callout>

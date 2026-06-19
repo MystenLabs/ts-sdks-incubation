@@ -1,23 +1,18 @@
 ---
 title: State and Snapshots
-description: Current state layout and the supported snapshot command surface.
+description: Save and restore a stack's chain, blobs, and runtime state.
 ---
 
-Runtime state is stack-scoped:
+Snapshots let you save the full state of a running stack — its chain, blobs, key-server vaults, and
+runtime — and restore it later. Use them to capture a known-good baseline before a risky migration,
+to share a seeded environment, or to reset back to a clean starting point.
 
-```txt
-.devstack/stacks/<stack>/
-  manifest.json
-  projection.v3.json
-  runtime/
-  snapshots/
-```
+Each stack keeps its state under `.devstack/stacks/<stack>/`, including a `snapshots/` directory
+where saved artifacts live.
 
-`projection.v3.json` is the persisted operator read model used by `devstack status`, the TUI, and
-plain renderer startup sweeps. A missing, malformed, or unsupported file is treated as absent;
-devstack rebuilds status from the next running stack.
+## Saving and restoring
 
-The usual snapshot flow is a one-shot CLI capture when no attached `devstack up` session is running:
+Save a snapshot with a one-shot CLI command when no `devstack up` session is attached to the stack:
 
 ```bash
 devstack snapshot save
@@ -41,32 +36,30 @@ devstack up --from-snapshot before-migration --snapshot-stale clean-start
 devstack up --snapshot-cache dev-baseline
 ```
 
-`--from-snapshot` resolves the same name-or-id references as `snapshot restore`, restores before the
-initial acquire, and then lets the supervisor converge the stack. The default stale policy is
-`warn`: if the snapshot's graph input id differs from the current stack's graph input id, devstack
-logs a warning and proceeds. Use `block` to refuse the restore on graph-input drift, or
-`clean-start` to skip the restore and boot normally when the snapshot is stale.
+`--from-snapshot` resolves the same name-or-id references as `snapshot restore`, restores before
+startup, and then brings the stack up. A snapshot is _stale_ when it was captured for a different
+stack configuration than the one you're booting. The default stale policy is `warn`: devstack logs a
+warning and restores anyway. Use `block` to refuse the restore when stale, or `clean-start` to skip
+the restore and boot normally.
 
-`--snapshot-cache <name>` uses the same graph-input check as a startup cache: a current snapshot is
+`--snapshot-cache <name>` uses the same staleness check as a startup cache: a current snapshot is
 restored, while a missing or stale one is refreshed after a normal startup.
 
-When you are already attached to `devstack up --renderer tui`, use the TUI shortcut instead of
-starting a second snapshot command. Press `s`, type a snapshot name, and press Enter. Press Enter on
-an empty prompt to use a generated `manual-...` name, or press Esc to cancel. The shortcut exists
-only in TUI mode; `plain` and `silent` renderers do not handle keypress commands.
+### Capturing from the TUI
 
-TUI capture runs in the background after the prompt submits. The bottom status row shows the active
-phase and when the stack is paused for snapshot consistency. While capture is running, a second
-submitted snapshot is skipped and `q` still enters graceful shutdown instead of waiting behind the
-capture command.
+When you're already attached to `devstack up --renderer tui`, capture without starting a second
+command. Press `s`, type a snapshot name, and press Enter. Press Enter on an empty prompt to use a
+generated `manual-...` name, or press Esc to cancel. This shortcut is TUI-only; the `plain` and
+`silent` renderers don't handle keypress commands.
 
-Snapshot capture takes one stack-wide quiescence window for managed runtime state. Devstack
-validates the full capture set, pauses every running managed container, commits container writable
-layers, archives declared host subtrees, writes state/contribution metadata, then unpauses the
-containers. The TUI stays responsive during that window, but services behind the stack may briefly
-stop responding while Docker containers are paused.
+Capture runs in the background after you submit. The bottom status row shows progress, and `q` still
+shuts down gracefully rather than waiting behind the capture. To keep the snapshot consistent,
+devstack briefly pauses the stack's containers while capturing, so services may stop responding for
+a moment.
 
-One artifact lives under `.devstack/stacks/<stack>/snapshots/<snapshotId>/` and uses this layout:
+## Snapshot artifact
+
+A snapshot lives under `.devstack/stacks/<stack>/snapshots/<snapshotId>/` with this layout:
 
 ```txt
 meta.json
@@ -76,33 +69,21 @@ containers/images.tar
 contributions/<encoded-plugin>.json
 ```
 
-Supported behavior:
+Treat `meta.json`, `state.json`, `host-tree.tar`, and `containers/images.tar` as the stable artifact
+contract; anything else under the directory is internal.
 
-- CLI save performs a one-shot stack boot and captures a snapshot of the selected stack.
-- `up --from-snapshot <name-or-id>` restores a selected snapshot before startup and supports
-  `--snapshot-stale warn|block|clean-start` for graph-input drift.
-- `up --snapshot-cache <name>` restores that named snapshot when current and refreshes it after
-  startup when it is missing or stale.
-- TUI save captures the currently attached stack and is intended for operator snapshots during
-  `devstack up --renderer tui`.
-- Restore resolves a name or id, refuses to run while `devstack up` is live, then restores that
-  artifact directly after `--yes` or an interactive `y` confirmation.
-- List reads snapshot metadata from the active stack root and tolerates corrupt entries by showing a
-  fallback row.
-- Delete removes the resolved artifact from the selected stack root after `--yes` or an interactive
-  `y` confirmation.
+## Things to know
 
-Important caveats:
+- Snapshots are stack-scoped — you save and restore one stack at a time.
+- `restore` and `up --from-snapshot` refuse to run while `devstack up` owns the stack, and prompt
+  for `y` unless you pass `--yes`.
+- Restore raises `IdentityMismatchError` if the snapshot was captured for a different app, stack, or
+  network, before changing anything.
+- A stale snapshot — one captured for a different stack configuration — restores with a warning by
+  default, because it may create inconsistent state. Use `--snapshot-stale block` or `clean-start`
+  to change that.
 
-- Snapshots are stack-scoped. Snapshot metadata carries app, stack, network, and plugin identity
-  slices (including a Sui `mode` discriminator); restore raises `IdentityMismatchError` on identity
-  drift before any destructive change.
-- Snapshots also record a graph input id derived from the stack graph, selected options, devstack
-  version, and plugin-authored input identity. A mismatch means the snapshot was captured for
-  different inputs; restore warns by default because it may create inconsistent state.
-- The supported snapshot surface is the CLI and the on-disk artifact described above. `meta.json`,
-  `state.json`, `host-tree.tar`, and `containers/images.tar` are the artifact contract; everything
-  else under the snapshot directory is implementation detail.
+## Wiping state
 
-Use `devstack wipe --yes --stack <name>` to remove all state for a selected stack in non-interactive
-shells. In a TTY, omitting `--yes` prompts for `y` before deleting state.
+Use `devstack wipe --stack <name>` to remove all state for a stack. Pass `--yes` in non-interactive
+shells; in a TTY, omitting it prompts for `y` first.

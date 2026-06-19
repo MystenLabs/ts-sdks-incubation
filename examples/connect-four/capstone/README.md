@@ -1,7 +1,7 @@
 # Deploy to a real network — capstone validation harness
 
 A **documented, repeatable** harness that proves the devstack multi-network
-deployment path works against a *real* Sui network, not just a typecheck/unit
+deployment path works against a _real_ Sui network, not just a typecheck/unit
 pass. Typecheck-green is necessary but not sufficient — only a real deploy proves
 the prod path (`deploy = drop-local`, committed `deployments/<net>.ts`,
 per-network client repoint, dev-wallet-persists-across-switch) actually works
@@ -19,14 +19,14 @@ with [agent-browser]/Playwright, not just exit codes.
 
 ## What's already committed (the proof artifacts)
 
-The two browser specs that *are* the capstone proof, plus the committed devnet
+The two browser specs that _are_ the capstone proof, plus the committed devnet
 deployment, already live in the repo:
 
-| Artifact | Path | Proves |
-| --- | --- | --- |
-| Network-switch spec | [`../tests/browser/network-switch.spec.ts`](../tests/browser/network-switch.spec.ts) | localnet→devnet UI switch; dev wallet stays connected; client repoints (Scenario B, no tx) |
-| Devnet-tx spec | [`../tests/browser/devnet-tx.spec.ts`](../tests/browser/devnet-tx.spec.ts) | funds alice via the devnet faucet, signs a real `create_lobby` after the switch, asserts the tx landed via `sui_getTransactionBlock` (Scenario B, with tx) |
-| Committed devnet deployment | [`../deployments/devnet.ts`](../deployments/devnet.ts) | typed per-network unit, `satisfies AppNetworkDeployment` (a wrong/typo'd id fails `tsc`) |
+| Artifact                    | Path                                                                                 | Proves                                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Network-switch spec         | [`../tests/browser/network-switch.spec.ts`](../tests/browser/network-switch.spec.ts) | localnet→devnet UI switch; dev wallet stays connected; client repoints (Scenario B, no tx)                                                                 |
+| Devnet-tx spec              | [`../tests/browser/devnet-tx.spec.ts`](../tests/browser/devnet-tx.spec.ts)           | funds alice via the devnet faucet, signs a real `create_lobby` after the switch, asserts the tx landed via `sui_getTransactionBlock` (Scenario B, with tx) |
+| Committed devnet deployment | [`../deployments/devnet.ts`](../deployments/devnet.ts)                               | typed per-network unit, `satisfies AppNetworkDeployment` (a wrong/typo'd id fails `tsc`)                                                                   |
 
 This `capstone/` directory adds the **deliverable framing**: the runner script,
 this README, and the run log.
@@ -53,10 +53,10 @@ this README, and the run log.
 
 **Goal:** prove the deploy-time path with no local stack at all: a static `vite
 build` that ships the committed `deployments/devnet.ts`, connects to devnet RPC,
-reads the *real* package id, lands a tx signed by an external keypair, **and
+reads the _real_ package id, lands a tx signed by an external keypair, **and
 carries NO dev wallet** in the bundle.
 
-> Status: documented here; the *automated* proof in this branch is Scenario B
+> Status: documented here; the _automated_ proof in this branch is Scenario B
 > (which subsumes the switch + devnet-tx assertions). Scenario A's distinct
 > assertions are the **drop-local build** and the **no-dev-wallet-in-bundle**
 > grep — run the manual steps below to validate them.
@@ -64,18 +64,20 @@ carries NO dev wallet** in the bundle.
 ### Steps
 
 1. **(MANUAL) Publish the Move package to devnet.** From the example dir:
+
    ```bash
    cd examples/connect-four
    sui client switch --env devnet            # ensure active env is devnet
    sui client faucet                          # fund the active address on devnet
    sui client publish move/connect_four --gas-budget 100000000
    ```
+
    Copy the published **package id** from the output (`Published Objects → PackageID`).
 
 2. **Write the committed, typed deployment.** Either:
    - **Option A1 (hand-author):** edit [`../deployments/devnet.ts`](../deployments/devnet.ts),
      set `CONNECT_FOUR_PACKAGE_ID` to the published id. `satisfies AppNetworkDeployment`
-     makes `tsc` reject a missing/typo'd id. *(This is how the committed file was produced.)*
+     makes `tsc` reject a missing/typo'd id. _(This is how the committed file was produced.)_
    - **Option A2 (boot + dump):** point a one-shot devstack boot at devnet and let it
      emit the typed file:
      ```bash
@@ -87,17 +89,21 @@ carries NO dev wallet** in the bundle.
      JSON to stdout.)
 
 3. **Build the static bundle with NO local stack:**
+
    ```bash
    pnpm build        # tsc -b && vite build — stack-free, no Docker, works on a clean clone
    ```
+
    The Vite plugin auto-discovers `deployments/*.ts`; `command === 'build'` drops
    local-mode and ships the committed networks only. A build with no ids throws
    `DevstackConfigMissingError` at runtime — loud, never a silent zero.
 
 4. **Assert NO dev wallet shipped:**
+
    ```bash
    ! grep -rl "dev-wallet\|__devstackDevWallet__" dist/assets/*.js
    ```
+
    A pure prod build (not run through devstack) ships no dev-wallet plugin.
 
 5. **Serve + verify with a browser:**
@@ -138,6 +144,7 @@ script** ([`run-capstone.sh`](./run-capstone.sh)).
 
 2. **(AUTOMATED) Boot localnet + run the specs.** The `test:browser` script's
    `globalSetup` boots the `e2e` localnet stack, then tears it down:
+
    ```bash
    ./capstone/run-capstone.sh
    # which runs, with the right env:
@@ -154,11 +161,13 @@ script** ([`run-capstone.sh`](./run-capstone.sh)).
 ### What the specs assert (success criteria)
 
 `network-switch.spec.ts`:
+
 - after `switchNetwork('devnet')`, the dApp Kit current network = `devnet`;
 - the dev wallet stays connected (same `.account-line code` address, not a ConnectButton);
 - the network indicator repoints to `Network: devnet`.
 
 `devnet-tx.spec.ts`:
+
 - alice is funded on devnet (`suix_getBalance > 0`);
 - after the switch, `Create Lobby` executes a real tx;
 - `sui_getTransactionBlock` confirms the digest exists **on devnet**, `sender == alice`,
@@ -171,7 +180,7 @@ Record the printed `[devnet-tx] alice=… digest=…` line in [`RUN-LOG.md`](./R
 ## Scenario C — per-network services (0e) ⏸ DEFERRED / OPTIONAL
 
 **Goal:** same as B, but with an example consuming **deepbook / walrus / seal**, to
-prove service buckets resolve the right *per-network* ids on a `switchNetwork`
+prove service buckets resolve the right _per-network_ ids on a `switchNetwork`
 (`<svc>.forNetwork(net)` flips in lockstep with rpc/packages).
 
 > **Caveat (why it's deferred):** walrus / seal / deepbook may **not** be deployed

@@ -3,8 +3,9 @@ title: Dev Servers
 description: Supervise a local frontend dev server with hostService.
 ---
 
-Use `hostService(...)` for a browser dev server or any other host process that should start and stop
-with `devstack up`.
+Run your frontend dev server (or any host process) alongside your stack so it starts and stops with
+`devstack up`. `hostService(...)` supervises the process, gives it a stable browser-facing URL, and
+orders it after the packages, wallet, or services it depends on.
 
 ```ts title="devstack.config.ts"
 import { dirname } from 'node:path';
@@ -39,7 +40,7 @@ const app = hostService({
 export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 ```
 
-## Port Assignment And Routing
+## Ports and routing
 
 There are two ports involved:
 
@@ -50,14 +51,17 @@ There are two ports involved:
   router serves `http://dev.<app>.localhost:5175` and forwards traffic to whatever process port was
   allocated.
 
-That means the raw process port can change between runs while the routed URL stays predictable. Open
-the routed URL when you want stack-scoped browser behavior, wallet origin checks, Playwright base
-URLs, and links from the manifest to converge. Use the direct `127.0.0.1:<process-port>` URL only
+The raw process port can change between runs while the routed URL stays predictable. Open the routed
+URL for everyday work — it's the one that makes stack-scoped browser behavior, wallet origin checks,
+Playwright base URLs, and manifest links line up. Use the direct `127.0.0.1:<process-port>` URL only
 for low-level debugging.
 
-Use `script` for normal dev commands, and use `command` plus `args` only when you need argv-level
-control.
+## Options
 
-`hostService(...)` returns a plugin resource ref. Set `after` to order the process after packages,
-wallet, or service members it needs, and set `ready` to the readiness probe the supervisor should
-wait for before treating the service as started.
+`hostService(...)` returns a ref you can list in `after` on other members.
+
+- `script` — the dev command to run. Use `command` plus `args` instead when you need argv-level
+  control.
+- `after` — members this process should start after, such as packages, the wallet, or other
+  services.
+- `ready` — the readiness probe to wait for before treating the service as started.

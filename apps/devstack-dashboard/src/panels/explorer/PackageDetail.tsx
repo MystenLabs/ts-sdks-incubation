@@ -5,7 +5,7 @@
 // functions table (visibility + entry + param count) for the selected module.
 // Loading → `DetailSkeleton`; not-found → Banner.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { truncateMiddle } from '../../lib/format.ts';
 import type { Projection } from '../../lib/types.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
@@ -42,7 +42,11 @@ export const PackageDetail = ({ chain, projection, id }: PackageDetailProps) => 
 	const q = usePackage(chain, id);
 	const [active, setActive] = useState<string | null>(null);
 
-	const modules = q.data?.modules ?? [];
+	// Stabilize the array reference so the default-selection effect below
+	// doesn't re-run every render (react-query keeps `q.data.modules` stable
+	// across renders when the data is unchanged; only the `?? []` fallback
+	// would otherwise produce a fresh array each time).
+	const modules = useMemo(() => q.data?.modules ?? [], [q.data?.modules]);
 
 	// Default the selected module to the first one once data arrives.
 	useEffect(() => {

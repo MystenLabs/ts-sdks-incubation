@@ -25,7 +25,7 @@ const packages = [
 			'Compose local Sui networks, accounts, packages, services, generated files, tests, and wallet wiring from one TypeScript config.',
 		links: [
 			{ label: 'Get started', href: '/devstack' },
-			{ label: 'Services', href: '/devstack/services' },
+			{ label: 'Codegen', href: '/devstack/codegen' },
 			{ label: 'Testing', href: '/devstack/testing' },
 		],
 	},

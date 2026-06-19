@@ -45,8 +45,8 @@ export function deploymentForNetwork(network: string) {
 	// tolerating absence: a build with no injected ids (or a coin not yet
 	// published) yields `''`, which the UI gates on (`isDeployedFor`, query
 	// `enabled`). The non-throwing `optionalValue` returns `undefined` for these
-	// optional ids; the hard `DevstackConfigMissingError` from `requireValue`
-	// stays loud for the load-bearing fields (rpc, package ids).
+	// optional ids; `requireValue` still throws `DevstackConfigMissingError`
+	// for the required fields (rpc, package ids).
 	const discoveryId = (key: string): string =>
 		optionalValue<string>(net, 'coin:managed_coin', key) ?? '';
 

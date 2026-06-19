@@ -4,8 +4,9 @@ description:
   Local DeepBook deployments, pools, seed liquidity, Pyth price feeds, and known deployments.
 ---
 
-`deepbook(...)` adds a [DeepBook](https://github.com/MystenLabs/deepbookv3) central-limit order-book
-DEX to your stack. It runs in one of three modes:
+Trade on a [DeepBook](https://github.com/MystenLabs/deepbookv3) central-limit order-book DEX running
+on your local network. Add `deepbook(...)` to your stack, then read the resolved pool and coin ids
+from the generated bindings and drive trades with the DeepBook SDK. It runs in one of three modes:
 
 - **`local`** — publish the DeepBook Move package onto your local Sui network, create pools, and
   (optionally) seed them with resting liquidity and local Pyth price feeds. This is the mode you use
@@ -180,9 +181,9 @@ To place orders, build transactions with the
 
 ### Connect the SDK
 
-DeepBook is a per-network service: `deepbook.forNetwork(network).deepbook` returns the bindings for
-the network your wallet is connected to, so a runtime `switchNetwork` flips the package, pool, and
-coin ids in lockstep. Extend your Sui client with the DeepBook extension built from that bucket:
+To place orders, extend your Sui client with the DeepBook extension built from the same per-network
+bindings — `deepbook.forNetwork(network).deepbook` — so the package, pool, and coin ids flip with a
+runtime `switchNetwork`:
 
 ```ts title="src/App.tsx"
 import { useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
@@ -294,6 +295,5 @@ const dex = deepbook({
 });
 ```
 
-Margin, indexer, server, and market-maker options are intentionally absent until those modes have
-real acquire behavior. `deepbook(...)` returns a service member; known testnet/mainnet helpers may
+`deepbook(...)` returns a service member you add to `members`. Known testnet/mainnet helpers may
 also contribute funding strategies for service-owned coins when the mode supports them.

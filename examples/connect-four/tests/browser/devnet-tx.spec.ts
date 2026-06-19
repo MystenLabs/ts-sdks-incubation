@@ -152,10 +152,7 @@ test('funds alice on devnet, then signs a real on-chain create_lobby in the brow
 		digest: string;
 		transaction?: { data?: { sender?: string } };
 		effects?: { status?: { status?: string }; created?: unknown[] };
-	}>('sui_getTransactionBlock', [
-		digest,
-		{ showInput: true, showEffects: true },
-	]);
+	}>('sui_getTransactionBlock', [digest, { showInput: true, showEffects: true }]);
 
 	expect(txBlock.digest).toBe(digest);
 	// Sender is alice — the dev-wallet account that signed in the browser.

@@ -19,18 +19,18 @@ Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app
 ### `devstack apply [options]`
 
 Re-emit the per-stack deployment file from a live or one-shot stack. The deployment file is
-`deployment.json` and carries the resolved ids, accounts, and dev-wallet connection. Reconciles
-through a live supervisor when present; otherwise boots once, emits, and exits. The committed
-`src/generated` tree is `devstack codegen`'s job.
+`deployment.json` and carries the resolved ids, accounts, and dev-wallet connection. If a supervisor
+is live, `apply` reconciles through it; otherwise it boots once, emits, and exits. Refreshing the
+generated `src/generated` tree is `devstack codegen`'s job, not `apply`'s.
 
 Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
 
 ### `devstack codegen [options]`
 
-Regenerate committed bindings from Move source (no stack boot). The committed tree is
-`src/generated`. Deterministic and stack-free: no Docker, no on-chain ids. Requires the `sui` CLI on
-`PATH` for the `sui move summary` step. Writes the committed tree only.
+Regenerate the bindings from Move source (no stack boot). The generated tree is `src/generated`.
+Deterministic and stack-free: no Docker, no on-chain ids. Requires the `sui` CLI on `PATH` for the
+`sui move summary` step. Writes the generated tree only.
 
 Lifecycle: one-shot. Side effects: write. Docker: no. Requires: host `sui` CLI. Options: `--json`,
 `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
@@ -140,9 +140,9 @@ devstack apply
 
 `up` boots the stack and stays attached until you quit the TUI or interrupt the process. `apply`
 checks the selected stack first: if `devstack up` is live, it asks that supervisor to reconcile and
-waits for completion; if no supervisor is live, it boots the stack in one-shot mode, reconciles,
-re-emits the per-stack deployment file, and exits. Run `devstack codegen` to refresh the committed
-`src/generated` tree.
+waits for completion; otherwise it boots the stack in one-shot mode, reconciles, re-emits the
+per-stack deployment file, and exits. Neither touches the generated `src/generated` tree — that's
+`devstack codegen`'s job.
 
 Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
 `--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`,
@@ -181,11 +181,11 @@ devstack snapshot delete <name-or-id>
 provided positionally or with `--name`; if omitted, devstack generates a `manual-...` name. Restore
 and delete resolve an exact snapshot id first, then a unique name.
 
-If you are already attached to `devstack up --renderer tui`, press `s` in the TUI instead of
-starting a second snapshot command. That shortcut is the attached-session snapshot flow; it is not
-available in `plain` or `silent` renderer mode. `snapshot restore`, `snapshot delete`, and `wipe`
-prompt for `y` in a TTY or require `--yes` when prompts are unavailable. `snapshot restore` and
-`wipe` refuse to mutate state while an attached `devstack up` session is live. `snapshot list` and
+If you are already attached to `devstack up --renderer tui`, press `s` in the TUI to snapshot the
+attached session rather than starting a second snapshot command. The shortcut is available only in
+the TUI renderer, not in `plain` or `silent` mode. `snapshot restore`, `snapshot delete`, and `wipe`
+prompt for `y` in a TTY, or require `--yes` when prompts are unavailable. `snapshot restore` and
+`wipe` do not mutate state while an attached `devstack up` session is live. `snapshot list` and
 `snapshot delete` operate on the selected stack root.
 
 Use `devstack up --from-snapshot <name-or-id>` when you want startup to restore a snapshot and then
@@ -219,17 +219,17 @@ first:
 3. `$DEVSTACK_STATE_DIR` — the environment variable.
 4. `<cwd>/.devstack` — the default when nothing above is set.
 
-The no-config cleanup verbs (`prune`, `wipe`) still resolve a state directory by this ladder without
-loading a config — pass `--state-dir`, set `$DEVSTACK_STATE_DIR`, or run from a directory whose
-`.devstack` you want to act on.
+The cleanup verbs (`prune`, `wipe`) resolve a state directory by this ladder without loading a
+config: pass `--state-dir`, set `$DEVSTACK_STATE_DIR`, or run from a directory whose `.devstack` you
+want to act on.
 
 ## Exit codes
 
 Every CLI failure carries one of the codes below in `process.exitCode`, and under `--json` it also
 appears in the structured error envelope as `error.exitCode` (numeric) and `error.code` (the name).
-Each failure maps to a specific code. The devstack-domain block (40–43) is a private extension
-carved out below the standard sysexits range so it never collides with the OS table; numbers are
-stable and never reused. `devstack schema --json` emits this table for automation.
+The devstack-domain block (40–43) sits below the standard sysexits range so it does not overlap the
+OS table; these numbers are stable across releases. `devstack schema --json` emits this table for
+automation.
 
 | Code | Name                 | Meaning                                                             |
 | ---- | -------------------- | ------------------------------------------------------------------- |

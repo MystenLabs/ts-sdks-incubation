@@ -3,8 +3,9 @@ title: Local Development
 description: Stack state, on-disk outputs, and the day-to-day local commands.
 ---
 
-Local mode is the default. `sui()` starts an in-stack local network; include it once in any stack
-whose members depend on Sui.
+Spin up a full local Sui environment — network, accounts, published packages, a dev wallet, and your
+frontend — with a single `devstack up`. This is the default mode; the example below is the shape of
+a typical local stack. Include `sui()` once in any stack whose members depend on Sui.
 
 ```ts
 import { dirname, resolve } from 'node:path';
@@ -61,9 +62,9 @@ State is scoped by app and stack name:
 
 A `hostService(...)` dev server is reached through a stable routed endpoint —
 `http://dev.<app>.localhost:5175` by default — even though its raw process port may change between
-runs. The router model behind these stable hostnames (and how plugins publish named endpoints into
-the manifest) is covered in [Refs and dependencies](/devstack/reference/internals/refs-and-tags) and
-[Lifecycle](/devstack/reference/internals/lifecycle).
+runs. See [Dev servers](/devstack/configure/dev-server) for ports and routing, and
+[Refs and dependencies](/devstack/reference/internals/refs-and-tags) for how plugins publish named
+endpoints.
 
 ## Outputs
 
@@ -85,13 +86,13 @@ devstack apply
 devstack status --json
 ```
 
-`devstack apply` is safe to run while `devstack up` owns the same stack: it publishes a reconcile
-request to the live supervisor and waits, then re-emits the per-stack deployment file and dev
-extras. If the stack is not live, it performs the reconcile in a one-shot run. The committed
-`src/generated` tree stays the domain of `devstack codegen`.
+`devstack apply` is safe to run while `devstack up` owns the same stack: it reconciles against the
+live session and re-emits the per-stack deployment file and dev extras. If the stack is not live, it
+reconciles in a one-shot run. The generated `src/generated` tree stays the domain of
+`devstack codegen`.
 
 Use a different stack name when you want independent keys, snapshots, runtime state, and deployment
-file — the committed `src/generated` tree stays shared across all of them:
+file — the generated `src/generated` tree stays shared across all of them:
 
 ```bash
 DEVSTACK_STACK=ci devstack apply

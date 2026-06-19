@@ -349,10 +349,7 @@ export type {
 } from './service.ts';
 export { WALLET_ACCOUNTS_ALL } from './service.ts';
 export type { DevWalletConnection } from './codegen.ts';
-export {
-	DEV_WALLET_VALUES_NAMESPACE,
-	DEV_WALLET_VALUES_KEY,
-} from './codegen.ts';
+export { DEV_WALLET_VALUES_NAMESPACE, DEV_WALLET_VALUES_KEY } from './codegen.ts';
 export {
 	WalletHttpPath,
 	WALLET_PROTOCOL_PREFIX,

@@ -1,10 +1,11 @@
 ---
-title: Live Networks
-description: Running the same stack shape against public networks.
+title: Live networks
+description: Point the same stack at devnet, testnet, or mainnet.
 ---
 
-Pick a Sui mode explicitly in the config. `sui()` is the local shorthand; public networks use
-`sui({ mode: 'live', network })`.
+Run your stack against a public network when you want to develop or test against the real chain
+rather than a local one. The same config works — you just choose the network. `sui()` is the local
+shorthand; for a public network, pass `sui({ mode: 'live', network })`.
 
 ```ts
 import {
@@ -60,10 +61,9 @@ Network names accepted by `--network` and `DEVSTACK_NETWORK` are `localnet`, `te
 
 ## Forking a public network
 
-The `*-fork` networks run a local fork of an upstream public network — replaying against real
-on-chain state while keeping all writes local. Forking has its own configuration surface (the fork
-container, the impersonation faucet, the admin surface, and the seed/checkpoint knobs). See
-[Forking](/devstack/forking) for the full guide.
+The `*-fork` networks run a local fork of a public network: you develop against real on-chain state
+while every write stays local. Forking adds its own options for seeding upstream state, funding
+accounts, and advancing the chain — see [Forking](/devstack/forking) for the full guide.
 
 ## Live accounts
 
@@ -73,8 +73,8 @@ for local development, not custody of real assets.
 
 ## Live-mode service factories
 
-Local-only services may refuse live or fork modes. Use the mode-specific factories when you want the
-type system to narrow available branches to a live chain:
+Some services only run locally. To point Walrus, Seal, or DeepBook at a live chain, use the
+mode-specific factories — they narrow the type to the branches available on a live network:
 
 ```ts
 import { chainId, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
@@ -100,21 +100,20 @@ const dex = deepbookFor(live).known({
 
 See [Forking](/devstack/forking) for the fork-mode variants of these factories.
 
-## Network-options policy
+## Dev conveniences per network
 
-The `devWallet` and `faucet` conveniences default **on** for every network except live mainnet,
-where they are clamped **off**. This keeps localnet, fork, and even live testnet ergonomic for
-development.
+The dev wallet and faucet are on by default on every network except live mainnet, so localnet, fork,
+and live testnet stay easy to develop against. On live mainnet they're off and can't be turned back
+on.
 
 <Callout type="info">
-	On live mainnet, `devWallet`, `faucet`, and `autoApproveSigning` are clamped off regardless of
-	overrides — the clamp applies whenever the resolved surface network is live mainnet. A build
-	pointed at live mainnet ships no dev wallet, no faucet, and never auto-approves a real-funds
-	signature.
+	On live mainnet, the dev wallet, faucet, and `autoApproveSigning` are forced off regardless of
+	your config. A build pointed at live mainnet ships no dev wallet and no faucet, and won't
+	auto-approve a signature against real funds.
 </Callout>
 
-`autoApproveSigning` defaults **off** on every network. A real app exercises the actual connect and
-approve flow, so `pnpm dev` shows the wallet prompts. Opt in where you want it:
+`autoApproveSigning` is off by default everywhere, so `pnpm dev` shows the real connect and approve
+prompts your users will see. Turn it on where you want it:
 
 - **Headless e2e** — set `DEVSTACK_AUTO_APPROVE=1` (the Vite plugin reads it ahead of the policy),
   or pass `autoApprove: true` to `devstackVitePlugin(...)`.

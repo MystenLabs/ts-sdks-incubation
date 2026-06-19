@@ -17,7 +17,6 @@ import type { ChainSource } from '../../lib/useChain.ts';
 import { useAddressBalances, useOwnedObjects } from '../../lib/useChain.ts';
 import type { BalanceView, OwnedObjectView } from '../../lib/explorerTypes.ts';
 import {
-	Badge,
 	CoinAmount,
 	CoinIcon,
 	type Column,

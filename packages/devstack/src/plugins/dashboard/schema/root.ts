@@ -423,7 +423,9 @@ builder.subscriptionType({
 /** Bridge an Effect `SubscriptionRef` to an async iterable for GraphQL
  *  subscriptions. `SubscriptionRef.changes` emits the current value first,
  *  then each subsequent update. The pump fiber is interrupted when the
- *  consumer (yoga) stops iterating. */
+ *  consumer (yoga) stops iterating.
+ *
+ *  @yields {SubscribableState} the current subscribable state on each change */
 async function* subscribeState(
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 ): AsyncGenerator<SubscribableState> {

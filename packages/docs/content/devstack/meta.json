@@ -5,7 +5,9 @@
 	"pages": [
 		"index",
 		"configure",
-		"services",
+		"walrus",
+		"seal",
+		"deepbook",
 		"codegen",
 		"testing",
 		"live-networks",

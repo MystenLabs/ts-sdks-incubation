@@ -3,19 +3,20 @@ title: Generated Outputs
 description: Current generated-file behavior.
 ---
 
-`devstack codegen` writes the committed `src/generated` tree. It is deterministic and stack-free: no
-stack boots, no Docker, no on-chain ids — running it twice on the same Move source produces the same
-files. It does require the
+Import typed bindings for your Move packages and the services in your stack from one place:
+`src/generated`. Run `devstack codegen` to (re)write that tree from your Move source. It's
+deterministic — running it twice on the same source produces the same files — and needs no running
+stack, Docker, or on-chain ids. It does require the
 [Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install) (`sui`) on your `PATH`
-for the `sui move summary` step. The committed tree lives at a single, fixed location, shared across
-every stack:
+for the `sui move summary` step.
+
+The tree lives at one fixed location, shared across every stack:
 
 ```txt
 src/generated/
 ```
 
-The output is a **flat set of aggregate buckets**, one per plugin domain — not a nested per-instance
-tree. The committed set:
+Codegen emits a flat set of files, one per domain:
 
 ```txt
 config.ts            # sui networks + package handles (id-free; deployment lookups)
@@ -32,14 +33,14 @@ The `bindings/` tree is standard Sui Move codegen — `MoveStruct` BCS definitio
 builders, one file per module. Devstack drives the
 [`@mysten/codegen`](https://github.com/MystenLabs/ts-sdks/blob/main/packages/codegen#readme)
 generator for these; see its docs for how Move types, BCS, and function builders map to TypeScript.
-This page covers the devstack-specific layer on top: the bucket layout, the `@generated` alias, the
-`includePhantomTypeParameters` knob, and how on-chain ids reach the committed tree.
+This page covers the devstack layer on top: the file layout, the `@generated` alias, the
+`includePhantomTypeParameters` knob, and how on-chain ids reach the generated tree.
 
 ## Importing generated code
 
-Generated files are normal source imports, resolved through the `@generated` alias. The alias is
-**static**: it always resolves to `src/generated`, regardless of which stack is active. Runtime
-state under `.devstack/` is not importable through `@generated`.
+Import generated files like any other source, through the `@generated` alias. It always resolves to
+`src/generated`, whichever stack is active; per-stack runtime state under `.devstack/` is not
+importable through it.
 
 ```ts
 import { config } from '@generated/config.js';
@@ -47,7 +48,7 @@ import { Vault } from '@generated/bindings/my_pkg/vault.js';
 ```
 
 The alias is wired by `devstackVitePlugin()` and a matching `tsconfig` `paths` entry. Because the
-committed tree is id-free (see [On-chain ids](#on-chain-ids)), the same import works under every
+generated tree is id-free (see [On-chain ids](#on-chain-ids)), the same import works under every
 stack — only the injected deployment differs, never the file location.
 
 ```ts title="vite.config.ts"
@@ -67,44 +68,44 @@ The alias prefix is coordinated in two places, both pointing at the same fixed `
    { "compilerOptions": { "paths": { "@generated/*": ["./src/generated/*"] } } }
    ```
 
-To regenerate the committed tree after changing Move source, run codegen:
+After changing Move source, regenerate the tree:
 
 ```bash
 devstack codegen
 ```
 
-`devstack codegen` never boots a stack and never touches the deployment file — it only rewrites
-`src/generated`. To refresh the live deployment (real ids) for a running stack, use
+`devstack codegen` rewrites `src/generated` only — it doesn't boot a stack or touch the deployment
+file. To refresh the live deployment (real ids) for a running stack, use
 [`devstack apply`](#regenerating-the-deployment-with-apply) instead.
 
 ### Regenerating the deployment with apply
 
 `devstack apply` re-emits the per-stack `deployment.json` from a live or one-shot stack. It writes
-the per-stack deployment, never the committed `src/generated` tree — that is `devstack codegen`'s
-job alone.
+the per-stack deployment, not the `src/generated` tree.
 
 ```bash
 devstack apply
 ```
 
-When a matching `devstack up` supervisor is live, `apply` asks it to emit from the current runtime
-state. Otherwise, `apply` boots the stack once, emits the deployment, and exits.
+When a matching `devstack up` stack is live, `apply` asks it to emit from the current runtime state.
+Otherwise, `apply` boots the stack once, emits the deployment, and exits.
 
 ## On-chain ids
 
-Codegen output is deterministic and stack-free. The committed `config.ts` carries **no** on-chain
-ids — each id is resolved at runtime from a build-time-injected `__DEVSTACK_DEPLOYMENT__` global
-through the generated `config-runtime.ts`. This keeps the commands cleanly decoupled:
+The generated `config.ts` carries no on-chain ids. Each id is resolved at runtime from the
+build-time-injected `__DEVSTACK_DEPLOYMENT__` global through `config-runtime.ts`. So the generated
+tree stays the same whether you're on local, testnet, or a real deploy — only the injected ids
+differ — and each command owns one job:
 
-- `pnpm codegen` / `devstack codegen` — regenerates the committed `src/generated` tree from Move
-  source. Deterministic, stack-free, no Docker (requires the `sui` CLI on `PATH`). Writes the
-  committed tree only — never the deployment file.
+- `pnpm codegen` / `devstack codegen` — regenerates `src/generated` from Move source. Deterministic,
+  no running stack, no Docker (requires the `sui` CLI on `PATH`). Writes the generated tree only,
+  not the deployment file.
 - `pnpm dev` / `devstack up` — boots the stack and writes a gitignored, per-stack
   `.devstack/stacks/<stack>/deployment.json`; the [Vite plugin](#importing-generated-code) injects
-  it automatically in dev. It does not rewrite the committed tree.
-- `devstack apply` — re-emits the per-stack deployment from a live (or one-shot) stack. It never
-  writes the committed `src/generated` tree.
-- `pnpm build` (`tsc -b && vite build`) — stack-free and sub-second; works on a clean clone.
+  it automatically in dev. It doesn't rewrite the generated tree.
+- `devstack apply` — re-emits the per-stack deployment from a live (or one-shot) stack. It doesn't
+  write the generated tree.
+- `pnpm build` (`tsc -b && vite build`) — works on a clean clone with no running stack.
 
 The deployment loader, the strict `deployment.ts` type, the missing-id error behavior, and the
 dapp-kit handoff are covered in [Config & deployments](/devstack/codegen/config-and-deployments). To
@@ -112,10 +113,10 @@ author a deployment for a real network, see [Going to production](/devstack/goin
 
 ## Phantom type parameters
 
-Move structs routinely carry `phantom` type parameters — `Vault<phantom T>`, coin and pool markers,
-capability types. By default the generated bindings **drop** them: a struct whose type parameters
-are all phantom renders as a plain `const`, with the phantom slots baked into its BCS name as
-placeholders:
+`includePhantomTypeParameters` is a devstack codegen knob that controls how the bindings render Move
+structs with `phantom` type parameters — `Vault<phantom T>`, coin and pool markers, capability
+types. By default the bindings drop them: a struct whose type parameters are all phantom renders as
+a plain `const`, with the phantom slots baked into its BCS name as placeholders:
 
 ```ts
 // default (includePhantomTypeParameters: false)
@@ -136,8 +137,8 @@ export default defineDevstack({
 });
 ```
 
-Phantom-parameterized structs now generate as **factories whose phantom parameters are required
-arguments**, and the returned class's `.name` is the fully-qualified type tag:
+Phantom-parameterized structs now generate as factories whose phantom parameters are required
+arguments, and the returned class's `.name` is the fully-qualified type tag:
 
 ```ts
 export function Vault<T extends BcsType<any>>(...typeParameters: [T]) {
@@ -150,8 +151,8 @@ widened to `string`), and tags compose by nesting.
 
 ### Type arguments: strings or generated classes
 
-Generated function builders type `typeArguments` as strings, so a hand-written fully-qualified tag
-always works — including nested ones:
+Function builders type `typeArguments` as strings, so a hand-written fully-qualified tag always
+works — including nested ones:
 
 ```ts
 deposit({

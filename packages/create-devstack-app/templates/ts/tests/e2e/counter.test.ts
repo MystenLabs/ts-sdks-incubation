@@ -23,9 +23,8 @@ import { createCounterTx, incrementTx, readCounter } from '../../src/counter.ts'
 import { executedTx } from '../../src/tx.ts';
 
 // `config.forNetwork(config.defaultNetwork)` returns the active (test) stack's
-// connection entry with a non-undefined type and a loud throw — no
-// `config.networks[...]` index-signature footgun (which would type `net` as
-// possibly-undefined).
+// connection entry with a non-undefined type, throwing if the network isn't in
+// the deployment.
 const net = config.forNetwork(config.defaultNetwork);
 
 /** Sign with `signer`, execute, wait for finality, and return the

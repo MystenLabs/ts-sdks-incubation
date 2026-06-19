@@ -3,27 +3,18 @@ title: Coins and Funding
 description: Coin declaration forms, managed coins, and how account funding works.
 ---
 
-The `coin` namespace has three forms, one per provenance: a coin from a package you publish, a
-protocol builtin, or an already-deployed on-chain type. Funding then follows from whether devstack
-can mint the coin — SUI from the faucet, managed package coins from their treasury cap — dispatched
-per network.
+Declare the coins your accounts hold, then fund those accounts at boot so your app starts with
+balances in place. The `coin` namespace has three forms, one per provenance — a coin from a package
+you publish, a protocol builtin, or an already-deployed on-chain type — and funding follows from
+whether devstack can mint the coin: SUI from the faucet, managed package coins from their treasury
+cap.
 
 ```ts title="devstack.config.ts"
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-	HOST_SERVICE_PORT_TOKEN,
-	account,
-	coin,
-	defineDevstack,
-	hostService,
-	localPackage,
-	sui,
-	wallet,
-} from '@mysten-incubation/devstack';
+import { account, coin, defineDevstack, localPackage, sui } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEV_PORT = 5173;
 
 const localnet = sui();
 const publisher = account('publisher');
@@ -42,20 +33,7 @@ const alice = account('alice', {
 	],
 });
 
-const devWallet = wallet({
-	accounts: [publisher, alice],
-});
-
-const app = hostService({
-	name: 'app',
-	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
-	cwd: HERE,
-	port: DEV_PORT,
-	ready: { kind: 'http' },
-	after: [managed, studio, devWallet] as const,
-});
-
-export default defineDevstack({ members: [localnet, app], stackName: 'main' });
+export default defineDevstack({ members: [localnet, managed, alice], stackName: 'main' });
 ```
 
 ## Coin forms
@@ -63,10 +41,10 @@ export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 - **`coin.builtin('sui')`** — the protocol SUI type, `0x2::sui::SUI`, with known decimals (9). Pure
   synchronous lookup; baked as a literal into codegen.
 - **`coin.fromPackage(member, witness)`** — a coin published by a `localPackage(...)` or
-  `knownPackage(...)` member, looked up in the per-stack coin registry by `(package, witness)` after
-  the package publishes. It adds a dependency edge on the package member, so publish and coin
-  discovery complete before any funding tries to use the coin. Generated bindings carry the
-  discovered `CoinMetadata` / `coin_registry::Currency` fields.
+  `knownPackage(...)` member, looked up by `(package, witness)` after the package publishes. It adds
+  a dependency edge on the package member, so publish and coin discovery complete before any funding
+  tries to use the coin. Generated bindings carry the discovered `CoinMetadata` /
+  `coin_registry::Currency` fields.
 - **`coin.known(fullCoinType)`** — an already-deployed on-chain type (`0x…::module::WITNESS`),
   resolved through a metadata read. Use it for live-network coins no local package publishes.
 
@@ -78,9 +56,9 @@ A **managed** coin is one devstack can both identify and mint for accounts. A co
 - the publish output includes the coin metadata and a `TreasuryCap` for that witness;
 - the publisher still owns that cap (so it stays available as the funding signer).
 
-When those hold, the coin contributes a `coinType:<fullCoinType>` funding strategy that mints from
-the treasury cap. Account funding, DeepBook pool seeding, and the dashboard fund button all mint
-through that one strategy — no bespoke seed actions. Account funding then mints the coin directly:
+When those hold, the coin gains a `coinType:<fullCoinType>` funding strategy that mints from the
+treasury cap. Account funding, DeepBook pool seeding, and the dashboard fund button all mint through
+that same strategy. You then fund an account with the coin directly:
 
 ```ts
 const alice = account('alice', {
@@ -107,30 +85,30 @@ account('trader', {
   `coin.builtin('sui')` needed.
 - `{ coin: <ref>, amount }` funds any resolved coin ref through its `coinType:<fullCoinType>`
   strategy.
-- `via` adds a dependency edge on the member that contributes the strategy (e.g. a DeepBook
-  instance), so that provider resolves before funding runs. Use it when the coin's funding comes
-  from a service rather than its own package publish.
+- `via` adds a dependency edge on the member that provides the strategy (e.g. a DeepBook instance),
+  so that provider resolves before funding runs. Use it when the coin's funding comes from a service
+  rather than its own package publish.
 
 Amounts are in the coin's smallest unit (MIST for SUI).
 
-## Fundable vs detectable
+## Which coins can be funded
 
-Devstack detects more coins than it can fund. A coin is **fundable** when something contributes a
+You can reference more coins than you can fund. A coin is **fundable** when something provides a
 funding strategy for it:
 
-- **SUI** is fundable when the active Sui network contributes a faucet strategy. Explicit SUI
-  funding throws if none exists, because default account funding depends on it.
+- **SUI** is fundable when the active Sui network provides a faucet strategy. Explicit SUI funding
+  throws when none exists, since default account funding depends on it.
 - **Managed local-package coins** are fundable from their treasury cap, as above.
-- **Service coins** like `walCoin(localWalrus)` are fundable when their service contributes a
-  matching `coinType:<fullCoinType>` strategy.
+- **Service coins** like `walCoin(localWalrus)` are fundable when their service provides a matching
+  `coinType:<fullCoinType>` strategy.
 - **`coin.known(fullCoinType)`** resolves metadata for an external coin so app code and bindings can
-  reference it. To fund it, contribute a strategy through the service that owns the mint, or pass
-  `via` on the funding entry.
+  reference it. To fund it, provide a strategy through the service that owns the mint, or pass `via`
+  on the funding entry.
 
 A missing non-SUI strategy is a no-op, so optional service funding stays ergonomic; a missing SUI
-strategy is an error.
+strategy raises an error.
 
-Funding is dispatched **per network**: each strategy is keyed by `coinType:<fullCoinType>` (or
-`faucet:request:<chainId>` for SUI) and resolved in the current network's context, so a stack funds
-only against its own network. See [Faucet and funding strategies](/devstack/configure/faucet) for
-how strategies are registered and dispatched.
+Funding runs per network: each strategy is keyed by `coinType:<fullCoinType>` (or
+`faucet:request:<chainId>` for SUI) and resolved against the current network, so a stack funds only
+on its own network. See [Faucet and funding strategies](/devstack/configure/faucet) for how
+strategies are provided and dispatched.

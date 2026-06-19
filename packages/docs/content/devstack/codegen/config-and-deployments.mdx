@@ -5,11 +5,11 @@ description:
   type, and the dapp-kit handoff.
 ---
 
-Devstack resolves a typed config object from a per-network **deployment**. A `NetworkDeployment`
-carries everything an app needs to talk to one network (rpc, chainId, faucet, graphql, package ids,
-mvrOverrides, values); a `DevstackDeployment` envelope holds one per network plus the network the
-app opens on. The config is read once, and throws `DevstackConfigMissingError` if no deployment was
-injected.
+Your app reads everything it needs to talk to a network — rpc, package ids, service config — from a
+typed `config` object backed by a per-network **deployment**. A `NetworkDeployment` holds one
+network's resolved state (rpc, chainId, faucet, graphql, package ids, mvrOverrides, values); a
+`DevstackDeployment` envelope holds one per network, plus the network the app opens on. The config
+is read once, and throws `DevstackConfigMissingError` if no deployment was injected.
 
 ## The per-network unit: `NetworkDeployment`
 
@@ -43,10 +43,10 @@ export interface NetworkDeployment {
 }
 ```
 
-`rpc` is the load-bearing connection field the app reads synchronously; `chainId` / `faucet` /
-`graphql` are optional diagnostics. `packages.*.id` and `mvrOverrides` carry the on-chain package
-ids; `values` is the generic channel service plugins (DeepBook pools, Walrus/Seal endpoints, coin
-types) resolve through. The unit is hand-writable — it's exactly what you author in a
+`rpc` is the connection field your app reads to reach the network; `chainId` / `faucet` / `graphql`
+are optional. `packages.*.id` and `mvrOverrides` carry the on-chain package ids; `values` is the
+channel services resolve through (DeepBook pools, Walrus/Seal endpoints, coin types). The unit is
+hand-writable — it's exactly what you author in a
 [committed `deployments/<net>.ts`](/devstack/going-to-production).
 
 ## The envelope: `DevstackDeployment`
@@ -68,15 +68,14 @@ export interface DevstackDeployment {
 
 The envelope is injected as the build-time global `__DEVSTACK_DEPLOYMENT__` (by the
 [Vite plugin](/devstack/going-to-production)), and the dev stack writes it to disk at
-`.devstack/stacks/<stack>/deployment.json`. `accounts` is the one envelope-level field: dev
-identities are network-agnostic — the same keypair signs on every network — so they ride the
-envelope, never the per-network unit.
+`.devstack/stacks/<stack>/deployment.json`. `accounts` rides the envelope rather than a per-network
+unit because dev identities are network-agnostic — the same keypair signs on every network.
 
 ## The strict generated type
 
-Codegen emits `src/generated/deployment.ts`, an app-specific type narrowed to exactly this app's
-declared packages and network set. A hand-written production deployment is checked against it at
-compile time:
+When you hand-write a production deployment, `tsc` checks it against `src/generated/deployment.ts` —
+an app-specific type narrowed to exactly this app's declared packages and network set, so a missing
+or mistyped id is a compile error:
 
 ```ts title="src/generated/deployment.ts (connect-four)"
 /** Exhaustive over THIS app's declared package names. */
@@ -115,11 +114,11 @@ export type ProvidedDeployments = Partial<Record<ProvidedNetwork, AppNetworkDepl
 export const NETWORK_NAMES = ['localnet', 'devnet'] as const;
 ```
 
-`AppNetworkDeployment` is the authoring surface: `packages` is exhaustive over the app's declared
-packages, and `mvrOverrides.packages` requires every `@local/<slug>` placeholder. A missing or
-mistyped id fails `tsc`. `ProvidedNetwork` is derived from the `deployments/*.ts` filenames, and
-`NETWORK_NAMES` is the literal tuple dapp-kit's `switchNetwork` / `defaultNetwork` type-check
-against. The file is types-only — zero runtime, except that one literal tuple.
+`AppNetworkDeployment` is the type you author against: `packages` is exhaustive over the app's
+declared packages, and `mvrOverrides.packages` requires every `@local/<slug>` placeholder.
+`ProvidedNetwork` comes from the `deployments/*.ts` filenames, and `NETWORK_NAMES` is the literal
+tuple dapp-kit's `switchNetwork` / `defaultNetwork` type-check against. The file is types-only — no
+runtime, except that one literal tuple.
 
 <Callout type="info">
 	The `AppNetworkDeployment` type carries no `accounts` field at all. Dev accounts live only on the
@@ -128,8 +127,8 @@ against. The file is types-only — zero runtime, except that one literal tuple.
 
 ## Load once, resolve ids
 
-The committed `config.ts` carries no on-chain ids — they're config data, not codegen output.
-`loadDeployment()` reads the injected envelope once and wraps it in an accessor; `requireId`
+The generated `config.ts` carries no on-chain ids — they come from the injected deployment, not
+codegen. `loadDeployment()` reads the envelope once and wraps it in an accessor; `requireId`
 resolves a single package id off a network, throwing when the id is missing or unresolved:
 
 ```ts title="src/generated/config-runtime.ts"
@@ -154,15 +153,14 @@ export const requireId = (deployment: NetworkDeployment, mvrPlaceholder: string)
 };
 ```
 
-`DevstackConfigMissingError` is actionable: it tells you to run `devstack up` for local dev, or to
-commit a `deployments/<net>.ts` for a real deploy. `requireValue<T>` is the throwing resolver for
-the generic `values` channel; `optionalValue<T>` is its non-throwing sibling for discovery-only
-fields the app gates on.
+`DevstackConfigMissingError` tells you what to do: run `devstack up` for local dev, or commit a
+`deployments/<net>.ts` for a real deploy. For the generic `values` channel, use `requireValue<T>`
+when the value must be present, or `optionalValue<T>` when your app gates on whether it's there.
 
 <Callout type="info">
-	**Guarantees.** Compilation always succeeds — the committed tree is id-free. Accessing an id that
-	wasn't provided throws `DevstackConfigMissingError` at access time, with the missing key and a
-	message pointing you at `devstack up` or a committed `deployments/<net>.ts`.
+	Because the generated tree is id-free, your app always compiles. Accessing an id that wasn't
+	provided throws `DevstackConfigMissingError` at access time, naming the missing key and pointing you
+	at `devstack up` or a committed `deployments/<net>.ts`.
 </Callout>
 
 ## The generated `config` object
@@ -230,11 +228,10 @@ export const dAppKit = createDAppKit({
 });
 ```
 
-App code routes package ids through `mvrOverrides`: each generated Move binding defaults its
-`package` to `@local/<name>`, and that map resolves the name to the deployed id.
-`config.packages.*.packageId` is the introspection surface — read it when you want the id directly,
-but app code that calls the bindings consumes their MVR defaults and never touches
-`config.packages`.
+Package ids flow through `mvrOverrides`: each generated Move binding defaults its `package` to
+`@local/<name>`, and that map resolves the name to the deployed id. Read
+`config.packages.*.packageId` when you want an id directly, but code that calls the bindings
+consumes their MVR defaults and never touches `config.packages`.
 
 For the end-to-end story — declaring the network set, scaffolding typed deployments, the Vite merge,
 and the production build — see [Going to production](/devstack/going-to-production).

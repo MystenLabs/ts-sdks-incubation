@@ -3,12 +3,13 @@ title: Accounts and wallet
 description: Named identities, funding, and the dev wallet.
 ---
 
-Use `account(name, opts?)` for every named identity. The bare form creates an ephemeral key and
-funds it with the default SUI amount on faucet-bearing local networks.
+Declare the identities your app and tests sign with using `account(name, opts?)`. The bare form
+gives you a ready-to-use account: it creates an ephemeral key and funds it with the default SUI
+amount on faucet-bearing local networks, so you can publish and transact straight away.
 
-The `signer` variant is the single bring-your-own door — pass any `@mysten/sui` `Signer` or
-`Keypair`. A secret loaded from an env var or an inline `suiprivkey1...` literal is expressed by
-constructing the keypair yourself and passing it as the signer:
+To bring your own key — a CI secret, or a fixed identity you want to reuse — use the `signer`
+variant and pass any `@mysten/sui` `Signer` or `Keypair`. Load a secret from an env var or an inline
+`suiprivkey1...` literal by constructing the keypair yourself:
 
 ```ts
 import { account } from '@mysten-incubation/devstack';
@@ -25,7 +26,8 @@ const demo = account('demo', {
 });
 ```
 
-Cross-coin funding takes a list of `{ coin, amount }` members:
+To fund an account with specific coins and amounts, pass a `funding` list of `{ coin, amount }`
+entries:
 
 ```ts
 import { account } from '@mysten-incubation/devstack';
@@ -35,10 +37,10 @@ const alice = account('alice', {
 });
 ```
 
-Add a `wallet()` member to make the dev wallet's account(s) available in your app. In dev, devstack
-injects the wallet onto the page and dApp Kit auto-discovers it via wallet-standard, so it's ready
-to connect without any wiring. Use `wallet()` to expose every account or `wallet({ accounts })` to
-scope it to a chosen set:
+Add a `wallet()` member to make your accounts available in the app as a dev wallet — connect and
+sign without standing up a real wallet. In dev, devstack injects the wallet onto the page and dApp
+Kit auto-discovers it via wallet-standard, so it's ready to connect with no extra wiring. Use
+`wallet()` to expose every account, or `wallet({ accounts })` to scope it to a chosen set:
 
 ```ts
 import {
@@ -70,14 +72,12 @@ export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 ```
 
 `wallet({ accounts: 'all' })` expands to every account member in the final `defineDevstack(...)`
-call. The end result is the same either way: in dev, the wallet's accounts are injected into your
-app and ready to connect — dApp Kit discovers the wallet automatically, and a production build
+call. Either way, the dev wallet is injected and ready to connect in dev, and a production build
 carries no dev wallet.
 
 ### Under the hood
 
-To deliver that, the wallet runs a small local server (bound to `0.0.0.0` by default) that the
-injected page talks to. It stores its pairing token under the stack runtime root and emits its
-dapp-kit handles into the per-stack gitignored runtime output under `.devstack/stacks/<stack>/`, and
-allows the stack-scoped dev-server route such as `http://dev.<app>.localhost:5175`. Add
-`allowedOrigins` for nonstandard browser origins.
+The wallet runs a small local server (bound to `0.0.0.0` by default) that the injected page talks
+to. It keeps its pairing token and dApp Kit handles under the per-stack gitignored runtime output at
+`.devstack/stacks/<stack>/`, and accepts the stack-scoped dev-server origin such as
+`http://dev.<app>.localhost:5175`. Add `allowedOrigins` for nonstandard browser origins.

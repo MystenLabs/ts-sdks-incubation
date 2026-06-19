@@ -3,7 +3,10 @@ title: Seal
 description: Local Seal key servers and live key-server references.
 ---
 
-Local keygen mode starts a local key server and requires a signer account.
+Encrypt and decrypt data with a Seal key server running on your local network. Add `seal()` to your
+stack to start the key server, then build a `SealClient` from the id and URL it resolves at boot.
+
+Local keygen mode starts the key server and requires a signer account.
 
 ```ts title="devstack.config.ts"
 import { account, defineDevstack, seal, sui } from '@mysten-incubation/devstack';
@@ -18,19 +21,18 @@ const keyServer = seal({
 export default defineDevstack({ members: [localnet, keyServer] });
 ```
 
-Live modes reference existing key servers and do not expose a local manager. Fork stacks can point
-at the upstream key server through `sealFor(forkNetwork).forkKnown(...)`; local keygen is not
-available on fork networks.
+Live modes reference an existing key server. Fork stacks can point at the upstream key server
+through `sealFor(forkNetwork).forkKnown(...)`; local keygen runs only on local networks.
 
-`seal(...)` returns a service member. Put it in `members`, and order any app server or package
-action that needs the key server after that member.
+Add `seal(...)` to `members`, and order any app server or package action that needs the key server
+after it.
 
 ## Connect the SDK
 
-The stack config above runs the key server; the [generated bindings](/devstack/codegen) carry its
-resolved id and URL into your app. Seal is a per-network service: `seal.forNetwork(network).seal`
-returns the bucket for the network your wallet is connected to, so a runtime `switchNetwork` flips
-the key-server config in lockstep. Build a `SealClient` from that bucket:
+The config above runs the key server; the [generated bindings](/devstack/codegen) carry its resolved
+id and URL into your app. Seal is a per-network service: `seal.forNetwork(network).seal` returns the
+config for the network your wallet is connected to, so a runtime `switchNetwork` flips the
+key-server config in lockstep. Build a `SealClient` from it:
 
 ```ts title="src/lib/seal.ts"
 import { useCurrentNetwork } from '@mysten/dapp-kit-react';
@@ -51,7 +53,7 @@ const client = new SealClient({
 ```
 
 `s.serverConfigs` is the resolved key-server list — `objectId`, `weight`, and aggregator URL — ready
-to pass to the client. Set `verifyKeyServers: false` for the local key server; on live networks the
-SDK verifies the server's on-chain registration by default. See
+to pass to the client. Set `verifyKeyServers: false` for the local key server; on live networks
+leave it on so the SDK verifies the server's on-chain registration. See
 [`examples/private-content`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/seal.ts)
 for the full encrypt/decrypt flow with session keys.

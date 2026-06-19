@@ -1,9 +1,9 @@
 ---
 title: Vitest
-description: Current Vitest config helpers and setup hooks.
+description: Config helpers and setup hooks for node-mode unit and e2e tests.
 ---
 
-Use the `vitest` subpath for node-mode unit and integration tests.
+Use the `vitest` subpath to run node-mode unit and e2e tests against a devstack stack.
 
 ```ts title="vitest.config.ts"
 import { defineConfig } from 'vitest/config';
@@ -23,19 +23,22 @@ export default defineConfig({
 });
 ```
 
-Vitest runs its own Vite pipeline, so `devstackVitePlugin()` is added here too — otherwise the
-`@generated` alias would not resolve when importing generated code under test.
+Vitest runs its own Vite pipeline, so add `devstackVitePlugin()` here too — without it the
+`@generated` alias won't resolve when you import generated code under test.
 
-Current exports from `@mysten-incubation/devstack/vitest` include:
+The `@mysten-incubation/devstack/vitest` subpath exports:
 
-- `devstackVitestTestConfig`
-- `devstackVitestServerConfig`
-- `useDevstackTestSetup`
-- `runDevstackBeforeAll`
-- `runDevstackAfterAll`
-- `getStackContext`
-- `loadStackContext`
-- `resolveVitestEnv`
+- `devstackVitestTestConfig` — build the `test` block for `defineConfig`; pass `{ autoBoot: true }`
+  to boot and tear down a stack around the run.
+- `devstackVitestServerConfig` — build the `server` block for `defineConfig`.
+- `useDevstackTestSetup` — wire boot/teardown into a shared setup file with your own
+  `beforeAll`/`afterAll`.
+- `runDevstackBeforeAll` / `runDevstackAfterAll` — the boot and teardown steps on their own, if you
+  prefer to call them directly instead of through `useDevstackTestSetup`.
+- `getStackContext` — read the booted stack's context (endpoints, manifest) inside a test.
+- `loadStackContext` — load that context from disk outside the Vitest setup lifecycle.
+- `resolveVitestEnv` — resolve the devstack env (stack name, deployment file) the same way the
+  config helpers do.
 
 Programmatic setup is useful when you own a shared setup file:
 
@@ -46,7 +49,7 @@ import { useDevstackTestSetup } from '@mysten-incubation/devstack/vitest';
 useDevstackTestSetup({ beforeAll, afterAll }, { requireDevstack: true });
 ```
 
-Inside a test, read the captured manifest context:
+Inside a test, read the booted stack's context to find an endpoint:
 
 ```ts
 import { expect, test } from 'vitest';
@@ -58,23 +61,78 @@ test('has a wallet endpoint', () => {
 });
 ```
 
-The helpers do not boot a supervisor by themselves. Start one with `devstack up`, or run
-`devstack apply` before tests that only need an ids file and a manifest. If a matching supervisor is
-already live, `apply` reuses it instead of starting a second stack.
+Unless you set `autoBoot: true`, these helpers don't start a stack for you. Run `devstack up`
+yourself, or run `devstack apply` before tests that only need a deployment file and a manifest. If a
+matching stack is already live, `apply` reuses it instead of starting a second one.
 
-## How live ids reach a test
+## Running against an already-deployed stack
 
-The committed `src/generated` tree is id-free — every on-chain value resolves at runtime through
-`loadDeployment()`, which reads the build-injected `__DEVSTACK_DEPLOYMENT__` global (see
-[Codegen](/devstack/codegen)). Under Vitest, Vite's `define` evaluates `__DEVSTACK_DEPLOYMENT__`
-before `globalSetup` boots the stack, so the injected blob is `null` in the Node test environment. A
-Node-only fallback bridges that:
+When a stack is already booted — your `pnpm dev` stack, a CI stack from an earlier step, or any
+named stack — point the suite at it instead of booting a fresh one. The `autoBoot` config wires a
+`globalSetup` that reuses the running stack when `DEVSTACK_TEST_REUSE=1` is set: it skips the boot
+and the teardown and only publishes the env handoff (`DEVSTACK_STACK` + `DEVSTACK_MANIFEST_PATH`,
+and `DEVSTACK_DEPLOYMENT_FILE` for the generated config) to the existing manifest.
 
-1. Vitest's `globalSetup` boots the stack and publishes the booted stack's deployment-file path as
+```ts title="vitest.e2e.config.ts"
+import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
+import {
+	devstackVitestServerConfig,
+	devstackVitestTestConfig,
+} from '@mysten-incubation/devstack/vitest';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+	plugins: [devstackVitePlugin()],
+	server: devstackVitestServerConfig(),
+	test: devstackVitestTestConfig({ autoBoot: true, test: { testTimeout: 60_000 } }),
+});
+```
+
+Run it against a stack you brought up yourself — `DEVSTACK_STACK` selects which one, and
+`DEVSTACK_TEST_REUSE=1` switches the boot seam into reuse mode:
+
+```bash
+# In one terminal: bring the stack up (or it's already running from `pnpm dev`).
+DEVSTACK_STACK=staging devstack up
+
+# In another: run the e2e suite against it — no boot, no teardown.
+DEVSTACK_STACK=staging DEVSTACK_TEST_REUSE=1 vitest run --config vitest.e2e.config.ts
+```
+
+Inside a test, read the live deployment the running stack published and run a transaction against
+it. `loadDeployment()` resolves the deployment file the reuse step published; `forNetwork` returns
+that network's `rpc` and resolved package ids:
+
+```ts title="tests/e2e/reuse.test.ts"
+import { SuiClient } from '@mysten/sui/client';
+import { expect, test } from 'vitest';
+import { loadDeployment } from '@generated/config-runtime.js';
+import { createCounterTx, readCounter } from '../../src/counter.js';
+
+test('runs a transaction against the already-running stack', async () => {
+	const deployment = loadDeployment();
+	const net = deployment.forNetwork(deployment.defaultNetwork);
+
+	const client = new SuiClient({ url: net.rpc });
+	// …create + read a counter against `net`'s published ids…
+	const id = await createCounterTx(client, net);
+	expect(await readCounter(client, id)).toBe(0n);
+});
+```
+
+Reuse mode never tears the stack down, so the same stack survives across runs — convenient for
+iterating, but it means your suite shares state with whatever else is using that stack.
+
+## How a test picks up live ids
+
+The generated `src/generated` tree is id-free: every on-chain value resolves at runtime through
+`loadDeployment()`. In the browser build that value comes from the build-injected
+`__DEVSTACK_DEPLOYMENT__` global (see [Codegen](/devstack/codegen)). Under Vitest that global is
+`null`, so config reads fall back to the deployment file the setup step booted:
+
+1. The setup step boots the stack and writes the deployment-file path to
    `process.env.DEVSTACK_DEPLOYMENT_FILE`.
-2. The generated `config-runtime.ts` reads that file the first time `loadDeployment()` is called,
-   when `__DEVSTACK_DEPLOYMENT__` is `null` and `process.env.DEVSTACK_DEPLOYMENT_FILE` is set.
+2. The first `loadDeployment()` call reads that file when `__DEVSTACK_DEPLOYMENT__` is `null`.
 
-The net effect is that config reads inside a test pick up the **live** ids of the stack that
-`globalSetup` booted, with no extra wiring. This fallback is Node-only; the browser build uses the
-injected `__DEVSTACK_DEPLOYMENT__` value.
+The result: config reads inside a test see the live ids of the stack the setup step booted, with no
+extra wiring.

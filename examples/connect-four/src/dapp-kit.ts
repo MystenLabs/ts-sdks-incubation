@@ -33,7 +33,7 @@ export const dAppKit = createDAppKit({
 	// connection is resolved off the loaded deployment (injected via
 	// `__DEVSTACK_IDS__`, not baked into the committed tree);
 	// `config.forNetwork(network)` returns that network's resolved entry — a
-	// non-undefined type that fails loudly if absent, no index-signature footgun.
+	// non-undefined type that throws if the network isn't in the deployment.
 	createClient(network) {
 		const net = config.forNetwork(network);
 		return new SuiGrpcClient({

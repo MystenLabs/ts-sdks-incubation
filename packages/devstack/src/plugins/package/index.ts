@@ -579,7 +579,7 @@ const makeKnownCapabilities = (
 			upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
 			mvrPlaceholder: resolved.mvrPlaceholder,
 		},
-		{ ...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}) },
+		opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {},
 	);
 	const projection: PackageRegistryProjectionContribution = {
 		kind: 'known',

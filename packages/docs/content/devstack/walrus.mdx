@@ -3,8 +3,11 @@ title: Walrus
 description: Local Walrus clusters, known deployments, and WAL funding.
 ---
 
-Local mode starts a local cluster. Use `walCoin(localWalrus)` with account funding when an account
-needs WAL.
+Store and retrieve blobs from a Walrus cluster running on your local network. Add `walrus()` to your
+stack to start the cluster, then build a `WalrusClient` from the ids it resolves at boot.
+
+Local mode starts the cluster. Use `walCoin(localWalrus)` with account funding when an account needs
+WAL.
 
 ```ts title="devstack.config.ts"
 import { account, defineDevstack, sui, walCoin, walrus } from '@mysten-incubation/devstack';
@@ -28,20 +31,19 @@ const alice = account('alice', {
 export default defineDevstack({ members: [localnet, localWalrus, alice] });
 ```
 
-Known mode references an existing deployment and requires explicit on-chain ids plus an explicit
-node list. Fork stacks can use `walrusFor(forkNetwork).known(...)` for upstream deployments; local
-Walrus clusters are only available on local networks.
+Known mode points at an existing deployment and requires explicit on-chain ids plus an explicit node
+list. Fork stacks can use `walrusFor(forkNetwork).known(...)` for upstream deployments; local Walrus
+clusters run only on local networks.
 
-`walCoin(walrusMember)` returns the WAL funding coin for the resolved Walrus member. Account funding
-can use it like any other coin ref when the Walrus service contributes the matching funding
-strategy.
+`walCoin(walrusMember)` returns the WAL funding coin for that Walrus member. Pass it to account
+funding like any other coin ref to give an account WAL.
 
 ## Connect the SDK
 
-The stack config above runs the cluster; the [generated bindings](/devstack/codegen) carry its
-resolved ids into your app. Walrus is a per-network service: `walrus.forNetwork(network)` returns
-the bucket for the network your wallet is connected to, so a runtime `switchNetwork` flips the
-cluster ids in lockstep. Build a `WalrusClient` from that bucket:
+The config above runs the cluster; the [generated bindings](/devstack/codegen) carry its resolved
+ids into your app. Walrus is a per-network service: `walrus.forNetwork(network)` returns the config
+for the network your wallet is connected to, so a runtime `switchNetwork` flips the cluster ids in
+lockstep. Build a `WalrusClient` from it:
 
 ```ts title="src/lib/walrus.ts"
 import { useCurrentNetwork } from '@mysten/dapp-kit-react';
@@ -64,7 +66,7 @@ const client = new WalrusClient({
 ```
 
 `w.packageConfig` already holds `systemObjectId`, `stakingPoolId`, and `exchangeIds` resolved at
-boot — pass it straight through. `storageNodeUrlScheme` keys off `w.mode` so the same code reaches a
-local cluster over HTTP and a known deployment over HTTPS as the connected network changes. See
+boot — pass it straight through. Keying `storageNodeUrlScheme` off `w.mode` lets the same code reach
+a local cluster over HTTP and a known deployment over HTTPS as the connected network changes. See
 [`examples/private-content`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/walrus.ts)
 for the full client with blob write/read.

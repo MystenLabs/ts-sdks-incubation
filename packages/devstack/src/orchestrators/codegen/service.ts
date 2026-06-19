@@ -1152,8 +1152,8 @@ const deploymentImportsFor = (u: DeploymentUsage): ReadonlyArray<string> => {
 	return names;
 };
 
-/** The module-level preamble lines the usage requires (loud-failing
- *  `loadDeployment()` once, then the active-network `dep`). */
+/** The module-level preamble lines the usage requires (`loadDeployment()`
+ *  once, then the active-network `dep`). */
 const deploymentPreambleFor = (u: DeploymentUsage): ReadonlyArray<string> => {
 	const lines: Array<string> = [];
 	if (u.usesDep || u.usesDeployment) lines.push('const __deployment = loadDeployment();');

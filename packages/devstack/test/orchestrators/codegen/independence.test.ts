@@ -107,7 +107,7 @@ describe('(a) codegen is stack-free and apply-free', () => {
 			expect(offending, `codegen must not value-import ${forbidden}`).toEqual([]);
 		}
 		// And the one mention of `SupervisedStack` is the type-only import.
-		expect(src).toContain("import type { SupervisedStack }");
+		expect(src).toContain('import type { SupervisedStack }');
 	});
 });
 

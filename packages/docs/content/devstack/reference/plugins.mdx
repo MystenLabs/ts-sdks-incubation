@@ -14,10 +14,10 @@ A plugin returned by `definePlugin(...)` is a
 - `role` — lifecycle classification. `'service'` means a long-lived resource (a container, an HTTP
   process); `'task'` means the body runs once at acquire and reaches "done" when `start` resolves
   (account, action, package publish). The supervisor uses the role to decide stop semantics.
-- `section` — **required** dashboard bucket the plugin's rows belong to:
-  `'service' | 'package' | 'account' | 'action' | 'app' | 'other'`. The supervisor stamps this onto
-  every row at acquire-time, so the renderer groups rows by section directly. A long-lived resource
-  is usually `'service'`.
+- `section` — required dashboard bucket for the plugin's rows:
+  `'service' | 'package' | 'account' | 'action' | 'app' | 'other'`. The supervisor stamps it onto
+  each row at acquire time, and the renderer groups rows by section. A long-lived resource is
+  usually `'service'`.
 - `dependsOn` — a single plugin/ref, an array, or an object of plugin/refs. Resolved upstream values
   are passed to `start` in the same shape — single, positional array, or keyed object.
 - `start` — the `Effect` that produces the resolved value. May yield substrate services

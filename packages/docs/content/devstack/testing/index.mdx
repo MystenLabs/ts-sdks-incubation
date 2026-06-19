@@ -3,15 +3,24 @@ title: Testing
 description: The three-suite testing layout for devstack apps — unit, e2e, and browser.
 ---
 
-Devstack apps test at three levels: **unit** tests over generated bindings, **e2e** tests against a
-booted stack, and **browser** tests that drive the running app with the dev wallet. Each level uses
-a different devstack build integration and runs against its own stack, so the three can run in
-parallel with each other and with a `pnpm dev` session.
+Pick the level that matches what you're testing:
 
-| Suite   | Runs against                 | Build integration                               | Stack  |
+- **Unit** — test your generated bindings directly: BCS encode/decode, Move-call builders, pure
+  logic. No stack, no Docker, no on-chain ids. Fast. See [Vitest](/devstack/testing/testing-vitest).
+- **E2e** — test real transactions against a live local stack. The suite boots a stack, publishes
+  your packages, runs against the real ids, and tears down. See
+  [Vitest](/devstack/testing/testing-vitest).
+- **Browser** — test the running app in a real browser, signing through the dev wallet. Asserts what
+  the app actually renders after a signed on-chain action. See
+  [Playwright](/devstack/testing/testing-playwright).
+
+Each suite runs against its own stack, so all three can run in parallel with each other and with a
+`pnpm dev` session.
+
+| Suite   | What you test                | Helper subpath                                  | Stack  |
 | ------- | ---------------------------- | ----------------------------------------------- | ------ |
 | Unit    | generated bindings           | `@mysten-incubation/devstack/vite` (alias only) | none   |
-| E2e     | a booted local stack         | `@mysten-incubation/devstack/vitest`            | `test` |
+| E2e     | real transactions on a stack | `@mysten-incubation/devstack/vitest`            | `test` |
 | Browser | the running app + dev wallet | `@mysten-incubation/devstack/playwright`        | `e2e`  |
 
 ## Run matrix
@@ -28,22 +37,23 @@ The template wires one script per suite:
 }
 ```
 
-- **`pnpm test`** runs unit tests. No stack, no Docker — they import generated bindings and run as
-  plain Vitest.
+- **`pnpm test`** runs unit tests. No stack, no Docker — plain Vitest over your generated bindings.
 - **`pnpm test:e2e`** boots a dedicated `test` stack (codegen included), runs the suite against it,
   and tears it down. Self-contained, and isolated from a running `pnpm dev` stack.
-- **`pnpm test:browser`** boots the `e2e` stack and drives the real app in a browser through the dev
+- **`pnpm test:browser`** boots the `e2e` stack and drives the app in a browser through the dev
   wallet. `DEVSTACK_AUTO_APPROVE=1` makes the dev wallet sign without showing its approval UI.
 
 Each suite resolves `@generated` to its own stack's deployment, so the same import reads whichever
-stack is live — `DEVSTACK_STACK` selects it. To run a suite against an already-deployed stack
-instead of a fresh local one, point it at that stack's deployment with `DEVSTACK_STACK`.
+stack is live; `DEVSTACK_STACK` selects it. To run a suite against an already-deployed stack instead
+of a fresh local one, point `DEVSTACK_STACK` at that stack and set `DEVSTACK_TEST_REUSE=1` — the e2e
+boot seam then reuses the running stack instead of booting and tearing down its own. See
+[Running against an already-deployed stack](/devstack/testing/testing-vitest#running-against-an-already-deployed-stack).
 
 ## Unit tests
 
-Unit tests exercise generated bindings in isolation. The canonical one is a **BCS round-trip**: take
-a generated `MoveStruct`, serialize a value to bytes, parse it back, and assert equality — the same
-codec that decodes on-chain object content.
+Unit tests exercise generated bindings in isolation. A common one is a BCS round-trip: take a
+generated `MoveStruct`, serialize a value to bytes, parse it back, and assert equality — this is the
+same codec that decodes on-chain object content.
 
 ```ts title="tests/unit/bcs.test.ts"
 import { describe, expect, it } from 'vitest';
@@ -63,7 +73,7 @@ describe('Counter BCS codec', () => {
 });
 ```
 
-These need no stack and no on-chain ids — they import bindings only, never `@generated/config.js`.
+These need no stack and no on-chain ids: import the bindings only, never `@generated/config.js`.
 
 ## E2e tests
 
@@ -87,7 +97,7 @@ export default defineConfig({
 ```
 
 Inside a test, read the active stack's connection and package ids from the generated config, then
-build and sign transactions against them:
+build and sign transactions:
 
 ```ts title="tests/e2e/counter.test.ts"
 import { SuiGrpcClient } from '@mysten/sui/grpc';
@@ -104,7 +114,7 @@ describe('counter (local devstack)', () => {
 			network: 'localnet',
 			baseUrl: net.rpc,
 			// Resolve the bindings' `@local/counter` placeholder to the deployed id.
-			mvr: { overrides: { packages: config.mvrOverrides } },
+			mvr: { overrides: net.mvrOverrides },
 		});
 
 		const signer = new Ed25519Keypair();
@@ -115,15 +125,15 @@ describe('counter (local devstack)', () => {
 ```
 
 `config.forNetwork(config.defaultNetwork)` returns the booted `test` stack's connection entry
-(`rpc`, `faucet`, …), and `config.mvrOverrides` resolves the package placeholders to the ids that
-stack published. See [Vitest](/devstack/testing/testing-vitest) for the config helpers and how live
-ids reach a test.
+(`rpc`, `faucet`, …), and `net.mvrOverrides` resolves the package placeholders to the ids that stack
+published. See [Vitest](/devstack/testing/testing-vitest) for the config helpers and how a test
+picks up the live ids.
 
 ## Browser tests
 
-Browser tests drive the real app in a real browser with Playwright, signing through the injected dev
-wallet. The test only switches the connected account with `connectAs` — every transaction is signed
-by the **app** through its dapp-kit wallet adapter, then asserted on-chain by reading what the app
+Browser tests drive the app in a real browser with Playwright, signing through the injected dev
+wallet. Your test switches the connected account with `connectAs`; every transaction is signed by
+the app through its dapp-kit wallet adapter, and you assert the result by reading what the app
 renders.
 
 ```ts title="tests/browser/counter.spec.ts"
@@ -145,10 +155,15 @@ test('connects, creates a counter, and increments it on chain', async ({ page })
 ```
 
 `connectAs(page, name)` switches the dev wallet's active account; `selectAccount` and
-`createWalletAdapter` round out the helper set. Multi-account flows alternate seats by calling
-`connectAs` between turns — the same address signs across accounts, and across networks when the app
-exposes `switchNetwork`. Because `DEVSTACK_AUTO_APPROVE=1` is set for the suite, signatures are
-approved with no UI step.
+`createWalletAdapter` round out the helper set. For multi-account flows, call `connectAs` between
+turns to alternate seats, and across networks when the app exposes `switchNetwork`. Because
+`DEVSTACK_AUTO_APPROVE=1` is set for the suite, signatures are approved with no UI step.
+
+The example above asserts on what the app renders. To prove a transaction was actually signed and
+executed, sign through the dev wallet explicitly with `createWalletAdapter().signTransaction(...)`
+and then read the created object off the stack's RPC via `loadStackManifest().endpoint('sui-rpc')`.
+See
+[Asserting a signed transaction](/devstack/testing/testing-playwright#asserting-a-signed-transaction).
 
 See [Playwright](/devstack/testing/testing-playwright) for the config helpers and the wallet bridge,
 and [Accounts & wallet](/devstack/configure/accounts-and-wallet) for declaring the accounts these

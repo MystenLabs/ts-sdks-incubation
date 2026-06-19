@@ -5,13 +5,12 @@ description:
   dependencies are ready.
 ---
 
-The `action()` plugin declares a one-shot on-chain effect — a mint, a singleton-object creation, a
-seed-config call — that runs after its declared upstream refs (typically a signer account plus one
-or more published packages) are ready. The result is an `ActionReceipt` carrying the real
-transaction digest and projected object changes.
+Use `action()` to run a one-shot on-chain effect once your packages and accounts are ready — mint a
+token, create a singleton object, or make a seed-config call. The action runs after its declared
+upstream refs (typically a signer account plus one or more published packages) and returns an
+`ActionReceipt` with the transaction digest and the objects it changed.
 
-Actions are `role: 'task'`: the body runs once at acquire and reaches "done" after `start` resolves.
-They are not long-lived services.
+An action runs once and then it's done; it is not a long-lived service.
 
 ```ts title="devstack.config.ts"
 import { account, action, defineDevstack, localPackage, sui } from '@mysten-incubation/devstack';
@@ -59,16 +58,15 @@ The returned receipt's `objectChanges` array surfaces the SDK's `changedObjects`
 
 ## Caching
 
-Action results are cached by the substrate's artifact publisher under the `action` namespace. The
-cache key folds:
+Action results are cached, so re-running the same stack against the same chain reuses the recorded
+receipt instead of re-executing. The cache key folds:
 
-- the chain id (so `localnet` and `testnet` cache independently);
-- a content hash of the action name and the resolved dependency resource ids;
-- a dynamic discriminator (literal or callback-supplied) when present.
+- the chain id, so `localnet` and `testnet` cache independently;
+- the action name and its resolved dependency ids;
+- the `discriminator`, when present.
 
-This means re-running the same stack against the same chain reuses the recorded receipt unless the
-discriminator changes. Supplying a callback `discriminator` is how you force re-execution on mutable
-upstream state (e.g. a counter on a singleton object).
+Supply a callback `discriminator` to force re-execution when upstream state changes — for example, a
+counter on a singleton object.
 
 ## Failure surface
 

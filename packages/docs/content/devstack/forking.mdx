@@ -5,12 +5,12 @@ description:
   local.
 ---
 
-Fork mode runs a local `sui-fork` container against an upstream public network, so you can replay
-against real on-chain state while keeping all writes local. Reach for it when a bug, package
-interaction, or funding shape only appears on a public network but the test still needs repeatable
-local transactions plus the usual local snapshot and dev-wallet workflows.
+Fork a public network when a bug, package interaction, or funding shape only shows up against real
+on-chain state — but you still want repeatable local transactions, snapshots, and the dev wallet. A
+fork replays against the upstream network's real state while keeping every write local, so you get
+the fidelity of the public chain with the control of a local one.
 
-The `examples/fork-greeting` example is the smallest runnable stack: it forks testnet, faucet-funds
+The `examples/fork-greeting` example is the smallest runnable fork: it forks testnet, funds
 ephemeral accounts from a default whale, publishes a Move package, and captures the published object
 id.
 
@@ -74,19 +74,17 @@ const forkedTestnet = sui({
 
 ## The fork endpoint
 
-Fork mode serves a **gRPC** endpoint (not legacy JSON-RPC) on the same devstack Sui RPC route. It
-does not expose a GraphQL endpoint, and the balance APIs (`getBalance` / `listBalances` /
-`getCoinInfo`) are unavailable in fork mode — read balances through `ChainProbe`, and fund accounts
-through the fork faucet (below).
+A fork serves a gRPC endpoint (not legacy JSON-RPC) on the usual devstack Sui RPC route. There's no
+GraphQL endpoint, and the balance APIs (`getBalance` / `listBalances` / `getCoinInfo`) aren't
+available — read balances through `ChainProbe`, and fund accounts through the fork faucet (below).
 
-First boot compiles `sui-fork` from a pinned Sui revision, a one-time multi-minute build that the
-supervisor row narrates; the content-addressed image is reused on later boots. To skip the build
-entirely, point at a prebuilt image with `image: { pull: '…' }` or set the `DEVSTACK_SUI_FORK_IMAGE`
-environment variable.
+First boot builds the fork image from a pinned Sui revision, which takes a few minutes; later boots
+reuse the cached image. To skip the build, point at a prebuilt image with `image: { pull: '…' }` or
+set the `DEVSTACK_SUI_FORK_IMAGE` environment variable.
 
 If a slow first build or a large upstream checkpoint trips the ready probe, raise `readyTimeout` (a
-`sui()` option, `Duration`; default 180s) or inspect the `sui-fork` container logs with
-`docker logs <container>`. The ready-probe timeout message points at both.
+`sui()` option, `Duration`; default 180s), or check the fork container logs with
+`docker logs <container>`.
 
 ## Accounts: impersonate vs. ephemeral
 
@@ -103,10 +101,10 @@ the test only needs funded local signers.
 
 ## Funding test accounts
 
-Fork networks have no HTTP faucet, so devstack funds accounts by impersonating a large-reserve
-"whale" address on the forked upstream and transferring SUI from it. For `testnet`, `mainnet`, and
-`devnet` a default whale ships built in, so fork funding works with zero config — ephemeral accounts
-auto-fund exactly like on localnet:
+Fork networks have no HTTP faucet, so devstack funds accounts by transferring SUI from a
+large-reserve "whale" address on the forked upstream. For `testnet`, `mainnet`, and `devnet` a
+default whale is built in, so funding works with zero config — ephemeral accounts auto-fund exactly
+like on localnet:
 
 ```ts
 const forkedTestnet = sui({ mode: 'fork', upstream: 'testnet' });
@@ -127,17 +125,14 @@ const forkedTestnet = sui({
 });
 ```
 
-Funding flows through the normal faucet pathway, so ephemeral-account auto-funding and explicit SUI
-top-ups behave exactly as on localnet. `faucet.perRequestCapMist` caps a single request (default
-1000 SUI); `faucet: { enabled: false }` turns the faucet off. Point `faucet.whale` at any address
-holding a large single SUI coin — an active validator or a treasury address, found via a block
-explorer. At boot the faucet checks that the whale has a SUI coin large enough to cover a default
-fund plus gas, and emits an actionable error if none does.
+Auto-funding and explicit SUI top-ups behave exactly as on localnet. `faucet.perRequestCapMist` caps
+a single request (default 1000 SUI), and `faucet: { enabled: false }` turns the faucet off. For
+`faucet.whale`, use any address holding a large single SUI coin — an active validator or treasury
+address you can find on a block explorer. If the whale doesn't hold a coin large enough to cover a
+fund plus gas, boot fails with a message saying so.
 
-Faucet-funded ephemeral accounts are first-class in fork mode: they can publish packages, run
-actions, mint coins, and transfer value. Because `sui-fork` has no `simulate_transaction`, these
-transactions are built offline with an explicit gas budget (0.1 SUI), which also leaves a funded
-account headroom to move value rather than reserving its whole coin for gas.
+Faucet-funded ephemeral accounts are first-class: they can publish packages, run actions, mint
+coins, and transfer value.
 
 ## The fork admin surface
 
@@ -167,8 +162,8 @@ const forkProbe = definePlugin({
 
 ## Fork-mode service factories
 
-Local-only services may refuse live or fork modes. Use the mode-specific factories when you want the
-type system to narrow available branches to a fork chain:
+Some services only run locally. To point Walrus or Seal at a fork, use the mode-specific factories —
+they narrow the type to the branches available on a fork chain:
 
 ```ts
 import { chainId, walrusFor, sealFor } from '@mysten-incubation/devstack';
