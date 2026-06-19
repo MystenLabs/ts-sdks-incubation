@@ -103,7 +103,7 @@ export class PlaywrightEndpointNotFoundError extends Data.TaggedError(
  */
 export class PlaywrightWalletAdapterError extends Data.TaggedError('PlaywrightWalletAdapterError')<{
 	readonly message: string;
-	readonly operation: 'sign-tx' | 'list-accounts' | 'switch-account' | 'fetch';
+	readonly operation: 'sign-tx' | 'list-accounts' | 'switch-account' | 'switch-network' | 'fetch';
 	readonly url?: string;
 	readonly status?: number;
 	readonly cause?: unknown;

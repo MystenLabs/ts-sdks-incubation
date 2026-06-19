@@ -45,11 +45,16 @@ interface UiWalletLike {
 export interface TestableDAppKit<W extends UiWalletLike> {
 	connectWallet(args: { wallet: W; account: W['accounts'][number] }): Promise<unknown>;
 	switchAccount(args: { account: W['accounts'][number] }): void;
+	/** dApp Kit's public network switcher — the same surface the app's own UI
+	 *  uses. The bridge calls this so a test can flip networks exactly as it
+	 *  flips accounts. */
+	switchNetwork(network: string): void;
 	readonly stores: {
 		readonly $wallets: { get(): readonly W[] };
 		readonly $connection: {
 			get(): { readonly isConnected: boolean; readonly wallet: { readonly name: string } | null };
 		};
+		readonly $currentNetwork: { get(): string };
 	};
 }
 
@@ -75,6 +80,11 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * to the dev wallet it switches the active account; otherwise it connects,
  * selecting the requested account. Account names resolve to the dev wallet's
  * wallet-standard accounts by `label` (the devstack account name).
+ *
+ * The slot also publishes `switchNetwork` (+ `currentNetwork`): the SAME bridge,
+ * one level over — a test flips the active dApp Kit network exactly as it flips
+ * the account, driving the public `switchNetwork`. The dev wallet stays
+ * registered across the switch; only the active network/client changes.
  */
 export function registerDAppKitForTesting<W extends UiWalletLike>(
 	dAppKit: TestableDAppKit<W>,
@@ -112,5 +122,18 @@ export function registerDAppKitForTesting<W extends UiWalletLike>(
 		await dAppKit.connectWallet({ wallet, account });
 	};
 
-	(globalThis as { [DAPP_KIT_SLOT_KEY]?: DAppKitSlot }).__devstackDAppKit__ = { selectAccount };
+	// Network switching rides the SAME bridge as account switching: a test
+	// calls the published slot, which drives dApp Kit's public `switchNetwork`.
+	// The dev wallet (a wallet-standard wallet registered once) stays mounted
+	// across the switch — only the active network/client changes.
+	const switchNetwork = (network: string): void => {
+		dAppKit.switchNetwork(network);
+	};
+	const currentNetwork = (): string => dAppKit.stores.$currentNetwork.get();
+
+	(globalThis as { [DAPP_KIT_SLOT_KEY]?: DAppKitSlot }).__devstackDAppKit__ = {
+		selectAccount,
+		switchNetwork,
+		currentNetwork,
+	};
 }

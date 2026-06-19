@@ -20,4 +20,16 @@ describe('dapp-kit slot (canonical)', () => {
 		expect(globalThis.__devstackDAppKit__?.selectAccount).toBe(selectAccount);
 		delete (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
 	});
+
+	it('carries the network switcher (same bridge, one level over accounts)', () => {
+		const switchNetwork = (_network: string) => {};
+		const currentNetwork = () => 'devnet';
+		(globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__ = {
+			switchNetwork,
+			currentNetwork,
+		};
+		expect(globalThis.__devstackDAppKit__?.switchNetwork).toBe(switchNetwork);
+		expect(globalThis.__devstackDAppKit__?.currentNetwork?.()).toBe('devnet');
+		delete (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
+	});
 });

@@ -75,6 +75,7 @@ export {
 	createWalletAdapter,
 	loadStackManifest,
 	selectAccount,
+	switchNetwork,
 } from './wallet-context.ts';
 
 export type { PlaywrightIntegrationError } from './errors.ts';

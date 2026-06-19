@@ -24,6 +24,7 @@ import {
 	DAPP_KIT_SLOT,
 	connectAs,
 	createWalletAdapter,
+	switchNetwork,
 } from '../../../src/build-integrations/playwright/wallet-context.ts';
 import { WalletHttpPath } from '../../../src/plugins/wallet/protocol.ts';
 import { CURRENT_MANIFEST_VERSION } from '../../../src/substrate/runtime/manifest/manifest.ts';
@@ -312,5 +313,57 @@ describe('connectAs', () => {
 
 		expect(evaluateCalls).toBe(2);
 		expect(calls).toEqual(['select:alice']);
+	});
+});
+
+describe('switchNetwork', () => {
+	beforeEach(() => setDappKitSlot(null));
+	afterEach(() => setDappKitSlot(null));
+
+	const evalPage = () => ({
+		evaluate: async <T>(fn: (arg: unknown) => T, arg?: unknown): Promise<T> => fn(arg),
+	});
+
+	it('switches network through the dapp-kit slot (same bridge as accounts)', async () => {
+		const calls: string[] = [];
+		let current = 'localnet';
+		setDappKitSlot({
+			switchNetwork: (network: string) => {
+				calls.push(`switch:${network}`);
+				current = network;
+			},
+			currentNetwork: () => current,
+		});
+
+		await switchNetwork(evalPage(), 'devnet');
+
+		expect(calls).toEqual(['switch:devnet']);
+	});
+
+	it('waits until the slot reports the network actually changed', async () => {
+		// Network propagation can lag the call — the helper polls currentNetwork
+		// until it matches, so a switch that settles asynchronously still resolves.
+		const calls: string[] = [];
+		let current = 'localnet';
+		setDappKitSlot({
+			switchNetwork: (network: string) => {
+				calls.push(`switch:${network}`);
+				// settle one tick later
+				void Promise.resolve().then(() => {
+					current = network;
+				});
+			},
+			currentNetwork: () => current,
+		});
+
+		await switchNetwork(evalPage(), 'devnet');
+		expect(calls.at(-1)).toBe('switch:devnet');
+	});
+
+	it('throws a typed error when the slot has no switchNetwork', async () => {
+		setDappKitSlot({ selectAccount: () => {} });
+		await expect(switchNetwork(evalPage(), 'devnet')).rejects.toBeInstanceOf(
+			PlaywrightWalletAdapterError,
+		);
 	});
 });

@@ -334,6 +334,52 @@ export const selectAccount = async (
 	}
 };
 
+/**
+ * Switch the app's active dApp Kit network through the same dapp-kit slot
+ * `selectAccount` uses — one level over (network instead of account). Drives
+ * dApp Kit's public `switchNetwork`; the dev wallet (registered once via
+ * wallet-standard) stays mounted across the switch — only the active
+ * network/client changes. Resolves once the slot reports the current network
+ * is `network` (the switch took effect).
+ */
+export const switchNetwork = async (page: PlaywrightPageLike, network: string): Promise<void> => {
+	const deadline = Date.now() + SELECT_ACCOUNT_SLOT_TIMEOUT_MS;
+	for (;;) {
+		const result: { ok: boolean; reason?: string; current?: string } = await page.evaluate(
+			async (net): Promise<{ ok: boolean; reason?: string; current?: string }> => {
+				const slot = (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
+				if (slot === undefined || slot.switchNetwork === undefined) {
+					return { ok: false, reason: 'slot-not-populated' };
+				}
+				try {
+					await slot.switchNetwork(net as string);
+					return { ok: true, current: slot.currentNetwork?.() };
+				} catch (err) {
+					return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+				}
+			},
+			network,
+		);
+
+		if (result.ok && (result.current === undefined || result.current === network)) return;
+		if (
+			(result.reason === 'slot-not-populated' || (result.ok && result.current !== network)) &&
+			Date.now() < deadline
+		) {
+			await new Promise((resolve) => setTimeout(resolve, SELECT_ACCOUNT_SLOT_POLL_MS));
+			continue;
+		}
+		throw new PlaywrightWalletAdapterError({
+			message:
+				`switchNetwork("${network}") failed: ${result.reason ?? `current is "${result.current}"`}. ` +
+				`Confirm the network is in the app's deployment (a committed deployments/${network}.ts ` +
+				`or the live local stack) and \`globalThis.${DAPP_KIT_SLOT}\` is populated.`,
+			operation: 'switch-network',
+			cause: result.reason,
+		});
+	}
+};
+
 // -----------------------------------------------------------------------------
 // Artifact loaders
 // -----------------------------------------------------------------------------

@@ -20,6 +20,15 @@ export interface DAppKitSlot {
 	 *  account list directly from dApp Kit (each account's `label` is the
 	 *  devstack account name). */
 	readonly selectAccount?: (accountName: string) => void | Promise<void>;
+	/** Network switcher entry point consumed by Playwright's `switchNetwork`
+	 *  helper. Calls dApp Kit's public `switchNetwork(network)` — the same
+	 *  bridge mechanism as `selectAccount`, one level over (network instead of
+	 *  account). The dev wallet stays registered across the switch; only the
+	 *  active network/client changes. */
+	readonly switchNetwork?: (network: string) => void | Promise<void>;
+	/** Reads dApp Kit's current network name (`stores.$currentNetwork`) so the
+	 *  helper can assert the switch took effect. */
+	readonly currentNetwork?: () => string;
 }
 
 declare global {
