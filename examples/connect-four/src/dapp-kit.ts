@@ -35,7 +35,7 @@ export const dAppKit = createDAppKit({
 	// it is building a client for — so EVERYTHING flows through dApp Kit's
 	// selected network and stays in sync across a runtime `switchNetwork`. The
 	// connection is resolved off the loaded deployment (injected via
-	// `__DEVSTACK_IDS__`, not baked into the committed tree);
+	// `__DEVSTACK_DEPLOYMENT__`, not baked into the committed tree);
 	// `config.forNetwork(network)` returns that network's resolved entry — a
 	// non-undefined type that throws if the network isn't in the deployment.
 	createClient(network) {

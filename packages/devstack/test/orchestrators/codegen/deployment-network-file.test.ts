@@ -204,9 +204,17 @@ describe('renderNetworkDeploymentFile — string-quoting safety', () => {
 	const src = rendered.text;
 
 	it('emits a syntactically valid module (parses without an unterminated literal)', () => {
-		const diagnostics = ts
-			.createSourceFile('/tricky.ts', src, ts.ScriptTarget.ES2022, true)
-			.parseDiagnostics.map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+		// `parseDiagnostics` is an internal field on the parsed SourceFile — the
+		// most direct surface for "did the parser choke on an unterminated
+		// literal". It is not on the public `ts.SourceFile` type, so reach it
+		// through a typed cast rather than `any`.
+		const sourceFile = ts.createSourceFile('/tricky.ts', src, ts.ScriptTarget.ES2022, true);
+		const { parseDiagnostics } = sourceFile as unknown as {
+			readonly parseDiagnostics: readonly ts.Diagnostic[];
+		};
+		const diagnostics = parseDiagnostics.map((d) =>
+			ts.flattenDiagnosticMessageText(d.messageText, '\n'),
+		);
 		expect(diagnostics).toEqual([]);
 	});
 
