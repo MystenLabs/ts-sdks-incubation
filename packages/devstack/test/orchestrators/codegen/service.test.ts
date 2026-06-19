@@ -1048,7 +1048,7 @@ describe('codegen.assembleDeployment — active-network agreement', () => {
 	// and a `networks` map keyed by 'localnet' for EVERY identity mode (mirrors
 	// plugins/sui/codegen.ts hard-coding LOCAL_NETWORK_NAME). The deployment's
 	// active `network` field MUST be a key present in `networks` — the committed
-	// runtime resolver does `resolveNetworks()[network]`.
+	// runtime resolver does `loadDeployment().forNetwork(network)`.
 	const suiLikeDecl = (): CodegenableDecl<string> =>
 		fakeDecl({
 			emitterName: 'sui-network',
@@ -1084,7 +1084,7 @@ describe('codegen.assembleDeployment — active-network agreement', () => {
 						// Boot for a fork: identity network = 'testnet-fork', but the
 						// sui binding still keys `networks` by 'localnet'. Old behavior
 						// stamped network: 'testnet-fork' (absent from networks) →
-						// `resolveNetworks()['testnet-fork']` is undefined → throws +
+						// `forNetwork('testnet-fork')` has no entry → throws +
 						// dev-wallet injection reads undefined.rpc. The fix derives the
 						// active network from the bucket so they AGREE.
 						const deployment = yield* codegen.assembleDeployment('testnet-fork');

@@ -14,7 +14,7 @@
 // The framework derives both behaviors (see `contracts/config-bindings.ts`):
 //   - LIVE (boot): bakes the resolved on-chain values (fullCoinType,
 //     decimals, ids) AND feeds the generic deployment `values` channel.
-//   - STATIC (committed tree): emits `resolveValue('coin:<symbol>', '<key>')`
+//   - STATIC (committed tree): emits `requireValue(dep, 'coin:<symbol>', '<key>')`
 //     so the committed `coins.ts` carries NO baked coin type / object id.
 //
 // STRUCTURAL fields (symbol, source) stay literals; the coin type, decimals,
@@ -49,7 +49,7 @@ export interface CoinBindings {
  *  stub for this symbol. `source` is the address-form provenance (known at
  *  factory time). `constants` is set ONLY for a `'builtin'` coin (SUI),
  *  whose coin type + decimals are protocol-defined constants the stub bakes
- *  as literals (no `resolveValue` that would throw at module load). */
+ *  as literals (no `requireValue(dep, …)` that would throw at module load). */
 export interface CoinStaticConfig {
 	readonly symbol: string;
 	readonly source: CoinBindings['source'];
@@ -58,7 +58,7 @@ export interface CoinStaticConfig {
 	 *  argument). This is DECLARED config (not loaded-at-runtime data), so the
 	 *  committed `coins.ts` bakes it as a LITERAL `fullCoinType`. `decimals` and
 	 *  `packageId` still resolve at runtime (they come from `getCoinMetadata`,
-	 *  genuinely only known after a live probe), so they stay `resolveValue`.
+	 *  genuinely only known after a live probe), so they stay `requireValue(dep, …)`.
 	 *  Absent for `fromPackage` (registry/local) coins whose type is dynamic. */
 	readonly knownCoinType?: string;
 }
@@ -68,14 +68,14 @@ type CoinLiveState = CoinBindings;
 
 /** Build the coin's config-binding spec for symbol `key`. `symbol` and
  *  `source` are structural literals; the coin type, decimals, and on-chain
- *  object ids are runtime-resolved (`resolveValue`).
+ *  object ids are runtime-resolved (`requireValue(dep, …)`).
  *
- *  Field-set DETERMINISM. A committed `resolveValue(...)` call evaluates at
+ *  Field-set DETERMINISM. A committed `requireValue(dep, …)` call evaluates at
  *  module-load and THROWS when the id is absent, so the static stub must
  *  emit ONLY fields the injected ids will carry. `source` (known at factory
  *  time) decides this: a `'builtin'` coin (SUI) is fully protocol-defined —
  *  it carries NO package id and its coin type / decimals are constants, so
- *  it emits them as LITERALS (no `resolveValue` that would throw at load).
+ *  it emits them as LITERALS (no `requireValue(dep, …)` that would throw at load).
  *  A `'registry'` / `'on-chain'` coin carries a real `packageId`, so it
  *  emits `fullCoinType` / `decimals` / `packageId` as resolved. The OPTIONAL
  *  discovery-only ids (`treasuryCapId` / `metadataId` / `iconUrl` /
@@ -99,7 +99,7 @@ const coinBucketSpec = (
 			: undefined);
 	if (builtin && constants !== undefined) {
 		// A builtin coin (SUI) is protocol-defined: bake its constants as
-		// literals in BOTH paths (no `resolveValue` to throw at module load).
+		// literals in BOTH paths (no `requireValue(dep, …)` to throw at module load).
 		// The coin type carries `::` so it is not a baked on-chain id.
 		fields.push({ key: 'fullCoinType', variant: 'literal', value: constants.fullCoinType });
 		fields.push({ key: 'decimals', variant: 'literal', value: constants.decimals });
@@ -172,7 +172,7 @@ export const makeCoinCodegen = <Symbol extends string>(parts: {
 	);
 
 /** Construct the STATIC (stack-free) Codegenable contribution for one coin.
- *  Emits `resolveValue('coin:<symbol>', '<key>')` for runtime fields; the
+ *  Emits `requireValue(dep, 'coin:<symbol>', '<key>')` for runtime fields; the
  *  committed `coins.ts` carries no baked coin type / object id. */
 export const makeCoinStaticCodegen = (config: CoinStaticConfig): CodegenableDecl =>
 	staticBucketCodegen(coinBucketSpec(config.symbol, config, null));

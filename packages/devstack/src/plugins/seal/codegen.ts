@@ -9,7 +9,7 @@
 // `export const seal = { <name>: SealBindings, ... }` (sibling-keyed bucket):
 //   - LIVE (boot): bakes the resolved key-server object id / URL / configs
 //     AND feeds the generic deployment `values` channel.
-//   - STATIC (committed tree): emits `resolveValue('seal:<name>', '<key>')`
+//   - STATIC (committed tree): emits `requireValue(dep, 'seal:<name>', '<key>')`
 //     so the committed `seal.ts` carries NO baked object id / endpoint URL.
 //
 // STRUCTURAL fields (`name`, `mode`) stay literals; the object id, key-server
@@ -61,7 +61,7 @@ type SealLiveState = SealBindings;
 
 /** Build the seal instance's config-binding spec for `name`. `name` / `mode`
  *  are structural literals. For a `local-keygen` instance the object id / URL
- *  are dynamically-deployed (`resolveValue`) and `serverConfigs` is a runtime
+ *  are dynamically-deployed (`requireValue(dep, …)`) and `serverConfigs` is a runtime
  *  committee blob; for a `live` / `fork-known` instance these are DECLARED
  *  config, baked as literals. */
 const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiveState> => {
@@ -109,7 +109,7 @@ export const makeSealCodegenable = (bindings: SealBindings): CodegenableDecl =>
 	liveBucketCodegen(sealBucketSpec({ name: bindings.name, mode: bindings.mode }), bindings);
 
 /** Build the STATIC (stack-free) Codegenable contribution for a seal
- *  instance. Emits `resolveValue('seal:<name>', '<key>')` for the runtime
+ *  instance. Emits `requireValue(dep, 'seal:<name>', '<key>')` for the runtime
  *  fields; the committed `seal.ts` carries no baked object id / endpoint URL. */
 export const makeSealStaticCodegen = (config: SealStaticConfig): CodegenableDecl =>
 	staticBucketCodegen(sealBucketSpec(config));

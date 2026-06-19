@@ -470,7 +470,8 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		// `config.ts`'s `network`/`networks` from this hook. Both are
 		// environment/live data (dynamic local rpc port; a real deployment
 		// names a different network), so the committed tree carries
-		// `resolveNetwork()`/`resolveNetworks()` raw expressions that resolve
+		// `dep.network`/`Object.fromEntries(networkNames.map(forNetwork))` raw
+		// expressions off the loaded deployment that resolve
 		// at app build/dev time via the injected `__DEVSTACK_DEPLOYMENT__` global —
 		// never literal values. No id-resolver input needed.
 		staticCodegen: makeStaticCodegen(),
