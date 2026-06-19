@@ -166,9 +166,9 @@ Some services only run locally. To point Walrus or Seal at a fork, use the mode-
 they narrow the type to the branches available on a fork chain:
 
 ```ts
-import { chainId, walrusFor, sealFor } from '@mysten-incubation/devstack';
+import { chainIdForNetwork, walrusFor, sealFor } from '@mysten-incubation/devstack';
 
-const fork = { mode: 'fork', chain: chainId('sui:testnet-fork') } as const;
+const fork = { mode: 'fork', chainId: chainIdForNetwork('testnet-fork') } as const;
 
 const forkWal = walrusFor(fork).known({
 	systemObjectId: '0x...',

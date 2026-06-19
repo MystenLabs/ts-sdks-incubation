@@ -15,7 +15,32 @@ describe('DevWallet', () => {
 		expect(wallet.version).toBe('1.0.0');
 		expect(wallet.name).toBe('Dev Wallet');
 		expect(wallet.icon).toMatch(/^data:image\//);
-		expect(wallet.chains).toBe(SUI_CHAINS);
+		// `chains` reflects the configured networks unioned with the standard
+		// set. The default config's `testnet` is already a standard chain, so
+		// the advertised chains equal SUI_CHAINS by content (a fresh array).
+		expect(wallet.chains).toEqual([...SUI_CHAINS]);
+	});
+
+	it('advertises configured non-standard networks as chains (fork + custom)', () => {
+		const wallet = new DevWallet(
+			createDefaultConfig({
+				networks: {
+					localnet: 'http://127.0.0.1:9000',
+					'testnet-fork': 'http://127.0.0.1:9001',
+					custom: 'http://127.0.0.1:9002',
+				},
+			}),
+		);
+		// Standard chains are still advertised (union for safety)...
+		for (const chain of SUI_CHAINS) {
+			expect(wallet.chains).toContain(chain);
+		}
+		// ...and the configured fork/custom networks are advertised too, so
+		// dApp Kit's chain-gated paths work for them.
+		expect(wallet.chains).toContain('sui:testnet-fork');
+		expect(wallet.chains).toContain('sui:custom');
+		// No duplicates for a configured standard network (`localnet`).
+		expect(wallet.chains.filter((c) => c === 'sui:localnet')).toHaveLength(1);
 	});
 
 	it('uses custom name and icon when provided', () => {

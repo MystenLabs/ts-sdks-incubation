@@ -10,7 +10,7 @@
 // ONE declaration, TWO derivations (see `contracts/config-bindings.ts`):
 //   - LIVE (boot): bakes the resolved ids / URLs into the ephemeral tree AND
 //     feeds the generic deployment `values` channel.
-//   - STATIC (committed tree): emits `resolveValue('walrus', '<key>')` so the
+//   - STATIC (committed tree): emits `requireValue(dep, 'walrus', '<key>')` so the
 //     committed `walrus.ts` carries NO baked object id / endpoint URL.
 //
 // STRUCTURAL fields (`mode`, `network`) stay literals; the on-chain ids,
@@ -95,7 +95,7 @@ export interface WalrusStaticConfig {
 const NAMESPACE = 'walrus';
 
 /** TS source-type strings for the resolved walrus fields — keeps the committed
- *  `walrus.ts` typed as `WalrusBindings` declares (the generic `resolveValue`
+ *  `walrus.ts` typed as `WalrusBindings` declares (the generic `requireValue`
  *  channel would otherwise return `unknown`). Composite blobs inline their
  *  structural literal types so no emitted type-import is needed. */
 const PACKAGE_CONFIG_TS_TYPE =
@@ -105,7 +105,7 @@ const NODES_TS_TYPE =
 
 /** The walrus config bindings, declared ONCE. `mode` / `network` are
  *  structural literals; every id / coin type / URL / committee value is a
- *  RESOLVED binding on the generic `resolveValue('walrus', '<key>')` channel.
+ *  RESOLVED binding on the generic `requireValue(dep, 'walrus', '<key>')` channel.
  *  Both the live boot decl and the static committed-tree decl derive from it. */
 const walrusConfigBindings = (
 	structural: WalrusStaticConfig,
@@ -194,7 +194,7 @@ export const makeCodegenable = (inputs: MakeCodegenableInputs): CodegenableDecl 
 	});
 
 /** Construct the STATIC (stack-free) Codegenable contribution. Emits
- *  `resolveValue('walrus', '<key>')` for the runtime fields; the committed
+ *  `requireValue(dep, 'walrus', '<key>')` for the runtime fields; the committed
  *  `walrus.ts` carries no baked object id / endpoint URL. */
 export const makeWalrusStaticCodegen = (config: WalrusStaticConfig): CodegenableDecl =>
 	configCodegenable(walrusConfigBindings(config), 'static');

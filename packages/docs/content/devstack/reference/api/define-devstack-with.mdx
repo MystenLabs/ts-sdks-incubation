@@ -11,11 +11,11 @@ one or more plugin factories need mode-narrowing — `sui()` in `live` mode, `wa
 resolved network is known at composition time.
 
 ```ts title="devstack.config.ts"
-import { chainId, defineDevstackWith, suiFor } from '@mysten-incubation/devstack';
+import { chainIdForNetwork, defineDevstackWith, suiFor } from '@mysten-incubation/devstack';
 
 export default defineDevstackWith(
 	{
-		network: { mode: 'live', chain: chainId('sui:testnet') },
+		network: { mode: 'live', chainId: chainIdForNetwork('testnet') },
 		stackName: 'main',
 	},
 	({ network }) => {

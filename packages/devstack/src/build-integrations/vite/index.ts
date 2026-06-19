@@ -6,7 +6,7 @@
 // source of bindings, written only by the stack-free `devstack codegen`
 // verb. On-chain ids are NOT baked into that tree; they resolve at
 // runtime via the `__DEVSTACK_DEPLOYMENT__` global (see
-// `resolveInjectedDeployment`), so the same generated source serves every
+// `mergeDeployment`), so the same generated source serves every
 // stack. Resolution:
 //   1. `options.generatedDir` — explicit escape hatch (relative → root).
 //   2. `<root>/src/generated` — the committed tree, always.
@@ -69,12 +69,17 @@ export interface DevstackVitePluginOptions {
 	 *  shows the real connect + approve UX; opt in per-network). A single
 	 *  switch, replacing per-app `VITE_*_AUTO_APPROVE`.
 	 *
-	 *  HARD-CLAMP: on live `mainnet` the per-network policy forces
+	 *  PRECEDENCE: an explicit value here ALWAYS wins — passing `autoApprove:
+	 *  false` forces it off even when `DEVSTACK_AUTO_APPROVE` is set, and
+	 *  `autoApprove: true` forces it on. The `DEVSTACK_AUTO_APPROVE` env and the
+	 *  per-network policy default apply ONLY when this option is left undefined.
+	 *
+	 *  HARD-CLAMP: on live `mainnet` the per-network policy default forces
 	 *  auto-approve OFF — a real-funds signature is NEVER granted without a
-	 *  human in the loop. An explicit `autoApprove: true` here, or
-	 *  `DEVSTACK_AUTO_APPROVE`, still take precedence (the author opted in
-	 *  deliberately), but the policy default never silently auto-approves on
-	 *  mainnet. */
+	 *  human in the loop. The policy default never silently auto-approves on
+	 *  mainnet; an explicit `autoApprove: true` (or, when this option is
+	 *  undefined, `DEVSTACK_AUTO_APPROVE`) is still the author opting in
+	 *  deliberately. */
 	readonly autoApprove?: boolean;
 	/** Per-network overrides for the dev-convenience policy (the same
 	 *  `networkOptions` shape `defineDevstack` takes, forwarded verbatim).
@@ -218,25 +223,38 @@ export interface DevstackVitePlugin {
  *  throws — the single discover→parse→guard→degrade-to-null reader every
  *  manifest field above (`codegen.deploymentFile`, `identity.network`)
  *  routes through. */
-const readManifestField = (
+const readManifestObject = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-	dottedPath: string,
-): string | null => {
+): unknown => {
 	try {
 		const { stack, stateDir } = resolveDiscoveryEnv(env, { cwd });
 		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
 		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
-		let node: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-		for (const segment of dottedPath.split('.')) {
-			if (typeof node !== 'object' || node === null) return null;
-			node = (node as Record<string, unknown>)[segment];
-		}
-		return typeof node === 'string' && node.length > 0 ? node : null;
+		return JSON.parse(readFileSync(manifestPath, 'utf8'));
 	} catch {
 		return null;
 	}
 };
+
+/** Walk `dottedPath` over an already-parsed manifest object, returning the
+ *  non-empty string leaf or `null` on ANY miss (non-object hop, missing /
+ *  non-string / empty leaf). Lets one parsed manifest serve several field
+ *  reads without re-parsing. */
+const pickManifestString = (manifest: unknown, dottedPath: string): string | null => {
+	let node = manifest;
+	for (const segment of dottedPath.split('.')) {
+		if (typeof node !== 'object' || node === null) return null;
+		node = (node as Record<string, unknown>)[segment];
+	}
+	return typeof node === 'string' && node.length > 0 ? node : null;
+};
+
+const readManifestField = (
+	env: Readonly<Record<string, string | undefined>>,
+	cwd: string,
+	dottedPath: string,
+): string | null => pickManifestString(readManifestObject(env, cwd), dottedPath);
 
 /** The gitignored `deployment.json` path the boot wrote for the active
  *  stack (`codegen.deploymentFile`), or `null` on any miss. */
@@ -392,22 +410,6 @@ const mergeDeployment = (
 	};
 };
 
-/** Resolve the deployment envelope to inject as `__DEVSTACK_DEPLOYMENT__` —
- *  the committed per-network `deployments` thunks merged with the live local
- *  stack (`command === 'serve'` and the config-load default) / nothing
- *  (`command === 'build'`). No committed networks + no live stack ⇒ `null`, so
- *  the generated resolver throws loudly at access time. */
-const resolveInjectedDeployment = async (
-	env: Readonly<Record<string, string | undefined>>,
-	root: string,
-	command: 'build' | 'serve' | undefined,
-	options: DevstackVitePluginOptions,
-): Promise<DevstackDeployment | null> => {
-	const committed = await resolveCommittedNetworks(resolveDeploymentThunks(options, root));
-	const live = command === 'build' ? null : readLiveEnvelope(env, root);
-	return mergeDeployment(command, committed, live, options.defaultNetwork);
-};
-
 /**
  * Build the devstack Vite plugin that aliases `options.alias`
  * (default `@generated`) at the committed `<root>/src/generated` tree.
@@ -423,18 +425,16 @@ const resolveInjectedDeployment = async (
  * the manifest (for `__DEVSTACK_DEPLOYMENT__`) once at config-load.
  */
 
-/** The on-disk dev-wallet pairing-token path for the active stack. The
- *  token lives in a `0o600` side-channel file (`<stackRoot>/wallet/token`,
- *  written by `pairing.ts`), NEVER in the world-readable `deployment.json`.
- *  The boot writes `deployment.json` into the SAME `<stackRoot>`, so the
- *  token sits at `<dirname(deploymentFile)>/wallet/token`. Read in Node by
- *  the `load` hook (which runs server-side) so the secret stays off the
- *  manifest/deployment surface. Returns `null` on any miss. */
-const readDevWalletToken = (
-	env: Readonly<Record<string, string | undefined>>,
-	cwd: string,
-): string | null => {
-	const deploymentFile = readIdsFileFromManifest(env, cwd);
+/** The on-disk dev-wallet pairing-token for the active stack, given the
+ *  already-resolved `deploymentFile` path (the manifest's
+ *  `codegen.deploymentFile`). The token lives in a `0o600` side-channel file
+ *  (`<stackRoot>/wallet/token`, written by `pairing.ts`), NEVER in the
+ *  world-readable `deployment.json`. The boot writes `deployment.json` into the
+ *  SAME `<stackRoot>`, so the token sits at `<dirname(deploymentFile)>/wallet/
+ *  token`. Read in Node by the `load` hook (which runs server-side) so the
+ *  secret stays off the manifest/deployment surface. Returns `null` on any
+ *  miss (including a `null` deployment file). */
+const readDevWalletToken = (deploymentFile: string | null): string | null => {
 	if (deploymentFile === null) return null;
 	const tokenFile = resolve(dirname(deploymentFile), 'wallet', 'token');
 	try {
@@ -446,11 +446,34 @@ const readDevWalletToken = (
 	}
 };
 
+/** Escape a `JSON.stringify` result for safe embedding in an inline
+ *  `<script>` element's text. Unlike an external file, inline-script text is
+ *  parsed by the HTML tokenizer first, so a raw `</script>` (or `<!--`) inside
+ *  any string value would terminate the tag early — and a lone `<` is enough to
+ *  matter. We escape `<` / `>` / `&` to their `\uXXXX` JS-string forms (valid
+ *  inside JSON-as-JS, and inert to the HTML tokenizer) and the U+2028/U+2029
+ *  line separators (legal in JSON strings but illegal as raw JS line
+ *  terminators in older engines). Used ONLY on the inline-script injection path
+ *  — the `define` build path embeds into a JS module, not HTML, so it needs no
+ *  such escaping. */
+const escapeForInlineScript = (json: string): string =>
+	json
+		.replace(/</g, '\\u003c')
+		.replace(/>/g, '\\u003e')
+		.replace(/&/g, '\\u0026')
+		// U+2028 / U+2029: legal in JSON strings but illegal as raw JS line
+		// terminators in older engines — matched by code point so no literal
+		// separator lives in this source.
+		.replace(/[\u2028\u2029]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+
+/** A boolean env flag is truthy when set to `'1'` or `'true'`
+ *  (case-insensitive). Shared by the auto-approve + e2e env readers. */
+const isTruthyEnvFlag = (raw: string | undefined): boolean =>
+	raw === '1' || raw?.toLowerCase() === 'true';
+
 /** Read the `DEVSTACK_AUTO_APPROVE` env (`'1'`/`'true'`, case-insensitive). */
-const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean => {
-	const raw = env['DEVSTACK_AUTO_APPROVE'];
-	return raw === '1' || raw?.toLowerCase() === 'true';
-};
+const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean =>
+	isTruthyEnvFlag(env['DEVSTACK_AUTO_APPROVE']);
 
 /** True under a Playwright e2e run (`DEVSTACK_E2E` set to `'1'`/`'true'`,
  *  case-insensitive). DEDICATED signal — distinct from `DEVSTACK_AUTO_APPROVE`
@@ -458,10 +481,8 @@ const autoApproveFromEnv = (env: Readonly<Record<string, string | undefined>>): 
  *  `autoConnect` ON only under e2e, so a normal `pnpm dev` serve exercises the
  *  real connect UX. A prod `vite build` never sets the env ⇒ injects `false`
  *  (tree-shakeable). */
-const e2eFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean => {
-	const raw = env['DEVSTACK_E2E'];
-	return raw === '1' || raw?.toLowerCase() === 'true';
-};
+const e2eFromEnv = (env: Readonly<Record<string, string | undefined>>): boolean =>
+	isTruthyEnvFlag(env['DEVSTACK_E2E']);
 
 /** Lit packages deduped to a single instance. The injected dev-wallet UI and
  *  the app's dapp-kit UI are both Lit-based; if Vite loads two Lit copies they
@@ -518,12 +539,34 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 	// the secret token off its side-channel file.
 	let resolvedRoot = process.cwd();
 	let isServe = false;
+	// Whether the app carries the dev wallet (`devWalletInstalled(root)`),
+	// computed ONCE in the `config` hook and reused by `transformIndexHtml` so
+	// the per-request HTML injection doesn't re-`stat` the package on disk.
+	let devWalletPresent = false;
 	// The committed per-network deployments, resolved + validated ONCE in the
 	// async `config` hook (the thunks are async; the runtime-global path in
 	// `transformIndexHtml` is sync). Stable for the dev server's lifetime, so
 	// the per-request HTML injection overlays the fresh live network on top of
 	// these without re-awaiting.
 	let resolvedCommittedNetworks: Record<string, NetworkDeployment> = {};
+	// Per-republish cache of the live local envelope. `readLiveEnvelope` walks
+	// the manifest + reads/decodes `deployment.json` on every call, but the file
+	// only changes on a republish — which the `configureServer` watcher already
+	// observes. So we read it once (lazily, on the first `transformIndexHtml`)
+	// and reuse it until the watcher invalidates it, rather than re-reading per
+	// page load. `liveEnvelopeFresh === false` is the "needs (re)read" sentinel
+	// (a `null` envelope — no live stack — is a legitimately cacheable value).
+	let liveEnvelopeFresh = false;
+	let liveEnvelopeCache: DevstackDeployment | null = null;
+	const readLiveEnvelopeCached = (
+		env: Readonly<Record<string, string | undefined>>,
+	): DevstackDeployment | null => {
+		if (!liveEnvelopeFresh) {
+			liveEnvelopeCache = readLiveEnvelope(env, resolvedRoot);
+			liveEnvelopeFresh = true;
+		}
+		return liveEnvelopeCache;
+	};
 
 	return {
 		name: 'devstack:generated-alias',
@@ -551,7 +594,11 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// wallet — we pre-bundle the injected dev-wallet entries so Vite
 			// never re-optimizes them mid-session into a second Lit realm
 			// (see the constants above).
-			const includeDevWallet = injectDevWallet && devWalletInstalled(root);
+			// `devWalletInstalled` stats the package on disk; do it once here and
+			// reuse the result in `transformIndexHtml` (the root is stable for the
+			// server's lifetime).
+			devWalletPresent = devWalletInstalled(root);
+			const includeDevWallet = injectDevWallet && devWalletPresent;
 			// Resolve + validate the committed per-network deployments ONCE (the
 			// thunks are async; the per-request HTML path is sync). Captured so
 			// `transformIndexHtml` overlays the fresh live network on top of
@@ -583,7 +630,17 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// member-access chain) — note the bare `globalThis.…`, NOT a
 			// parenthesised `(… ?? null)`; `config-runtime.ts` already guards the
 			// `typeof … === 'undefined'` case.
-			const injectedDeployment = await resolveInjectedDeployment(env, root, command, options);
+			// Merge the deployment envelope to bake/point at — reusing the
+			// committed networks just resolved above rather than re-resolving the
+			// thunks. `build` drops the live local stack; `serve`/config-load
+			// overlays it.
+			const injectedLive = command === 'build' ? null : readLiveEnvelope(env, root);
+			const injectedDeployment = mergeDeployment(
+				command,
+				resolvedCommittedNetworks,
+				injectedLive,
+				options.defaultNetwork,
+			);
 			const isVitest = env['VITEST'] !== undefined;
 			const deploymentDefine =
 				command === 'serve' && !isVitest
@@ -636,7 +693,13 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// (no `devstack up`). The presence of BOTH the deployment file (for the
 			// connection) and the token gate injection — the browser side resolves
 			// the connection off the injected envelope.
-			const token = readDevWalletToken(env, resolvedRoot);
+			// Parse the manifest ONCE and read both fields it carries below — the
+			// `codegen.deploymentFile` (locating the token side-channel) and the
+			// `identity.network` (the active network for the auto-approve policy) —
+			// off the same parsed object rather than discovering + parsing twice.
+			const manifest = readManifestObject(env, resolvedRoot);
+			const deploymentFile = pickManifestString(manifest, 'codegen.deploymentFile');
+			const token = readDevWalletToken(deploymentFile);
 			if (!injectDevWallet || !isServe || token === null) {
 				return 'export {};';
 			}
@@ -653,7 +716,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// resolve as `mainnet` (auto-approve OFF) rather than assuming a
 			// dev network. The override RECORD isn't on disk — `networkOptions`
 			// is read from the plugin option when the app threads it.
-			const network = readManifestField(env, resolvedRoot, 'identity.network') ?? 'mainnet';
+			const network = pickManifestString(manifest, 'identity.network') ?? 'mainnet';
 			const netOpts = resolveNetworkOptions(network, options.networkOptions);
 			const autoApprove =
 				options.autoApprove ?? (autoApproveFromEnv(env) || netOpts.autoApproveSigning);
@@ -725,6 +788,9 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 				// `resolve(changed)` is normally a no-op; resolve against the Vite
 				// root anyway so a relative event path can't silently miss.
 				if (resolve(resolvedRoot, changed) !== resolve(idsFile)) return;
+				// Invalidate the per-republish live-envelope cache so the next
+				// `transformIndexHtml` re-reads the rewritten `deployment.json`.
+				liveEnvelopeFresh = false;
 				const channel = server.hot ?? server.ws;
 				channel?.send({ type: 'full-reload' });
 			};
@@ -735,14 +801,14 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 		transformIndexHtml: (html: string) => {
 			if (!isServe) return undefined;
 			const env = process.env as Readonly<Record<string, string | undefined>>;
-			// Read the live local envelope FRESH per request so a full-reload
-			// after a republish injects the new id, then overlay it on the
-			// committed networks captured at config-load (a sync merge — the
-			// committed thunks were already awaited in `config`). Set on a
-			// distinct global (`__DEVSTACK_DEPLOYMENT_LIVE__`) the `config` hook's
+			// Read the live local envelope (cached per republish, invalidated by
+			// the `configureServer` watcher on a `deployment.json` change), then
+			// overlay it on the committed networks captured at config-load (a sync
+			// merge — the committed thunks were already awaited in `config`). Set on
+			// a distinct global (`__DEVSTACK_DEPLOYMENT_LIVE__`) the `config` hook's
 			// `define` points `__DEVSTACK_DEPLOYMENT__` at; `head-prepend` runs it
 			// before any app module.
-			const live = readLiveEnvelope(env, resolvedRoot);
+			const live = readLiveEnvelopeCached(env);
 			const liveDeployment = mergeDeployment(
 				'serve',
 				resolvedCommittedNetworks,
@@ -757,15 +823,15 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			}> = [
 				{
 					tag: 'script',
-					children: `globalThis.__DEVSTACK_DEPLOYMENT_LIVE__ = ${JSON.stringify(liveDeployment ?? null)};`,
+					children: `globalThis.__DEVSTACK_DEPLOYMENT_LIVE__ = ${escapeForInlineScript(JSON.stringify(liveDeployment ?? null))};`,
 					injectTo: 'head-prepend',
 				},
 			];
 			// Gate the script tag on the app actually carrying the wallet (same
-			// condition as the `config` hook's `optimizeDeps` include), so a
-			// headless app emits zero dev-wallet plumbing rather than a tag that
-			// resolves to the no-op virtual module.
-			if (injectDevWallet && devWalletInstalled(resolvedRoot)) {
+			// condition as the `config` hook's `optimizeDeps` include — reusing the
+			// boolean it computed), so a headless app emits zero dev-wallet plumbing
+			// rather than a tag that resolves to the no-op virtual module.
+			if (injectDevWallet && devWalletPresent) {
 				tags.push({
 					tag: 'script',
 					attrs: { type: 'module', src: VIRTUAL_DEV_WALLET_SCRIPT_SRC },

@@ -350,7 +350,7 @@ const buildLocalPlugin = <
 			excluded: opts.excludeFromCodegen ?? false,
 			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 			// Capture KEYS (config-known) so the committed stub carries
-			// `resolveValue('package:<name>:objects', '<key>')` references —
+			// `requireValue(dep, 'package:<name>:objects', '<key>')` references —
 			// no live-only `objects` field, no baked object id.
 			...(opts.capture !== undefined ? { objectKeys: Object.keys(opts.capture) } : {}),
 		}),

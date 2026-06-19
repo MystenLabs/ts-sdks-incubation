@@ -55,9 +55,9 @@ devstack up --network mainnet
 devstack up --network testnet-fork
 ```
 
-Network names accepted by `--network` and `DEVSTACK_NETWORK` are `localnet`, `testnet`, `mainnet`,
-`devnet`, `testnet-fork`, `mainnet-fork`, and `devnet-fork`; the same names are accepted with a
-`sui:` prefix. The `local` alias maps to `localnet`.
+The names accepted by `--network` and `DEVSTACK_NETWORK` are exactly `localnet`, `testnet`,
+`mainnet`, `devnet`, `testnet-fork`, `mainnet-fork`, and `devnet-fork` — one canonical spelling
+each, with no `sui:` prefix or alias form. Any other value is rejected.
 
 ## Forking a public network
 
@@ -77,9 +77,9 @@ Some services only run locally. To point Walrus, Seal, or DeepBook at a live cha
 mode-specific factories — they narrow the type to the branches available on a live network:
 
 ```ts
-import { chainId, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
+import { chainIdForNetwork, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
 
-const live = { mode: 'live', chain: chainId('sui:testnet') } as const;
+const live = { mode: 'live', chainId: chainIdForNetwork('testnet') } as const;
 
 const wal = walrusFor(live).known({
 	systemObjectId: '0x...',

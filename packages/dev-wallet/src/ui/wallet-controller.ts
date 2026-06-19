@@ -225,10 +225,11 @@ export class WalletController implements ReactiveController {
 				? html`
 						<div class="section">
 							<dev-wallet-balances
-								exportparts="balance-list, loading: balances-loading, error-message: balances-error-message, empty-state: balances-empty-state"
+								exportparts="balance-list, loading: balances-loading, error-message: balances-error-message, empty-state: balances-empty-state, faucet-button: balances-faucet-button, faucet-error-message: balances-faucet-error-message"
 								.address=${this.activeAddress}
 								.client=${this.getActiveClient()}
 								.network=${this.#wallet.activeNetwork}
+								.faucetHost=${this.#wallet.activeFaucet}
 								.coins=${this.coins}
 							></dev-wallet-balances>
 						</div>

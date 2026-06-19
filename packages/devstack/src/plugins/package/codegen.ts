@@ -15,7 +15,7 @@
 // `projectLiveConfig` / `projectStaticConfig` derive both behaviors:
 //   - LIVE (boot): bakes the resolved package id literal — boot's
 //     `assembleDeployment` reads it into the loadable deployment.
-//   - STATIC (committed-tree): emits `resolveId('<mvr>')` so the committed
+//   - STATIC (committed-tree): emits `requireId(dep, '<mvr>')` so the committed
 //     `config.ts` carries NO on-chain id (resolved at app build/dev time).
 //
 // The package contribution is `aggregateOnly`: it projects into the combined
@@ -69,18 +69,18 @@ interface PackageBindingInput {
 	/** Pinned literal id (KNOWN package with a declared id). When set, the
 	 *  active-network id is a LITERAL binding (identical in both paths). When
 	 *  absent (a LOCAL package, or a KNOWN-shaped local stub), the id is a
-	 *  RESOLVED binding: static emits `resolveId('<mvr>')`, live computes the
+	 *  RESOLVED binding: static emits `requireId(dep, '<mvr>')`, live computes the
 	 *  real resolved id from acquired state. */
 	readonly pinnedId?: string | undefined;
 	/** Resolved local object captures (keyed by user `capture` name).
 	 *  Surfaced into `config.objects.<name>` + `packages.<name>.objects`
 	 *  for the active (local) network. Empty on the committed-stub path —
 	 *  the captured IDS are loaded config data (resolved at app build/dev
-	 *  time), so the static path emits `resolveValue` from `objectKeys`. */
+	 *  time), so the static path emits `requireValue` from `objectKeys`. */
 	readonly captured: Readonly<Record<string, string>>;
 	/** The capture KEYS this package declares (the user `capture` option's
 	 *  key set, known at config time). Drives the object-id bindings on BOTH
-	 *  paths so the committed stub carries `resolveValue('package:<name>:
+	 *  paths so the committed stub carries `requireValue(dep, 'package:<name>:
 	 *  objects', '<key>')` references rather than a live-only `objects` field.
 	 *  When omitted, falls back to the keys present in `captured` (live path).
 	 */
@@ -119,7 +119,7 @@ const normalizeMvrTypeSuffix = (packageName: string, mvr: string, entry: string)
 /**
  * Build the package's config-binding set, declared ONCE. The `name` keys the
  * `config.packages.<name>` entry; `mvrPlaceholder` is a literal in both paths;
- * the active-network id is a RESOLVED binding (sugar `resolveId('<mvr>')` when
+ * the active-network id is a RESOLVED binding (sugar `requireId(dep, '<mvr>')` when
  * `resolveViaRuntime`, otherwise a literal already-known id). Declared
  * per-network literals (testnet/mainnet) and captured objects are literals.
  *
@@ -140,7 +140,7 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 
 	// The active-network id binding. Two cases:
 	//   - no pinned id (LOCAL, or KNOWN-shaped local stub) → RESOLVED (sugar
-	//     `resolveId('<mvr>')` static; live = the concrete resolved id from
+	//     `requireId(dep, '<mvr>')` static; live = the concrete resolved id from
 	//     `state.packageId`).
 	//   - pinned literal (KNOWN with a declared id) → LITERAL (the id stands
 	//     identically in both paths).
@@ -163,7 +163,7 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 
 	// Active-network objects — captured ids (local). The captured ids are
 	// LOADED CONFIG DATA, so each is a RESOLVED binding on the generic
-	// `resolveValue('package:<name>:objects', '<key>')` channel: the static
+	// `requireValue(dep, 'package:<name>:objects', '<key>')` channel: the static
 	// committed stub emits the resolver expr, the live path bakes the real
 	// captured id AND feeds the deployment `values` channel. The key set comes
 	// from `objectKeys` (config-known) so BOTH paths emit identical paths —
@@ -266,7 +266,7 @@ export const makeLocalCodegenable = (
 	// deterministic; computed ONCE so the binding default and `config.mvr`
 	// stay equal. A LOCAL package has NO pinned id — the active-network id is
 	// always a RESOLVED binding (live bakes the real id; static emits
-	// `resolveId`).
+	// `requireId`).
 	const mvrPlaceholder = mvrNamedFormFrom(resolved.mvrPlaceholder);
 	const set = packageConfigBindings({
 		name: resolved.name,
@@ -338,7 +338,7 @@ export const makeLocalStaticCodegen = (config: {
 	readonly mvrPlaceholder?: string | undefined;
 	readonly excluded: boolean;
 	/** Capture KEYS declared by the user `capture` option (config-known).
-	 *  The static stub emits `resolveValue('package:<name>:objects', '<key>')`
+	 *  The static stub emits `requireValue(dep, 'package:<name>:objects', '<key>')`
 	 *  for each so the committed tree carries object-id references with NO
 	 *  baked id and NO live-only `objects` field. */
 	readonly objectKeys?: ReadonlyArray<string> | undefined;

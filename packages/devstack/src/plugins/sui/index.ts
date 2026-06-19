@@ -62,7 +62,6 @@ import { bootSuiService } from './service.ts';
 import { suiPluginError, type SuiPluginError } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey, type FaucetStrategy } from '../faucet/index.ts';
-import { resolveNetworkOptions } from '../../orchestrators/network-options.ts';
 import { suiLocalStrategy } from './local-faucet-strategy.ts';
 import { suiForkFaucetStrategy } from './fork-faucet-strategy.ts';
 import { selectSufficientForkCoin } from './fork-transaction.ts';
@@ -379,24 +378,24 @@ const bootAndEmit = (
 		// on a resolved strategy) and routables (mode-dependent) are the
 		// only optional members; order is load-bearing.
 		const realChainId = value.chainId;
-		// Per-network faucet gate (per-network options: ON for every network
-		// EXCEPT live `mainnet`, where the funding faucet must NEVER run).
-		// `identity.network` is the resolved network name. The gate honours
-		// ONLY the POLICY DEFAULT, NOT any author per-network override: the
-		// override RECORD (`networkOptions`) is an orchestrator-level concern
-		// that the name-blind substrate does not forward into plugins, and
-		// this plugin only receives `IdentityContext`. So a per-network
-		// `{ <network>: { faucet: false } }` override is deliberately NOT
-		// applied here (unlike `devWallet`/`autoApproveSigning`, which the
-		// orchestrator resolves against the forwarded `networkOptions`); see
-		// `orchestrators/network-options.ts`. The policy default already
-		// carries the load-bearing mainnet hard-clamp, so a resolved strategy
-		// on `mainnet` (none of the live modes build one today, but a future
-		// faucet-bearing mainnet config could) is suppressed and the strategy
-		// registry never exposes `faucet:request:<mainnet-chain-id>`; account
-		// funding then surfaces the actionable "no faucet strategy" error
-		// rather than silently faucet-funding against a production network.
-		const faucetEnabled = resolveNetworkOptions(identity.network).faucet;
+		// Funding-faucet gate: a FIXED policy — ON for every network EXCEPT
+		// live `mainnet`, where the funding faucet must NEVER run.
+		// `identity.network` is the resolved network name. There is NO
+		// per-network override surface for this gate: the override RECORD
+		// (`networkOptions`) is an orchestrator-level concern that the
+		// name-blind substrate does not forward into plugins (this plugin
+		// only receives the closed `IdentityContext` tuple), so a per-network
+		// `{ <network>: { faucet: false } }` toggle could never reach here —
+		// `NetworkScopedOptions` therefore deliberately omits a `faucet`
+		// field rather than advertise a silent no-op (see
+		// `orchestrators/network-options.ts`). The mainnet exclusion is
+		// load-bearing: a resolved strategy on `mainnet` (none of the live
+		// modes build one today, but a future faucet-bearing mainnet config
+		// could) is suppressed and the strategy registry never exposes
+		// `faucet:request:<mainnet-chain-id>`; account funding then surfaces
+		// the actionable "no faucet strategy" error rather than silently
+		// faucet-funding against a production network.
+		const faucetEnabled = identity.network !== 'mainnet';
 		const faucetContribution: ReadonlyArray<StrategyContributorDecl> =
 			!faucetEnabled || value.fundingFaucetStrategy === null
 				? []

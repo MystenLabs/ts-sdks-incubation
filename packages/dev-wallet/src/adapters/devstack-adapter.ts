@@ -16,7 +16,7 @@ import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
 import type { ManagedAccount } from '../types.js';
 import { BaseSignerAdapter } from './base-adapter.js';
-import { buildManagedAccount } from './build-managed-account.js';
+import { buildManagedAccount, chainsForNetworks } from './build-managed-account.js';
 import { DEVSTACK_WALLET_HTTP_PATH } from './devstack-paths.js';
 
 const DEVSTACK_WALLET_FEATURES = [
@@ -191,6 +191,11 @@ export interface DevstackSignerAdapterOptions {
 	token?: string | null;
 	/** Override the adapter's display name. Defaults to `'Devstack'`. */
 	name?: string;
+	/** The configured network names the wallet operates on. Each is advertised
+	 *  on every account as the wallet-standard chain `sui:<name>` (unioned with
+	 *  the standard Sui chains) so fork/custom networks are signable. Defaults
+	 *  to the standard chains only. */
+	networks?: readonly string[];
 }
 
 /**
@@ -219,6 +224,7 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 
 	#serverOrigin: string;
 	#authToken: string | null;
+	#chains: readonly `sui:${string}`[];
 
 	constructor(options: DevstackSignerAdapterOptions) {
 		super();
@@ -230,6 +236,7 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 		this.#serverOrigin = options.serverOrigin;
 		this.#authToken = options.token ?? null;
 		this.name = options.name ?? 'Devstack';
+		this.#chains = chainsForNetworks(options.networks);
 	}
 
 	async initialize(): Promise<void> {
@@ -272,7 +279,13 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 				serverOrigin: this.#serverOrigin,
 				authToken: this.#authToken,
 			});
-			return buildManagedAccount(signer, info.address, info.name, DEVSTACK_WALLET_FEATURES);
+			return buildManagedAccount(
+				signer,
+				info.address,
+				info.name,
+				DEVSTACK_WALLET_FEATURES,
+				this.#chains,
+			);
 		});
 	}
 }

@@ -186,6 +186,18 @@ describe('renderDeploymentStrict — shape', () => {
 			'export const NETWORK_NAMES = ["localnet", "testnet", "mainnet"] as const;',
 		);
 	});
+
+	it('defensively drops the local network + duplicates from a hand-supplied providedNetworks', () => {
+		// A caller that passes the local name (or a duplicate) in `providedNetworks`
+		// must NOT yield a duplicate `localnet` tuple element or pollute the union —
+		// the documented "local excluded" contract is enforced even off-source.
+		const src = renderDeploymentStrict({
+			...counterInput,
+			providedNetworks: ['localnet', 'testnet', 'testnet'],
+		});
+		expect(src).toContain('export type ProvidedNetwork = "testnet";');
+		expect(src).toContain('export const NETWORK_NAMES = ["localnet", "testnet"] as const;');
+	});
 });
 
 describe('renderDeploymentStrict — type-level completeness (counter / no service values)', () => {

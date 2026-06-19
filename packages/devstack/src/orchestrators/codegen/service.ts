@@ -146,11 +146,20 @@ const discoverProvidedNetworks = (canonicalOutputDir: string): ReadonlyArray<str
 		const projectRoot = dirname(dirname(canonicalOutputDir));
 		const deploymentsDir = join(projectRoot, 'deployments');
 		if (!existsSync(deploymentsDir)) return [];
-		return readdirSync(deploymentsDir)
-			.filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
-			.map((f) => f.slice(0, -'.ts'.length))
-			.filter((n) => n.length > 0)
-			.sort();
+		return (
+			readdirSync(deploymentsDir)
+				.filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+				.map((f) => f.slice(0, -'.ts'.length))
+				.filter((n) => n.length > 0)
+				// The local network is never a COMMITTED/provided network — it is the
+				// live dev stack, added as the head of `NETWORK_NAMES` separately. A
+				// stray committed `deployments/localnet.ts` must NOT pollute the
+				// `ProvidedNetwork` union / `NETWORK_NAMES` tuple with a duplicate
+				// `localnet`; the documented "local excluded" contract is enforced here
+				// at the source so every consumer of `providedNetworks` sees it honored.
+				.filter((n) => n !== LOCAL_NETWORK_NAME)
+				.sort()
+		);
 	} catch {
 		return [];
 	}
@@ -512,9 +521,7 @@ const runEmitCycleInner = (
 			// so it imports `loadDeployment` but emits NO module-level `dep` /
 			// `__deployment` preamble. Non-service buckets (config.ts) keep the
 			// module-level preamble.
-			const preamble = SERVICE_BUCKETS.has(aggregate.outputPath)
-				? []
-				: deploymentPreambleFor(usage);
+			const preamble = isServiceBucket(aggregate.outputPath) ? [] : deploymentPreambleFor(usage);
 			// `config.ts` references the app-specific `NETWORK_NAMES` tuple (D2)
 			// for `defaultNetwork`/`networkNames`; import it from the strict
 			// `deployment.ts` we emit alongside `config-runtime.ts`. Scan for the
@@ -920,6 +927,54 @@ const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').repla
  *  below is the matching static-render-only branch. */
 const CONFIG_BUCKET = 'config.ts';
 
+/** The network-agnostic `accounts.ts` bucket. Like `config.ts`, this is a
+ *  bucket the orchestrator special-cases STRUCTURALLY (not by plugin identity):
+ *  the live `assembleDeployment` folds it into the deployment envelope's
+ *  network-AGNOSTIC `accounts` map (name → address) rather than any per-network
+ *  unit, so it must NOT receive the per-network `forNetwork(network)` wrapper. */
+const ACCOUNTS_BUCKET = 'accounts.ts';
+
+/** The network-agnostic `packages.ts` MVR-pointer bucket. Unlike the service
+ *  buckets, its per-network package ids do NOT live in this module — they
+ *  resolve through `config.forNetwork(net).packages.<name>.id`; the standalone
+ *  `packages.ts` export is only the network-agnostic MVR placeholder plus the
+ *  default-network convenience id. It therefore must NOT receive the per-network
+ *  `forNetwork(network)` wrapper (doing so reshapes `packages.<name>` into a
+ *  network accessor and breaks `packages.<name>.mvrPlaceholder`). It is absent
+ *  from `assembleDeployment`'s name branches because the envelope's `packages`
+ *  field is sliced out of `config.ts`, not this aggregate. */
+const PACKAGES_BUCKET = 'packages.ts';
+
+/** The buckets that are NOT per-network service buckets — the ones the
+ *  orchestrator special-cases structurally:
+ *   - `config.ts`: carries the TYPED deployment channel and its own
+ *     per-network `forNetwork` field (injected by {@link withConfigEnvelopeAccessors});
+ *     `assembleDeployment` slices it into `network`/`networks`/`packages`/`mvrOverrides`.
+ *   - `accounts.ts`: network-agnostic (name → address), folded into the
+ *     envelope's `accounts` map by `assembleDeployment`.
+ *   - `packages.ts`: network-agnostic MVR pointers (see {@link PACKAGES_BUCKET}).
+ *  config/accounts mirror the two bucket arms `assembleDeployment` branches on;
+ *  `packages.ts` is the additional structurally-network-agnostic aggregate whose
+ *  per-network story is owned by `config.forNetwork`. Keeping this set to the
+ *  genuinely network-agnostic buckets is what lets the STATIC `forNetwork` gate
+ *  auto-wrap any NEW per-network service bucket by default. */
+const NON_SERVICE_BUCKETS: ReadonlySet<string> = new Set([
+	CONFIG_BUCKET,
+	ACCOUNTS_BUCKET,
+	PACKAGES_BUCKET,
+]);
+
+/** True when a bucket is a per-network SERVICE bucket (coins / deepbook / seal /
+ *  walrus today; a NEW plugin's `pyth.ts` automatically) — i.e. any aggregate
+ *  bucket that is NOT one of the orchestrator's structurally-special buckets.
+ *
+ *  Derived from a DECLARED structural fact (the bucket is not config / not
+ *  accounts) rather than a hard-coded service-name allowlist: a per-network
+ *  service plugin emitting a new bucket is wrapped in its `forNetwork(network)`
+ *  accessor by default, so its ids resolve for the dapp-kit-selected network
+ *  instead of silently baking the DEFAULT network's ids at module load. */
+const isServiceBucket = (bucket: string): boolean => !NON_SERVICE_BUCKETS.has(bucket);
+
 /**
  * Inject the DEPLOYMENT envelope-accessor fields into the committed
  * `config.ts` aggregate's `config` object literal as raw expressions:
@@ -959,21 +1014,16 @@ const withConfigEnvelopeAccessors = (file: AggregateFile): AggregateFile => {
 	return { ...file, exports: { ...file.exports, [stem]: augmented } };
 };
 
-/** The own-bucket SERVICE buckets (coin → `coins.ts`, deepbook →
- *  `deepbook.ts`, seal → `seal.ts`, walrus → `walrus.ts`). Each is wrapped in
- *  a per-network `forNetwork(network)` accessor so its ids resolve for the
- *  dapp-kit-selected network (not the default network baked at module load).
- *  `config.ts` / `accounts.ts` are NOT service buckets (config carries its own
- *  per-network `forNetwork` field; accounts are network-agnostic). */
-const SERVICE_BUCKETS: ReadonlySet<string> = new Set([
-	'coins.ts',
-	'deepbook.ts',
-	'seal.ts',
-	'walrus.ts',
-]);
-
 /**
  * Wrap a SERVICE bucket's inner object in a `forNetwork(network)` accessor.
+ *
+ * A per-network service bucket (coin → `coins.ts`, deepbook → `deepbook.ts`,
+ * seal → `seal.ts`, walrus → `walrus.ts`, and any NEW plugin's bucket) gets its
+ * ids wrapped so they resolve for the dapp-kit-selected network rather than the
+ * default network baked at module load. Which buckets qualify is derived from
+ * {@link isServiceBucket} (every bucket that is not the structurally-special
+ * `config.ts` / `accounts.ts`) — see its note for why a declared denylist beats
+ * a hard-coded service-name allowlist.
  *
  * The aggregate file's `exports` is `{ <stem>: <merged bucket object> }`. We
  * replace the merged object with a {@link ForNetworkBucket} marker the renderer
@@ -985,7 +1035,7 @@ const SERVICE_BUCKETS: ReadonlySet<string> = new Set([
  * Non-service buckets pass through unchanged.
  */
 const withForNetworkAccessor = (file: AggregateFile): AggregateFile => {
-	if (!SERVICE_BUCKETS.has(file.outputPath)) return file;
+	if (!isServiceBucket(file.outputPath)) return file;
 	const stem = bucketStem(file.outputPath);
 	const inner = file.exports[stem];
 	if (!isPlainObject(inner)) return file;
@@ -1319,6 +1369,13 @@ const deploymentFromBucket = (
 	// that sole connection key, then the param. This keeps `network` in
 	// agreement with the connection map so resolution never dereferences
 	// `undefined`.
+	//
+	// Consumer note: the resulting envelope is keyed by the BINDING's connection
+	// key (`"localnet"` for every local mode — fork modes included), NOT the
+	// identity's network name. Callers resolving per-network data off the
+	// envelope must key by this connection name and must NOT assume the identity
+	// network name appears as a key (a `"testnet-fork"` identity still keys its
+	// connection under `"localnet"`). This keying is intentional — do not change.
 	const connKeys = Object.keys(conns);
 	const bucketNetwork = asString(bucket['network']);
 	const activeNetwork =
@@ -1410,11 +1467,11 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 					if (decl.aggregate.idConfigValues !== undefined) {
 						deepMerge(values, decl.aggregate.idConfigValues);
 					}
-					if (decl.aggregate.bucket === 'config.ts') {
+					if (decl.aggregate.bucket === CONFIG_BUCKET) {
 						const emission = yield* runEmitter(decl);
 						const projected = decl.aggregate.project(emission.exports);
 						if (projected !== null) deepMerge(bucket, projected);
-					} else if (decl.aggregate.bucket === 'accounts.ts') {
+					} else if (decl.aggregate.bucket === ACCOUNTS_BUCKET) {
 						const emission = yield* runEmitter(decl);
 						const projected = decl.aggregate.project(emission.exports);
 						if (projected !== null) deepMerge(accounts, projected);

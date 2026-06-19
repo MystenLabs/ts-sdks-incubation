@@ -19,8 +19,9 @@ import type {
 	WalletAccount,
 	WalletIcon,
 } from '@mysten/wallet-standard';
-import { getWallets, ReadonlyWalletAccount, SUI_CHAINS } from '@mysten/wallet-standard';
+import { getWallets, ReadonlyWalletAccount } from '@mysten/wallet-standard';
 
+import { chainsForNetworks } from '../adapters/build-managed-account.js';
 import type { SignerAdapter } from '../types.js';
 import { DEFAULT_WALLET_ICON, getNetworkFromChain, type WalletEventsMap } from './constants.js';
 import { type SigningResult, executeSigning } from './signing.js';
@@ -177,8 +178,16 @@ export class DevWallet implements Wallet {
 		return this.#icon;
 	}
 
-	get chains() {
-		return SUI_CHAINS;
+	/**
+	 * Wallet-standard chains this wallet advertises. Reflects the CONFIGURED
+	 * networks — each network name is advertised as `sui:<name>` so dApp Kit's
+	 * chain-gated paths work for fork networks (`testnet-fork`, …) and custom
+	 * network names, not just the fixed standard set. Unioned with the standard
+	 * Sui chains for safety, de-duplicated, with the standard chains first and
+	 * configured-only chains appended in network-map order.
+	 */
+	get chains(): `sui:${string}`[] {
+		return chainsForNetworks(Object.keys(this.#networkUrls));
 	}
 
 	get accounts(): readonly ReadonlyWalletAccount[] {
@@ -321,7 +330,7 @@ export class DevWallet implements Wallet {
 			);
 		}
 		this.#activeNetwork = network;
-		this.#events.emit('change', { accounts: this.#accounts });
+		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
 	addNetwork(name: string, url: string, faucet?: string | null): void {
@@ -340,7 +349,7 @@ export class DevWallet implements Wallet {
 			this.#faucetUrls[name] = faucet;
 		}
 		this.#saveNetworkUrls();
-		this.#events.emit('change', { accounts: this.#accounts });
+		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
 	removeNetwork(name: string): void {
@@ -351,7 +360,7 @@ export class DevWallet implements Wallet {
 			this.#activeNetwork = Object.keys(this.#networkUrls)[0] ?? '';
 		}
 		this.#saveNetworkUrls();
-		this.#events.emit('change', { accounts: this.#accounts });
+		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
 	/** Register this wallet with the wallet-standard registry. Returns an unregister function. */

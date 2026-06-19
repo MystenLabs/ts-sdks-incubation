@@ -44,11 +44,34 @@ const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 /** A single-quoted TS string literal (prettier `singleQuote: true`). Falls
  *  back to a double-quoted literal only when the value itself contains a
  *  single quote but no double quote (prettier's own preference), else escapes
- *  within single quotes. */
+ *  within single quotes.
+ *
+ *  Escaping is derived from `JSON.stringify`, which already produces a valid
+ *  double-quoted JS string literal for ANY input — escaping backslash, the
+ *  double quote, and all control characters (newline, CR, tab, etc.) — so a
+ *  `values`-channel blob with literal newlines (PEM/cert text, multi-line
+ *  descriptions) can never emit an unterminated literal. The result is then
+ *  rephrased into prettier's quote preference. `U+2028`/`U+2029` are valid in
+ *  JS string literals (and `JSON.stringify` leaves them unescaped), but are
+ *  escaped here defensively so the emitted file is robust under tools that
+ *  treat them as line terminators. */
+// JS line/paragraph separators: valid in string literals but treated as line
+// terminators by some tooling. Built from escape sequences so this SOURCE file
+// stays pure-ASCII (no raw separator bytes).
+const LINE_SEP = new RegExp('\\u2028', 'g');
+const PARA_SEP = new RegExp('\\u2029', 'g');
 const quote = (s: string): string => {
-	if (!s.includes("'")) return `'${s.replace(/\\/g, '\\\\')}'`;
-	if (!s.includes('"')) return `"${s.replace(/\\/g, '\\\\')}"`;
-	return `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+	// `JSON.stringify` yields `"…"` with `\\`, `\"`, and all control chars
+	// escaped; the body (sans surrounding quotes) is then a safe double-quoted
+	// payload we can re-quote. Escape the JS line/paragraph separators too.
+	const json = JSON.stringify(s).replace(LINE_SEP, '\\u2028').replace(PARA_SEP, '\\u2029');
+	// Prefer single quotes (prettier `singleQuote: true`). The JSON body escapes
+	// `"` as `\"`; to single-quote we unescape `\"` → `"` and escape any literal
+	// `'` instead. Keep the double-quoted form when the value has a single quote
+	// but no double quote (prettier's own preference: fewer escapes).
+	if (s.includes("'") && !s.includes('"')) return json;
+	const body = json.slice(1, -1).replace(/\\"/g, '"').replace(/'/g, "\\'");
+	return `'${body}'`;
 };
 
 const key = (k: string): string => (IDENT_RE.test(k) ? k : quote(k));
@@ -90,8 +113,16 @@ const renderValue = (value: unknown, depth: number): string => {
  *  spread of the decoded unit) so the field order is stable and the dev-only
  *  `local` marker is dropped. Optional connection diagnostics are omitted when
  *  absent. `accounts` is structurally absent from `NetworkDeployment`, so it
- *  can never leak in. */
-const deploymentBody = (network: string, unit: NetworkDeployment): Record<string, unknown> => {
+ *  can never leak in.
+ *
+ *  Exported as the SHARED normalize seam: `dump-deployment --network`'s JSON
+ *  `data` reflects this same shape (network re-derived from the arg, `local`
+ *  dropped) so a `--json` consumer never sees a shape that diverges from the
+ *  committed file actually written. */
+export const deploymentBody = (
+	network: string,
+	unit: NetworkDeployment,
+): Record<string, unknown> => {
 	const body: Record<string, unknown> = { network, rpc: unit.rpc };
 	if (unit.chainId !== undefined) body.chainId = unit.chainId;
 	if (unit.faucet !== undefined) body.faucet = unit.faucet;

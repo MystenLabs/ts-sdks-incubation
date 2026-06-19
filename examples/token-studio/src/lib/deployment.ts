@@ -31,15 +31,34 @@ import { useCurrentNetwork } from '@mysten/dapp-kit-react';
 
 import { coins } from '@generated/coins.js';
 import { config } from '@generated/config.js';
-import { optionalValue } from '@generated/config-runtime.js';
+import { DevstackConfigMissingError, optionalValue } from '@generated/config-runtime.js';
+
+// The undeployed projection: the sentinel shape `isDeployedFor` reads as
+// "nothing deployed for this network". Returned for any unknown/undeployed
+// network so the gate can render `NotDeployed` instead of crashing.
+const UNDEPLOYED = {
+	packageId: '0x0',
+	managedCoinType: '',
+	treasuryCapId: '',
+	metadataId: '',
+} as const;
 
 // Project the manifest for ONE network. Both the generated coin table
 // (`coins.forNetwork`) and the discovery-only object ids resolve per network,
 // so flipping the dapp-kit-selected network (via `useDeployment`) flips every
 // coin id in lockstep — a runtime `switchNetwork` re-projects everything.
-export function deploymentForNetwork(network: string) {
-	const studio = coins.forNetwork(network).managed_coin;
-	const net = config.forNetwork(network);
+//
+// NON-THROWING: `useDeployment` runs this bare in render to gate the deployed
+// view, so an unknown/undeployed network must project the `UNDEPLOYED` sentinel
+// (which `isDeployedFor` reads as `false`), not throw. Two guards mirror the
+// throwing surfaces: (1) the network must be present in the injected envelope
+// (`config.networks[network]`) — `config.forNetwork` / `coins.forNetwork` throw
+// otherwise; (2) the coin table resolves required fields via `requireValue`,
+// which throws `DevstackConfigMissingError` when the coin hasn't been published
+// — caught here and reported as undeployed.
+export function deploymentForNetwork(network: string): Deployment {
+	const net = config.networks[network];
+	if (net === undefined) return UNDEPLOYED;
 
 	// Resolve a discovery-only coin object id off this network's deployment,
 	// tolerating absence: a build with no injected ids (or a coin not yet
@@ -50,20 +69,31 @@ export function deploymentForNetwork(network: string) {
 	const discoveryId = (key: string): string =>
 		optionalValue<string>(net, 'coin:managed_coin', key) ?? '';
 
-	return {
-		// Display-only: the published package id (header/footer + deployed gate).
-		packageId: studio?.packageId ?? '0x0',
-		// Coin TYPE string — sourced from generated coin config, never concatenated.
-		managedCoinType: studio?.fullCoinType ?? '',
-		// Known objects, sourced from coin auto-discovery (runtime-resolved).
-		treasuryCapId: discoveryId('treasuryCapId'),
-		metadataId: discoveryId('metadataId'),
-	} as const;
+	try {
+		const studio = coins.forNetwork(network).managed_coin;
+		return {
+			// Display-only: the published package id (header/footer + deployed gate).
+			packageId: studio?.packageId ?? '0x0',
+			// Coin TYPE string — sourced from generated coin config, never concatenated.
+			managedCoinType: studio?.fullCoinType ?? '',
+			// Known objects, sourced from coin auto-discovery (runtime-resolved).
+			treasuryCapId: discoveryId('treasuryCapId'),
+			metadataId: discoveryId('metadataId'),
+		};
+	} catch (cause) {
+		if (cause instanceof DevstackConfigMissingError) return UNDEPLOYED;
+		throw cause;
+	}
 }
 
-export type Deployment = ReturnType<typeof deploymentForNetwork>;
+export type Deployment = {
+	readonly packageId: string;
+	readonly managedCoinType: string;
+	readonly treasuryCapId: string;
+	readonly metadataId: string;
+};
 
-export const isDeployedFor = (d: Deployment): boolean => (d.packageId as string) !== '0x0';
+export const isDeployedFor = (d: Deployment): boolean => d.packageId !== '0x0';
 
 /**
  * The active deployment, projected for the dapp-kit-selected network. Because

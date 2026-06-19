@@ -64,7 +64,7 @@ describe('registerDevstackDevWallet — multi-network', () => {
 		vi.restoreAllMocks();
 	});
 
-	it('advertises the standard Sui chains and exposes every supplied network with its rpc', async () => {
+	it('advertises every supplied network as a wallet-standard chain — including non-standard names', async () => {
 		const { wallet, dispose } = await registerDevstackDevWallet({
 			serverOrigin: SERVER_ORIGIN,
 			token: null,
@@ -72,22 +72,34 @@ describe('registerDevstackDevWallet — multi-network', () => {
 			networks: {
 				localnet: { rpc: 'http://localnet.routed/rpc', faucet: 'http://localnet.routed/faucet' },
 				devnet: { rpc: 'http://devnet.routed/rpc', faucet: 'http://devnet.routed/faucet' },
+				// A non-standard network name (a fork stack + an arbitrary custom
+				// name) — neither is in the fixed SUI_CHAINS set. The wallet must
+				// advertise BOTH so dApp Kit's chain-gated paths work for them.
+				'testnet-fork': { rpc: 'http://testnet-fork.routed/rpc' },
+				custom: { rpc: 'http://custom.routed/rpc' },
 			},
 			defaultNetwork: 'localnet',
 			mountUI: false,
 		});
 
-		// The wallet advertises the four standard wallet-standard Sui chains —
-		// dApp Kit forwards `sui:<network>` for signing and the wallet routes by
-		// the chain's network segment, so localnet AND devnet are both signable.
+		// The wallet advertises the standard wallet-standard Sui chains — dApp Kit
+		// forwards `sui:<network>` for signing and the wallet routes by the
+		// chain's network segment, so localnet AND devnet are both signable.
 		expect(wallet.chains).toContain('sui:localnet');
 		expect(wallet.chains).toContain('sui:devnet');
+		// Crucially, chains reflects the CONFIGURED networks: the fork + custom
+		// names are advertised too (they are NOT in the static standard set).
+		expect(wallet.chains).toContain('sui:testnet-fork');
+		expect(wallet.chains).toContain('sui:custom');
 
 		// EVERY supplied network is configured with its routed rpc — the wallet
 		// resolves the right endpoint per selected network.
-		expect(wallet.availableNetworks).toEqual(expect.arrayContaining(['localnet', 'devnet']));
+		expect(wallet.availableNetworks).toEqual(
+			expect.arrayContaining(['localnet', 'devnet', 'testnet-fork', 'custom']),
+		);
 		expect(wallet.networkUrls['localnet']).toBe('http://localnet.routed/rpc');
 		expect(wallet.networkUrls['devnet']).toBe('http://devnet.routed/rpc');
+		expect(wallet.networkUrls['testnet-fork']).toBe('http://testnet-fork.routed/rpc');
 
 		// The wallet opens on the requested default network.
 		expect(wallet.activeNetwork).toBe('localnet');

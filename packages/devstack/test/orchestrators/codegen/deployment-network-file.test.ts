@@ -167,3 +167,62 @@ describe('renderNetworkDeploymentFile — round-trips against the generated depl
 		expect(typeCheck(deploymentTs, rendered.text).length).toBeGreaterThan(0);
 	});
 });
+
+describe('renderNetworkDeploymentFile — string-quoting safety', () => {
+	// A `values`-channel blob that exercises every escape `quote()` guards: a
+	// literal newline + CR (PEM/cert text), a single quote, a double quote, a
+	// backslash, a tab, and the JS line/paragraph separators U+2028/U+2029. None
+	// may produce an unterminated string literal in the emitted committed file.
+	// U+2028 (line sep) / U+2029 (para sep), built from char codes so this SOURCE
+	// stays pure-ASCII but the VALUE carries the real separator bytes `quote()`
+	// must escape.
+	const LINE_SEP = String.fromCharCode(0x2028);
+	const PARA_SEP = String.fromCharCode(0x2029);
+	const PEM = [
+		'-----BEGIN CERTIFICATE-----',
+		"line with a ' single quote",
+		'line with a " double quote',
+		'line with a \\ backslash',
+		'line\twith a tab',
+		`sep${LINE_SEP}and${PARA_SEP}terminators`,
+		'-----END CERTIFICATE-----',
+	].join('\n'); // literal newlines between lines.
+	const tricky = `${PEM}\r\n'tail'`;
+
+	const unit: NetworkDeployment = {
+		network: 'testnet',
+		rpc: 'https://fullnode.testnet.sui.io',
+		packages: {},
+		mvrOverrides: { packages: {}, types: {} },
+		values: {
+			'tls:cert': { pem: tricky, note: `quote ' and " mixed` },
+		},
+	};
+
+	const rendered = renderNetworkDeploymentFile('testnet', unit);
+	if (!rendered.ok) throw new Error(`render failed: ${rendered.error.detail}`);
+	const src = rendered.text;
+
+	it('emits a syntactically valid module (parses without an unterminated literal)', () => {
+		const diagnostics = ts
+			.createSourceFile('/tricky.ts', src, ts.ScriptTarget.ES2022, true)
+			.parseDiagnostics.map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+		expect(diagnostics).toEqual([]);
+	});
+
+	it('the escaped value survives intact (round-trips back to the original string)', () => {
+		// Evaluate the emitted module body's `deployment` object literal and read
+		// the value back — it must equal the original tricky string byte-for-byte.
+		// Strip the `import type` (type-only) + the `satisfies` clause so the
+		// literal is plain runtime-evaluable JS.
+		const objectLiteral = src
+			.slice(src.indexOf('export const deployment ='))
+			.replace('export const deployment =', 'return')
+			.replace(/ satisfies AppNetworkDeployment;\s*$/, ';');
+		const evaluated = new Function(objectLiteral)() as {
+			values: { 'tls:cert': { pem: string; note: string } };
+		};
+		expect(evaluated.values['tls:cert'].pem).toBe(tricky);
+		expect(evaluated.values['tls:cert'].note).toBe(`quote ' and " mixed`);
+	});
+});

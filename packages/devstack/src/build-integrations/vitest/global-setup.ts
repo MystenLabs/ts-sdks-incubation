@@ -153,7 +153,7 @@ const wipeStack = (stack: string, runtimeRoot: string, cwd: string): Promise<voi
  *  so the define bakes to `null`. The resolver's Node-only fallback reads
  *  `process.env.DEVSTACK_DEPLOYMENT_FILE` at id-access time instead — we point it at
  *  the freshly-booted stack's live deployment file here. Mirrors the Vite
- *  plugin's `readCodegenField`; degrades to `null` on any miss. */
+ *  plugin's `readIdsFileFromManifest`; degrades to `null` on any miss. */
 const readIdsFileFromManifest = (manifestPath: string): string | null => {
 	try {
 		if (!existsSync(manifestPath)) return null;

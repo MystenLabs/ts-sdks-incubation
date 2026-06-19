@@ -68,7 +68,17 @@ export const DEPLOYMENT_STRICT_OUTPUT_PATH = 'deployment.ts';
 /** Render the app-specific strict deployment type from data. Pure +
  *  deterministic (stable key ordering), types-only output. */
 export const renderDeploymentStrict = (input: DeploymentStrictInput): string => {
-	const { localNetworkName, packageNames, mvrPlaceholders, mvrTypeTags, providedNetworks } = input;
+	const { localNetworkName, packageNames, mvrPlaceholders, mvrTypeTags } = input;
+
+	// Defensive: the local network is the head of `NETWORK_NAMES` and is never a
+	// committed/provided network, so drop it (and any duplicate) from
+	// `providedNetworks` even if a caller passes it in. The source discovery
+	// (`discoverProvidedNetworks`) already filters it, but a hand-supplied set
+	// (tests, future callers) must not yield a duplicate `localnet` tuple element
+	// or pollute the `ProvidedNetwork` union.
+	const providedNetworks = [...new Set(input.providedNetworks)].filter(
+		(n) => n !== localNetworkName,
+	);
 
 	// `AppPackages` — exhaustive over the declared package names. Each entry
 	// carries `{ id; objects? }`. An app with no packages still declares the

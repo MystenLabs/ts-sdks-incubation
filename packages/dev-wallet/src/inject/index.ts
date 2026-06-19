@@ -139,10 +139,20 @@ async function registerDevstackDevWalletImpl(
 	const { mountUI = true, autoApprove = false } = config;
 	globalThis.__DEV_WALLET_INJECTED__ = true;
 
+	// Resolve the FULL network set up front so it can be advertised both on
+	// the wallet (its `chains`) and on every devstack account (per-account
+	// `chains`) — fork/custom networks must be signable from both surfaces.
+	const networkInfos: Readonly<Record<string, DevstackNetworkInfo>> =
+		config.networks !== undefined && Object.keys(config.networks).length > 0
+			? config.networks
+			: { localnet: { rpc: 'http://127.0.0.1:9000' } };
+	const networkNames = Object.keys(networkInfos);
+
 	const adapter = new DevstackSignerAdapter({
 		serverOrigin: config.serverOrigin,
 		token: config.token ?? null,
 		name: config.name ?? 'Devstack',
+		networks: networkNames,
 	});
 
 	// The wallet EXECUTES (and simulates) `signAndExecuteTransaction` with
@@ -160,11 +170,7 @@ async function registerDevstackDevWalletImpl(
 	// a UI `switchNetwork` just changes the active chain, it never
 	// re-registers. The wallet does NOT know live-vs-local — both flow through
 	// the same map. Omitting `networks` falls back to a single localnet entry
-	// (the legacy non-routed default).
-	const networkInfos: Readonly<Record<string, DevstackNetworkInfo>> =
-		config.networks !== undefined && Object.keys(config.networks).length > 0
-			? config.networks
-			: { localnet: { rpc: 'http://127.0.0.1:9000' } };
+	// (the legacy non-routed default — resolved as `networkInfos` above).
 	const networks: Record<string, string> = {};
 	const faucets: Record<string, string> = {};
 	for (const [net, info] of Object.entries(networkInfos)) {

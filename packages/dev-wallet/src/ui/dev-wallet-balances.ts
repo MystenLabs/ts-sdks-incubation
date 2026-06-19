@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ClientWithCoreApi } from '@mysten/sui/client';
+import { requestSuiFromFaucetV2 } from '@mysten/sui/faucet';
 import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
@@ -162,6 +163,13 @@ export class DevWalletBalances extends LitElement {
 				min-width: 0;
 			}
 
+			.hero-actions {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				flex-shrink: 0;
+			}
+
 			.hero-balance {
 				display: flex;
 				align-items: baseline;
@@ -220,6 +228,13 @@ export class DevWalletBalances extends LitElement {
 	@property({ type: String })
 	network = '';
 
+	/** Faucet endpoint for the active network (the wallet's `activeFaucet`),
+	 *  or `null` when the active network has no faucet (live mainnet, fork
+	 *  stacks). When set, a "Request from faucet" button funds the active
+	 *  address against this endpoint and refreshes balances. */
+	@property({ attribute: false })
+	faucetHost: string | null = null;
+
 	/** Optional pre-seeded coin metadata — pass the generated `coins`
 	 *  constant from devstack codegen (`src/generated/coins.ts`) to skip
 	 *  per-coin `getCoinMetadata` RPC waterfalls on UI load. Unknown coin
@@ -236,6 +251,12 @@ export class DevWalletBalances extends LitElement {
 	@state()
 	private _error: string | null = null;
 
+	@state()
+	private _funding = false;
+
+	@state()
+	private _fundError: string | null = null;
+
 	#lastFetchedAddress = '';
 	#lastFetchedClient: ClientWithCoreApi | null = null;
 	#fetchGeneration = 0;
@@ -246,6 +267,24 @@ export class DevWalletBalances extends LitElement {
 	refresh() {
 		if (this.address && this.client) {
 			this.#fetchBalances();
+		}
+	}
+
+	/** Request SUI from the active network's faucet for the active address,
+	 *  then refresh balances. No-op when no `faucetHost` is configured (live
+	 *  mainnet / fork stacks have none). */
+	async #requestFromFaucet() {
+		if (!this.faucetHost || !this.address || this._funding) return;
+		this._funding = true;
+		this._fundError = null;
+		try {
+			await requestSuiFromFaucetV2({ host: this.faucetHost, recipient: this.address });
+			this.refresh();
+		} catch (error) {
+			this._fundError =
+				error instanceof Error ? error.message : 'Faucet request failed. Try again.';
+		} finally {
+			this._funding = false;
 		}
 	}
 
@@ -286,8 +325,25 @@ export class DevWalletBalances extends LitElement {
 					</div>
 					<div class="hero-note">${formatAddress(this.address)} · ${networkLabel}</div>
 				</div>
-				<button class="action-btn" @click=${this.refresh}>Refresh</button>
+				<div class="hero-actions">
+					${this.faucetHost
+						? html`<button
+								class="action-btn"
+								part="faucet-button"
+								?disabled=${this._funding}
+								@click=${this.#requestFromFaucet}
+							>
+								${this._funding ? 'Funding...' : 'Faucet'}
+							</button>`
+						: nothing}
+					<button class="action-btn" @click=${this.refresh}>Refresh</button>
+				</div>
 			</div>
+			${this._fundError
+				? html`<div class="error-state" part="faucet-error-message" aria-live="polite">
+						${this._fundError}
+					</div>`
+				: nothing}
 			<div class="coins-header">
 				<h3 class="section-header">Coins · ${this._balances.length}</h3>
 				<button class="manage-btn" disabled>Manage</button>
@@ -302,8 +358,11 @@ export class DevWalletBalances extends LitElement {
 						? html`<div class="empty-state empty-wallet" part="empty-state">
 								<div class="empty-title">No balances on ${networkLabel}</div>
 								<div class="empty-copy">
-									Fund ${formatAddress(this.address)} from your local faucet or devstack seed, then
-									refresh balances here.
+									${this.faucetHost
+										? html`Use the Faucet button above to fund ${formatAddress(this.address)} on
+											${networkLabel}, then refresh.`
+										: html`Fund ${formatAddress(this.address)} from your local faucet or devstack
+											seed, then refresh balances here.`}
 								</div>
 							</div>`
 						: html`

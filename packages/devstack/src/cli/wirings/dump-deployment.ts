@@ -34,9 +34,11 @@ import {
 	type DevstackDeployment,
 } from '../../orchestrators/codegen/deployment.ts';
 import {
+	deploymentBody,
 	DEPLOYMENTS_DIRNAME,
 	renderNetworkDeploymentFile,
 } from '../../orchestrators/codegen/deployment-network-file.ts';
+import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import { type CliError, CliInternalError, CliUsageError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult } from '../../surfaces/cli/commands/index.ts';
 import { probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
@@ -101,7 +103,12 @@ const parseDeployment = (
 	Effect.try({
 		try: () => decodeDeployment(text),
 		catch: (cause) =>
-			new CliInternalError({ message: `deployment at ${deploymentFile} is not valid JSON`, cause }),
+			new CliInternalError({
+				// `decodeDeployment` throws on BOTH malformed JSON AND a shape that
+				// violates `DeploymentSchema`, so the message must cover both causes.
+				message: `could not decode deployment at ${deploymentFile} (malformed JSON or invalid shape)`,
+				cause,
+			}),
 	});
 
 /** The project root the `deployments/<net>.ts` file is written relative to:
@@ -131,6 +138,20 @@ const writeNetworkDeploymentFile = (
 						available.length > 0
 							? `available networks: ${available}`
 							: 'the deployment carries no networks',
+				}),
+			);
+		}
+		// A committed `deployments/<net>.ts` is non-local by definition
+		// (deployment-network-file.ts header) — it is the authoring surface for a
+		// REAL-network deploy. The live local stack's envelope is keyed under
+		// `localnet` with `local: true`, so `--network localnet` (or any unit
+		// flagged `local`) must be rejected rather than write a committed file
+		// that captures the throwaway dev stack.
+		if (network === LOCAL_NETWORK_NAME || unit.local === true) {
+			return yield* Effect.fail(
+				new CliUsageError({
+					message: `cannot dump the live local network "${network}" as a committed deployment`,
+					hint: 'committed deployments are for real networks; pick a non-local --network (e.g. testnet, mainnet)',
 				}),
 			);
 		}
@@ -200,10 +221,16 @@ export const runDumpDeployment = (
 		if (opts.network !== undefined) {
 			const projectRoot = projectRootOf(opts.configPath);
 			const outFile = yield* writeNetworkDeploymentFile(data, opts.network, projectRoot);
+			// The JSON `data` must mirror the file actually written — the NORMALIZED
+			// body (network re-derived from the arg, dev-only `local` dropped), NOT
+			// the raw envelope unit (which still carries `local` + the boot-written
+			// `network`). `writeNetworkDeploymentFile` already guaranteed the unit
+			// exists, so the lookup here is non-undefined.
+			const writtenUnit = data.networks[opts.network]!;
 			yield* emitSuccess(opts.io, opts.outputMode, {
 				command: 'dump-deployment',
 				elapsedMs: Date.now() - started,
-				data: data.networks[opts.network],
+				data: deploymentBody(opts.network, writtenUnit),
 				humanLines: [`wrote ${outFile}`],
 			});
 			return { exitCode: ExitCode.OK };

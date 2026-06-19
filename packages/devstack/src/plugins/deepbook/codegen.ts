@@ -8,7 +8,7 @@
 //   - LIVE (boot): bakes the resolved deployment (package / registry / pool
 //     ids, pyth feed ids, …) AND feeds the generic deployment `values`
 //     channel.
-//   - STATIC (committed tree): emits `resolveValue('deepbook:<name>', '<key>')`
+//   - STATIC (committed tree): emits `requireValue(dep, 'deepbook:<name>', '<key>')`
 //     so the committed `deepbook.ts` carries NO baked on-chain id / URL.
 //
 // STRUCTURAL fields (`name`, `network`) stay literals. The scalar ids
@@ -70,7 +70,7 @@ export interface DeepbookBindings {
  *  data), so the committed `deepbook.ts` bakes them as LITERALS. Only the
  *  always-declared scalar ids + the (declared, feed-less) pyth blob are carried;
  *  the dynamically-discovered fields (`adminCapId` for known, `pools`, server
- *  URLs) stay `resolveValue`. */
+ *  URLs) stay `requireValue`. */
 export interface DeepbookKnownIds {
 	readonly packageId: string;
 	readonly registryId: string;
@@ -92,7 +92,7 @@ type DeepbookLiveState = DeepbookBindings;
 
 /** TS source-type strings for the resolved deepbook fields, so the committed
  *  `deepbook.ts` carries the SAME concrete types `DeepbookBindings` declares
- *  (the generic `resolveValue` channel would otherwise return `unknown`). The
+ *  (the generic `requireValue` channel would otherwise return `unknown`). The
  *  composite blobs (`pools`/`pyth`/`margin`) inline the structural literal
  *  types so no emitted type-import is needed. */
 const POOL_TS_TYPE =
@@ -103,7 +103,7 @@ const MARGIN_TS_TYPE = '{ readonly packageId: string; readonly registryId: strin
 
 /** Build the deepbook instance's config-binding spec for `name`. `name` /
  *  `network` are structural literals; the deployment ids + composite values
- *  are runtime-resolved (`resolveValue`). */
+ *  are runtime-resolved (`requireValue`). */
 const deepbookBucketSpec = (
 	structural: DeepbookStaticConfig,
 ): SiblingBucketSpec<DeepbookLiveState> => {
@@ -180,7 +180,7 @@ export const makeDeepbookCodegenable = (bindings: DeepbookBindings): Codegenable
 	);
 
 /** Build the STATIC (stack-free) Codegenable contribution for a deepbook
- *  instance. Emits `resolveValue('deepbook:<name>', '<key>')` for the runtime
+ *  instance. Emits `requireValue(dep, 'deepbook:<name>', '<key>')` for the runtime
  *  fields; the committed `deepbook.ts` carries no baked on-chain id / URL. */
 export const makeDeepbookStaticCodegen = (config: DeepbookStaticConfig): CodegenableDecl =>
 	staticBucketCodegen(deepbookBucketSpec(config));

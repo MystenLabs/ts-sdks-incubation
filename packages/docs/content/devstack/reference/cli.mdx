@@ -149,11 +149,11 @@ Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--s
 `--from-snapshot <name-or-id>`, `--snapshot-cache <name>`, and
 `--snapshot-stale warn|block|clean-start`. The default snapshot stale policy is `warn`.
 
-Accepted network names are `localnet`, `testnet`, `mainnet`, `devnet`, `testnet-fork`,
-`mainnet-fork`, and `devnet-fork`. The same names are accepted with a `sui:` prefix, and `local`
-maps to `localnet`. Plain `sui()` still means localnet; fork and live names select the surface
-network for mode-narrowed configs, generated identity, and configs that explicitly branch on the
-resolved network.
+Accepted network names are exactly `localnet`, `testnet`, `mainnet`, `devnet`, `testnet-fork`,
+`mainnet-fork`, and `devnet-fork` — one canonical spelling each, with no `sui:` prefix or alias
+form; any other value is rejected with exit code 64. Plain `sui()` still means localnet; fork and
+live names select the surface network for mode-narrowed configs, generated identity, and configs
+that explicitly branch on the resolved network.
 
 ## Inspection commands
 

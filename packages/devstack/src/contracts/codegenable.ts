@@ -17,7 +17,7 @@ import type { Effect } from 'effect';
  *
  * The one authorized use is id resolution in the emitted `config.ts`:
  * `mvrOverrides` / `packageId` entries hold a
- * `RawExpr('resolveId("@local/foo")')` so the COMMITTED config carries NO
+ * `RawExpr('requireId(dep, "@local/foo")')` so the COMMITTED config carries NO
  * on-chain id. The id resolves at app build/dev time through the injected
  * `__DEVSTACK_DEPLOYMENT__` global (see the emitted `config-runtime.ts`), which
  * throws loudly when an id is unresolved. Lives at the L0 contract layer

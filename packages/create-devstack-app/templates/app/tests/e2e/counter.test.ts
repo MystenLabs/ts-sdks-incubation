@@ -35,8 +35,11 @@ describe('counter (local devstack)', () => {
 			network: 'localnet',
 			baseUrl: net.rpc,
 			// Resolves the bindings' default `@local/counter` package name to the
-			// deployed id at tx-build time (same wiring as `dapp-kit.ts`).
-			mvr: { overrides: config.mvrOverrides },
+			// deployed id at tx-build time. Wired off `net.mvrOverrides` — the same
+			// per-network `{ packages, types }` map `dapp-kit.ts` uses — so the e2e
+			// exercises the identical MVR resolution as the app (not the narrower
+			// `config.mvrOverrides`, which carries `packages` only).
+			mvr: { overrides: net.mvrOverrides },
 		});
 
 		// Throwaway on-chain actor, funded by the stack's local faucet.

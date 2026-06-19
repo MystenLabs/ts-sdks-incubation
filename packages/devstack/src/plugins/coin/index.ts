@@ -275,7 +275,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		section: 'action',
 		// Stack-free codegen: a package coin's type / decimals / package id
 		// are LOADED CONFIG DATA -- the committed stub emits
-		// `resolveValue('coin:<symbol>', '<key>')`, never a baked coin type.
+		// `requireValue(dep, 'coin:<symbol>', '<key>')`, never a baked coin type.
 		staticCodegen: () => [makeCoinStaticCodegen({ symbol, source: 'registry' })],
 		// `deps` auto-infers the resolved `{ pkg, sui }` dependency object;
 		// `ctx` arrives via the `PluginContext` service.
@@ -376,7 +376,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		section: 'action',
 		// Stack-free codegen: a builtin coin (SUI) is protocol-defined --
 		// its coin type + decimals are constants baked as LITERALS (no
-		// `resolveValue` that would throw at module load for a coin with no
+		// `requireValue` that would throw at module load for a coin with no
 		// injected id).
 		staticCodegen: () => [
 			makeCoinStaticCodegen({
