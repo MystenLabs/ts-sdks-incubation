@@ -171,9 +171,43 @@ const suiPrice = sui ? Number(sui.price) * 10 ** sui.expo : undefined; // 3.45
 
 To place orders, build transactions with the
 [`@mysten/deepbook-v3`](https://www.npmjs.com/package/@mysten/deepbook-v3) SDK, using the resolved
-`poolId` and coin types from the bindings, and sign them with your wallet / dapp-kit. See
-[`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader)
-for a complete trading UI — multiple pools, multiple feeds, and swap execution.
+`poolId` and coin types from the bindings, and sign them with your wallet / dapp-kit.
+
+### Connect the SDK
+
+DeepBook is a per-network service: `deepbook.forNetwork(network).deepbook` returns the bindings for
+the network your wallet is connected to, so a runtime `switchNetwork` flips the package, pool, and
+coin ids in lockstep. Extend your Sui client with the DeepBook extension built from that bucket:
+
+```ts title="src/App.tsx"
+import { useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
+import { deepbook as deepbookExtension } from '@mysten/deepbook-v3';
+
+import { deepbook } from '@generated/deepbook.js';
+
+const suiClient = useCurrentClient();
+const network = useCurrentNetwork();
+const bindings = deepbook.forNetwork(network).deepbook;
+
+const deepbookClient = suiClient.$extend(
+	deepbookExtension({
+		address: account.address,
+		// `packageIds`, `coins`, and `pools` map the bindings' resolved ids
+		// (bindings.packageId, bindings.registryId, bindings.pools[].poolId)
+		// into the extension's shapes.
+		packageIds: buildPackageIds(bindings),
+		coins: buildCoinMap(coins),
+		pools: buildPoolMap(bindings),
+	}),
+);
+```
+
+The extension carries DeepBook's package, registry, coin, and pool ids — all read from the bindings,
+nothing hard-coded — so `deepbookClient.deepbook.deepBook.swapExactQuoteForBase(...)` and the rest of
+the SDK target the pools your stack just created. See
+[`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader/src/App.tsx)
+for the `buildPackageIds` / `buildCoinMap` / `buildPoolMap` helpers and a complete trading UI —
+multiple pools, multiple feeds, and swap execution.
 
 ## Pyth price feeds
 

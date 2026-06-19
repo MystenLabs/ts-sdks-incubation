@@ -35,3 +35,36 @@ Walrus clusters are only available on local networks.
 `walCoin(walrusMember)` returns the WAL funding coin for the resolved Walrus member. Account funding
 can use it like any other coin ref when the Walrus service contributes the matching funding
 strategy.
+
+## Connect the SDK
+
+The stack config above runs the cluster; the [generated bindings](/devstack/codegen) carry its
+resolved ids into your app. Walrus is a per-network service: `walrus.forNetwork(network)` returns the
+bucket for the network your wallet is connected to, so a runtime `switchNetwork` flips the cluster
+ids in lockstep. Build a `WalrusClient` from that bucket:
+
+```ts title="src/lib/walrus.ts"
+import { useCurrentNetwork } from '@mysten/dapp-kit-react';
+import { WalrusClient } from '@mysten/walrus';
+import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
+
+import { walrus } from '@generated/walrus.js';
+
+const network = useCurrentNetwork();
+const w = walrus.forNetwork(network);
+
+const client = new WalrusClient({
+	suiClient,
+	packageConfig: w.packageConfig,
+	// Local clusters serve plain HTTP behind the devstack proxy; live
+	// networks serve HTTPS.
+	storageNodeUrlScheme: w.mode === 'local' ? 'http' : 'https',
+	wasmUrl: walrusWasmUrl,
+});
+```
+
+`w.packageConfig` already holds `systemObjectId`, `stakingPoolId`, and `exchangeIds` resolved at
+boot — pass it straight through. `storageNodeUrlScheme` keys off `w.mode` so the same code reaches a
+local cluster over HTTP and a known deployment over HTTPS as the connected network changes. See
+[`examples/private-content`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/walrus.ts)
+for the full client with blob write/read.
