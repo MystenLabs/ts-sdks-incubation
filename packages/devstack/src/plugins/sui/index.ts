@@ -471,7 +471,7 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		// environment/live data (dynamic local rpc port; a real deployment
 		// names a different network), so the committed tree carries
 		// `resolveNetwork()`/`resolveNetworks()` raw expressions that resolve
-		// at app build/dev time via the injected `__DEVSTACK_IDS__` global —
+		// at app build/dev time via the injected `__DEVSTACK_DEPLOYMENT__` global —
 		// never literal values. No id-resolver input needed.
 		staticCodegen: makeStaticCodegen(),
 		// Zero-arg `start` (no `dependsOn`); the substrate supplies the

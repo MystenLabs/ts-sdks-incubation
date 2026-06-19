@@ -3,28 +3,29 @@
 // `devstack codegen`. Apps consume codegen output; codegen output never
 // imports from devstack.
 //
-// Loud-failing on-chain id resolver. The committed `config.ts` carries no
-// ids; it resolves each id through `resolveId(...)` here, which reads the
-// build-time-injected `__DEVSTACK_IDS__` global. Run `devstack up` for
-// local dev (the Vite plugin injects the live ids), or point the build at a
-// committed id-config file for a real deployment.
+// Loud-failing on-chain deployment resolver. The committed `config.ts`
+// carries no ids; it resolves each id through the deployment API here
+// (`loadDeployment()` / `requireId(dep, ...)`), which reads the build-time-
+// injected `__DEVSTACK_DEPLOYMENT__` envelope. Run `devstack up` for local
+// dev (the Vite plugin injects the live deployment), or commit a per-network
+// `deployments/<net>.ts` for a real deployment.
 
 const UNRESOLVED_ID =
 	'0x0000000000000000000000000000000000000000000000000000000000000000';
 
-// Node-only runtime fallback for the on-chain ids. The browser/dev/prod
-// path injects `__DEVSTACK_IDS__` via the Vite `define` (replaced at
+// Node-only runtime fallback for the injected deployment. The browser/dev/prod
+// path injects `__DEVSTACK_DEPLOYMENT__` via the Vite `define` (replaced at
 // transform time); this fallback ONLY engages when that define is absent —
 // i.e. under Node/vitest, where the `define` bakes to `null` because the
 // test stack is booted by the vitest `globalSetup` AFTER the Vite config
 // (and so this module) is evaluated. The devstack vitest `globalSetup`
-// publishes the booted stack's id-config FILE path as
-// `process.env.DEVSTACK_DEPLOYMENT_FILE`; we read+parse it lazily here. Guarded so
-// browser bundles (no `process`, no `node:fs`) never touch it. Returns
-// `null` on any miss, so `ids()` throws its actionable error as before.
-// Minimal LOCAL shapes (no `@types/node` dependency — this file is also
-// type-checked in browser tsconfigs that don't load node types). We reach
-// `process` through `globalThis` and feature-test every member.
+// publishes the booted stack's deployment FILE path as
+// `process.env.DEVSTACK_DEPLOYMENT_FILE`; we read+parse the ENVELOPE lazily
+// here. Guarded so browser bundles (no `process`, no `node:fs`) never touch
+// it. Returns `null` on any miss, so the resolvers throw their actionable
+// error as before. Minimal LOCAL shapes (no `@types/node` dependency — this
+// file is also type-checked in browser tsconfigs that don't load node types).
+// We reach `process` through `globalThis` and feature-test every member.
 interface NodeProcessLike {
 	readonly env?: { readonly [k: string]: string | undefined };
 	readonly getBuiltinModule?: (id: string) => unknown;
@@ -33,15 +34,15 @@ interface NodeFsLike {
 	readonly existsSync: (p: string) => boolean;
 	readonly readFileSync: (p: string, enc: 'utf8') => string;
 }
-let nodeFallbackCache: DevstackIds | null | undefined;
-const readNodeFallbackIds = (): DevstackIds | null => {
+let nodeFallbackCache: DevstackDeployment | null | undefined;
+const readNodeFallbackDeployment = (): DevstackDeployment | null => {
 	if (nodeFallbackCache !== undefined) return nodeFallbackCache;
 	nodeFallbackCache = null;
 	try {
 		const proc = (globalThis as { process?: NodeProcessLike }).process;
 		if (proc === undefined) return null;
-		const idsFile = proc.env?.DEVSTACK_DEPLOYMENT_FILE;
-		if (idsFile === undefined || idsFile.length === 0) return null;
+		const file = proc.env?.DEVSTACK_DEPLOYMENT_FILE;
+		if (file === undefined || file.length === 0) return null;
 		// `process.getBuiltinModule` (Node >=22.3) loads `node:fs`
 		// synchronously without an `import`/`require` literal a browser
 		// bundler would try to resolve — this whole branch is unreachable in
@@ -49,183 +50,53 @@ const readNodeFallbackIds = (): DevstackIds | null => {
 		const getBuiltin = proc.getBuiltinModule;
 		if (typeof getBuiltin !== 'function') return null;
 		const fs = getBuiltin('node:fs') as NodeFsLike;
-		if (!fs.existsSync(idsFile)) return null;
-		nodeFallbackCache = JSON.parse(fs.readFileSync(idsFile, 'utf8')) as DevstackIds;
+		if (!fs.existsSync(file)) return null;
+		nodeFallbackCache = JSON.parse(fs.readFileSync(file, 'utf8')) as DevstackDeployment;
 		return nodeFallbackCache;
 	} catch {
 		return null;
 	}
 };
 
-/** The injected ids, or — under Node with no injected define — the
- *  `DEVSTACK_DEPLOYMENT_FILE` fallback. `null` when neither is available. */
-const injectedIds = (): DevstackIds | null => {
-	const injected = typeof __DEVSTACK_IDS__ === 'undefined' ? null : __DEVSTACK_IDS__;
+/** The injected deployment envelope, or — under Node with no injected define —
+ *  the `DEVSTACK_DEPLOYMENT_FILE` fallback. `null` when neither is
+ *  available. */
+const injectedDeployment = (): DevstackDeployment | null => {
+	const injected =
+		typeof __DEVSTACK_DEPLOYMENT__ === 'undefined' ? null : __DEVSTACK_DEPLOYMENT__;
 	if (injected !== null && injected !== undefined) return injected;
-	return readNodeFallbackIds();
+	return readNodeFallbackDeployment();
 };
 
-/** One network connection entry — `rpc` is the load-bearing field the app
- *  reads synchronously; `chainId`/`faucet`/`graphql` are optional
- *  diagnostics (mirrors `IdConfigNetworkSchema`). */
-export interface DevstackNetworkEntry {
-	readonly rpc: string;
-	readonly chainId?: string;
-	readonly faucet?: string | null;
-	readonly graphql?: string | null;
-}
-
-/** Shape of the injected ids. `null` when no stack is running and no
- *  id-config file was supplied at build time. */
-export interface DevstackIds {
-	readonly network: string;
-	readonly networks: { readonly [name: string]: DevstackNetworkEntry };
-	readonly packages: {
-		readonly [name: string]: { readonly id: string; readonly objects?: { readonly [k: string]: string } };
-	};
-	readonly accounts: { readonly [name: string]: string };
-	readonly mvrOverrides: { readonly [mvrPlaceholder: string]: string };
-	/** Generic resolver channel: `values[namespace][key]` carries
-	 *  arbitrary plugin JSON the typed fields above can't (deepbook pool
-	 *  ids, coin types, walrus/seal endpoints). Optional — an older
-	 *  injected blob (no `values`) still satisfies the typed resolvers. */
-	readonly values?: { readonly [namespace: string]: { readonly [key: string]: unknown } };
-}
-
-declare global {
-	// Injected by the devstack Vite plugin via `define`. `null` when no
-	// ids are available (no stack up + no id-config file).
-	const __DEVSTACK_IDS__: DevstackIds | null | undefined;
-}
-
-/** Thrown when a generated config value needs an on-chain id but none was
- *  injected — actionable, not a silent zero. */
-export class DevstackConfigMissingError extends Error {
-	constructor(detail: string) {
-		super(
-			`[devstack] ${detail}\n` +
-				`No on-chain ids are available. For local dev, run \`devstack up\` ` +
-				`(the Vite dev server injects the live ids). For a production build, ` +
-				`point the build at the known deployment's committed id-config file ` +
-				`(the Vite plugin \`ids\` option, or \`DEVSTACK_DEPLOYMENT_FILE\`) before ` +
-				`\`pnpm build\`. See your example README's "Deploy to a real network" ` +
-				`section.`,
-		);
-		this.name = 'DevstackConfigMissingError';
-	}
-}
-
-const ids = (): DevstackIds => {
-	const injected = injectedIds();
-	if (injected === null || injected === undefined) {
-		throw new DevstackConfigMissingError('on-chain ids were never injected');
-	}
-	return injected;
-};
-
-/** Resolve the active-network id for an MVR placeholder (`@local/<slug>`).
- *  Throws `DevstackConfigMissingError` when the id is absent or the
- *  all-zero sentinel. */
-export const resolveId = (mvrPlaceholder: string): string => {
-	const id = ids().mvrOverrides[mvrPlaceholder];
-	if (id === undefined || id === UNRESOLVED_ID) {
-		throw new DevstackConfigMissingError(`id for "${mvrPlaceholder}" is unresolved`);
-	}
-	return id;
-};
-
-/** Resolve the active network name (the `networks.<name>` key the app
- *  reads). Environment/live data — the local stack picks a dynamic value
- *  and a real deployment names a different network — so it is injected,
- *  never baked into the committed tree. Throws when no ids were injected. */
-export const resolveNetwork = (): string => ids().network;
-
-/** Resolve the network connection map (`{ [name]: DevstackNetworkEntry }`).
- *  The local rpc carries a dynamic port; a real deployment supplies its own —
- *  so this is injected, never baked. Throws when no ids were injected. */
-export const resolveNetworks = (): { readonly [name: string]: DevstackNetworkEntry } =>
-	ids().networks;
-
-/** Resolve the ACTIVE network's connection entry —
- *  `resolveNetworks()[resolveNetwork()]` with a non-undefined return type and
- *  a loud throw. Removes the `config.networks[config.network]` index-signature
- *  footgun: the app reads `.rpc` etc. off a guaranteed entry instead of
- *  threading an `undefined` past the index lookup. Throws
- *  `DevstackConfigMissingError` when no ids were injected or the active
- *  network has no entry in the injected map. */
-export const resolveActiveNetwork = (): DevstackNetworkEntry => {
-	const network = resolveNetwork();
-	const entry = resolveNetworks()[network];
-	if (entry === undefined) {
-		throw new DevstackConfigMissingError(`active network "${network}" has no entry`);
-	}
-	return entry;
-};
-
-/** Resolve a generic plugin value (`values[namespace][key]`). The committed
- *  `config.ts` calls this for any live plugin value that isn't a package id
- *  or the network — deepbook pool ids, coin types, walrus/seal endpoints.
- *  Throws `DevstackConfigMissingError` when no ids were injected, the value
- *  is missing, or it is the all-zero sentinel. */
-export const resolveValue = <T = unknown>(namespace: string, key: string): T => {
-	const values = ids().values ?? {};
-	const namespaceValues = values[namespace];
-	const value = namespaceValues === undefined ? undefined : namespaceValues[key];
-	if (value === undefined || value === UNRESOLVED_ID) {
-		throw new DevstackConfigMissingError(
-			`value "${namespace}.${key}" is unresolved`,
-		);
-	}
-	return value as T;
-};
-
-/** Non-throwing variant of `resolveValue`: returns `undefined` instead of
- *  throwing `DevstackConfigMissingError` when no ids were injected, the value
- *  is missing, or it is the all-zero sentinel. For discovery-only ids the app
- *  GATES on (e.g. a coin's `treasuryCapId`/`metadataId`, only known after a
- *  live publish) rather than the load-bearing fields that should fail loud. */
-export const resolveValueOptional = <T = unknown>(
-	namespace: string,
-	key: string,
-): T | undefined => {
-	const injected = injectedIds();
-	const values = injected?.values ?? {};
-	const namespaceValues = values[namespace];
-	const value = namespaceValues === undefined ? undefined : namespaceValues[key];
-	if (value === undefined || value === UNRESOLVED_ID) {
-		return undefined;
-	}
-	return value as T;
-};
-
-// ── Deployment API (the typed, multi-network surface) ───────────────────────
-// The resolved per-network runtime config is a DEPLOYMENT — it carries the
-// network's rpc/chainId/faucet/graphql endpoints, accounts, mvrOverrides and a
-// generic values channel, not just ids. The app reads typed fields off a
-// loaded deployment instead of calling per-id resolvers, and dapp-kit builds a
-// client per network so runtime network-switching works. The resolve*()
-// functions above are retained during the migration and will be removed once
-// every generated bucket reads through loadDeployment().
-
-/** One network's full resolved deployment — connection fields plus the
- *  on-chain ids/values for that network. The per-network unit of the
- *  multi-network envelope; hand-writable for production. */
+/** One network's full resolved deployment — connection fields (`rpc` is the
+ *  load-bearing one the app reads synchronously; `chainId`/`faucet`/
+ *  `graphql` are optional diagnostics) plus the on-chain ids/values for that
+ *  network. The per-network UNIT of the multi-network envelope; hand-writable
+ *  for production. */
 export interface NetworkDeployment {
-	readonly network: string;
+	readonly network?: string;
 	readonly rpc: string;
 	readonly chainId?: string;
 	readonly faucet?: string | null;
 	readonly graphql?: string | null;
+	/** Marks a live LOCAL network (a `devstack up` stack). Production builds
+	 *  ship only non-local networks. */
+	readonly local?: boolean;
 	readonly packages: {
 		readonly [name: string]: { readonly id: string; readonly objects?: { readonly [k: string]: string } };
 	};
 	readonly accounts: { readonly [name: string]: string };
 	readonly mvrOverrides: { readonly [mvrPlaceholder: string]: string };
+	/** Generic resolver channel: `values[namespace][key]` carries arbitrary
+	 *  plugin JSON the typed fields above can't (deepbook pool ids, coin
+	 *  types, walrus/seal endpoints). Optional — an older injected unit (no
+	 *  `values`) still satisfies the typed resolvers. */
 	readonly values?: { readonly [namespace: string]: { readonly [key: string]: unknown } };
 }
 
-/** The injected multi-network envelope: every network this build supports,
- *  keyed by name, plus the default the app opens on. */
+/** The injected multi-network ENVELOPE: every network this build supports,
+ *  keyed by name, plus the default the app opens on. `null` when no stack is
+ *  running and no committed deployment was supplied at build time. */
 export interface DevstackDeployment {
 	readonly defaultNetwork: string;
 	readonly networks: { readonly [name: string]: NetworkDeployment };
@@ -240,39 +111,28 @@ export interface LoadedDeployment {
 	readonly forNetwork: (network: string) => NetworkDeployment;
 }
 
-// Adapt the (currently single-network) injected ids blob into one
-// `NetworkDeployment`. Bridges the migration: today the Vite plugin injects a
-// single active network, so this presents it as that network's deployment.
-// Multi-network injection lands later; `forNetwork` of any other network
-// throws until then.
-const networkDeploymentFromIds = (blob: DevstackIds, network: string): NetworkDeployment => {
-	const entry = blob.networks[network];
-	if (entry === undefined) {
-		throw new DevstackConfigMissingError(`network "${network}" has no deployment`);
-	}
-	return {
-		network,
-		rpc: entry.rpc,
-		chainId: entry.chainId,
-		faucet: entry.faucet,
-		graphql: entry.graphql,
-		packages: blob.packages,
-		accounts: blob.accounts,
-		mvrOverrides: blob.mvrOverrides,
-		values: blob.values,
-	};
-};
+declare global {
+	// Injected by the devstack Vite plugin via `define`. `null` when no
+	// deployment is available (no stack up + no committed deployment).
+	const __DEVSTACK_DEPLOYMENT__: DevstackDeployment | null | undefined;
+}
 
-// Adapt the injected ids blob into the multi-network `DevstackDeployment`
-// envelope. Today the blob carries one active network, so the envelope keys
-// that single network; multi-network injection lands later (the shape is
-// already the production-authorable envelope).
-const deploymentFromIds = (blob: DevstackIds): DevstackDeployment => ({
-	defaultNetwork: blob.network,
-	networks: Object.fromEntries(
-		Object.keys(blob.networks).map((name) => [name, networkDeploymentFromIds(blob, name)]),
-	),
-});
+/** Thrown when a generated config value needs an on-chain id but none was
+ *  injected — actionable, not a silent zero. */
+export class DevstackConfigMissingError extends Error {
+	constructor(detail: string) {
+		super(
+			`[devstack] ${detail}\n` +
+				`No on-chain deployment is available. For local dev, run \`devstack up\` ` +
+				`(the Vite dev server injects the live deployment). For a production build, ` +
+				`commit the known deployment's per-network \`deployments/<net>.ts\` ` +
+				`(wired into the Vite plugin's \`deployments\` option, or pointed at via ` +
+				`\`DEVSTACK_DEPLOYMENT_FILE\`) before \`pnpm build\`. See your example ` +
+				`README's "Deploy to a real network" section.`,
+		);
+		this.name = 'DevstackConfigMissingError';
+	}
+}
 
 /** Wrap a resolved `DevstackDeployment` envelope in the `LoadedDeployment`
  *  accessor the app consumes. */
@@ -290,15 +150,21 @@ const loadedFrom = (deployment: DevstackDeployment): LoadedDeployment => ({
 
 /** Load the injected deployment envelope. Loud-fails ONCE here when nothing
  *  was injected; the app then reads typed fields off `forNetwork(net)`. */
-export const loadDeployment = (): LoadedDeployment => loadedFrom(deploymentFromIds(ids()));
+export const loadDeployment = (): LoadedDeployment => {
+	const injected = injectedDeployment();
+	if (injected === null || injected === undefined) {
+		throw new DevstackConfigMissingError('no deployment was ever injected');
+	}
+	return loadedFrom(injected);
+};
 
 /** Non-throwing sibling of `loadDeployment` — returns `null` instead of
  *  throwing when nothing was injected. For dev-only consumers (e.g. the dev
  *  wallet) that must no-op gracefully when no stack is running. */
 export const loadDeploymentOptional = (): LoadedDeployment | null => {
-	const blob = injectedIds();
-	if (blob === null || blob === undefined) return null;
-	return loadedFrom(deploymentFromIds(blob));
+	const injected = injectedDeployment();
+	if (injected === null || injected === undefined) return null;
+	return loadedFrom(injected);
 };
 
 /** Resolve a package id for an MVR placeholder off a loaded deployment.
@@ -336,4 +202,71 @@ export const optionalValue = <T = unknown>(
 	const namespaceValues = deployment.values?.[namespace];
 	const value = namespaceValues === undefined ? undefined : namespaceValues[key];
 	return value === undefined || value === UNRESOLVED_ID ? undefined : (value as T);
+};
+
+// ── Legacy resolve*() shims (default-network deployment) ────────────────────
+// These predate the typed deployment API and are still consumed by the two
+// e2e tests (`resolveActiveNetwork`) and any not-yet-migrated generated sugar.
+// They read the envelope's DEFAULT network. Their removal + the e2e migration
+// is a LATER commit — they stay green here.
+
+/** The default network's resolved deployment, loud-failing when nothing was
+ *  injected. The shared seam every legacy `resolve*()` reads through. */
+const defaultNetworkDeployment = (): NetworkDeployment => {
+	const loaded = loadDeployment();
+	return loaded.forNetwork(loaded.defaultNetwork);
+};
+
+/** Resolve the default-network id for an MVR placeholder (`@local/<slug>`).
+ *  Throws `DevstackConfigMissingError` when the id is absent or the
+ *  all-zero sentinel. */
+export const resolveId = (mvrPlaceholder: string): string =>
+	requireId(defaultNetworkDeployment(), mvrPlaceholder);
+
+/** Resolve the default network name (the network the app opens on).
+ *  Environment/live data — the local stack picks a dynamic value and a real
+ *  deployment names a different network — so it is injected, never baked into
+ *  the committed tree. Throws when nothing was injected. */
+export const resolveNetwork = (): string => loadDeployment().defaultNetwork;
+
+/** Resolve the network connection map (`{ [name]: { rpc, ... } }`). The local
+ *  rpc carries a dynamic port; a real deployment supplies its own — so this is
+ *  injected, never baked. Throws when nothing was injected. */
+export const resolveNetworks = (): { readonly [name: string]: NetworkDeployment } => {
+	const injected = injectedDeployment();
+	if (injected === null || injected === undefined) {
+		throw new DevstackConfigMissingError('no deployment was ever injected');
+	}
+	return injected.networks;
+};
+
+/** Resolve the DEFAULT network's connection entry. Removes the
+ *  `config.networks[config.network]` index-signature footgun: the app reads
+ *  `.rpc` etc. off a guaranteed entry instead of threading an `undefined`
+ *  past the index lookup. Throws `DevstackConfigMissingError` when nothing was
+ *  injected. */
+export const resolveActiveNetwork = (): NetworkDeployment => defaultNetworkDeployment();
+
+/** Resolve a generic plugin value (`values[namespace][key]`) off the DEFAULT
+ *  network. The committed `config.ts` calls this for any live plugin value
+ *  that isn't a package id or the network — deepbook pool ids, coin types,
+ *  walrus/seal endpoints. Throws `DevstackConfigMissingError` when nothing was
+ *  injected, the value is missing, or it is the all-zero sentinel. */
+export const resolveValue = <T = unknown>(namespace: string, key: string): T =>
+	requireValue<T>(defaultNetworkDeployment(), namespace, key);
+
+/** Non-throwing variant of `resolveValue`: returns `undefined` instead of
+ *  throwing when nothing was injected, the value is missing, or it is the
+ *  all-zero sentinel. For discovery-only ids the app GATES on (e.g. a coin's
+ *  `treasuryCapId`/`metadataId`, only known after a live publish) rather than
+ *  the load-bearing fields that should fail loud. */
+export const resolveValueOptional = <T = unknown>(
+	namespace: string,
+	key: string,
+): T | undefined => {
+	const injected = injectedDeployment();
+	if (injected === null || injected === undefined) return undefined;
+	const network = injected.networks[injected.defaultNetwork];
+	if (network === undefined) return undefined;
+	return optionalValue<T>(network, namespace, key);
 };

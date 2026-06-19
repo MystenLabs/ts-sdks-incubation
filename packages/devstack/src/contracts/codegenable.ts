@@ -19,7 +19,7 @@ import type { Effect } from 'effect';
  * `byNetwork` / `mvrOverrides` / `packageId` entries hold a
  * `RawExpr('resolveId("@local/foo")')` so the COMMITTED config carries NO
  * on-chain id. The id resolves at app build/dev time through the injected
- * `__DEVSTACK_IDS__` global (see the emitted `config-runtime.ts`), which
+ * `__DEVSTACK_DEPLOYMENT__` global (see the emitted `config-runtime.ts`), which
  * throws loudly when an id is unresolved. Lives at the L0 contract layer
  * so both the package plugin (producer) and the renderer (consumer) can
  * reach it without a layering cycle.
@@ -132,7 +132,7 @@ export type OutputLocation = 'generated' | 'generated-extras';
  * the live `acquire` would emit, but stack-free — KNOWN package ids come
  * from the declared `networks` literals, LOCAL ids stay the all-zero
  * sentinel (`UNRESOLVED_ID`) resolved at app build/dev time through the
- * injected `__DEVSTACK_IDS__` global. Plugins whose contributions genuinely
+ * injected `__DEVSTACK_DEPLOYMENT__` global. Plugins whose contributions genuinely
  * require live resolution (or which only land in the gitignored
  * `generated-extras` dev tree) omit this — the verb simply skips them.
  */

@@ -46,7 +46,7 @@ const leafPaths = (value: unknown, prefix = ''): ReadonlyArray<string> => {
 
 // No baked on-chain id (`0x…`) nor literal http rpc URL survives anywhere in
 // the static projection — those are LOADED CONFIG DATA, resolved at app
-// build/dev time via the injected `__DEVSTACK_IDS__` global.
+// build/dev time via the injected `__DEVSTACK_DEPLOYMENT__` global.
 const containsBakedRuntimeValue = (value: unknown): boolean => {
 	if (isRawExpr(value)) return false;
 	if (typeof value === 'string')

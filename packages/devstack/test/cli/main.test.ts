@@ -325,10 +325,12 @@ describe('cli/main', () => {
 			// Id-config written; committed tree untouched.
 			expect(existsSync(deploymentPath)).toBe(true);
 			expect(existsSync(generatedPath)).toBe(false);
-			const idConfig = JSON.parse(readFileSync(deploymentPath, 'utf8')) as {
-				readonly network: string;
+			const envelope = JSON.parse(readFileSync(deploymentPath, 'utf8')) as {
+				readonly defaultNetwork: string;
+				readonly networks: Record<string, { readonly network: string }>;
 			};
-			expect(idConfig.network).toBe('localnet');
+			expect(envelope.defaultNetwork).toBe('localnet');
+			expect(envelope.networks['localnet']?.network).toBe('localnet');
 		} finally {
 			process.exitCode = previousExitCode;
 			for (const [key, value] of Object.entries(previousEnv)) {

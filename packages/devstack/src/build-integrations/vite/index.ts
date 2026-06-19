@@ -5,8 +5,9 @@
 // that alias at the committed `<root>/src/generated` tree — the ONE
 // source of bindings, written only by the stack-free `devstack codegen`
 // verb. On-chain ids are NOT baked into that tree; they resolve at
-// runtime via the `__DEVSTACK_IDS__` global (see `resolveInjectedIds`),
-// so the same generated source serves every stack. Resolution:
+// runtime via the `__DEVSTACK_DEPLOYMENT__` global (see
+// `resolveInjectedDeployment`), so the same generated source serves every
+// stack. Resolution:
 //   1. `options.generatedDir` — explicit escape hatch (relative → root).
 //   2. `<root>/src/generated` — the committed tree, always.
 //
@@ -29,7 +30,12 @@ import { isAbsolute, resolve } from 'node:path';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
 import { resolveNetworkOptions } from '../../orchestrators/network-options.ts';
-import { decodeDeployment } from '../../orchestrators/codegen/deployment.ts';
+import {
+	decodeDeployment,
+	decodeNetworkDeployment,
+	type DevstackDeployment,
+	type NetworkDeployment,
+} from '../../orchestrators/codegen/deployment.ts';
 
 /** Default import-alias prefix. Customizable via `options.alias` (some
  *  apps prefer `@gen`, `~generated`, …). The app MUST use the SAME
@@ -89,14 +95,26 @@ export interface DevstackVitePluginOptions {
 	 *  otherwise on disk, so an app that customizes per-network signing must
 	 *  thread it here explicitly; the mainnet hard-clamp holds regardless. */
 	readonly networkOptions?: Readonly<Record<string, unknown>>;
-	/** Production deployment FILE — the known deployment's `deployment.json`
-	 *  (same schema the dev stack writes), committed at e.g.
-	 *  `config/<network>.ids.json`. Used only for `command === 'build'` to
-	 *  inject `__DEVSTACK_IDS__`. Relative paths resolve against the Vite
-	 *  root. If omitted, the `DEVSTACK_DEPLOYMENT_FILE` env (a path pointer) is used.
-	 *  Neither ⇒ no ids baked, and the generated resolver throws loudly at
-	 *  id-access time. We deliberately take a FILE, not a JSON env blob: a
-	 *  real deployment's ids are many + nested. */
+	/** Committed, per-network PROD deployments — `{ <net>: () => import('./deployments/<net>.ts') }`,
+	 *  each thunk resolving to `{ deployment: NetworkDeployment }` (the typed
+	 *  hand-written / `dump-deployment`-emitted file). These are the
+	 *  non-local networks a production `build` ships, and the additional
+	 *  networks a dev `serve` makes selectable alongside the live local one.
+	 *  Each thunk's `deployment` is validated against `NetworkDeploymentSchema`
+	 *  at config-load — a malformed committed file fails LOUDLY rather than
+	 *  silently injecting a broken network. Default `{}`. */
+	readonly deployments?: Readonly<Record<string, () => Promise<{ deployment: NetworkDeployment }>>>;
+	/** The network the app opens on when no live local network is present
+	 *  (a pure production build, or a dev serve with only committed
+	 *  networks). Defaults to the first committed network key. The live
+	 *  local network always wins as the default in dev. */
+	readonly defaultNetwork?: string;
+	/** DEPRECATED (kept one release): a single committed deployment FILE
+	 *  (the per-stack `deployment.json` ENVELOPE the dev stack writes).
+	 *  Used only for `command === 'build'` to inject `__DEVSTACK_DEPLOYMENT__`
+	 *  when no `deployments` thunks are supplied. Relative paths resolve
+	 *  against the Vite root; if omitted, the `DEVSTACK_DEPLOYMENT_FILE` env
+	 *  (a path pointer) is used. Prefer the per-network `deployments` option. */
 	readonly ids?: string;
 }
 
@@ -148,7 +166,7 @@ export interface DevstackVitePlugin {
 	readonly config: (
 		config: ViteUserConfigLike,
 		env?: ViteConfigEnvLike,
-	) => {
+	) => Promise<{
 		readonly resolve: {
 			readonly alias: Record<string, string>;
 			// Mutable `string[]` (NOT `readonly`): Vite's `ResolveOptions.dedupe`
@@ -161,14 +179,15 @@ export interface DevstackVitePlugin {
 			readonly dedupe?: string[];
 		};
 		readonly optimizeDeps?: { readonly include: string[] };
-		/** `define` injecting the on-chain ids as `__DEVSTACK_IDS__`. In a
-		 *  prod `build` this is the static id literal; in dev `serve` it is a
-		 *  reference to the `globalThis.__DEVSTACK_IDS_LIVE__` runtime global
-		 *  the `transformIndexHtml` hook sets fresh per page load, so a
-		 *  republished id reaches the app on reload (`define` is fixed for the
-		 *  dev server's lifetime and could never hot-update). */
+		/** `define` injecting the deployment envelope as
+		 *  `__DEVSTACK_DEPLOYMENT__`. In a prod `build` this is the static
+		 *  envelope literal; in dev `serve` it is a reference to the
+		 *  `globalThis.__DEVSTACK_DEPLOYMENT_LIVE__` runtime global the
+		 *  `transformIndexHtml` hook sets fresh per page load, so a republished
+		 *  id reaches the app on reload (`define` is fixed for the dev server's
+		 *  lifetime and could never hot-update). */
 		readonly define: Record<string, string>;
-	};
+	}>;
 	/** Capture the resolved command so injection is DEV-only. */
 	readonly configResolved: (config: ViteUserConfigLike) => void;
 	/** Dev-only: watch the live `deployment.json` and full-reload the page
@@ -179,10 +198,10 @@ export interface DevstackVitePlugin {
 	readonly resolveId: (id: string) => string | undefined;
 	/** Emit the dev-wallet register module (or a no-op when not applicable). */
 	readonly load: (id: string) => string | undefined;
-	/** Inject the dev-only HTML tags: the `__DEVSTACK_IDS_LIVE__` global
-	 *  (read fresh from the ids file per request) and, when the app carries
-	 *  the dev wallet, the `<script type="module">` importing the virtual
-	 *  module. The return shape mirrors a structural subset of Vite's
+	/** Inject the dev-only HTML tags: the `__DEVSTACK_DEPLOYMENT_LIVE__`
+	 *  global (read fresh from the deployment file per request) and, when the
+	 *  app carries the dev wallet, the `<script type="module">` importing the
+	 *  virtual module. The return shape mirrors a structural subset of Vite's
 	 *  `IndexHtmlTransformResult` so the plugin stays assignable to Vite's
 	 *  `Plugin` without devstack importing `vite`. */
 	readonly transformIndexHtml: (html: string) =>
@@ -237,40 +256,123 @@ const readIdsFileFromManifest = (
 	cwd: string,
 ): string | null => readManifestField(env, cwd, 'codegen.deploymentFile');
 
-/** SYNC read + schema-decode of a deployment FILE. The MISSING-file case
- *  (absent path, no file on disk) collapses to `null` so the Vite config
+/** SYNC read + schema-decode of a deployment ENVELOPE file. The MISSING-file
+ *  case (absent path, no file on disk) collapses to `null` so the Vite config
  *  load degrades gracefully when no stack has booted / no committed file is
- *  wired. A PRESENT-but-malformed file is NOT swallowed: it flows through
- *  the shared {@link decodeDeployment}, which THROWS on bad JSON or a shape
- *  that violates `DeploymentSchema` — surfacing a genuinely broken committed
+ *  wired. A PRESENT-but-malformed file is NOT swallowed: it flows through the
+ *  shared {@link decodeDeployment}, which THROWS on bad JSON or a shape that
+ *  violates `DevstackDeploymentSchema` — surfacing a genuinely broken
  *  deployment at config-load instead of silently injecting `null`. */
-const readDeploymentFile = (idsFile: string | null): unknown => {
-	if (idsFile === null || !existsSync(idsFile)) return null;
-	return decodeDeployment(readFileSync(idsFile, 'utf8'));
+const readDeploymentFile = (file: string | null): DevstackDeployment | null => {
+	if (file === null || !existsSync(file)) return null;
+	return decodeDeployment(readFileSync(file, 'utf8'));
 };
 
-/** Resolve the on-chain ids to inject as the `__DEVSTACK_IDS__` global —
- *  ALWAYS from a deployment FILE (same schema in dev and prod), never a
- *  JSON env blob. Dev (`serve`): the live `deployment.json` (via the
- *  manifest `codegen.deploymentFile`). Prod (`build`): the committed known-
- *  deployment file — the plugin `ids` option, else the `DEVSTACK_DEPLOYMENT_FILE`
- *  env (a PATH pointer, not data). Neither ⇒ `null`, so the generated
- *  resolver throws loudly at id-access time. */
-const resolveInjectedIds = (
+/** The LIVE local-stack deployment envelope for the active stack — the
+ *  `deployment.json` boot wrote (via the manifest `codegen.deploymentFile`),
+ *  or `null` on any miss. Read fresh so a republish reaches the app. */
+const readLiveEnvelope = (
+	env: Readonly<Record<string, string | undefined>>,
+	root: string,
+): DevstackDeployment | null => readDeploymentFile(readIdsFileFromManifest(env, root));
+
+/** Resolve + validate the committed per-network deployments — the
+ *  `deployments` option's thunks, each `() => Promise<{ deployment }>`. Each
+ *  `deployment` is validated against `NetworkDeploymentSchema` (loud-fail on a
+ *  malformed committed file) and stamped `{ network: <key>, local: false }` so
+ *  the envelope key is authoritative and the deploy filter treats it as a real
+ *  (non-local) network. Empty when no `deployments` are supplied. */
+const resolveCommittedNetworks = async (
+	deployments: Readonly<Record<string, () => Promise<{ deployment: NetworkDeployment }>>>,
+): Promise<Record<string, NetworkDeployment>> => {
+	const committed: Record<string, NetworkDeployment> = {};
+	for (const [net, thunk] of Object.entries(deployments)) {
+		const loaded = await thunk();
+		const validated = decodeNetworkDeployment(loaded.deployment, `deployments['${net}']`);
+		committed[net] = { ...validated, network: net, local: false };
+	}
+	return committed;
+};
+
+/** The first key of a record, or `undefined` when empty. */
+const firstKey = (record: Record<string, unknown>): string | undefined => Object.keys(record)[0];
+
+/** Merge the committed + live deployments into the envelope to inject as
+ *  `__DEVSTACK_DEPLOYMENT__`.
+ *   - `command === 'build'` (DEPLOY): the committed, NON-local networks only —
+ *     the live local network is dropped. Empty ⇒ `null` (the generated
+ *     resolver throws loudly at access time).
+ *   - dev `serve` (and config-load default): the committed networks OVERLAID
+ *     with the live local network(s), the live default winning. No live
+ *     envelope ⇒ committed only (default = `defaultNetwork` option / first
+ *     committed key).
+ *  The live envelope's entries are forced `local: true` (they ARE the running
+ *  local stack) so a later `build` would drop them. */
+const mergeDeployment = (
+	command: 'build' | 'serve' | undefined,
+	committed: Record<string, NetworkDeployment>,
+	live: DevstackDeployment | null,
+	defaultNetworkOption: string | undefined,
+): DevstackDeployment | null => {
+	if (command === 'build') {
+		if (Object.keys(committed).length === 0) return null;
+		const fallback = firstKey(committed)!;
+		return {
+			defaultNetwork:
+				defaultNetworkOption !== undefined && committed[defaultNetworkOption] !== undefined
+					? defaultNetworkOption
+					: fallback,
+			networks: committed,
+		};
+	}
+	// Dev serve / config-load default: overlay the live local network(s).
+	const networks: Record<string, NetworkDeployment> = { ...committed };
+	if (live !== null) {
+		for (const [net, dep] of Object.entries(live.networks)) {
+			networks[net] = { ...dep, network: net, local: true };
+		}
+		return { defaultNetwork: live.defaultNetwork, networks };
+	}
+	const fallback = firstKey(networks);
+	if (fallback === undefined) return null;
+	return {
+		defaultNetwork:
+			defaultNetworkOption !== undefined && networks[defaultNetworkOption] !== undefined
+				? defaultNetworkOption
+				: fallback,
+		networks,
+	};
+};
+
+/** Resolve the deployment envelope to inject as `__DEVSTACK_DEPLOYMENT__` —
+ *  the committed per-network `deployments` thunks merged with the live local
+ *  stack (dev) / nothing (build). The legacy single-file `ids` option (or the
+ *  `DEVSTACK_DEPLOYMENT_FILE` env) is honoured for `command === 'build'` ONLY
+ *  when no `deployments` thunks are supplied (one-release fallback): its
+ *  envelope's networks are shipped verbatim. Neither ⇒ `null`, so the
+ *  generated resolver throws loudly at access time. */
+const resolveInjectedDeployment = async (
 	env: Readonly<Record<string, string | undefined>>,
 	root: string,
 	command: 'build' | 'serve' | undefined,
-	idsOption: string | undefined,
-): unknown => {
-	// Prod build: the known deployment's committed deployment file. Option
-	// wins; else a `DEVSTACK_DEPLOYMENT_FILE` path pointer. Relative → Vite root.
-	if (command === 'build') {
-		const pointer = idsOption ?? env['DEVSTACK_DEPLOYMENT_FILE'];
-		if (pointer === undefined || pointer.length === 0) return null;
-		return readDeploymentFile(isAbsolute(pointer) ? pointer : resolve(root, pointer));
+	options: DevstackVitePluginOptions,
+): Promise<DevstackDeployment | null> => {
+	const committed = await resolveCommittedNetworks(options.deployments ?? {});
+	// Legacy `ids` / `DEVSTACK_DEPLOYMENT_FILE` fallback (build only, no
+	// `deployments` supplied): fold the committed FILE's networks in.
+	if (command === 'build' && Object.keys(committed).length === 0) {
+		const pointer = options.ids ?? env['DEVSTACK_DEPLOYMENT_FILE'];
+		if (pointer !== undefined && pointer.length > 0) {
+			const envelope = readDeploymentFile(isAbsolute(pointer) ? pointer : resolve(root, pointer));
+			if (envelope !== null) {
+				for (const [net, dep] of Object.entries(envelope.networks)) {
+					committed[net] = { ...dep, network: net, local: false };
+				}
+			}
+		}
 	}
-	// Dev serve (and config-load default): the live deployment file.
-	return readDeploymentFile(readIdsFileFromManifest(env, root));
+	const live = command === 'build' ? null : readLiveEnvelope(env, root);
+	return mergeDeployment(command, committed, live, options.defaultNetwork);
 };
 
 /** The manifest-recorded dev-extras tree (`codegen.extrasDir`) the
@@ -291,9 +393,10 @@ const readExtrasDirFromManifest = (
  *     // or devstackVitePlugin({ alias: '@gen' })
  *
  * The plugin's `config` hook merges `resolve.alias[<prefix>] = <dir>`
- * into the user config (Vite deep-merges the returned partial). Sync;
- * reads `process.env` + the manifest (for `__DEVSTACK_IDS__` / the
- * `@devstack-dev` extras dir) once at config-load.
+ * into the user config (Vite deep-merges the returned partial). Async
+ * (it awaits the committed `deployments` thunks); reads `process.env` +
+ * the manifest (for `__DEVSTACK_DEPLOYMENT__` / the `@devstack-dev` extras
+ * dir) once at config-load.
  */
 /** Derive the cold-start fallback dev-extras dir
  *  (`<root>/.devstack/stacks/<stack>/generated-extras`) for the active
@@ -383,16 +486,22 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 	const devExtrasAlias = options.devExtrasAlias ?? DEFAULT_DEV_EXTRAS_ALIAS;
 	const injectDevWallet = options.injectDevWallet ?? true;
 
-	// Captured across hooks. `config` runs first (alias resolution),
-	// `configResolved` records the command (DEV-gate), and `load` re-reads
-	// the dev-wallet config off `extrasDir`.
+	// Captured across hooks. `config` runs first (alias resolution + committed
+	// deployment validation), `configResolved` records the command (DEV-gate),
+	// and `load` re-reads the dev-wallet config off `extrasDir`.
 	let resolvedRoot = process.cwd();
 	let resolvedExtrasDir: string | null = null;
 	let isServe = false;
+	// The committed per-network deployments, resolved + validated ONCE in the
+	// async `config` hook (the thunks are async; the runtime-global path in
+	// `transformIndexHtml` is sync). Stable for the dev server's lifetime, so
+	// the per-request HTML injection overlays the fresh live network on top of
+	// these without re-awaiting.
+	let resolvedCommittedNetworks: Record<string, NetworkDeployment> = {};
 
 	return {
 		name: 'devstack:generated-alias',
-		config: (config: ViteUserConfigLike, configEnv?: ViteConfigEnvLike) => {
+		config: async (config: ViteUserConfigLike, configEnv?: ViteConfigEnvLike) => {
 			const root = config.root ?? process.cwd();
 			resolvedRoot = root;
 			const env = process.env as Readonly<Record<string, string | undefined>>;
@@ -406,8 +515,8 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// Explicit `generatedDir` wins (relative → resolved against the
 			// Vite root). Otherwise always the committed `<root>/src/generated`
 			// tree — the single source of bindings written by `devstack
-			// codegen`; ids resolve at runtime via `__DEVSTACK_IDS__`, so the
-			// same tree serves every stack.
+			// codegen`; ids resolve at runtime via `__DEVSTACK_DEPLOYMENT__`, so
+			// the same tree serves every stack.
 			const explicit = options.generatedDir;
 			const generatedDir =
 				explicit !== undefined ? resolve(root, explicit) : resolve(root, GENERATED_SUBPATH);
@@ -420,34 +529,41 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// never re-optimizes them mid-session into a second Lit realm
 			// (see the constants above).
 			const includeDevWallet = injectDevWallet && devWalletInstalled(root);
-			// Inject the on-chain ids the generated `config-runtime.ts` resolver
-			// reads as `__DEVSTACK_IDS__`.
-			//   - PROD build: bake the static literal.
+			// Resolve + validate the committed per-network deployments ONCE (the
+			// thunks are async; the per-request HTML path is sync). Captured so
+			// `transformIndexHtml` overlays the fresh live network on top of
+			// these without re-awaiting. A malformed committed file throws here,
+			// at config-load.
+			resolvedCommittedNetworks = await resolveCommittedNetworks(options.deployments ?? {});
+			// Inject the deployment envelope the generated `config-runtime.ts`
+			// resolver reads as `__DEVSTACK_DEPLOYMENT__`.
+			//   - PROD build: bake the static merged envelope literal (committed,
+			//     non-local networks only).
 			//   - DEV server (`vite dev`): point the identifier at the
-			//     `__DEVSTACK_IDS_LIVE__` runtime global the `transformIndexHtml`
-			//     hook sets fresh per page load — `define` is fixed for the dev
-			//     server's lifetime, so baking the value would pin the FIRST id
-			//     forever and a republish would never reach the app. A distinct
-			//     global name avoids a single-pass `define` token collision with
-			//     `__DEVSTACK_IDS__`.
+			//     `__DEVSTACK_DEPLOYMENT_LIVE__` runtime global the
+			//     `transformIndexHtml` hook sets fresh per page load — `define`
+			//     is fixed for the dev server's lifetime, so baking the value
+			//     would pin the FIRST id forever and a republish would never
+			//     reach the app. A distinct global name avoids a single-pass
+			//     `define` token collision with `__DEVSTACK_DEPLOYMENT__`.
 			//   - VITEST: vitest ALSO reports `command === 'serve'`, but it runs
 			//     no `transformIndexHtml` (no HTML), so the live global is never
 			//     set — and esbuild's stricter `define` rejects an operator
 			//     expression anyway. Bake a literal instead: the Vite config loads
-			//     BEFORE the test stack boots, so `injectedIds` is null and the
-			//     resolver falls back to the `DEVSTACK_DEPLOYMENT_FILE` env the vitest
-			//     globalSetup points at the freshly-booted stack (see
+			//     BEFORE the test stack boots, so the merged envelope is null and
+			//     the resolver falls back to the `DEVSTACK_DEPLOYMENT_FILE` env the
+			//     vitest globalSetup points at the freshly-booted stack (see
 			//     vitest/global-setup.ts).
 			// The define VALUE must be esbuild-valid (a JSON literal or a
 			// member-access chain) — note the bare `globalThis.…`, NOT a
 			// parenthesised `(… ?? null)`; `config-runtime.ts` already guards the
 			// `typeof … === 'undefined'` case.
-			const injectedIds = resolveInjectedIds(env, root, command, options.ids);
+			const injectedDeployment = await resolveInjectedDeployment(env, root, command, options);
 			const isVitest = env['VITEST'] !== undefined;
-			const idsDefine =
+			const deploymentDefine =
 				command === 'serve' && !isVitest
-					? 'globalThis.__DEVSTACK_IDS_LIVE__'
-					: JSON.stringify(injectedIds ?? null);
+					? 'globalThis.__DEVSTACK_DEPLOYMENT_LIVE__'
+					: JSON.stringify(injectedDeployment ?? null);
 			return {
 				resolve: {
 					// A bare-prefix alias (no trailing `/`) matches both
@@ -460,7 +576,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 					dedupe: resolvableLitDedupe(root),
 				},
 				define: {
-					__DEVSTACK_IDS__: idsDefine,
+					__DEVSTACK_DEPLOYMENT__: deploymentDefine,
 				},
 				...(includeDevWallet
 					? { optimizeDeps: { include: [...DEV_WALLET_OPTIMIZE_ENTRIES] } }
@@ -543,7 +659,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			// post-acquire hook rewrites this file whenever a package (re)publishes
 			// (e.g. after a Move-source edit fires the file watcher → selective
 			// restart); a reload re-runs `transformIndexHtml`, which re-reads the
-			// file into `__DEVSTACK_IDS_LIVE__`, so the app picks up the new id.
+			// file into `__DEVSTACK_DEPLOYMENT_LIVE__`, so the app picks up the new id.
 			server.watcher.add(idsFile);
 			const reloadOnIdsChange = (changed: string): void => {
 				// Chokidar fires absolute paths for an absolute `watcher.add`, so
@@ -560,11 +676,20 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 		transformIndexHtml: (html: string) => {
 			if (!isServe) return undefined;
 			const env = process.env as Readonly<Record<string, string | undefined>>;
-			// Read the live ids FRESH per request so a full-reload after a
-			// republish injects the new id. Set on a distinct global
-			// (`__DEVSTACK_IDS_LIVE__`) the `config` hook's `define` points
-			// `__DEVSTACK_IDS__` at; `head-prepend` runs it before any app module.
-			const liveIds = resolveInjectedIds(env, resolvedRoot, 'serve', options.ids);
+			// Read the live local envelope FRESH per request so a full-reload
+			// after a republish injects the new id, then overlay it on the
+			// committed networks captured at config-load (a sync merge — the
+			// committed thunks were already awaited in `config`). Set on a
+			// distinct global (`__DEVSTACK_DEPLOYMENT_LIVE__`) the `config` hook's
+			// `define` points `__DEVSTACK_DEPLOYMENT__` at; `head-prepend` runs it
+			// before any app module.
+			const live = readLiveEnvelope(env, resolvedRoot);
+			const liveDeployment = mergeDeployment(
+				'serve',
+				resolvedCommittedNetworks,
+				live,
+				options.defaultNetwork,
+			);
 			const tags: Array<{
 				tag: string;
 				attrs?: Record<string, string | boolean>;
@@ -573,7 +698,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			}> = [
 				{
 					tag: 'script',
-					children: `globalThis.__DEVSTACK_IDS_LIVE__ = ${JSON.stringify(liveIds ?? null)};`,
+					children: `globalThis.__DEVSTACK_DEPLOYMENT_LIVE__ = ${JSON.stringify(liveDeployment ?? null)};`,
 					injectTo: 'head-prepend',
 				},
 			];

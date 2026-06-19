@@ -345,17 +345,24 @@ describe('api/run-stack', () => {
 
 			const deploymentPath = join(runtimeRoot, 'stacks', 'main', 'deployment.json');
 			expect(existsSync(deploymentPath)).toBe(true);
-			const idConfig = JSON.parse(readFileSync(deploymentPath, 'utf8')) as {
-				readonly network: string;
-				readonly networks: Record<string, unknown>;
-				readonly packages: Record<string, unknown>;
-				readonly mvrOverrides: Record<string, unknown>;
+			const envelope = JSON.parse(readFileSync(deploymentPath, 'utf8')) as {
+				readonly defaultNetwork: string;
+				readonly networks: Record<
+					string,
+					{
+						readonly network: string;
+						readonly packages: Record<string, unknown>;
+						readonly mvrOverrides: Record<string, unknown>;
+					}
+				>;
 			};
-			expect(idConfig.network).toBe('localnet');
+			expect(envelope.defaultNetwork).toBe('localnet');
+			const unit = envelope.networks['localnet']!;
+			expect(unit.network).toBe('localnet');
 			// A leaf-only stack contributes no codegen — the deployment is valid
 			// but empty.
-			expect(idConfig.packages).toEqual({});
-			expect(idConfig.mvrOverrides).toEqual({});
+			expect(unit.packages).toEqual({});
+			expect(unit.mvrOverrides).toEqual({});
 		} finally {
 			await Effect.runPromise(handle.stop);
 			await Effect.runPromise(handle.awaitShutdown);

@@ -55,7 +55,7 @@ import { makeConfigLoader } from './config-loader.ts';
  *  hook (skipping plugins that lack one) to derive the committed-tree
  *  contributions from config alone. KNOWN package ids come from the
  *  declared `networks` literals; LOCAL ids stay the all-zero sentinel
- *  (resolved at app build/dev time through `__DEVSTACK_IDS__`). */
+ *  (resolved at app build/dev time through `__DEVSTACK_DEPLOYMENT__`). */
 export const deriveContributions = (
 	members: ReadonlyArray<AnyPlugin>,
 ): ReadonlyArray<CodegenableDecl> => {

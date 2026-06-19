@@ -67,7 +67,7 @@ import {
 import {
 	DEPLOYMENT_FILENAME,
 	writeDeployment,
-	type Deployment,
+	type DevstackDeployment,
 } from '../../src/orchestrators/codegen/deployment.ts';
 import { CoinRegistryService, layerCoinRegistry } from '../../src/plugins/coin/registry.ts';
 import {
@@ -204,7 +204,7 @@ export interface BootCodegenRun {
 	/** Absolute path to the written deployment file. */
 	readonly deploymentFile: string;
 	/** The assembled deployment (the live on-chain ids). */
-	readonly deployment: Deployment;
+	readonly deployment: DevstackDeployment;
 }
 
 export interface BootResult {

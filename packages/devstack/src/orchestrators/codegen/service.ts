@@ -82,8 +82,8 @@ import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
 import { UNRESOLVED_ID } from './deployment.ts';
 import type {
-	Deployment,
-	DeploymentNetwork,
+	DevstackDeployment,
+	NetworkDeployment,
 	DeploymentPackage,
 	DeploymentValues,
 } from './deployment.ts';
@@ -543,7 +543,7 @@ const runEmitCycleInner = (
 
 		// Emit the FIXED `config-runtime.ts` resolver (a constant string, NOT
 		// routed through the literal renderer) when `config.ts` resolves ids
-		// at runtime. It reads the injected `__DEVSTACK_IDS__` global and
+		// at runtime. It reads the injected `__DEVSTACK_DEPLOYMENT__` global and
 		// THROWS `DevstackConfigMissingError` on an unresolved id.
 		if (needsConfigRuntime) {
 			const abs = yield* paths.resolve(CONFIG_RUNTIME_OUTPUT_PATH);
@@ -1031,13 +1031,18 @@ export interface CodegenOrchestrator {
 		decl: Codegenable,
 	) => Effect.Effect<void, never, Scope.Scope>;
 
-	/** Assemble the deployment from the currently-registered (live-resolved)
-	 *  contributions. Boot calls this in its post-acquire hook to WRITE the
-	 *  deployment file (the same `networks` / `packages` / `mvrOverrides`
-	 *  data that fed `config.ts`, but as loadable JSON the Vite plugin
-	 *  injects). `network` is the active network name (`ctx.identity.network`).
-	 *  Pure projection over the registered decls — no I/O, no chain. */
-	readonly assembleDeployment: (network: string) => Effect.Effect<Deployment, CodegenEmitFailed>;
+	/** Assemble the deployment ENVELOPE from the currently-registered
+	 *  (live-resolved) contributions. Boot calls this in its post-acquire hook
+	 *  to WRITE the deployment file (the same `networks` / `packages` /
+	 *  `mvrOverrides` data that fed `config.ts`, but as loadable JSON the Vite
+	 *  plugin injects). A single-network dev stack yields a one-entry envelope
+	 *  `{ defaultNetwork: <net>, networks: { <net>: <NetworkDeployment, local:true> } }`
+	 *  — the live LOCAL network the Vite plugin overlays in dev. `network` is the
+	 *  active network name (`ctx.identity.network`). Pure projection over the
+	 *  registered decls — no I/O, no chain. */
+	readonly assembleDeployment: (
+		network: string,
+	) => Effect.Effect<DevstackDeployment, CodegenEmitFailed>;
 
 	/** Flush ONLY the `generated-extras` contributions (the dev wallet's
 	 *  `dev-wallet.ts` + the account plugin's `accounts.ts`) to the
@@ -1061,7 +1066,7 @@ export interface CodegenOrchestrator {
 	 *  member's `staticCodegen()` hook, NOT the live registered ones. This is
 	 *  load-bearing: the live decls bake the resolved on-chain ids into
 	 *  `config.ts`, but the committed tree MUST stay id-free (ids resolve at
-	 *  app build time via `__DEVSTACK_IDS__`) — baking a live id breaks a fresh
+	 *  app build time via `__DEVSTACK_DEPLOYMENT__`) — baking a live id breaks a fresh
 	 *  clone and any OTHER stack reading the tree. Runs the canonical
 	 *  {@link runEmitCycle} (per-process lock + content-addressed
 	 *  stage-and-swap), so config.ts re-emits to its unchanged id-free form
@@ -1084,28 +1089,41 @@ export class CodegenOrchestratorService extends Context.Service<
 >()('@devstack/orchestrators/Codegen') {}
 
 /**
- * Slice the deep-merged `config.ts` aggregate bucket into the loadable
- * `Deployment` interchange shape. The bucket is the live codegen
- * accumulation (sui `networks`, per-package `packages`/`objects`/
- * `mvrOverrides`, account `accounts`); this picks the id-bearing fields
- * the Vite plugin injects. Reads are defensive — any missing slice
- * collapses to an empty record so a partial stack still writes a valid
- * (if sparse) deployment.
+ * Slice the deep-merged `config.ts` aggregate bucket into a single
+ * loadable `NetworkDeployment` (the LIVE LOCAL network unit). The bucket is
+ * the live codegen accumulation (sui `networks`, per-package `packages`/
+ * `objects`/`mvrOverrides`, account `accounts`); this picks the id-bearing
+ * fields the Vite plugin injects and FLATTENS the chosen network's
+ * connection coordinates (rpc/chainId/faucet/graphql) inline. Reads are
+ * defensive — any missing slice collapses to an empty record so a partial
+ * stack still writes a valid (if sparse) network deployment. Single-network
+ * only here (commit 2): `assembleDeployment` keys the envelope under this
+ * unit's network. Per-package `byNetwork` resolution lands in commit 3.
  */
 const deploymentFromBucket = (
 	bucket: Record<string, unknown>,
 	network: string,
 	values: DeploymentValues,
-): Deployment => {
+): NetworkDeployment => {
 	const asRecord = (v: unknown): Record<string, unknown> => (isPlainObject(v) ? v : {});
 	const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
-	const networks: Record<string, DeploymentNetwork> = {};
+	// The bucket's `networks` map is keyed by what the sui binding emitted
+	// (`"localnet"` for every local mode); each entry carries the connection
+	// coordinates. We flatten ONE entry's coordinates into the per-network
+	// unit. Collect them first so we can pick the active network.
+	interface Conn {
+		readonly rpc: string;
+		readonly chainId?: string;
+		readonly faucet?: string | null;
+		readonly graphql?: string | null;
+	}
+	const conns: Record<string, Conn> = {};
 	for (const [name, raw] of Object.entries(asRecord(bucket['networks']))) {
 		const entry = asRecord(raw);
 		const rpc = asString(entry['rpc']);
 		if (rpc === undefined) continue;
-		networks[name] = {
+		conns[name] = {
 			rpc,
 			...(asString(entry['chainId']) !== undefined ? { chainId: asString(entry['chainId']) } : {}),
 			...(entry['faucet'] !== undefined ? { faucet: asString(entry['faucet']) ?? null } : {}),
@@ -1148,31 +1166,42 @@ const deploymentFromBucket = (
 		if (s !== undefined) mvrOverrides[mvr] = s;
 	}
 
-	// The active `network` field MUST be a key present in `networks` — the
-	// committed `config-runtime.ts` `resolveActiveNetwork()` does
-	// `resolveNetworks()[network]`, and the Vite dev-wallet injection reads
-	// `networks[network].rpc`. The `network` PARAM is the identity's network
-	// name (e.g. `"testnet-fork"`), but the sui binding keys the `networks`
-	// map by what it emitted (`"localnet"` for every mode). So PREFER the
-	// network the binding stamped into the bucket (`bucket['network']`, which
-	// matches the `networks` key); fall back to the param, then — if neither
-	// is a known key but exactly one network exists — that sole key. This
-	// keeps `network` in agreement with `networks` so resolution never
-	// dereferences `undefined`.
-	const networkKeys = Object.keys(networks);
+	// The unit's `network` field MUST be a key present in the bucket's
+	// connection map — the Vite dev-wallet injection reads
+	// `networks[network].rpc` off the envelope. The `network` PARAM is the
+	// identity's network name (e.g. `"testnet-fork"`), but the sui binding
+	// keys the connection map by what it emitted (`"localnet"` for every
+	// mode). So PREFER the network the binding stamped into the bucket
+	// (`bucket['network']`, which matches a connection key); fall back to the
+	// param, then — if neither is a known key but exactly one connection
+	// exists — that sole key. This keeps `network` in agreement with the
+	// connection map so resolution never dereferences `undefined`.
+	const connKeys = Object.keys(conns);
 	const bucketNetwork = asString(bucket['network']);
 	const activeNetwork =
-		bucketNetwork !== undefined && networkKeys.includes(bucketNetwork)
+		bucketNetwork !== undefined && connKeys.includes(bucketNetwork)
 			? bucketNetwork
-			: networkKeys.includes(network)
+			: connKeys.includes(network)
 				? network
-				: networkKeys.length === 1
-					? networkKeys[0]!
+				: connKeys.length === 1
+					? connKeys[0]!
 					: (bucketNetwork ?? network);
+
+	// Flatten the active network's connection coordinates inline. A bucket
+	// with no connection at all (network-only / partial stack) still yields a
+	// well-formed unit with an empty `rpc` — the resolvers throw their
+	// actionable error rather than a raw TypeError.
+	const conn = conns[activeNetwork] ?? { rpc: '' };
 
 	return {
 		network: activeNetwork,
-		networks,
+		rpc: conn.rpc,
+		...(conn.chainId !== undefined ? { chainId: conn.chainId } : {}),
+		...(conn.faucet !== undefined ? { faucet: conn.faucet } : {}),
+		...(conn.graphql !== undefined ? { graphql: conn.graphql } : {}),
+		// Live LOCAL network — the deploy filter (`command === 'build'`)
+		// drops it; dev overlays it as the default network.
+		local: true,
 		packages,
 		accounts,
 		mvrOverrides,
@@ -1251,7 +1280,16 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 					}
 				}
 				bucket['accounts'] = accounts;
-				return deploymentFromBucket(bucket, network, values as DeploymentValues);
+				// The single-network slice — the live LOCAL network unit.
+				const unit = deploymentFromBucket(bucket, network, values as DeploymentValues);
+				// Wrap it in the multi-network envelope keyed by the unit's own
+				// (bucket-derived) network, so the on-disk shape is uniform with a
+				// multi-network deployment. A single-network dev stack ⇒ one entry.
+				const unitNetwork = unit.network ?? network;
+				return {
+					defaultNetwork: unitNetwork,
+					networks: { [unitNetwork]: unit },
+				} satisfies DevstackDeployment;
 			});
 
 		const emitExtras: CodegenOrchestrator['emitExtras'] = () =>

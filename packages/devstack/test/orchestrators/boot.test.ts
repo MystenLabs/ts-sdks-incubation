@@ -152,11 +152,10 @@ const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 	registerContribution: () => Effect.void,
 	assembleDeployment: (network) =>
 		Effect.succeed({
-			network,
-			networks: {},
-			packages: {},
-			accounts: {},
-			mvrOverrides: {},
+			defaultNetwork: network,
+			networks: {
+				[network]: { network, rpc: '', local: true, packages: {}, accounts: {}, mvrOverrides: {} },
+			},
 		}),
 	emitExtras: () =>
 		Effect.succeed({ filesWritten: [], filesUnchanged: [], filesChmod: [], bindings: null }),
@@ -631,11 +630,17 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 			registerContribution: () => Effect.void,
 			assembleDeployment: (network) =>
 				Effect.succeed({
-					network,
-					networks: {},
-					packages: {},
-					accounts: {},
-					mvrOverrides: {},
+					defaultNetwork: network,
+					networks: {
+						[network]: {
+							network,
+							rpc: '',
+							local: true,
+							packages: {},
+							accounts: {},
+							mvrOverrides: {},
+						},
+					},
 				}),
 			emitExtras: () =>
 				Effect.sync(() => {

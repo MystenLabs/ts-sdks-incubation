@@ -4,8 +4,8 @@
 // `src/generated/config-runtime.ts`. It is a constant string (NOT routed
 // through the literal renderer), so these tests transpile it with the
 // TypeScript compiler and evaluate it in a `vm` sandbox against a controlled
-// `__DEVSTACK_IDS__` global — exercising the REAL emitted resolver behavior,
-// not a re-implementation.
+// `__DEVSTACK_DEPLOYMENT__` ENVELOPE global — exercising the REAL emitted
+// resolver behavior, not a re-implementation.
 
 import { describe, expect, it } from 'vitest';
 import { createContext, runInContext } from 'node:vm';
@@ -25,7 +25,11 @@ interface Resolver {
 	loadDeployment: () => LoadedDeploymentLike;
 	loadDeploymentOptional: () => LoadedDeploymentLike | null;
 	requireId: (deployment: NetworkDeploymentLike, mvrPlaceholder: string) => string;
-	requireValue: <T = unknown>(deployment: NetworkDeploymentLike, namespace: string, key: string) => T;
+	requireValue: <T = unknown>(
+		deployment: NetworkDeploymentLike,
+		namespace: string,
+		key: string,
+	) => T;
 	optionalValue: <T = unknown>(
 		deployment: NetworkDeploymentLike,
 		namespace: string,
@@ -47,8 +51,8 @@ interface LoadedDeploymentLike {
 }
 
 /** Transpile the emitted source to CJS and evaluate it with the given
- *  `__DEVSTACK_IDS__` global, returning the module exports. */
-const loadResolver = (injectedIds: unknown): Resolver => {
+ *  `__DEVSTACK_DEPLOYMENT__` envelope global, returning the module exports. */
+const loadResolver = (injected: unknown): Resolver => {
 	const js = ts.transpileModule(CONFIG_RUNTIME_SOURCE, {
 		compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 	}).outputText;
@@ -56,20 +60,68 @@ const loadResolver = (injectedIds: unknown): Resolver => {
 	const sandbox = {
 		exports,
 		module: { exports },
-		__DEVSTACK_IDS__: injectedIds,
+		__DEVSTACK_DEPLOYMENT__: injected,
 	};
 	createContext(sandbox);
 	runInContext(js, sandbox);
 	return sandbox.module.exports as unknown as Resolver;
 };
 
-const idsBlob = {
+/** Build a single-network envelope around one `NetworkDeployment` unit. */
+const envelope = (unit: {
+	network: string;
+	rpc: string;
+	packages?: Record<string, { id: string }>;
+	accounts?: Record<string, string>;
+	mvrOverrides?: Record<string, string>;
+	values?: Record<string, Record<string, unknown>>;
+	local?: boolean;
+}) => ({
+	defaultNetwork: unit.network,
+	networks: {
+		[unit.network]: {
+			packages: {},
+			accounts: {},
+			mvrOverrides: {},
+			...unit,
+		},
+	},
+});
+
+const localUnit = {
 	network: 'localnet',
-	networks: { localnet: { rpc: 'http://127.0.0.1:9000' } },
+	rpc: 'http://127.0.0.1:9000',
+	local: true,
 	packages: {},
 	accounts: {},
 	mvrOverrides: { '@local/demo': '0xabc' },
 	values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
+};
+const idsBlob = envelope(localUnit);
+
+/** A two-network envelope (localnet default + a committed testnet). */
+const multiBlob = {
+	defaultNetwork: 'localnet',
+	networks: {
+		localnet: {
+			network: 'localnet',
+			rpc: 'http://127.0.0.1:9000',
+			local: true,
+			packages: {},
+			accounts: {},
+			mvrOverrides: { '@local/demo': '0xabc' },
+			values: { 'coin:managed_coin': { treasuryCapId: '0xcap' } },
+		},
+		testnet: {
+			network: 'testnet',
+			rpc: 'http://testnet.example',
+			local: false,
+			packages: {},
+			accounts: {},
+			mvrOverrides: { '@local/demo': '0xdef' },
+			values: {},
+		},
+	},
 };
 
 const UNRESOLVED = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -86,19 +138,27 @@ describe('CONFIG_RUNTIME_SOURCE shape', () => {
 });
 
 describe('resolveActiveNetwork', () => {
-	it('returns the active network entry', () => {
+	it('returns the default network entry', () => {
 		const r = loadResolver(idsBlob);
-		expect(r.resolveActiveNetwork()).toEqual({ rpc: 'http://127.0.0.1:9000' });
+		expect(r.resolveActiveNetwork().rpc).toBe('http://127.0.0.1:9000');
 	});
 
-	it('throws DevstackConfigMissingError when the active network has no entry', () => {
-		const r = loadResolver({ ...idsBlob, network: 'testnet' });
+	it('throws DevstackConfigMissingError when the default network has no entry', () => {
+		// An envelope whose `defaultNetwork` names a network absent from `networks`.
+		const r = loadResolver({ defaultNetwork: 'testnet', networks: {} });
 		expect(() => r.resolveActiveNetwork()).toThrow(r.DevstackConfigMissingError);
 	});
 
-	it('throws when no ids were injected', () => {
+	it('throws when no deployment was injected', () => {
 		const r = loadResolver(null);
 		expect(() => r.resolveActiveNetwork()).toThrow(r.DevstackConfigMissingError);
+	});
+
+	it('reads the DEFAULT network in a multi-network envelope', () => {
+		const r = loadResolver(multiBlob);
+		expect(r.resolveActiveNetwork().rpc).toBe('http://127.0.0.1:9000');
+		expect(r.resolveNetwork()).toBe('localnet');
+		expect(r.resolveId('@local/demo')).toBe('0xabc');
 	});
 });
 
@@ -119,21 +179,23 @@ describe('resolveValueOptional', () => {
 	});
 
 	it('returns undefined for the all-zero sentinel', () => {
-		const r = loadResolver({
-			...idsBlob,
-			values: { 'coin:managed_coin': { treasuryCapId: UNRESOLVED } },
-		});
+		const r = loadResolver(
+			envelope({
+				...localUnit,
+				values: { 'coin:managed_coin': { treasuryCapId: UNRESOLVED } },
+			}),
+		);
 		expect(r.resolveValueOptional('coin:managed_coin', 'treasuryCapId')).toBeUndefined();
 	});
 
-	it('returns undefined when no ids were injected (no throw)', () => {
+	it('returns undefined when no deployment was injected (no throw)', () => {
 		const r = loadResolver(null);
 		expect(r.resolveValueOptional('coin:managed_coin', 'treasuryCapId')).toBeUndefined();
 	});
 });
 
 describe('deployment API', () => {
-	it('loadDeployment adapts the injected blob into a one-network envelope', () => {
+	it('loadDeployment reads the one-network envelope directly', () => {
 		const r = loadResolver(idsBlob);
 		const dep = r.loadDeployment();
 		expect(dep.defaultNetwork).toBe('localnet');
@@ -143,12 +205,25 @@ describe('deployment API', () => {
 		expect(net.mvrOverrides['@local/demo']).toBe('0xabc');
 	});
 
-	it('loadDeployment throws when no ids were injected', () => {
+	it('loadDeployment honors a multi-network envelope (forNetwork + defaultNetwork)', () => {
+		const r = loadResolver(multiBlob);
+		const dep = r.loadDeployment();
+		expect(dep.defaultNetwork).toBe('localnet');
+		expect([...dep.networkNames].sort()).toEqual(['localnet', 'testnet']);
+		// `forNetwork('testnet')` returns the testnet entry (NOT the default).
+		const testnet = dep.forNetwork('testnet');
+		expect(testnet.rpc).toBe('http://testnet.example');
+		expect(r.requireId(testnet, '@local/demo')).toBe('0xdef');
+		// The default network is still distinct.
+		expect(dep.forNetwork('localnet').rpc).toBe('http://127.0.0.1:9000');
+	});
+
+	it('loadDeployment throws when no deployment was injected', () => {
 		const r = loadResolver(null);
 		expect(() => r.loadDeployment()).toThrow(r.DevstackConfigMissingError);
 	});
 
-	it('loadDeploymentOptional returns null when no ids were injected', () => {
+	it('loadDeploymentOptional returns null when no deployment was injected', () => {
 		const r = loadResolver(null);
 		expect(r.loadDeploymentOptional()).toBeNull();
 	});
@@ -166,7 +241,7 @@ describe('deployment API', () => {
 	});
 
 	it('requireId throws on the all-zero sentinel', () => {
-		const r = loadResolver({ ...idsBlob, mvrOverrides: { '@local/demo': UNRESOLVED } });
+		const r = loadResolver(envelope({ ...localUnit, mvrOverrides: { '@local/demo': UNRESOLVED } }));
 		const net = r.loadDeployment().forNetwork('localnet');
 		expect(() => r.requireId(net, '@local/demo')).toThrow(r.DevstackConfigMissingError);
 	});

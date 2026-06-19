@@ -39,13 +39,12 @@ prod `deployments/<network>.ts`. `requireId` kept. App object stays `config`.
    `AppNetworkDeployment extends NetworkDeployment` (required packages/mvrOverrides), `ProvidedNetwork`
    (declared non-local network union), `ProvidedDeployments = Partial<Record<ProvidedNetwork, …>>`, and
    the literal `NETWORK_NAMES` tuple for D2. tsc-green on clean clone (Partial/empty). Regenerate.
-5. **Sugar re-pointing + resolver removal (COUPLED — one commit, must not split).** Re-point
-   `config-bindings.ts`/`sui/codegen.ts`/`coin/codegen.ts` sugar (`resolveNetwork()`/`resolveNetworks()`/
-   `resolveValue(...)`/`resolveId(...)`) to deployment-API expressions; delete `resolve*()` from
-   `CONFIG_RUNTIME_SOURCE`; update `idsImportSymbols`/import-symbol logic. Regenerate ALL trees in the
-   same commit. Update `config-bindings.test.ts` + `move-bindings-codegen.test.ts` expected exprs.
-   Migrate `templates/{app,ts}/tests/e2e/counter.test.ts` off `resolveActiveNetwork` →
-   `config.forNetwork(config.defaultNetwork)`. Green.
+5. **Resolver removal (smaller than planned — sugar re-pointing was already done by the 0a flip).**
+   The emitted `config.ts`/buckets already use the deployment API; `resolve*()` are now used ONLY by
+   `templates/{app,ts}/tests/e2e/counter.test.ts` (`resolveActiveNetwork`). So: migrate those two e2e
+   tests → `config.forNetwork(config.defaultNetwork)`, then delete `resolve*()` from
+   `CONFIG_RUNTIME_SOURCE` + regenerate the 8 trees. Confirm `idsImportSymbols`/import-symbol logic no
+   longer references the removed names. Green.
 6. **`dump-deployment --network <net>`**: emit typed TS `deployments/<network>.ts`
    (`export const deployment = {…} satisfies AppNetworkDeployment`) from a live deploy; no-flag keeps
    raw envelope JSON to stdout. Green.
@@ -77,6 +76,52 @@ testnet/prod, not just rpc + packages + mvrOverrides. So service buckets stop ba
 Sequencing: lands after the core multi-network (commits 1–5); commit 4's strict type should narrow
 `values` from the start (or a follow-up tightens it). Service bucket shape change (commit 8) is
 consumer-visible (`deepbook.pools` → `deepbook.forNetwork(net).pools`).
+
+## Dev-only surfaces are LOCAL-ONLY (accounts + dev wallet) — cross-cutting invariant
+A devstack account is an ephemeral faucet-funded test identity that exists ONLY on a local stack;
+the dev wallet signs with those local accounts. Live networks (devnet/testnet/mainnet) have NEITHER —
+you connect a real wallet there. So accounts/dev-wallet are "per-network" only in the sense of
+local-present / live-absent, NOT "a different value per network." Handle correctly:
+- **NetworkDeployment.accounts** stays present-but-defaulting-`{}` (commit 2 schema already defaults
+  it). Populated for local networks (live stack), `{}` for committed live networks.
+- **Strict type (0d.4):** `accounts` is OPTIONAL / excluded from the completeness check — a hand-written
+  `deployments/testnet.ts` must NOT be forced to provide accounts (it has none). Completeness covers
+  packages + service `values` only.
+- **`resolveAccounts()` / accounts surface (0b):** scoped to the LOCAL network — reads the local
+  stack's accounts; returns `{}` for a live network. The dev-wallet injection (serve-only, prod-stripped)
+  reads the local network's accounts and the `connectAs(alice)` test bridge is local-only.
+- **dump-deployment (0d.6):** scaffolds live `deployments/<net>.ts` with `accounts: {}` (no ephemeral
+  identities for a real network).
+- **On a dev network-switch (localnet→devnet):** the dev wallet's accounts are localnet identities (no
+  devnet gas) — switching must not break; the app uses a real wallet for the live network. Verify in the
+  capstone.
+- **Prod build (drop-local):** no accounts, no dev wallet — already guaranteed by deploy=drop-local +
+  the serve-only dev-wallet injection.
+
+## Capstone: live-network validation (MANUAL, owner-requested — run after 0d.7 + 0e)
+Typecheck/unit-green is necessary but NOT sufficient — a real deploy proves the prod path works.
+Build a documented, repeatable harness (script + README; NOT a CI gate — live nets are slow/flaky).
+Use the template counter package (devnet has a faucet → free gas: `sui client faucet` / the HTTP
+faucet). Verify the running app with agent-browser, not just exit codes.
+
+- **Scenario A — prod build, no local stack.** Publish counter to devnet → `devstack dump-deployment
+  --network devnet` writes typed `deployments/devnet.ts` (completeness-checked) → `vite build` with
+  `deployments: { devnet }` and NO local stack → serve the built bundle → agent-browser confirms: app
+  connects to devnet RPC, reads the REAL package id, and a create/increment tx lands on devnet. Proves
+  deploy=drop-local + committed deployment + no spurious loud-fail. ALSO assert the built bundle carries
+  NO dev wallet and NO accounts (grep the bundle / no dev-wallet UI on the page).
+- **Scenario B — both networks in dev (co-existence + switching).** `devstack up` (localnet live) +
+  committed `deployments/devnet.ts` → `pnpm dev` → app lists [localnet, devnet]; agent-browser: default
+  localnet works (dev wallet + funded local accounts present, `connectAs(alice)` signs on localnet),
+  then `switchNetwork('devnet')` → app reads devnet ids and a tx hits devnet via a real wallet; confirm
+  the switch does NOT break when the dev wallet has no devnet accounts. Proves runtime co-existence +
+  switching + accounts-are-local-only.
+- **Scenario C — per-network services (0e).** Same as B but with an example using deepbook/walrus/seal,
+  to prove services resolve the right per-network ids on switch. CAVEAT: walrus/seal/deepbook may not
+  be on devnet — run C against whichever live net hosts them (likely testnet); core A/B stay on devnet.
+
+Deliverable: the harness + a short "Deploy to a real network" run log. Owner has authorized the live
+publish (devnet/testnet test package; ephemeral, faucet-funded).
 
 ## autoConnect (#2, deferred): currently `import.meta.env.DEV`. Gating to tests-only needs a
 test-only flag injected by the devstack Vite plugin in e2e — only if the owner asks.

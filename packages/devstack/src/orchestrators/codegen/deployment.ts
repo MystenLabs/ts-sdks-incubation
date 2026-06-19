@@ -13,20 +13,28 @@
 //   - READER:   the stack-free `devstack codegen` verb reads it via the
 //               optional `--config <file>` flag (absent ⇒ ids unresolved).
 //   - CONSUMER: the emitted `config-runtime.ts` resolver reads the same
-//               shape off the injected `__DEVSTACK_IDS__` global.
-//   - INJECTOR: the vite plugin reads the live file (dev) or a committed
-//               deployment file (prod, via `ids`/`DEVSTACK_DEPLOYMENT_FILE`) and
+//               shape off the injected `__DEVSTACK_DEPLOYMENT__` global.
+//   - INJECTOR: the vite plugin reads the live file (dev) or committed
+//               per-network deployment files (prod, via the `deployments`
+//               option / `DEVSTACK_DEPLOYMENT_FILE`), MERGES them, and
 //               `define`s the global.
 //
-// The shape is the id-half of today's `config.ts`: networks (rpc + the
-// rest), per-package ids (+ captured object ids), account addresses, and
-// the MVR placeholder → id override map an app feeds dapp-kit.
+// The shape is a MULTI-NETWORK ENVELOPE: `{ defaultNetwork, networks }`.
+// Each `networks.<name>` entry is a `NetworkDeployment` — the id-half of
+// today's `config.ts` for that one network: rpc (+ chainId/faucet/graphql),
+// per-package ids (+ captured object ids), account addresses, the MVR
+// placeholder → id override map an app feeds dapp-kit, and a generic
+// `values` channel. A plain single-network dev stack produces an envelope
+// with exactly one entry (the live local network, `local: true`); a real
+// multi-network deployment keys several. The envelope is the uniform unit
+// the Vite plugin merges live (dev) + committed (prod) sources into.
 
 import { Effect, FileSystem, Schema } from 'effect';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 import {
 	decodeJsonTextSync,
+	decodeUnknownSync,
 	type RuntimeDecodeIssue,
 } from '../../substrate/runtime/runtime-decode.ts';
 
@@ -50,7 +58,7 @@ export const isUnresolvedId = (id: string | undefined | null): boolean =>
 // -----------------------------------------------------------------------------
 
 /** Any JSON-serialisable value. The deployment round-trips through
- *  `JSON.stringify` into the injected `__DEVSTACK_IDS__` global, so a
+ *  `JSON.stringify` into the injected `__DEVSTACK_DEPLOYMENT__` global, so a
  *  plugin live value carried in the generic `values` channel must be JSON. */
 export type JsonValue =
 	| null
@@ -64,19 +72,8 @@ export type JsonValue =
 // Schema
 // -----------------------------------------------------------------------------
 
-/** One `networks.<name>` entry — the connection coordinates for a
- *  network. Mirrors `SuiNetworkConfigEntry` (plugins/sui/codegen.ts);
- *  `rpc` is the load-bearing field the app reads synchronously at module
- *  load. */
-export const DeploymentNetworkSchema = Schema.Struct({
-	rpc: Schema.String,
-	chainId: Schema.optional(Schema.String),
-	faucet: Schema.optional(Schema.NullOr(Schema.String)),
-	graphql: Schema.optional(Schema.NullOr(Schema.String)),
-});
-
 /** One `packages.<name>` entry — the resolved package id plus any
- *  resolved object captures for the active network. */
+ *  resolved object captures for that network. */
 export const DeploymentPackageSchema = Schema.Struct({
 	id: Schema.String,
 	objects: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -111,16 +108,31 @@ export const DeploymentValuesSchema = Schema.Record(
 	Schema.Record(Schema.String, DeploymentJsonSchema),
 );
 
-/** The deployment interchange shape. The whole document is data — no
+/** One network's full resolved deployment — the per-network UNIT of the
+ *  multi-network envelope. Carries the connection coordinates (`rpc` is the
+ *  load-bearing field the app reads synchronously at module load, plus
+ *  optional `chainId`/`faucet`/`graphql`) FLATTENED inline alongside the
+ *  on-chain ids/values for that network. The whole document is data — no
  *  functions, no devstack imports — so it round-trips through JSON and a
  *  `JSON.stringify` into a vite `define` global. */
-export const DeploymentSchema = Schema.Struct({
-	/** Active network name (the `networks.<name>` key the app reads).
-	 *  Load-bearing — a deployment MUST name its network + connection. */
-	network: Schema.String,
-	networks: Schema.Record(Schema.String, DeploymentNetworkSchema),
+export const NetworkDeploymentSchema = Schema.Struct({
+	/** This network's name (the `networks.<name>` key it sits under).
+	 *  Optional on input — the envelope key is authoritative, so the Vite
+	 *  merge and the boot writer set it from the key; a hand-written
+	 *  committed `deployments/<net>.ts` need not restate it. */
+	network: Schema.optional(Schema.String),
+	/** Load-bearing — the RPC endpoint the app reads synchronously. */
+	rpc: Schema.String,
+	chainId: Schema.optional(Schema.String),
+	faucet: Schema.optional(Schema.NullOr(Schema.String)),
+	graphql: Schema.optional(Schema.NullOr(Schema.String)),
+	/** Marks a LIVE LOCAL network (a `devstack up` stack). The deploy
+	 *  filter (`command === 'build'`) drops these — a production bundle
+	 *  ships only committed, non-local networks. Optional so a hand-written
+	 *  committed `deployments/<net>.ts` omits it (treated as non-local). */
+	local: Schema.optional(Schema.Boolean),
 	/** Resolved package ids (+ object captures). Optional, default `{}`: a
-	 *  deployment may have zero packages (a network-only stack, or a
+	 *  network may have zero packages (a network-only stack, or a
 	 *  hand-authored deploy file), and the boot writer always emits the key
 	 *  anyway — defaulting keeps the injected blob well-formed so the app's
 	 *  resolvers throw `DevstackConfigMissingError` rather than a raw
@@ -131,9 +143,9 @@ export const DeploymentSchema = Schema.Struct({
 	accounts: Schema.Record(Schema.String, Schema.String).pipe(
 		Schema.withDecodingDefaultKey(Effect.succeed({})),
 	),
-	/** MVR placeholder (`@local/<slug>`) → resolved id, for the active
-	 *  network. An app feeds this straight into dapp-kit's
-	 *  `mvr.overrides.packages`. Optional, default `{}` (see `packages`). */
+	/** MVR placeholder (`@local/<slug>`) → resolved id, for this network.
+	 *  An app feeds this straight into dapp-kit's `mvr.overrides.packages`.
+	 *  Optional, default `{}` (see `packages`). */
 	mvrOverrides: Schema.Record(Schema.String, Schema.String).pipe(
 		Schema.withDecodingDefaultKey(Effect.succeed({})),
 	),
@@ -143,8 +155,19 @@ export const DeploymentSchema = Schema.Struct({
 	values: Schema.optional(DeploymentValuesSchema),
 });
 
-export type Deployment = typeof DeploymentSchema.Type;
-export type DeploymentNetwork = typeof DeploymentNetworkSchema.Type;
+/** The injected multi-network ENVELOPE — every network this deployment
+ *  supports, keyed by name, plus the default the app opens on. The single
+ *  on-disk / injected shape: boot writes one (single-network) envelope, the
+ *  Vite plugin merges live + committed envelopes, and the generated resolver
+ *  reads it off `__DEVSTACK_DEPLOYMENT__`. */
+export const DevstackDeploymentSchema = Schema.Struct({
+	/** The network the app opens on (a `networks.<name>` key). */
+	defaultNetwork: Schema.String,
+	networks: Schema.Record(Schema.String, NetworkDeploymentSchema),
+});
+
+export type DevstackDeployment = typeof DevstackDeploymentSchema.Type;
+export type NetworkDeployment = typeof NetworkDeploymentSchema.Type;
 export type DeploymentPackage = typeof DeploymentPackageSchema.Type;
 export type DeploymentValues = typeof DeploymentValuesSchema.Type;
 
@@ -174,7 +197,7 @@ export const DEPLOYMENT_FILENAME = 'deployment.json';
  *  identical input (sorted by the caller's assembly order). */
 export const writeDeployment = (
 	path: string,
-	config: Deployment,
+	config: DevstackDeployment,
 ): Effect.Effect<void, DeploymentDecodeError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const text = `${JSON.stringify(config, null, 2)}\n`;
@@ -206,8 +229,23 @@ const mkDeploymentError = (issue: RuntimeDecodeIssue): DeploymentDecodeError =>
  *  place rather than each caller hand-rolling `JSON.parse`. Throws
  *  `DeploymentDecodeError` on malformed JSON or a shape that violates
  *  `DeploymentSchema`. */
-export const decodeDeployment = (text: string): Deployment =>
-	decodeJsonTextSync(DeploymentSchema, text, {
+export const decodeDeployment = (text: string): DevstackDeployment =>
+	decodeJsonTextSync(DevstackDeploymentSchema, text, {
 		source: DEPLOYMENT_FILENAME,
 		mkError: mkDeploymentError,
+	});
+
+/** Decode + validate a single per-network `NetworkDeployment` unit from an
+ *  already-parsed object (a committed `deployments/<net>.ts` thunk's
+ *  `deployment`). The Vite plugin's merge layer calls this on each committed
+ *  thunk so a malformed committed deployment surfaces loudly at config-load
+ *  (rather than silently injecting a broken network). Throws
+ *  `DeploymentDecodeError` on a shape that violates `NetworkDeploymentSchema`.
+ *  The caller overwrites `network`/`local` from the envelope key afterwards,
+ *  so the unit's own `network` field is optional here. */
+export const decodeNetworkDeployment = (value: unknown, source: string): NetworkDeployment =>
+	decodeUnknownSync(NetworkDeploymentSchema, value, {
+		source,
+		mkError: mkDeploymentError,
+		message: 'committed deployment is not a valid NetworkDeployment',
 	});

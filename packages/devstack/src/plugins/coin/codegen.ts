@@ -19,7 +19,7 @@
 //
 // STRUCTURAL fields (symbol, source) stay literals; the coin type, decimals,
 // icon URL, and on-chain object ids are RUNTIME (loaded config data),
-// resolved at app build/dev time via the injected `__DEVSTACK_IDS__` global.
+// resolved at app build/dev time via the injected `__DEVSTACK_DEPLOYMENT__` global.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import {

@@ -44,7 +44,7 @@ export class ManifestExtrasLookupError extends Schema.TaggedErrorClass<ManifestE
 /** Codegen metadata recorded per stack. The supervisor writes the
  *  dev-only `extrasDir` (the `@devstack-dev` overlay) and the live
  *  `deploymentFile` (the gitignored `deployment.json` injected as
- *  `__DEVSTACK_IDS__`) here at manifest-flush time so the read-side
+ *  `__DEVSTACK_DEPLOYMENT__`) here at manifest-flush time so the read-side
  *  build integrations (the Vite plugin) consult the exact locations the
  *  boot wrote — read and write share one decision. Bindings themselves
  *  are NOT recorded here: the `@generated` alias always resolves to the
@@ -60,7 +60,7 @@ export interface ManifestCodegen {
 	readonly extrasDir?: string;
 	/** Absolute path to the gitignored `deployment.json` the boot wrote
 	 *  for this stack (the live on-chain ids). The Vite plugin reads it to
-	 *  inject `__DEVSTACK_IDS__` in dev. Optional + additive. */
+	 *  inject `__DEVSTACK_DEPLOYMENT__` in dev. Optional + additive. */
 	readonly deploymentFile?: string;
 }
 
@@ -174,8 +174,8 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	// Optional codegen metadata. The Vite plugin reads
 	// `codegen.extrasDir` to point its `@devstack-dev` overlay alias and
 	// `codegen.deploymentFile` to inject the live on-chain ids via
-	// `__DEVSTACK_IDS__`; on a miss it falls back to the cold-start
-	// `generated-extras` path and `__DEVSTACK_IDS__ = null`. Bindings are
+	// `__DEVSTACK_DEPLOYMENT__`; on a miss it falls back to the cold-start
+	// `generated-extras` path and `__DEVSTACK_DEPLOYMENT__ = null`. Bindings are
 	// not recorded here — `@generated` always resolves to the committed
 	// `src/generated` tree.
 	codegen: Schema.optional(

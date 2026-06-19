@@ -16,7 +16,7 @@
 //     carries NO network name and NO literal rpc URL (both are
 //     environment/live data: a dynamic local rpc port; a real deployment
 //     names a different network — resolved at app build/dev time via the
-//     injected `__DEVSTACK_IDS__` global).
+//     injected `__DEVSTACK_DEPLOYMENT__` global).
 //
 // The decl is `aggregateOnly` — it projects directly into the combined
 // `generated/config.ts` (`config.network` + `config.networks.localnet`) and

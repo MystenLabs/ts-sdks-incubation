@@ -755,7 +755,7 @@ export const buildProductionPostAcquireHook = (
 				];
 				// Boot no longer runs codegen. Its only job is to PRODUCE the
 				// deployment (loadable on-chain ids), which the Vite plugin injects
-				// via `__DEVSTACK_IDS__` in dev. The committed `src/generated` tree
+				// via `__DEVSTACK_DEPLOYMENT__` in dev. The committed `src/generated` tree
 				// is written ONLY by the stack-free `devstack codegen` verb.
 				// Assemble the deployment from the SAME live-resolved contributions
 				// that fed `config.ts` and write it to the gitignored
@@ -784,7 +784,7 @@ export const buildProductionPostAcquireHook = (
 					extras,
 					// Record the dev-only `generated-extras` tree the
 					// `@devstack-dev` Vite alias resolves and the live `deploymentFile`
-					// the plugin injects as `__DEVSTACK_IDS__` — one decision, one
+					// the plugin injects as `__DEVSTACK_DEPLOYMENT__` — one decision, one
 					// source of truth. Bindings are NOT recorded: `@generated`
 					// always resolves to the committed `src/generated` tree written
 					// by the stack-free `codegen` verb.

@@ -148,7 +148,7 @@ const wipeStack = (stack: string, runtimeRoot: string, cwd: string): Promise<voi
 
 /** Best-effort, sync read of the booted stack's `codegen.deploymentFile` from its
  *  manifest. The generated `config-runtime.ts` resolver reads the injected
- *  `__DEVSTACK_IDS__` Vite `define`, but under vitest the Vite config (and
+ *  `__DEVSTACK_DEPLOYMENT__` Vite `define`, but under vitest the Vite config (and
  *  thus that define) is evaluated BEFORE this `globalSetup` boots the stack,
  *  so the define bakes to `null`. The resolver's Node-only fallback reads
  *  `process.env.DEVSTACK_DEPLOYMENT_FILE` at id-access time instead — we point it at

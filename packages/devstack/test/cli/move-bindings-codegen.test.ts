@@ -49,7 +49,7 @@ export default defineDevstack({ members: [suiPlugin, alice, hello], stackName: '
 // via the host `sui` binary + real `@mysten/codegen` and emits the committed
 // `src/generated` tree WITHOUT booting a stack (no Docker, no publish). The
 // emitted bindings are id-free (the `config.ts` resolves ids at app build
-// time via `__DEVSTACK_IDS__`), so this is a pure deterministic projection.
+// time via `__DEVSTACK_DEPLOYMENT__`), so this is a pure deterministic projection.
 describe('cli codegen Move bindings', () => {
 	afterEach(() => {
 		for (const root of tempRoots.splice(0)) {

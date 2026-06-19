@@ -482,23 +482,30 @@ describe('codegen.runEmitCycle', () => {
 
 					// The committed `config.ts` now opens with
 					// `const __deployment = loadDeployment();` — the loud-failing
-					// deployment accessor — so importing it requires injected ids.
-					// Stub `__DEVSTACK_IDS__` (the Vite `define` channel) for the
-					// duration of the imports; restore it after so the global stays
-					// clean for sibling tests.
+					// deployment accessor — so importing it requires an injected
+					// deployment. Stub `__DEVSTACK_DEPLOYMENT__` (the Vite `define`
+					// channel) with the multi-network ENVELOPE for the duration of the
+					// imports; restore it after so the global stays clean for sibling
+					// tests.
 					yield* Effect.acquireRelease(
 						Effect.sync(() => {
-							(globalThis as Record<string, unknown>)['__DEVSTACK_IDS__'] = {
-								network: 'localnet',
-								networks: { localnet: { rpc: 'http://127.0.0.1:9000' } },
-								packages: { mock_usdc: { id: '0x1' } },
-								accounts: { alice: '0xabc' },
-								mvrOverrides: { 'mock-usdc': '0x1' },
+							(globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'] = {
+								defaultNetwork: 'localnet',
+								networks: {
+									localnet: {
+										network: 'localnet',
+										rpc: 'http://127.0.0.1:9000',
+										local: true,
+										packages: { mock_usdc: { id: '0x1' } },
+										accounts: { alice: '0xabc' },
+										mvrOverrides: { 'mock-usdc': '0x1' },
+									},
+								},
 							};
 						}),
 						() =>
 							Effect.sync(() => {
-								delete (globalThis as Record<string, unknown>)['__DEVSTACK_IDS__'];
+								delete (globalThis as Record<string, unknown>)['__DEVSTACK_DEPLOYMENT__'];
 							}),
 					);
 
@@ -1065,10 +1072,13 @@ describe('codegen.assembleDeployment — active-network agreement', () => {
 						// dev-wallet injection reads undefined.rpc. The fix derives the
 						// active network from the bucket so they AGREE.
 						const deployment = yield* codegen.assembleDeployment('testnet-fork');
-						// The active network MUST be a key present in `networks`.
-						expect(Object.keys(deployment.networks)).toContain(deployment.network);
+						// The envelope's default network MUST be a key present in
+						// `networks`, and each unit's `network` field agrees with its key.
+						expect(Object.keys(deployment.networks)).toContain(deployment.defaultNetwork);
+						const unit = deployment.networks[deployment.defaultNetwork]!;
+						expect(unit.network).toBe(deployment.defaultNetwork);
 						// And it is the key the binding emitted ('localnet').
-						expect(deployment.network).toBe('localnet');
+						expect(deployment.defaultNetwork).toBe('localnet');
 					}),
 				).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
 			),

@@ -74,13 +74,18 @@ const DEPLOYMENT_FILE = 'deployment.json';
 const CODEGEN_APP = 'snapshot-matrix-codegen';
 
 interface DeploymentLike {
-	readonly packages: { readonly [name: string]: { readonly id: string } };
+	readonly networks: {
+		readonly [name: string]: {
+			readonly packages: { readonly [name: string]: { readonly id: string } };
+		};
+	};
 }
 
 const readCodegenPackageId = (outputDir: string): string => {
 	const file = join(outputDir, DEPLOYMENT_FILE);
 	const parsed = JSON.parse(readFileSync(file, 'utf8')) as DeploymentLike;
-	const ids = Object.values(parsed.packages)
+	const ids = Object.values(parsed.networks)
+		.flatMap((net) => Object.values(net.packages))
 		.map((p) => p.id)
 		.filter((id) => /^0x[0-9a-fA-F]+$/.test(id));
 	if (ids.length === 0) throw new Error(`no package id in deployment ${file}`);
@@ -93,9 +98,11 @@ const readCodegenPackageId = (outputDir: string): string => {
 const corruptCodegenPackageId = (outputDir: string): void => {
 	const p = join(outputDir, DEPLOYMENT_FILE);
 	const parsed = JSON.parse(readFileSync(p, 'utf8')) as {
-		packages: Record<string, { id: string }>;
+		networks: Record<string, { packages: Record<string, { id: string }> }>;
 	};
-	for (const entry of Object.values(parsed.packages)) entry.id = '0xdead0000dead0000';
+	for (const net of Object.values(parsed.networks)) {
+		for (const entry of Object.values(net.packages)) entry.id = '0xdead0000dead0000';
+	}
 	writeFileSync(p, `${JSON.stringify(parsed, null, 2)}\n`);
 };
 
