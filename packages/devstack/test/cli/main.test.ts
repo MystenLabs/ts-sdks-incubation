@@ -277,17 +277,17 @@ describe('cli/main', () => {
 		}
 	});
 
-	it('apply writes the id-config and does NOT emit the committed tree', async () => {
+	it('apply writes the deployment and does NOT emit the committed tree', async () => {
 		const appRoot = makeTempRoot('cli-codegen-app');
 		const stateRoot = makeTempRoot('cli-codegen-state');
 		const configPath = writeCodegenConfig(appRoot);
 		// Boot/apply no longer emits a committed codegen tree — it writes the
-		// gitignored id-config (the live ids the Vite plugin injects). The
+		// gitignored deployment (the live ids the Vite plugin injects). The
 		// committed `src/generated` is the stack-free `devstack codegen` verb's
-		// job. Assert apply wrote `devstack-ids.json` and emitted NO
+		// job. Assert apply wrote `deployment.json` and emitted NO
 		// `src/generated` file.
 		const generatedPath = join(appRoot, 'src', 'generated', 'cli-apply-proof.ts');
-		const idsPath = join(stateRoot, 'stacks', 'main', 'devstack-ids.json');
+		const deploymentPath = join(stateRoot, 'stacks', 'main', 'deployment.json');
 		const previousExitCode = process.exitCode;
 		const previousEnv = {
 			DEVSTACK_APP: process.env.DEVSTACK_APP,
@@ -323,9 +323,11 @@ describe('cli/main', () => {
 
 			expect(process.exitCode).toBe(0);
 			// Id-config written; committed tree untouched.
-			expect(existsSync(idsPath)).toBe(true);
+			expect(existsSync(deploymentPath)).toBe(true);
 			expect(existsSync(generatedPath)).toBe(false);
-			const idConfig = JSON.parse(readFileSync(idsPath, 'utf8')) as { readonly network: string };
+			const idConfig = JSON.parse(readFileSync(deploymentPath, 'utf8')) as {
+				readonly network: string;
+			};
 			expect(idConfig.network).toBe('localnet');
 		} finally {
 			process.exitCode = previousExitCode;

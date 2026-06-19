@@ -1020,10 +1020,10 @@ describe('codegen.emitBindings', () => {
 	);
 });
 
-describe('codegen.assembleIdConfig — active-network agreement', () => {
+describe('codegen.assembleDeployment — active-network agreement', () => {
 	// A sui-like config.ts contribution: the binding emits `network: 'localnet'`
 	// and a `networks` map keyed by 'localnet' for EVERY identity mode (mirrors
-	// plugins/sui/codegen.ts hard-coding LOCAL_NETWORK_NAME). The id-config's
+	// plugins/sui/codegen.ts hard-coding LOCAL_NETWORK_NAME). The deployment's
 	// active `network` field MUST be a key present in `networks` — the committed
 	// runtime resolver does `resolveNetworks()[network]`.
 	const suiLikeDecl = (): CodegenableDecl<string> =>
@@ -1064,11 +1064,11 @@ describe('codegen.assembleIdConfig — active-network agreement', () => {
 						// `resolveNetworks()['testnet-fork']` is undefined → throws +
 						// dev-wallet injection reads undefined.rpc. The fix derives the
 						// active network from the bucket so they AGREE.
-						const idConfig = yield* codegen.assembleIdConfig('testnet-fork');
+						const deployment = yield* codegen.assembleDeployment('testnet-fork');
 						// The active network MUST be a key present in `networks`.
-						expect(Object.keys(idConfig.networks)).toContain(idConfig.network);
+						expect(Object.keys(deployment.networks)).toContain(deployment.network);
 						// And it is the key the binding emitted ('localnet').
-						expect(idConfig.network).toBe('localnet');
+						expect(deployment.network).toBe('localnet');
 					}),
 				).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
 			),

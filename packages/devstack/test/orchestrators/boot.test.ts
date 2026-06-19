@@ -150,7 +150,7 @@ const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 
 const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 	registerContribution: () => Effect.void,
-	assembleIdConfig: (network) =>
+	assembleDeployment: (network) =>
 		Effect.succeed({
 			network,
 			networks: {},
@@ -616,7 +616,7 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 	// the extras files propagate into the returned `codegen.emitted` event.
 
 	// A known extras file the recording `emitExtras` "writes" — distinct from
-	// the `idsFile` boot always emits, so we can assert inclusion/exclusion.
+	// the `deploymentFile` boot always emits, so we can assert inclusion/exclusion.
 	const EXTRAS_FILE = '/generated-extras/dev-wallet.ts';
 	const EXTRAS_CHMOD = '/generated-extras/.secret';
 
@@ -629,7 +629,7 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 		const calls = { emitExtras: 0, emitBindings: 0 };
 		const layer = Layer.succeed(CodegenOrchestratorService)({
 			registerContribution: () => Effect.void,
-			assembleIdConfig: (network) =>
+			assembleDeployment: (network) =>
 				Effect.succeed({
 					network,
 					networks: {},
@@ -748,7 +748,7 @@ describe('buildProductionPostAcquireHook — generated-extras flush gate', () =>
 				expect(emitExtrasCalls).toBe(0);
 				expect(files).not.toContain(EXTRAS_FILE);
 				expect(files).not.toContain(EXTRAS_CHMOD);
-				// Only the always-emitted id-config file remains.
+				// Only the always-emitted deployment file remains.
 				expect(files).toHaveLength(1);
 			}),
 	);

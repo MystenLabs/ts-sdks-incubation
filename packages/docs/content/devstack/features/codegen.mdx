@@ -79,7 +79,7 @@ devstack codegen
 
 ### Regenerating ids with apply
 
-`devstack apply` re-emits the per-stack `devstack-ids.json` and the dev `generated-extras`
+`devstack apply` re-emits the per-stack `deployment.json` and the dev `generated-extras`
 (`accounts.ts`, `dev-wallet.ts`) from a live or one-shot stack. It **never** writes the committed
 `src/generated` tree — that is `devstack codegen`'s job alone.
 
@@ -101,7 +101,7 @@ commands cleanly decoupled:
   source. Deterministic, stack-free, no Docker (requires the `sui` CLI on `PATH`). Writes the
   committed tree only — never the ids file.
 - `pnpm dev` / `devstack up` — boots the stack and writes a gitignored, per-stack
-  `.devstack/stacks/<stack>/devstack-ids.json`; the [Vite plugin](#importing-generated-code) injects
+  `.devstack/stacks/<stack>/deployment.json`; the [Vite plugin](#importing-generated-code) injects
   those live ids automatically in dev. It does **not** rewrite the committed tree.
 - `devstack apply` — re-emits **only** the per-stack ids file and the dev `generated-extras` from a
   live (or one-shot) stack. It never writes the committed `src/generated` tree.
@@ -126,8 +126,8 @@ per-stack state, so they are **not** committed. They are emitted into a per-stac
 import { accounts } from '@devstack-dev/accounts.js';
 ```
 
-The per-stack manifest records where these two pieces live: `codegen.idsFile` (the
-`devstack-ids.json` path) and `codegen.extrasDir` (the `generated-extras` directory). The committed
+The per-stack manifest records where these two pieces live: `codegen.deploymentFile` (the
+`deployment.json` path) and `codegen.extrasDir` (the `generated-extras` directory). The committed
 `src/generated` tree is shared and stack-invariant; only the ids file and dev extras vary per stack.
 Two stacks of the same app (for example `pnpm dev` on the default stack and `pnpm test:e2e` on an
 `e2e` stack) coexist with distinct ids files and extras dirs but the **same** committed
@@ -160,26 +160,26 @@ export const networks = resolveNetworks();
 
 `config-runtime.ts` is **fixed** — codegen writes it once and never re-emits it with ids baked in.
 All variation flows through `__DEVSTACK_IDS__`, which the [Vite plugin](#importing-generated-code)
-injects at build time from the ids file (live dev) or a committed id-config (production builds).
+injects at build time from the ids file (live dev) or a committed deployment (production builds).
 
 ## Deploy to a real network
 
-Production ids come from a **committed id-config file** for the known deployment — the same
-`devstack-ids.json` schema the boot writes, selected at build time. The supported way to obtain one
-is `devstack dump-ids`, which emits the current (or booted) stack's ids to a file you commit:
+Production ids come from a **committed deployment file** for the known deployment — the same
+`deployment.json` schema the boot writes, selected at build time. The supported way to obtain one is
+`devstack dump-deployment`, which emits the current (or booted) stack's ids to a file you commit:
 
 ```bash
 # Option A: boot against the target network, then dump its ids to a committed file
 devstack up --network testnet
-devstack dump-ids --network testnet --out config/testnet.ids.json
+devstack dump-deployment --network testnet --out config/testnet.ids.json
 ```
 
-`dump-ids` writes the same `devstack-ids.json` that boot persists to
-`.devstack/stacks/<stack>/devstack-ids.json`; with no `--out` it prints to stdout. You can also copy
-the underlying file directly, but `dump-ids` is the supported, network-selectable path.
+`dump-deployment` writes the same `deployment.json` that boot persists to
+`.devstack/stacks/<stack>/deployment.json`; with no `--out` it prints to stdout. You can also copy
+the underlying file directly, but `dump-deployment` is the supported, network-selectable path.
 
 ```jsonc
-// Option B: hand-author config/testnet.ids.json (the devstack-ids.json schema)
+// Option B: hand-author config/testnet.ids.json (the deployment.json schema)
 {
 	"network": "testnet",
 	"networks": { "testnet": { "rpc": "https://fullnode.testnet.sui.io:443" } },
@@ -191,7 +191,7 @@ the underlying file directly, but `dump-ids` is the supported, network-selectabl
 ```
 
 Commit the file, then point the build at it — via the Vite plugin `ids` option (relative to the Vite
-root) or the `DEVSTACK_IDS_FILE` env path pointer (**not** a JSON env blob):
+root) or the `DEVSTACK_DEPLOYMENT_FILE` env path pointer (**not** a JSON env blob):
 
 ```ts title="vite.config.ts"
 import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
@@ -202,7 +202,7 @@ export default defineConfig({
 ```
 
 ```bash
-DEVSTACK_IDS_FILE=./config/mainnet.ids.json pnpm build
+DEVSTACK_DEPLOYMENT_FILE=./config/mainnet.ids.json pnpm build
 ```
 
 Then deploy the static bundle as usual.

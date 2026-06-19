@@ -10,7 +10,7 @@
 // ONE declaration, TWO derivations. Sui declares its `config.ts`
 // contributions ONCE as a `ConfigBindingSet`; the framework derives:
 //   - the LIVE (boot) decl — bakes the resolved network entry into the
-//     loadable id-config (so `assembleIdConfig` reads it back), AND
+//     loadable deployment (so `assembleDeployment` reads it back), AND
 //   - the STATIC (committed-tree) decl — emits `resolveNetwork()` /
 //     `resolveNetworks()` raw expressions so the committed `config.ts`
 //     carries NO network name and NO literal rpc URL (both are
@@ -25,7 +25,7 @@
 import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import { configCodegenable, type ConfigBindingSet } from '../../contracts/config-bindings.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 
 /** The typed shape one `networks.<key>` entry in `config.ts` exports. */
@@ -85,7 +85,7 @@ const suiConfigBindings = (): ConfigBindingSet<ResolvedSuiNetwork> => {
 
 /** The LIVE Codegenable contribution. Bakes the resolved network entry into
  *  the combined `config.ts` aggregate (chainId/rpc/faucet/graphql) — boot's
- *  `assembleIdConfig` slices it back into the loadable id-config. */
+ *  `assembleDeployment` slices it back into the loadable deployment. */
 export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl =>
 	configCodegenable(suiConfigBindings(), { mode: 'live', state: resolved });
 

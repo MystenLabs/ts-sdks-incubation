@@ -19,9 +19,9 @@ Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app
 ### `devstack apply [options]`
 
 Re-emit the per-stack ids file and dev extras from a live or one-shot stack. The ids file is
-`devstack-ids.json`; dev extras are the `generated-extras` tree. Reconciles through a live
-supervisor when present; otherwise boots once, emits, and exits. Never writes the committed
-`src/generated` tree — that is `devstack codegen`'s job.
+`deployment.json`; dev extras are the `generated-extras` tree. Reconciles through a live supervisor
+when present; otherwise boots once, emits, and exits. Never writes the committed `src/generated`
+tree — that is `devstack codegen`'s job.
 
 Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
@@ -37,11 +37,11 @@ Lifecycle: one-shot. Side effects: write. Docker: no. Requires: host `sui` CLI. 
 `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
 `--network <name>`.
 
-### `devstack dump-ids [options]`
+### `devstack dump-deployment [options]`
 
-Emit the stack id-config (devstack-ids.json) for a real-network deploy. Writes the current (or
-booted) stack's `devstack-ids.json` to `--out` or stdout — use it to obtain a committed id-config
-for the deploy (see [Codegen](/devstack/features/codegen)).
+Emit the stack deployment (deployment.json) for a real-network deploy. Writes the current (or
+booted) stack's `deployment.json` to `--out` or stdout — use it to obtain a committed deployment for
+the deploy (see [Codegen](/devstack/features/codegen)).
 
 Lifecycle: live-aware. Side effects: write (or stdout). Docker: yes (boots one-shot if no live
 supervisor). Options: `--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`,

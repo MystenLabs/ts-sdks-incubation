@@ -29,17 +29,17 @@ no injected ids throws `DevstackConfigMissingError` at runtime rather than silen
 
 ## Deploy to a real network
 
-The build needs a known deployment's id-config file (the same `devstack-ids.json` schema the
+The build needs a known deployment's deployment file (the same `deployment.json` schema the
 local stack writes). Either point the stack at the target network once and copy the file it
 emits, or hand-author one:
 
 ```bash
-# Option A: boot against the target network, then copy the emitted id-config
+# Option A: boot against the target network, then copy the emitted deployment
 devstack up --network testnet
-cp .devstack/stacks/main/devstack-ids.json config/testnet.ids.json
+cp .devstack/stacks/main/deployment.json config/testnet.ids.json
 ```
 
-For the full id-config schema (Option B, hand-authoring) see the canonical
+For the full deployment schema (Option B, hand-authoring) see the canonical
 [Deploy to a real network](https://ts-sdks-incubation.vercel.app/devstack/features/codegen#deploy-to-a-real-network)
 section in the devstack docs. Commit the file, then point the build at it:
 
@@ -47,7 +47,7 @@ section in the devstack docs. Commit the file, then point the build at it:
 # via the Vite plugin option (vite.config.ts):
 #   devstackVitePlugin({ ids: './config/testnet.ids.json' })
 # or via env:
-DEVSTACK_IDS_FILE=./config/testnet.ids.json pnpm build
+DEVSTACK_DEPLOYMENT_FILE=./config/testnet.ids.json pnpm build
 ```
 
 Then deploy the static `dist/` bundle. A build with no ids throws `DevstackConfigMissingError`

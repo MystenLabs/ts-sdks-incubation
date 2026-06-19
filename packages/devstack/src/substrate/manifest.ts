@@ -43,7 +43,7 @@ export class ManifestExtrasLookupError extends Schema.TaggedErrorClass<ManifestE
 
 /** Codegen metadata recorded per stack. The supervisor writes the
  *  dev-only `extrasDir` (the `@devstack-dev` overlay) and the live
- *  `idsFile` (the gitignored `devstack-ids.json` injected as
+ *  `deploymentFile` (the gitignored `deployment.json` injected as
  *  `__DEVSTACK_IDS__`) here at manifest-flush time so the read-side
  *  build integrations (the Vite plugin) consult the exact locations the
  *  boot wrote — read and write share one decision. Bindings themselves
@@ -58,10 +58,10 @@ export interface ManifestCodegen {
 	 *  additive — older manifests omit it; the reader falls back to
 	 *  `.devstack/stacks/<stack>/generated-extras`. */
 	readonly extrasDir?: string;
-	/** Absolute path to the gitignored `devstack-ids.json` the boot wrote
+	/** Absolute path to the gitignored `deployment.json` the boot wrote
 	 *  for this stack (the live on-chain ids). The Vite plugin reads it to
 	 *  inject `__DEVSTACK_IDS__` in dev. Optional + additive. */
-	readonly idsFile?: string;
+	readonly deploymentFile?: string;
 }
 
 /** Manifest envelope. */
@@ -173,7 +173,7 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	extras: Schema.Record(Schema.String, Schema.Unknown),
 	// Optional codegen metadata. The Vite plugin reads
 	// `codegen.extrasDir` to point its `@devstack-dev` overlay alias and
-	// `codegen.idsFile` to inject the live on-chain ids via
+	// `codegen.deploymentFile` to inject the live on-chain ids via
 	// `__DEVSTACK_IDS__`; on a miss it falls back to the cold-start
 	// `generated-extras` path and `__DEVSTACK_IDS__ = null`. Bindings are
 	// not recorded here — `@generated` always resolves to the committed
@@ -181,9 +181,9 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	codegen: Schema.optional(
 		Schema.Struct({
 			extrasDir: Schema.optional(Schema.String),
-			/** Absolute path to the gitignored `devstack-ids.json` the boot
+			/** Absolute path to the gitignored `deployment.json` the boot
 			 *  wrote for this stack. The Vite plugin reads it in dev. */
-			idsFile: Schema.optional(Schema.String),
+			deploymentFile: Schema.optional(Schema.String),
 		}),
 	),
 });

@@ -3,13 +3,13 @@
 // THE PROBLEM THIS SOLVES. A config-emitting plugin used to maintain TWO
 // near-duplicate projectors:
 //   - a LIVE one (boot): bakes concrete resolved values (real ids, rpc
-//     URLs) into the loadable id-config (`assembleIdConfig`), and
+//     URLs) into the loadable deployment (`assembleDeployment`), and
 //   - a STATIC one (the stack-free `codegen` verb): emits
 //     `rawExpr(resolve…())` into the committed `config.ts` so the tree
 //     carries NO on-chain id.
 // Two hand-written projectors per plugin is error-prone: forget the static
 // path and the committed tree is incomplete (broken clean-clone build);
-// the fixed typed id-config channel also can't carry arbitrary plugin live
+// the fixed typed deployment channel also can't carry arbitrary plugin live
 // values (deepbook pool ids, coin types, walrus/seal endpoints).
 //
 // THE UNIFICATION. A plugin declares its `config.ts` contributions ONCE as
@@ -19,7 +19,7 @@
 //     deployment accessors (and pure literals as literals).
 //   - `configCodegenable(set, { mode: 'live', state })` → the boot decl
 //     whose aggregate carries concrete resolved values that feed ONLY the
-//     loadable id-config (typed channel + the generic `values` channel) —
+//     loadable deployment (typed channel + the generic `values` channel) —
 //     no per-stack generated source is written; the committed `src/generated`
 //     tree stays the single bindings source.
 //
@@ -29,7 +29,7 @@ import { Effect } from 'effect';
 
 import type { CodegenableDecl } from './codegenable.ts';
 import { rawExpr } from './codegenable.ts';
-import type { JsonValue } from '../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../orchestrators/codegen/deployment.ts';
 
 // -----------------------------------------------------------------------------
 // Binding shape
@@ -40,7 +40,7 @@ import type { JsonValue } from '../orchestrators/codegen/id-config.ts';
  *  accessor: `id` → `requireId(dep, <arg>)`, `network` → `dep.network`,
  *  `networks` → `Object.fromEntries(__deployment.networkNames.map((n) =>
  *  [n, __deployment.forNetwork(n)]))`. Sugar bindings also feed the TYPED
- *  id-config fields (`mvrOverrides`/`network`/`networks`), not the generic
+ *  deployment fields (`mvrOverrides`/`network`/`networks`), not the generic
  *  `values` channel — that keeps `config.network`/`config.mvrOverrides`
  *  readable by apps exactly as before. */
 export type ConfigSugarResolver =
@@ -55,10 +55,10 @@ export type ConfigSugarResolver =
  * Variants:
  *   - `literal`: the SAME value in both paths (e.g. the package `mvr`
  *     placeholder string, a network NAME you decide is static). Emitted
- *     verbatim in `config.ts`; mirrored into the live id-config too.
+ *     verbatim in `config.ts`; mirrored into the live deployment too.
  *   - `resolved`: runtime-resolved. STATIC emits a resolver `rawExpr`;
  *     LIVE computes the concrete value via `live(state)` and routes it into
- *     the id-config — through the typed channel for a `sugar` resolver, or
+ *     the deployment — through the typed channel for a `sugar` resolver, or
  *     through the generic `values[namespace][key]` channel otherwise.
  */
 export type ConfigBinding<State = unknown> =
@@ -75,7 +75,7 @@ export type ConfigBinding<State = unknown> =
 			/** Path into the `config.ts` object literal. */
 			readonly configPath: ReadonlyArray<string>;
 			/** Generic-channel coordinates. Always present so the live path
-			 *  can populate `idConfig.values[namespace][key]` even for a
+			 *  can populate `deployment.values[namespace][key]` even for a
 			 *  sugar-resolved binding (the sugar ALSO feeds the typed field;
 			 *  `values` is harmless redundancy and keeps the guard simple). */
 			readonly namespace: string;
@@ -83,7 +83,7 @@ export type ConfigBinding<State = unknown> =
 			/** When set, the static path emits the typed-sugar deployment
 			 *  accessor (`requireId(dep, …)` / `dep.network` / the networks
 			 *  `Object.fromEntries(...)` expr) and the live path additionally
-			 *  feeds the TYPED id-config field. When omitted, the static path
+			 *  feeds the TYPED deployment field. When omitted, the static path
 			 *  emits `requireValue(dep, namespace, key)` and the live value lands
 			 *  ONLY in the generic `values` channel. */
 			readonly sugar?: ConfigSugarResolver;
@@ -214,10 +214,10 @@ export const projectLiveConfig = <State>(
 };
 
 /**
- * Derive the live `idConfig.values[namespace][key]` contributions of a
+ * Derive the live `deployment.values[namespace][key]` contributions of a
  * binding set. Only `resolved` bindings WITHOUT a `sugar` resolver land in
- * the generic channel (sugar bindings feed the typed id-config fields,
- * sliced from the live `config.ts` bucket by `idConfigFromBucket`). The
+ * the generic channel (sugar bindings feed the typed deployment fields,
+ * sliced from the live `config.ts` bucket by `deploymentFromBucket`). The
  * generic channel is the part the fixed typed schema can't carry.
  */
 export const liveValuesOf = <State>(
@@ -240,8 +240,8 @@ export const liveValuesOf = <State>(
  * aggregate emits `rawExpr(resolve…())` for resolved bindings.
  *
  * `{ mode: 'live', state }` → the boot decl. Its aggregate bakes concrete
- * values from `state`; boot's `assembleIdConfig` reads those back into the
- * loadable id-config (typed channel + the generic `values` channel).
+ * values from `state`; boot's `assembleDeployment` reads those back into the
+ * loadable deployment (typed channel + the generic `values` channel).
  */
 export const configCodegenable = <State, Emitter extends string = string>(
 	set: ConfigBindingSet<State>,
@@ -276,7 +276,7 @@ export const configCodegenable = <State, Emitter extends string = string>(
 			// the orchestrator calls `project(exported)` with the emitted map
 			// but the value is already fixed, so we ignore the argument.
 			project: () => projected,
-			// Only the live aggregate feeds the generic id-config channel.
+			// Only the live aggregate feeds the generic deployment channel.
 			...(live && Object.keys(idConfigValues).length > 0 ? { idConfigValues } : {}),
 		},
 		emit: (ctx) =>
@@ -311,7 +311,7 @@ export const configCodegenable = <State, Emitter extends string = string>(
  *  STRUCTURAL literal (a name / mode / decimals — the same in both paths)
  *  or a runtime-RESOLVED value (an on-chain id, coin type, or endpoint URL —
  *  the static path emits `requireValue(dep, …)`, the live path feeds the
- *  concrete value into the id-config). The `key` is the leaf field name written
+ *  concrete value into the deployment). The `key` is the leaf field name written
  *  under the instance key in the bucket object literal. */
 export type BucketField<State> =
 	| { readonly key: string; readonly variant: 'literal'; readonly value: JsonValue }
@@ -394,7 +394,7 @@ export const siblingBucketBindings = <State>(
 			namespace: spec.namespace,
 			key: field.valueKey ?? field.key,
 			// No `sugar` — these are generic `requireValue` bindings (the typed
-			// id-config channel only carries network/packages/mvrOverrides).
+			// deployment channel only carries network/packages/mvrOverrides).
 			...(field.tsType !== undefined ? { tsType: field.tsType } : {}),
 			live: field.live,
 		};
@@ -410,7 +410,7 @@ export const siblingBucketBindings = <State>(
 };
 
 /** Derive the LIVE bucket decl — feeds concrete values into the generic
- *  id-config `values` channel (no per-stack generated file is written). */
+ *  deployment `values` channel (no per-stack generated file is written). */
 export const liveBucketCodegen = <State>(
 	spec: SiblingBucketSpec<State>,
 	state: State,

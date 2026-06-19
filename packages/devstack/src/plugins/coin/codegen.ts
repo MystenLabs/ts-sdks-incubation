@@ -13,7 +13,7 @@
 // contribution ONCE as a `ConfigBindingSet` (rooted under its symbol key).
 // The framework derives both behaviors (see `contracts/config-bindings.ts`):
 //   - LIVE (boot): bakes the resolved on-chain values (fullCoinType,
-//     decimals, ids) AND feeds the generic id-config `values` channel.
+//     decimals, ids) AND feeds the generic deployment `values` channel.
 //   - STATIC (committed tree): emits `resolveValue('coin:<symbol>', '<key>')`
 //     so the committed `coins.ts` carries NO baked coin type / object id.
 //
@@ -29,7 +29,7 @@ import {
 	type BucketField,
 	type SiblingBucketSpec,
 } from '../../contracts/config-bindings.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 
 /** The typed shape per emitted coin record. */
 export interface CoinBindings {
@@ -156,7 +156,7 @@ const coinBucketSpec = (
 };
 
 /** Construct the LIVE Codegenable contribution for one coin instance.
- *  Bakes the resolved record + feeds the generic id-config `values` channel.
+ *  Bakes the resolved record + feeds the generic deployment `values` channel.
  *  Mirrors `account/${name}` naming. */
 export const makeCoinCodegen = <Symbol extends string>(parts: {
 	readonly symbol: Symbol;

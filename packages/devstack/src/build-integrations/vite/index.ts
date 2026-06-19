@@ -29,7 +29,7 @@ import { isAbsolute, resolve } from 'node:path';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
 import { resolveNetworkOptions } from '../../orchestrators/network-options.ts';
-import { decodeIdConfig } from '../../orchestrators/codegen/id-config.ts';
+import { decodeDeployment } from '../../orchestrators/codegen/deployment.ts';
 
 /** Default import-alias prefix. Customizable via `options.alias` (some
  *  apps prefer `@gen`, `~generated`, …). The app MUST use the SAME
@@ -89,11 +89,11 @@ export interface DevstackVitePluginOptions {
 	 *  otherwise on disk, so an app that customizes per-network signing must
 	 *  thread it here explicitly; the mainnet hard-clamp holds regardless. */
 	readonly networkOptions?: Readonly<Record<string, unknown>>;
-	/** Production id-config FILE — the known deployment's `devstack-ids.json`
+	/** Production deployment FILE — the known deployment's `deployment.json`
 	 *  (same schema the dev stack writes), committed at e.g.
 	 *  `config/<network>.ids.json`. Used only for `command === 'build'` to
 	 *  inject `__DEVSTACK_IDS__`. Relative paths resolve against the Vite
-	 *  root. If omitted, the `DEVSTACK_IDS_FILE` env (a path pointer) is used.
+	 *  root. If omitted, the `DEVSTACK_DEPLOYMENT_FILE` env (a path pointer) is used.
 	 *  Neither ⇒ no ids baked, and the generated resolver throws loudly at
 	 *  id-access time. We deliberately take a FILE, not a JSON env blob: a
 	 *  real deployment's ids are many + nested. */
@@ -171,7 +171,7 @@ export interface DevstackVitePlugin {
 	};
 	/** Capture the resolved command so injection is DEV-only. */
 	readonly configResolved: (config: ViteUserConfigLike) => void;
-	/** Dev-only: watch the live `devstack-ids.json` and full-reload the page
+	/** Dev-only: watch the live `deployment.json` and full-reload the page
 	 *  when it changes, so a republished package id (rewritten by the
 	 *  supervisor's post-acquire hook) reaches the running app. */
 	readonly configureServer: (server: ViteDevServerLike) => void;
@@ -199,7 +199,7 @@ export interface DevstackVitePlugin {
 }
 
 /** Best-effort, SYNC read of a string-valued field at `dottedPath` (e.g.
- *  `'codegen.idsFile'`, `'identity.network'`) from the active stack's
+ *  `'codegen.deploymentFile'`, `'identity.network'`) from the active stack's
  *  manifest. Walks each path segment as a nested object, returning the leaf
  *  value, or `null` on ANY miss (absent / partially-written / version-
  *  mismatched manifest, a non-object hop, a missing or non-string/empty
@@ -208,7 +208,7 @@ export interface DevstackVitePlugin {
  *  and throws on a version mismatch) so an out-of-date or partially-written
  *  manifest degrades gracefully instead of crashing the dev server. Never
  *  throws — the single discover→parse→guard→degrade-to-null reader every
- *  manifest field above (`codegen.idsFile`, `codegen.extrasDir`,
+ *  manifest field above (`codegen.deploymentFile`, `codegen.extrasDir`,
  *  `identity.network`) routes through. */
 const readManifestField = (
 	env: Readonly<Record<string, string | undefined>>,
@@ -230,30 +230,30 @@ const readManifestField = (
 	}
 };
 
-/** The gitignored `devstack-ids.json` path the boot wrote for the active
- *  stack (`codegen.idsFile`), or `null` on any miss. */
+/** The gitignored `deployment.json` path the boot wrote for the active
+ *  stack (`codegen.deploymentFile`), or `null` on any miss. */
 const readIdsFileFromManifest = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-): string | null => readManifestField(env, cwd, 'codegen.idsFile');
+): string | null => readManifestField(env, cwd, 'codegen.deploymentFile');
 
-/** SYNC read + schema-decode of an id-config FILE. The MISSING-file case
+/** SYNC read + schema-decode of a deployment FILE. The MISSING-file case
  *  (absent path, no file on disk) collapses to `null` so the Vite config
  *  load degrades gracefully when no stack has booted / no committed file is
  *  wired. A PRESENT-but-malformed file is NOT swallowed: it flows through
- *  the shared {@link decodeIdConfig}, which THROWS on bad JSON or a shape
- *  that violates `IdConfigSchema` — surfacing a genuinely broken committed
- *  id-config at config-load instead of silently injecting `null`. */
-const readIdConfigFile = (idsFile: string | null): unknown => {
+ *  the shared {@link decodeDeployment}, which THROWS on bad JSON or a shape
+ *  that violates `DeploymentSchema` — surfacing a genuinely broken committed
+ *  deployment at config-load instead of silently injecting `null`. */
+const readDeploymentFile = (idsFile: string | null): unknown => {
 	if (idsFile === null || !existsSync(idsFile)) return null;
-	return decodeIdConfig(readFileSync(idsFile, 'utf8'));
+	return decodeDeployment(readFileSync(idsFile, 'utf8'));
 };
 
 /** Resolve the on-chain ids to inject as the `__DEVSTACK_IDS__` global —
- *  ALWAYS from an id-config FILE (same schema in dev and prod), never a
- *  JSON env blob. Dev (`serve`): the live `devstack-ids.json` (via the
- *  manifest `codegen.idsFile`). Prod (`build`): the committed known-
- *  deployment file — the plugin `ids` option, else the `DEVSTACK_IDS_FILE`
+ *  ALWAYS from a deployment FILE (same schema in dev and prod), never a
+ *  JSON env blob. Dev (`serve`): the live `deployment.json` (via the
+ *  manifest `codegen.deploymentFile`). Prod (`build`): the committed known-
+ *  deployment file — the plugin `ids` option, else the `DEVSTACK_DEPLOYMENT_FILE`
  *  env (a PATH pointer, not data). Neither ⇒ `null`, so the generated
  *  resolver throws loudly at id-access time. */
 const resolveInjectedIds = (
@@ -262,15 +262,15 @@ const resolveInjectedIds = (
 	command: 'build' | 'serve' | undefined,
 	idsOption: string | undefined,
 ): unknown => {
-	// Prod build: the known deployment's committed id-config file. Option
-	// wins; else a `DEVSTACK_IDS_FILE` path pointer. Relative → Vite root.
+	// Prod build: the known deployment's committed deployment file. Option
+	// wins; else a `DEVSTACK_DEPLOYMENT_FILE` path pointer. Relative → Vite root.
 	if (command === 'build') {
-		const pointer = idsOption ?? env['DEVSTACK_IDS_FILE'];
+		const pointer = idsOption ?? env['DEVSTACK_DEPLOYMENT_FILE'];
 		if (pointer === undefined || pointer.length === 0) return null;
-		return readIdConfigFile(isAbsolute(pointer) ? pointer : resolve(root, pointer));
+		return readDeploymentFile(isAbsolute(pointer) ? pointer : resolve(root, pointer));
 	}
-	// Dev serve (and config-load default): the live id-config file.
-	return readIdConfigFile(readIdsFileFromManifest(env, root));
+	// Dev serve (and config-load default): the live deployment file.
+	return readDeploymentFile(readIdsFileFromManifest(env, root));
 };
 
 /** The manifest-recorded dev-extras tree (`codegen.extrasDir`) the
@@ -435,7 +435,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			//     set — and esbuild's stricter `define` rejects an operator
 			//     expression anyway. Bake a literal instead: the Vite config loads
 			//     BEFORE the test stack boots, so `injectedIds` is null and the
-			//     resolver falls back to the `DEVSTACK_IDS_FILE` env the vitest
+			//     resolver falls back to the `DEVSTACK_DEPLOYMENT_FILE` env the vitest
 			//     globalSetup points at the freshly-booted stack (see
 			//     vitest/global-setup.ts).
 			// The define VALUE must be esbuild-valid (a JSON literal or a
@@ -539,7 +539,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			const env = process.env as Readonly<Record<string, string | undefined>>;
 			const idsFile = readIdsFileFromManifest(env, resolvedRoot);
 			if (idsFile === null) return;
-			// Watch the live id-config and full-reload on change. The supervisor's
+			// Watch the live deployment and full-reload on change. The supervisor's
 			// post-acquire hook rewrites this file whenever a package (re)publishes
 			// (e.g. after a Move-source edit fires the file watcher → selective
 			// restart); a reload re-runs `transformIndexHtml`, which re-reads the

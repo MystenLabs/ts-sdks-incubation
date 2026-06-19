@@ -146,13 +146,13 @@ const wipeStack = (stack: string, runtimeRoot: string, cwd: string): Promise<voi
 		timer.unref?.();
 	});
 
-/** Best-effort, sync read of the booted stack's `codegen.idsFile` from its
+/** Best-effort, sync read of the booted stack's `codegen.deploymentFile` from its
  *  manifest. The generated `config-runtime.ts` resolver reads the injected
  *  `__DEVSTACK_IDS__` Vite `define`, but under vitest the Vite config (and
  *  thus that define) is evaluated BEFORE this `globalSetup` boots the stack,
  *  so the define bakes to `null`. The resolver's Node-only fallback reads
- *  `process.env.DEVSTACK_IDS_FILE` at id-access time instead — we point it at
- *  the freshly-booted stack's live id-config file here. Mirrors the Vite
+ *  `process.env.DEVSTACK_DEPLOYMENT_FILE` at id-access time instead — we point it at
+ *  the freshly-booted stack's live deployment file here. Mirrors the Vite
  *  plugin's `readCodegenField`; degrades to `null` on any miss. */
 const readIdsFileFromManifest = (manifestPath: string): string | null => {
 	try {
@@ -161,7 +161,7 @@ const readIdsFileFromManifest = (manifestPath: string): string | null => {
 		if (typeof parsed !== 'object' || parsed === null) return null;
 		const codegen = (parsed as { readonly codegen?: unknown }).codegen;
 		if (typeof codegen !== 'object' || codegen === null) return null;
-		const value = (codegen as Record<string, unknown>).idsFile;
+		const value = (codegen as Record<string, unknown>).deploymentFile;
 		return typeof value === 'string' && value.length > 0 ? value : null;
 	} catch {
 		return null;
@@ -171,13 +171,13 @@ const readIdsFileFromManifest = (manifestPath: string): string | null => {
 /** Publish the env handoff vitest forwards to test workers, so per-file
  *  `getStackContext()` resolves the stack this setup booted/attached, and the
  *  generated `config-runtime.ts` resolver can read the live ids
- *  (`DEVSTACK_IDS_FILE` — its Node fallback when the Vite `define` is null). */
+ *  (`DEVSTACK_DEPLOYMENT_FILE` — its Node fallback when the Vite `define` is null). */
 const publishHandoff = (stack: string, runtimeRoot: string, manifestPath: string): void => {
 	process.env[VITEST_ENV_VARS.STACK] = stack;
 	process.env[VITEST_ENV_VARS.RUNTIME_ROOT] = runtimeRoot;
 	process.env[VITEST_ENV_VARS.MANIFEST_PATH] = manifestPath;
 	const idsFile = readIdsFileFromManifest(manifestPath);
-	if (idsFile !== null) process.env.DEVSTACK_IDS_FILE = idsFile;
+	if (idsFile !== null) process.env.DEVSTACK_DEPLOYMENT_FILE = idsFile;
 };
 
 /**

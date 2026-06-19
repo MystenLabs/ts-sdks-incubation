@@ -66,7 +66,7 @@ const writeStackManifest = (
 	stateRoot: string,
 	stack: string,
 	extrasDir?: string,
-	idsFile?: string,
+	deploymentFile?: string,
 ): string => {
 	const dir = join(stateRoot, 'stacks', stack);
 	mkdirSync(dir, { recursive: true });
@@ -81,7 +81,7 @@ const writeStackManifest = (
 			extras: {},
 			codegen: {
 				...(extrasDir !== undefined ? { extrasDir } : {}),
-				...(idsFile !== undefined ? { idsFile } : {}),
+				...(deploymentFile !== undefined ? { deploymentFile } : {}),
 			},
 		}),
 	);
@@ -190,13 +190,13 @@ describe('devstackVitePlugin', () => {
 	// local-stack ids into the bundle (build-safe default).
 	it('explicit { command: "serve" } injects the live local-stack ids via the runtime global', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			const deploymentFile = join(tmp, '.devstack', 'stacks', 'e2e', 'deployment.json');
 			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
 			writeFileSync(
-				idsFile,
+				deploymentFile,
 				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
 			);
-			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			writeStackManifest(tmp, 'e2e', undefined, deploymentFile);
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
@@ -222,7 +222,7 @@ describe('devstackVitePlugin', () => {
 			// Vitest reports `command: 'serve'` too, but runs no `transformIndexHtml`,
 			// so the `__DEVSTACK_IDS_LIVE__` global is never set — and esbuild rejects
 			// the operator-expression `define`. The plugin must bake a literal so the
-			// resolver falls back to `DEVSTACK_IDS_FILE` (set by the vitest globalSetup).
+			// resolver falls back to `DEVSTACK_DEPLOYMENT_FILE` (set by the vitest globalSetup).
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 			process.env.VITEST = 'true';
@@ -236,13 +236,13 @@ describe('devstackVitePlugin', () => {
 
 	it('unknown command (no env arg) is build-safe: does NOT inject the live ids', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			const deploymentFile = join(tmp, '.devstack', 'stacks', 'e2e', 'deployment.json');
 			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
 			writeFileSync(
-				idsFile,
+				deploymentFile,
 				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
 			);
-			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			writeStackManifest(tmp, 'e2e', undefined, deploymentFile);
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
@@ -255,13 +255,13 @@ describe('devstackVitePlugin', () => {
 
 	it('injects the live ids even when the dev wallet is off', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			const deploymentFile = join(tmp, '.devstack', 'stacks', 'e2e', 'deployment.json');
 			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
 			writeFileSync(
-				idsFile,
+				deploymentFile,
 				JSON.stringify({ network: 'localnet', networks: { localnet: { rpc: 'http://x' } } }),
 			);
-			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			writeStackManifest(tmp, 'e2e', undefined, deploymentFile);
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
@@ -276,10 +276,10 @@ describe('devstackVitePlugin', () => {
 
 	it('configureServer full-reloads the page when the ids file changes', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
-			const idsFile = join(tmp, '.devstack', 'stacks', 'e2e', 'devstack-ids.json');
+			const deploymentFile = join(tmp, '.devstack', 'stacks', 'e2e', 'deployment.json');
 			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e'), { recursive: true });
-			writeFileSync(idsFile, JSON.stringify({ network: 'localnet', networks: {} }));
-			writeStackManifest(tmp, 'e2e', undefined, idsFile);
+			writeFileSync(deploymentFile, JSON.stringify({ network: 'localnet', networks: {} }));
+			writeStackManifest(tmp, 'e2e', undefined, deploymentFile);
 			process.env.DEVSTACK_STATE_DIR = tmp;
 			process.env.DEVSTACK_STACK = 'e2e';
 
@@ -304,17 +304,17 @@ describe('devstackVitePlugin', () => {
 
 			// The ids file is watched, on both 'change' and 'add' (the file may
 			// be (re)created after the server starts).
-			expect(watched).toContain(idsFile);
+			expect(watched).toContain(deploymentFile);
 			expect(onChange).toHaveLength(1);
 			expect(onAdd).toHaveLength(1);
 			// A change to an UNRELATED file does not reload.
 			for (const l of onChange) l(join(tmp, 'src', 'main.ts'));
 			expect(sent).toHaveLength(0);
 			// A change to the ids file triggers a single full reload.
-			for (const l of onChange) l(idsFile);
+			for (const l of onChange) l(deploymentFile);
 			expect(sent).toEqual([{ type: 'full-reload' }]);
 			// An 'add' of the ids file reloads too (file created post-boot).
-			for (const l of onAdd) l(idsFile);
+			for (const l of onAdd) l(deploymentFile);
 			expect(sent).toEqual([{ type: 'full-reload' }, { type: 'full-reload' }]);
 		}));
 });

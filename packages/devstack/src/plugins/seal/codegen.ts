@@ -8,7 +8,7 @@
 // seal instance folds into a single `generated/seal.ts` exporting
 // `export const seal = { <name>: SealBindings, ... }` (sibling-keyed bucket):
 //   - LIVE (boot): bakes the resolved key-server object id / URL / configs
-//     AND feeds the generic id-config `values` channel.
+//     AND feeds the generic deployment `values` channel.
 //   - STATIC (committed tree): emits `resolveValue('seal:<name>', '<key>')`
 //     so the committed `seal.ts` carries NO baked object id / endpoint URL.
 //
@@ -24,7 +24,7 @@ import {
 	type BucketField,
 	type SiblingBucketSpec,
 } from '../../contracts/config-bindings.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 import type { SealKeyServerEntry } from './registry-publish.ts';
 
 /** Codegen-emitted shape for seal. */
@@ -103,7 +103,7 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 };
 
 /** Build the LIVE Codegenable contribution for a seal instance. Bakes the
- *  resolved key-server fields + feeds the generic id-config `values`
+ *  resolved key-server fields + feeds the generic deployment `values`
  *  channel. */
 export const makeSealCodegenable = (bindings: SealBindings): CodegenableDecl =>
 	liveBucketCodegen(sealBucketSpec({ name: bindings.name, mode: bindings.mode }), bindings);

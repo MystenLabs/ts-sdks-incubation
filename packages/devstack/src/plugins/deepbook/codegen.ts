@@ -6,7 +6,7 @@
 // instance name). The framework derives both behaviors (see
 // `contracts/config-bindings.ts`):
 //   - LIVE (boot): bakes the resolved deployment (package / registry / pool
-//     ids, pyth feed ids, …) AND feeds the generic id-config `values`
+//     ids, pyth feed ids, …) AND feeds the generic deployment `values`
 //     channel.
 //   - STATIC (committed tree): emits `resolveValue('deepbook:<name>', '<key>')`
 //     so the committed `deepbook.ts` carries NO baked on-chain id / URL.
@@ -26,7 +26,7 @@ import {
 	type BucketField,
 	type SiblingBucketSpec,
 } from '../../contracts/config-bindings.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 
 export interface DeepbookBindings {
 	readonly name: string;
@@ -170,7 +170,7 @@ const deepbookBucketSpec = (
 };
 
 /** Build the LIVE Codegenable contribution for a deepbook instance. Bakes
- *  the resolved deployment + feeds the generic id-config `values` channel.
+ *  the resolved deployment + feeds the generic deployment `values` channel.
  *  Every instance folds into one `generated/deepbook.ts` exporting
  *  `export const deepbook = { <name>: DeepbookBindings, ... }`. */
 export const makeDeepbookCodegenable = (bindings: DeepbookBindings): CodegenableDecl =>

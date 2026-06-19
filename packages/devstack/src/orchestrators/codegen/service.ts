@@ -80,8 +80,13 @@ import {
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
-import { UNRESOLVED_ID } from './id-config.ts';
-import type { IdConfig, IdConfigNetwork, IdConfigPackage, IdConfigValues } from './id-config.ts';
+import { UNRESOLVED_ID } from './deployment.ts';
+import type {
+	Deployment,
+	DeploymentNetwork,
+	DeploymentPackage,
+	DeploymentValues,
+} from './deployment.ts';
 import { CodegenPathsService, type CodegenPaths } from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
@@ -873,7 +878,7 @@ const buildAggregateFiles = (
 const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').replace(/^.*\//, '');
 
 /** The committed `config.ts` bucket. The orchestrator already encodes
- *  `config.ts` semantics by name elsewhere (the live `assembleIdConfig`
+ *  `config.ts` semantics by name elsewhere (the live `assembleDeployment`
  *  slices it by this exact bucket); the static envelope-accessor injection
  *  below is the matching static-render-only branch. */
 const CONFIG_BUCKET = 'config.ts';
@@ -895,7 +900,7 @@ const CONFIG_BUCKET = 'config.ts';
  *
  * STATIC-render-only: these are wired into the emitted committed tree so apps
  * can enumerate / look up networks off `config`, but they are NOT part of the
- * live id-config path (`assembleIdConfig` / `idConfigFromBucket` slice the raw
+ * live deployment path (`assembleDeployment` / `deploymentFromBucket` slice the raw
  * `network`/`networks`/`packages`/`mvrOverrides` fields, never these). The
  * aggregate file's `exports` is `{ config: {...} }`; mutate the inner object.
  */
@@ -949,7 +954,10 @@ const deploymentUsageEmpty = (u: DeploymentUsage): boolean =>
 
 /** Recursively scan an exports value's raw expressions, OR-ing in the
  *  deployment symbols each references. */
-const scanDeploymentUsage = (value: unknown, acc: { -readonly [K in keyof DeploymentUsage]: boolean }): void => {
+const scanDeploymentUsage = (
+	value: unknown,
+	acc: { -readonly [K in keyof DeploymentUsage]: boolean },
+): void => {
 	if (isRawExpr(value)) {
 		const e = value.expr;
 		// `dep` as a standalone identifier (not a substring of e.g. `__deployment`).
@@ -1011,7 +1019,7 @@ const deploymentPreambleFor = (u: DeploymentUsage): ReadonlyArray<string> => {
  * `devstack codegen` verb (which calls `runEmitCycle` directly off the
  * config-derived `staticCodegen` decls). This service keeps the dispatcher
  * seam closed: every `codegenable` contribution still has a handler, so
- * plugins emit decls uniformly even though boot writes the id-config (not
+ * plugins emit decls uniformly even though boot writes the deployment (not
  * the committed tree).
  */
 export interface CodegenOrchestrator {
@@ -1023,13 +1031,13 @@ export interface CodegenOrchestrator {
 		decl: Codegenable,
 	) => Effect.Effect<void, never, Scope.Scope>;
 
-	/** Assemble the id-config from the currently-registered (live-resolved)
+	/** Assemble the deployment from the currently-registered (live-resolved)
 	 *  contributions. Boot calls this in its post-acquire hook to WRITE the
-	 *  id-config file (the same `networks` / `packages` / `mvrOverrides`
+	 *  deployment file (the same `networks` / `packages` / `mvrOverrides`
 	 *  data that fed `config.ts`, but as loadable JSON the Vite plugin
 	 *  injects). `network` is the active network name (`ctx.identity.network`).
 	 *  Pure projection over the registered decls — no I/O, no chain. */
-	readonly assembleIdConfig: (network: string) => Effect.Effect<IdConfig, CodegenEmitFailed>;
+	readonly assembleDeployment: (network: string) => Effect.Effect<Deployment, CodegenEmitFailed>;
 
 	/** Flush ONLY the `generated-extras` contributions (the dev wallet's
 	 *  `dev-wallet.ts` + the account plugin's `accounts.ts`) to the
@@ -1077,22 +1085,22 @@ export class CodegenOrchestratorService extends Context.Service<
 
 /**
  * Slice the deep-merged `config.ts` aggregate bucket into the loadable
- * `IdConfig` interchange shape. The bucket is the live codegen
+ * `Deployment` interchange shape. The bucket is the live codegen
  * accumulation (sui `networks`, per-package `packages`/`objects`/
  * `mvrOverrides`, account `accounts`); this picks the id-bearing fields
  * the Vite plugin injects. Reads are defensive — any missing slice
  * collapses to an empty record so a partial stack still writes a valid
- * (if sparse) id-config.
+ * (if sparse) deployment.
  */
-const idConfigFromBucket = (
+const deploymentFromBucket = (
 	bucket: Record<string, unknown>,
 	network: string,
-	values: IdConfigValues,
-): IdConfig => {
+	values: DeploymentValues,
+): Deployment => {
 	const asRecord = (v: unknown): Record<string, unknown> => (isPlainObject(v) ? v : {});
 	const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
-	const networks: Record<string, IdConfigNetwork> = {};
+	const networks: Record<string, DeploymentNetwork> = {};
 	for (const [name, raw] of Object.entries(asRecord(bucket['networks']))) {
 		const entry = asRecord(raw);
 		const rpc = asString(entry['rpc']);
@@ -1105,7 +1113,7 @@ const idConfigFromBucket = (
 		};
 	}
 
-	const packages: Record<string, IdConfigPackage> = {};
+	const packages: Record<string, DeploymentPackage> = {};
 	for (const [name, raw] of Object.entries(asRecord(bucket['packages']))) {
 		const entry = asRecord(raw);
 		// The active-network id is `packageId` (convenience field the package
@@ -1197,7 +1205,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				);
 			}) as Effect.Effect<void, never, Scope.Scope>;
 
-		const assembleIdConfig: CodegenOrchestrator['assembleIdConfig'] = (network) =>
+		const assembleDeployment: CodegenOrchestrator['assembleDeployment'] = (network) =>
 			Effect.gen(function* () {
 				const registered = (yield* Ref.get(contributionsRef)).map((e) => e.decl);
 				// Deep-merge every contribution's `config.ts` aggregate
@@ -1206,11 +1214,11 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				// package's `packages.<name>` / `objects` / `mvrOverrides`,
 				// the account plugin's `accounts`). The merged bucket carries
 				// real (live-`acquire`-resolved) ids; we then slice it into the
-				// loadable `IdConfig` shape.
+				// loadable `Deployment` shape.
 				const bucket: Record<string, unknown> = {};
 				// `accounts.ts` is a SEPARATE aggregate bucket (the account
 				// plugin routes it to `generated-extras`); fold its projection
-				// under an `accounts` key so the id-config carries account
+				// under an `accounts` key so the deployment carries account
 				// addresses alongside the `config.ts`-derived ids.
 				const accounts: Record<string, unknown> = {};
 				// The generic resolver channel — `values[namespace][key]` —
@@ -1226,7 +1234,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 					// walrus.ts, seal.ts, ...) may declare `idConfigValues`. Fold
 					// every contributor's so the committed-tree `resolveValue` calls
 					// those buckets emit resolve at app build/dev time -- not just the
-					// `config.ts` plugins'. Slicing the TYPED id-config fields
+					// `config.ts` plugins'. Slicing the TYPED deployment fields
 					// (`networks` / `packages` / `mvrOverrides`) stays scoped to the
 					// `config.ts` bucket below.
 					if (decl.aggregate.idConfigValues !== undefined) {
@@ -1243,7 +1251,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 					}
 				}
 				bucket['accounts'] = accounts;
-				return idConfigFromBucket(bucket, network, values as IdConfigValues);
+				return deploymentFromBucket(bucket, network, values as DeploymentValues);
 			});
 
 		const emitExtras: CodegenOrchestrator['emitExtras'] = () =>
@@ -1301,7 +1309,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 
 		return CodegenOrchestratorService.of({
 			registerContribution,
-			assembleIdConfig,
+			assembleDeployment,
 			emitExtras,
 			emitBindings,
 		});

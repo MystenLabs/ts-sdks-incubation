@@ -19,7 +19,7 @@ const UNRESOLVED_ID =
 // test stack is booted by the vitest `globalSetup` AFTER the Vite config
 // (and so this module) is evaluated. The devstack vitest `globalSetup`
 // publishes the booted stack's id-config FILE path as
-// `process.env.DEVSTACK_IDS_FILE`; we read+parse it lazily here. Guarded so
+// `process.env.DEVSTACK_DEPLOYMENT_FILE`; we read+parse it lazily here. Guarded so
 // browser bundles (no `process`, no `node:fs`) never touch it. Returns
 // `null` on any miss, so `ids()` throws its actionable error as before.
 // Minimal LOCAL shapes (no `@types/node` dependency — this file is also
@@ -40,7 +40,7 @@ const readNodeFallbackIds = (): DevstackIds | null => {
 	try {
 		const proc = (globalThis as { process?: NodeProcessLike }).process;
 		if (proc === undefined) return null;
-		const idsFile = proc.env?.DEVSTACK_IDS_FILE;
+		const idsFile = proc.env?.DEVSTACK_DEPLOYMENT_FILE;
 		if (idsFile === undefined || idsFile.length === 0) return null;
 		// `process.getBuiltinModule` (Node >=22.3) loads `node:fs`
 		// synchronously without an `import`/`require` literal a browser
@@ -58,7 +58,7 @@ const readNodeFallbackIds = (): DevstackIds | null => {
 };
 
 /** The injected ids, or — under Node with no injected define — the
- *  `DEVSTACK_IDS_FILE` fallback. `null` when neither is available. */
+ *  `DEVSTACK_DEPLOYMENT_FILE` fallback. `null` when neither is available. */
 const injectedIds = (): DevstackIds | null => {
 	const injected = typeof __DEVSTACK_IDS__ === 'undefined' ? null : __DEVSTACK_IDS__;
 	if (injected !== null && injected !== undefined) return injected;
@@ -107,7 +107,7 @@ export class DevstackConfigMissingError extends Error {
 				`No on-chain ids are available. For local dev, run \`devstack up\` ` +
 				`(the Vite dev server injects the live ids). For a production build, ` +
 				`point the build at the known deployment's committed id-config file ` +
-				`(the Vite plugin \`ids\` option, or \`DEVSTACK_IDS_FILE\`) before ` +
+				`(the Vite plugin \`ids\` option, or \`DEVSTACK_DEPLOYMENT_FILE\`) before ` +
 				`\`pnpm build\`. See your example README's "Deploy to a real network" ` +
 				`section.`,
 		);

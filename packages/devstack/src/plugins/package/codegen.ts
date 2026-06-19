@@ -14,7 +14,7 @@
 // contributions ONCE as a `ConfigBindingSet`; the framework's
 // `projectLiveConfig` / `projectStaticConfig` derive both behaviors:
 //   - LIVE (boot): bakes the resolved package id literal — boot's
-//     `assembleIdConfig` reads it into the loadable id-config.
+//     `assembleDeployment` reads it into the loadable deployment.
 //   - STATIC (committed-tree): emits `resolveId('<mvr>')` so the committed
 //     `config.ts` carries NO on-chain id (resolved at app build/dev time).
 //
@@ -33,7 +33,7 @@ import {
 	type ConfigBindingSet,
 } from '../../contracts/config-bindings.ts';
 import type { PackageBindings } from '../../orchestrators/codegen/bindings.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 import { mvrNamedForm, mvrNamedFormFrom } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
 
@@ -105,7 +105,7 @@ interface PackageBindingInput {
  * per-network literals (testnet/mainnet) and captured objects are literals.
  *
  * The same set drives `projectStaticConfig` (committed tree) and
- * `projectLiveConfig` (boot id-config) — no parallel projectors.
+ * `projectLiveConfig` (boot deployment) — no parallel projectors.
  */
 const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<PackageLiveState> => {
 	const { name, mvrPlaceholder } = input;
@@ -156,7 +156,7 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 	// LOADED CONFIG DATA, so each is a RESOLVED binding on the generic
 	// `resolveValue('package:<name>:objects', '<key>')` channel: the static
 	// committed stub emits the resolver expr, the live path bakes the real
-	// captured id AND feeds the id-config `values` channel. The key set comes
+	// captured id AND feeds the deployment `values` channel. The key set comes
 	// from `objectKeys` (config-known) so BOTH paths emit identical paths —
 	// no live-only `objects` field. Falls back to the live capture keys when
 	// `objectKeys` is absent (the live emit path).
@@ -201,7 +201,7 @@ const packageConfigBindings = (input: PackageBindingInput): ConfigBindingSet<Pac
 /**
  * Build the package's `CodegenableDecl` from its binding set via the unified
  * `configCodegenable` derivation. Mode `'live'` bakes concrete values + feeds
- * the id-config; `'static'` emits resolver expressions. The decl ALSO exports
+ * the deployment; `'static'` emits resolver expressions. The decl ALSO exports
  * `packageBindings` (the `extraExports` hook) so the orchestrator's
  * `isPackageBindings` seam forwards it to the Move-bindings emitter (bindings
  * stay in `generated/bindings/`).

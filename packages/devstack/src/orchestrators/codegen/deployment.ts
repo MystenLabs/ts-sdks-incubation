@@ -1,21 +1,21 @@
-// The id-config interchange file — the single source of on-chain ids.
+// The deployment interchange file — the single source of on-chain ids.
 //
 // Stop treating on-chain ids as codegen OUTPUT. Treat them as loaded
 // CONFIG DATA. Codegen is a deterministic, stack-free function
-// `(Move source, id-config?) → generated`. Booting a stack's only new
+// `(Move source, deployment?) → generated`. Booting a stack's only new
 // job is to PRODUCE this file; the codegen verb READS it (or runs with
 // none); the vite plugin INJECTS it into the app build/dev server.
 //
 // Four authors/consumers, one shared schema:
 //   - WRITER:   `orchestrators/boot.ts` post-acquire assembles this from
 //               acquired plugin state and writes it to the gitignored
-//               `.devstack/stacks/<name>/devstack-ids.json`.
+//               `.devstack/stacks/<name>/deployment.json`.
 //   - READER:   the stack-free `devstack codegen` verb reads it via the
 //               optional `--config <file>` flag (absent ⇒ ids unresolved).
 //   - CONSUMER: the emitted `config-runtime.ts` resolver reads the same
 //               shape off the injected `__DEVSTACK_IDS__` global.
 //   - INJECTOR: the vite plugin reads the live file (dev) or a committed
-//               id-config file (prod, via `ids`/`DEVSTACK_IDS_FILE`) and
+//               deployment file (prod, via `ids`/`DEVSTACK_DEPLOYMENT_FILE`) and
 //               `define`s the global.
 //
 // The shape is the id-half of today's `config.ts`: networks (rpc + the
@@ -49,7 +49,7 @@ export const isUnresolvedId = (id: string | undefined | null): boolean =>
 // JSON value space — the generic `values` channel carries exactly JSON.
 // -----------------------------------------------------------------------------
 
-/** Any JSON-serialisable value. The id-config round-trips through
+/** Any JSON-serialisable value. The deployment round-trips through
  *  `JSON.stringify` into the injected `__DEVSTACK_IDS__` global, so a
  *  plugin live value carried in the generic `values` channel must be JSON. */
 export type JsonValue =
@@ -68,7 +68,7 @@ export type JsonValue =
  *  network. Mirrors `SuiNetworkConfigEntry` (plugins/sui/codegen.ts);
  *  `rpc` is the load-bearing field the app reads synchronously at module
  *  load. */
-export const IdConfigNetworkSchema = Schema.Struct({
+export const DeploymentNetworkSchema = Schema.Struct({
 	rpc: Schema.String,
 	chainId: Schema.optional(Schema.String),
 	faucet: Schema.optional(Schema.NullOr(Schema.String)),
@@ -77,26 +77,26 @@ export const IdConfigNetworkSchema = Schema.Struct({
 
 /** One `packages.<name>` entry — the resolved package id plus any
  *  resolved object captures for the active network. */
-export const IdConfigPackageSchema = Schema.Struct({
+export const DeploymentPackageSchema = Schema.Struct({
 	id: Schema.String,
 	objects: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
 /** A JSON-serialisable value carried in the generic `values` channel.
- *  The whole id-config round-trips through `JSON.stringify` into the
+ *  The whole deployment round-trips through `JSON.stringify` into the
  *  vite `define` global, so the value space is exactly JSON. */
 // Typed as `Schema.Codec<JsonValue>` (NOT `Schema.Schema<JsonValue>`): the
 // type-only `Schema<T>` widens `DecodingServices` to `unknown`, which would
-// poison every decoder of `IdConfigSchema`; `Codec<T>` defaults the decode/
+// poison every decoder of `DeploymentSchema`; `Codec<T>` defaults the decode/
 // encode services to `never`, matching the real (service-free) recursion.
-export const IdConfigJsonSchema: Schema.Codec<JsonValue> = Schema.suspend(() =>
+export const DeploymentJsonSchema: Schema.Codec<JsonValue> = Schema.suspend(() =>
 	Schema.Union([
 		Schema.Null,
 		Schema.String,
 		Schema.Number,
 		Schema.Boolean,
-		Schema.Array(IdConfigJsonSchema),
-		Schema.Record(Schema.String, IdConfigJsonSchema),
+		Schema.Array(DeploymentJsonSchema),
+		Schema.Record(Schema.String, DeploymentJsonSchema),
 	]),
 ) as Schema.Codec<JsonValue>;
 
@@ -106,26 +106,26 @@ export const IdConfigJsonSchema: Schema.Codec<JsonValue> = Schema.suspend(() =>
  *  sibling to the typed `network`/`networks`/`packages`/`accounts`/
  *  `mvrOverrides` fields — it carries the plugin live values the fixed
  *  channel can't (deepbook pool ids, coin types, walrus/seal endpoints). */
-export const IdConfigValuesSchema = Schema.Record(
+export const DeploymentValuesSchema = Schema.Record(
 	Schema.String,
-	Schema.Record(Schema.String, IdConfigJsonSchema),
+	Schema.Record(Schema.String, DeploymentJsonSchema),
 );
 
-/** The id-config interchange shape. The whole document is data — no
+/** The deployment interchange shape. The whole document is data — no
  *  functions, no devstack imports — so it round-trips through JSON and a
  *  `JSON.stringify` into a vite `define` global. */
-export const IdConfigSchema = Schema.Struct({
+export const DeploymentSchema = Schema.Struct({
 	/** Active network name (the `networks.<name>` key the app reads).
-	 *  Load-bearing — an id-config MUST name its network + connection. */
+	 *  Load-bearing — a deployment MUST name its network + connection. */
 	network: Schema.String,
-	networks: Schema.Record(Schema.String, IdConfigNetworkSchema),
-	/** Resolved package ids (+ object captures). Optional, default `{}`: an
-	 *  id-config may have zero packages (a network-only stack, or a
+	networks: Schema.Record(Schema.String, DeploymentNetworkSchema),
+	/** Resolved package ids (+ object captures). Optional, default `{}`: a
+	 *  deployment may have zero packages (a network-only stack, or a
 	 *  hand-authored deploy file), and the boot writer always emits the key
 	 *  anyway — defaulting keeps the injected blob well-formed so the app's
 	 *  resolvers throw `DevstackConfigMissingError` rather than a raw
 	 *  TypeError on a missing section. */
-	packages: Schema.Record(Schema.String, IdConfigPackageSchema).pipe(
+	packages: Schema.Record(Schema.String, DeploymentPackageSchema).pipe(
 		Schema.withDecodingDefaultKey(Effect.succeed({})),
 	),
 	accounts: Schema.Record(Schema.String, Schema.String).pipe(
@@ -139,71 +139,75 @@ export const IdConfigSchema = Schema.Struct({
 	),
 	/** Generic resolver channel — `values[namespace][key]` carries
 	 *  arbitrary live plugin JSON the typed fields above can't. Optional
-	 *  so older id-config files (no `values`) still decode. */
-	values: Schema.optional(IdConfigValuesSchema),
+	 *  so older deployment files (no `values`) still decode. */
+	values: Schema.optional(DeploymentValuesSchema),
 });
 
-export type IdConfig = typeof IdConfigSchema.Type;
-export type IdConfigNetwork = typeof IdConfigNetworkSchema.Type;
-export type IdConfigPackage = typeof IdConfigPackageSchema.Type;
-export type IdConfigValues = typeof IdConfigValuesSchema.Type;
+export type Deployment = typeof DeploymentSchema.Type;
+export type DeploymentNetwork = typeof DeploymentNetworkSchema.Type;
+export type DeploymentPackage = typeof DeploymentPackageSchema.Type;
+export type DeploymentValues = typeof DeploymentValuesSchema.Type;
 
 // -----------------------------------------------------------------------------
 // Error
 // -----------------------------------------------------------------------------
 
-/** Failure reading or decoding an id-config file. */
-export class IdConfigError extends Schema.TaggedErrorClass<IdConfigError>()('IdConfigError', {
-	source: Schema.String,
-	message: Schema.String,
-	cause: Schema.optional(Schema.Defect),
-}) {}
+/** Failure reading or decoding a deployment file. */
+export class DeploymentDecodeError extends Schema.TaggedErrorClass<DeploymentDecodeError>()(
+	'DeploymentDecodeError',
+	{
+		source: Schema.String,
+		message: Schema.String,
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
 
 // -----------------------------------------------------------------------------
 // Read / write helpers
 // -----------------------------------------------------------------------------
 
-/** Canonical filename of the per-stack id-config under
+/** Canonical filename of the per-stack deployment under
  *  `.devstack/stacks/<name>/`. */
-export const ID_CONFIG_FILENAME = 'devstack-ids.json';
+export const DEPLOYMENT_FILENAME = 'deployment.json';
 
-/** Write the id-config as pretty JSON. Idempotent at the byte level for
+/** Write the deployment as pretty JSON. Idempotent at the byte level for
  *  identical input (sorted by the caller's assembly order). */
-export const writeIdConfig = (
+export const writeDeployment = (
 	path: string,
-	config: IdConfig,
-): Effect.Effect<void, IdConfigError, FileSystem.FileSystem> =>
+	config: Deployment,
+): Effect.Effect<void, DeploymentDecodeError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const text = `${JSON.stringify(config, null, 2)}\n`;
 		const bytes = new TextEncoder().encode(text);
 		// Atomic temp+rename — the Vite plugin reads this file with a plain
 		// `readFileSync` + `JSON.parse`, so a torn / partial write would surface
 		// as a parse error. `atomicWriteFile` ensures the parent dir (the
-		// id-config write may run before the manifest write) and fsyncs before
+		// deployment write may run before the manifest write) and fsyncs before
 		// the rename, so readers only ever see a complete file.
 		yield* atomicWriteFile(path, bytes, { mode: 0o644 }).pipe(
 			Effect.mapError(
-				(cause) => new IdConfigError({ source: path, message: 'failed to write id-config', cause }),
+				(cause) =>
+					new DeploymentDecodeError({ source: path, message: 'failed to write deployment', cause }),
 			),
 		);
 	});
 
-/** Project a runtime-decode issue into the typed `IdConfigError`. */
-const mkIdConfigError = (issue: RuntimeDecodeIssue): IdConfigError =>
-	new IdConfigError({
+/** Project a runtime-decode issue into the typed `DeploymentDecodeError`. */
+const mkDeploymentError = (issue: RuntimeDecodeIssue): DeploymentDecodeError =>
+	new DeploymentDecodeError({
 		source: issue.source,
 		message: issue.message,
 		...(issue.cause === undefined ? {} : { cause: issue.cause }),
 	});
 
-/** Decode + validate an id-config from already-read JSON text. The single
- *  schema-decode seam every reader shares (the Vite plugin, the `dump-ids`
+/** Decode + validate a deployment from already-read JSON text. The single
+ *  schema-decode seam every reader shares (the Vite plugin, the `dump-deployment`
  *  verb, the codegen verb) so the parse-and-validate decision lives in ONE
  *  place rather than each caller hand-rolling `JSON.parse`. Throws
- *  `IdConfigError` on malformed JSON or a shape that violates
- *  `IdConfigSchema`. */
-export const decodeIdConfig = (text: string): IdConfig =>
-	decodeJsonTextSync(IdConfigSchema, text, {
-		source: ID_CONFIG_FILENAME,
-		mkError: mkIdConfigError,
+ *  `DeploymentDecodeError` on malformed JSON or a shape that violates
+ *  `DeploymentSchema`. */
+export const decodeDeployment = (text: string): Deployment =>
+	decodeJsonTextSync(DeploymentSchema, text, {
+		source: DEPLOYMENT_FILENAME,
+		mkError: mkDeploymentError,
 	});

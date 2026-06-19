@@ -1,7 +1,7 @@
 // Guard: the UNIFIED config-binding path.
 //
 // Each config-emitting plugin must declare its `config.ts` contributions
-// ONCE as a `ConfigBindingSet` from which BOTH the live (boot id-config) and
+// ONCE as a `ConfigBindingSet` from which BOTH the live (boot deployment) and
 // the static (committed `config.ts`) behaviors are derived. The old failure
 // mode was a plugin shipping a LIVE-only config field with NO matching
 // static emission → an incomplete committed tree → a broken clean-clone
@@ -129,7 +129,7 @@ describe('contracts/config-bindings — unified derivation', () => {
 	it('generic `values` channel carries ONLY non-sugar resolved bindings', () => {
 		const values = liveValuesOf(demoSet, state);
 		// `demo.poolId` (no sugar) lands in the generic channel; the sugar id
-		// binding feeds the typed id-config field, not `values`.
+		// binding feeds the typed deployment field, not `values`.
 		expect(values).toEqual({ demo: { poolId: state.poolId } });
 	});
 
@@ -217,7 +217,7 @@ describe('contracts/config-bindings — config-emitting plugins expose the stati
 // -----------------------------------------------------------------------------
 //
 // These plugins resolve their bucket fields through the GENERIC
-// `requireValue(dep, ns, key)` channel (the typed id-config channel only
+// `requireValue(dep, ns, key)` channel (the typed deployment channel only
 // carries network/packages/mvrOverrides). That channel returns `unknown`,
 // which used to erase the static type of every field they emit. The fix
 // carries each resolved field's concrete TS type as a `tsType` on the binding,

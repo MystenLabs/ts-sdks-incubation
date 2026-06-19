@@ -137,7 +137,7 @@ export interface PluginCtx {
 	 *  so it cannot be a static spec field; that is exactly why it is a
 	 *  buffered verb). Since codegen was decoupled from boot this is the
 	 *  LIVE half ONLY: at boot the orchestrator projects the decl into the
-	 *  loadable id-config (`assembleIdConfig`) and, for dev-only decls,
+	 *  loadable deployment (`assembleDeployment`) and, for dev-only decls,
 	 *  writes the `generated-extras` tree (`emitExtras`) — it does NOT write
 	 *  the committed `src/generated` tree. That committed, stack-free tree is
 	 *  emitted separately by the `devstack codegen` verb from the plugin

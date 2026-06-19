@@ -106,10 +106,10 @@ export interface AggregateContribution {
 	 *  `CodegenableDecl.sensitive` for aggregate files. Defaults to
 	 *  `false`. */
 	readonly sensitive?: boolean;
-	/** Generic-channel contributions for the loadable id-config. Only the
+	/** Generic-channel contributions for the loadable deployment. Only the
 	 *  LIVE (boot) aggregate of a unified config-binding set sets this;
-	 *  boot's `assembleIdConfig` folds it into `idConfig.values[ns][key]`.
-	 *  Carries the live plugin JSON the typed id-config fields can't (pool
+	 *  boot's `assembleDeployment` folds it into `deployment.values[ns][key]`.
+	 *  Carries the live plugin JSON the typed deployment fields can't (pool
 	 *  ids, coin types, walrus/seal endpoints). The committed-tree (static)
 	 *  aggregate omits it — those values resolve at app build time. */
 	readonly idConfigValues?: {

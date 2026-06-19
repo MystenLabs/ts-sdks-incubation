@@ -1,6 +1,6 @@
 // Per-stack codegen output-location resolver.
 //
-// Boot no longer runs codegen — `up` / `apply` write an id-config file to
+// Boot no longer runs codegen — `up` / `apply` write a deployment file to
 // `.devstack/stacks/<stack>/` instead. This resolver still owns the per-
 // stack `.devstack` dev tree (the `generated-extras` overlay the Vite
 // `@devstack-dev` alias reads). The COMMITTED `src/generated` tree is
@@ -17,7 +17,7 @@
 //     each other's dev-only artifacts. There is NO output-dir override:
 //     `defineDevstack({ codegen })` exposes no public surface for the dev
 //     tree (boot writes only the per-stack `generated-extras` overlay + the
-//     id-config file), so the location is a single fixed per-stack rule.
+//     deployment file), so the location is a single fixed per-stack rule.
 //
 // The resolved absolute `extrasDir` is recorded in the per-stack manifest
 // (`codegen.extrasDir`) so the reader (the Vite plugin's `@devstack-dev`

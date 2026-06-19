@@ -135,7 +135,7 @@ const makeHarness = (
 		codegen: {
 			run: () => Effect.sync(() => ({ exitCode: 0 })),
 		},
-		dumpIds: {
+		dumpDeployment: {
 			run: () => Effect.sync(() => ({ exitCode: 0 })),
 		},
 		status: {
@@ -726,7 +726,7 @@ describe('dispatch', () => {
 			'up',
 			'apply',
 			'codegen',
-			'dump-ids',
+			'dump-deployment',
 			'status',
 			'doctor',
 			'config',

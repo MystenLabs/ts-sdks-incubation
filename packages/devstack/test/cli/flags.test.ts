@@ -27,7 +27,7 @@ const makeHarness = () => {
 		},
 		apply: { run: () => Effect.succeed({ exitCode: 0 }) },
 		codegen: { run: () => Effect.succeed({ exitCode: 0 }) },
-		dumpIds: { run: () => Effect.succeed({ exitCode: 0 }) },
+		dumpDeployment: { run: () => Effect.succeed({ exitCode: 0 }) },
 		status: { reader: { readState: () => Effect.succeed(null) } },
 		snapshot: {
 			reader: {

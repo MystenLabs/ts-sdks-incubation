@@ -82,7 +82,7 @@ import {
 	type Codegenable,
 } from './codegen/service.ts';
 import { CodegenWriteFailed } from './codegen/errors.ts';
-import { ID_CONFIG_FILENAME, writeIdConfig } from './codegen/id-config.ts';
+import { DEPLOYMENT_FILENAME, writeDeployment } from './codegen/deployment.ts';
 import {
 	DEFAULT_TRAEFIK_IMAGE,
 	layerDockerUpstreamResolver,
@@ -365,7 +365,7 @@ export const resolveProductionCodegenOptions = (input: {
 	// `<appRoot>/.devstack/stacks/<stack>/generated-extras` (the default
 	// rule). Nothing is ever emitted into the live `generated` tree at boot
 	// (boot writes only the per-stack `generated-extras` overlay +
-	// `devstack-ids.json`), so there is no live `outputDir` to resolve — the
+	// `deployment.json`), so there is no live `outputDir` to resolve — the
 	// committed `src/generated` tree is owned solely by the stack-free
 	// `codegen` verb (wired separately).
 	const resolved = resolveCodegenOutput({
@@ -754,24 +754,24 @@ export const buildProductionPostAcquireHook = (
 					...operationalManifestEndpointEntries(ctx, routableEndpoints),
 				];
 				// Boot no longer runs codegen. Its only job is to PRODUCE the
-				// id-config (loadable on-chain ids), which the Vite plugin injects
+				// deployment (loadable on-chain ids), which the Vite plugin injects
 				// via `__DEVSTACK_IDS__` in dev. The committed `src/generated` tree
 				// is written ONLY by the stack-free `devstack codegen` verb.
-				// Assemble the id-config from the SAME live-resolved contributions
+				// Assemble the deployment from the SAME live-resolved contributions
 				// that fed `config.ts` and write it to the gitignored
 				// `.devstack/stacks/<stack>/`.
-				const idConfig = yield* codegen.assembleIdConfig(String(ctx.identity.network)).pipe(
+				const deployment = yield* codegen.assembleDeployment(String(ctx.identity.network)).pipe(
 					Effect.mapError(
 						(cause) =>
 							new CodegenWriteFailed({
-								outputPath: ID_CONFIG_FILENAME,
+								outputPath: DEPLOYMENT_FILENAME,
 								stage: 'write',
 								cause,
 							}),
 					),
 				);
-				const idsFile = join(stackPaths.stackRoot, ID_CONFIG_FILENAME);
-				yield* writeIdConfig(idsFile, idConfig).pipe(
+				const deploymentFile = join(stackPaths.stackRoot, DEPLOYMENT_FILENAME);
+				yield* writeDeployment(deploymentFile, deployment).pipe(
 					Effect.provideService(FileSystem.FileSystem, fs),
 				);
 				const envelope = yield* buildEnvelope({
@@ -783,12 +783,12 @@ export const buildProductionPostAcquireHook = (
 					endpoints,
 					extras,
 					// Record the dev-only `generated-extras` tree the
-					// `@devstack-dev` Vite alias resolves and the live `idsFile`
+					// `@devstack-dev` Vite alias resolves and the live `deploymentFile`
 					// the plugin injects as `__DEVSTACK_IDS__` — one decision, one
 					// source of truth. Bindings are NOT recorded: `@generated`
 					// always resolves to the committed `src/generated` tree written
 					// by the stack-free `codegen` verb.
-					codegen: { extrasDir: paths.extrasDir, idsFile },
+					codegen: { extrasDir: paths.extrasDir, deploymentFile },
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');
 				yield* writeManifest(envelope, manifestPath).pipe(
@@ -840,7 +840,7 @@ export const buildProductionPostAcquireHook = (
 					},
 					{
 						tag: 'codegen.emitted' as const,
-						files: [idsFile, ...extrasFiles, ...bindingFiles],
+						files: [deploymentFile, ...extrasFiles, ...bindingFiles],
 						at: Date.now(),
 					},
 				];

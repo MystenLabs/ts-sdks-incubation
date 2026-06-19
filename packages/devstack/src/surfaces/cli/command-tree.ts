@@ -102,20 +102,20 @@ const commands = [
 		options: configOptions,
 	},
 	{
-		name: 'dump-ids',
-		summary: 'Emit the stack id-config (devstack-ids.json) for a real-network deploy.',
-		usage: 'devstack dump-ids [options]',
+		name: 'dump-deployment',
+		summary: 'Emit the stack deployment (deployment.json) for a real-network deploy.',
+		usage: 'devstack dump-deployment [options]',
 		lifecycle: 'live-aware',
 		sideEffects: 'write',
 		requiresDocker: true,
 		description:
-			'Emits the stack devstack-ids.json id-config to --out (or stdout). Reads the existing file when a supervisor is live; otherwise runs a one-shot boot to produce it, then tears down. The supported way to obtain a committed id-config file for a real-network deploy.',
+			'Emits the stack deployment.json deployment to --out (or stdout). Reads the existing file when a supervisor is live; otherwise runs a one-shot boot to produce it, then tears down. The supported way to obtain a committed deployment file for a real-network deploy.',
 		options: [
 			...configOptions,
 			{
 				name: 'out',
 				value: 'path',
-				description: 'Write the id-config JSON to this file instead of stdout.',
+				description: 'Write the deployment JSON to this file instead of stdout.',
 			},
 		],
 	},

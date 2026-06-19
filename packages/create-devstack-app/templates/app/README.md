@@ -39,16 +39,17 @@ runtime rather than silently shipping zeros.
 
 ## Deploy to a real network
 
-A production build needs a known deployment's id-config file — the same `devstack-ids.json` schema
-the local stack writes. The supported way to obtain one is `devstack dump-ids`, or hand-author one:
+A production build needs a known deployment's deployment file — the same `deployment.json` schema
+the local stack writes. The supported way to obtain one is `devstack dump-deployment`, or
+hand-author one:
 
 ```bash
 # Option A: boot against the target network, then dump its ids to a committed file
 devstack up --network testnet
-devstack dump-ids --network testnet --out config/testnet.ids.json
+devstack dump-deployment --network testnet --out config/testnet.ids.json
 ```
 
-For the full id-config schema (Option B, hand-authoring) see the canonical
+For the full deployment schema (Option B, hand-authoring) see the canonical
 [Deploy to a real network](https://ts-sdks-incubation.vercel.app/devstack/features/codegen#deploy-to-a-real-network)
 section in the devstack docs. Commit the file, then point the build at it via the Vite plugin option
 or env:
@@ -58,7 +59,7 @@ devstackVitePlugin({ ids: './config/testnet.ids.json' });
 ```
 
 ```bash
-DEVSTACK_IDS_FILE=./config/testnet.ids.json pnpm build
+DEVSTACK_DEPLOYMENT_FILE=./config/testnet.ids.json pnpm build
 ```
 
 Then deploy the static `dist/` bundle. A build with no ids throws `DevstackConfigMissingError` at

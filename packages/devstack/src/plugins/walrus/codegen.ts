@@ -9,7 +9,7 @@
 //
 // ONE declaration, TWO derivations (see `contracts/config-bindings.ts`):
 //   - LIVE (boot): bakes the resolved ids / URLs into the ephemeral tree AND
-//     feeds the generic id-config `values` channel.
+//     feeds the generic deployment `values` channel.
 //   - STATIC (committed tree): emits `resolveValue('walrus', '<key>')` so the
 //     committed `walrus.ts` carries NO baked object id / endpoint URL.
 //
@@ -25,7 +25,7 @@ import {
 	type ConfigBinding,
 	type ConfigBindingSet,
 } from '../../contracts/config-bindings.ts';
-import type { JsonValue } from '../../orchestrators/codegen/id-config.ts';
+import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 
 /** Per-node descriptor. */
 export interface WalrusNodeBinding {
@@ -185,7 +185,7 @@ const walrusConfigBindings = (
 };
 
 /** Construct the LIVE Codegenable contribution. Bakes the resolved ids /
- *  URLs into the ephemeral tree + feeds the generic id-config `values`
+ *  URLs into the ephemeral tree + feeds the generic deployment `values`
  *  channel. */
 export const makeCodegenable = (inputs: MakeCodegenableInputs): CodegenableDecl =>
 	configCodegenable(walrusConfigBindings({ mode: inputs.mode, network: inputs.network }), {
