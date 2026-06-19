@@ -314,6 +314,9 @@ export function App() {
 				<div>
 					<p className="eyebrow">Devstack connect four</p>
 					<h1>Connect Four</h1>
+					<p className="network-indicator" data-testid="current-network" data-network={network}>
+						Network: {network ?? '—'}
+					</p>
 				</div>
 				<ConnectButton />
 			</header>

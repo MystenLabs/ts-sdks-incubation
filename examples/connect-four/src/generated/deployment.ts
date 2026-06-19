@@ -32,7 +32,7 @@ export interface AppNetworkDeployment extends Omit<NetworkDeployment, 'packages'
 
 /** The LIVE network names this app ships — the `deployments/*.ts` filenames
  *  (local excluded). `never` when the app ships no committed deployments. */
-export type ProvidedNetwork = never;
+export type ProvidedNetwork = "devnet";
 
 /** The committed per-network deployments map a prod build / dev serve loads.
  *  Partial — an app need not ship every live network at once. */
@@ -41,4 +41,4 @@ export type ProvidedDeployments = Partial<Record<ProvidedNetwork, AppNetworkDepl
 /** The full network-name set, local-first: `[<local>, ...<provided>]`.
  *  dapp-kit's `networks` / `switchNetwork` type-check against this tuple
  *  (D2). */
-export const NETWORK_NAMES = ["localnet"] as const;
+export const NETWORK_NAMES = ["localnet", "devnet"] as const;

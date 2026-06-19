@@ -10,6 +10,10 @@
 			"@devstack-dev/*": ["./.devstack/stacks/connect-four/generated-extras/*"]
 		}
 	},
-	"include": ["src/**/*", ".devstack/stacks/connect-four/generated-extras/**/*"],
+	"include": [
+		"src/**/*",
+		"deployments/**/*",
+		".devstack/stacks/connect-four/generated-extras/**/*"
+	],
 	"exclude": ["dist", "node_modules", "tests"]
 }
