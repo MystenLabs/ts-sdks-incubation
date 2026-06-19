@@ -32,9 +32,15 @@ prod `deployments/<network>.ts`. `requireId` kept. App object stays `config`.
    - Merge algo: committed `deployments/*` validated → `{...committed}`; dev overlays live local
      (`local:true`, default = live network); `command==='build'` drops local-mode, ships committed
      only (null → loud throw if empty).
-3. **Per-package `byNetwork` wiring.** `deploymentFromBucket` reads `byNetwork` (today dropped at
-   service.ts ~1115, only `packageId`) so `forNetwork(testnet).packages.*.id` resolves; per-network
-   `objects` too. Regenerate. Green.
+3. **Remove the vestigial `byNetwork` half-skeleton (reframed: cleanup, not wiring).** With the
+   deployments-file path, per-network package ids come from the injected envelope (live local +
+   committed `deployments/*.ts`), so `config.forNetwork(net).packages.*.id` already resolves (commit 2).
+   That makes `config.packages.*.byNetwork` and the inline `localPackage({networks})`/`PackageNetworks`
+   field (+ its ignored per-network `objects`) DEAD. Remove them: drop the `byNetwork` emission from
+   `plugins/package/codegen.ts`, the `networks` option from `LocalPackageOptions`/`KnownPackageOptions`
+   (confirm no example uses it first), and the `byNetwork` key from the generated `config.ts` shape.
+   ONE clear per-network source = the strict-typed `deployments/<net>.ts`. Regenerate. Update tests.
+   Green.
 4. **Strict generated type** `src/generated/deployment.ts`: `AppPackages` (exhaustive),
    `AppNetworkDeployment extends NetworkDeployment` (required packages/mvrOverrides), `ProvidedNetwork`
    (declared non-local network union), `ProvidedDeployments = Partial<Record<ProvidedNetwork, …>>`, and
