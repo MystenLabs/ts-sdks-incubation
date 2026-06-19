@@ -1,61 +1,57 @@
 // Wallet plugin — Codegenable contribution.
 //
-// Architecture (15-wallet.md §"Capabilities PRODUCED" + §"Codegen
-// emits a `dapp-kit-config.ts`"):
+// Architecture (15-wallet.md §"Capabilities PRODUCED"):
 //
 //   - The browser-side dev-wallet adapter is the cross-boundary
-//     consumer. It reads a typed `dapp-kit-config` value at startup,
-//     constructs a `DevstackSignerAdapter`, and registers it with
-//     `@mysten/dapp-kit`'s wallet-standard surface (in user-app
-//     bundle code — devstack itself NEVER imports dapp-kit).
+//     consumer. It reads the dev-wallet CONNECTION metadata (server
+//     URL, network, protocol paths) at startup, constructs a
+//     `DevstackSignerAdapter`, and registers it with `@mysten/dapp-kit`'s
+//     wallet-standard surface (in user-app bundle code — devstack itself
+//     NEVER imports dapp-kit).
 //
-//   - The emitted file lives at `dapp-kit/config.ts` under the staging
-//     dir. The generated module owns the exported config value's type.
+//   - The connection metadata rides the deployment ENVELOPE's generic
+//     `values['dev-wallet']` channel (NOT a generated file): boot's
+//     `assembleDeployment` folds this decl's `idConfigValues` into
+//     `deployment.networks[net].values['dev-wallet']`, which the Vite
+//     plugin reads (`optionalValue(dep, 'dev-wallet', …)`) to assemble
+//     the dev-wallet injection. The decl emits NO standalone file — it
+//     is a values-only contribution.
 //
-// SENSITIVE FLAG (manifest-vs-token threat surface):
+// SECRET TOKEN (manifest-vs-token threat surface):
 //
-//   - The emitted file carries the unredacted pair URL (incl. the
-//     `#token=<32-hex>` fragment) so the dev-wallet adapter can wire
-//     itself up without a side-channel read.
-//   - Therefore `sensitive: true`. The codegen orchestrator tightens
-//     the file mode to `0o600` on emit AND injects the file path into
-//     `.gitignore`.
-//   - The token lives in a `0o600` side-channel file (see
-//     `pairing.ts:tokenPath`) AND the codegen emit is `0o600` via the
-//     sensitive flag. The unredacted pair URL is never written to a
-//     world-readable manifest — only the tightened codegen file carries
-//     it.
+//   - The pairing token is NEVER routed through `values` (which lands in
+//     the world-readable `deployment.json`). It stays in its `0o600`
+//     side-channel file (see `pairing.ts:tokenPath`); the Vite `load`
+//     hook runs in Node and reads it by path. Only the NON-secret
+//     connection fields (`walletUrl`, `network`, `protocolPaths`) ride
+//     `values`.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
 import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
 
 // ----------------------------------------------------------------------
-// Emitted shape
+// Connection metadata shape
 // ----------------------------------------------------------------------
 
-/** The typed shape `dapp-kit/config.ts` exports. Downstream consumers
- *  (the user-app's dapp-kit boot code) import and consume this.
- *
- *  Field shape mirrors what `DevstackSignerAdapter` needs:
+/** The NON-secret dev-wallet connection metadata the adapter needs to
+ *  reach the in-process wallet HTTP server. Routed through the deployment
+ *  envelope's `values['dev-wallet']` channel — NEVER a generated file, and
+ *  NEVER the secret token (that stays in the `0o600` side-channel).
  *
  *    - `walletUrl`     : the wallet HTTP server's URL (router-fronted
  *                        host form when available, direct-loopback
  *                        fallback otherwise).
- *    - `pairUrl`       : `walletUrl` + `/#token=<32-hex>` (single
- *                        source of truth for the token).
- *    - `protocolPaths` : path constants the adapter reads. Mirrored
- *                        here so the adapter doesn't depend on a
- *                        separate import.
  *    - `network`       : the network name the wallet's accounts are
  *                        scoped to (e.g. `localnet`). The dev wallet
  *                        derives the wallet-standard chain (`sui:<network>`)
  *                        from it at the wallet-standard boundary; devstack
  *                        itself never carries the `sui:`-prefixed form.
+ *    - `protocolPaths` : path constants the adapter reads. Mirrored here
+ *                        so the adapter doesn't depend on a separate import.
  */
-export interface DevWalletConfig {
+export interface DevWalletConnection {
 	readonly walletUrl: string;
-	readonly pairUrl: string;
 	readonly network: string;
 	readonly protocolPaths: {
 		readonly health: string;
@@ -65,6 +61,13 @@ export interface DevWalletConfig {
 	};
 }
 
+/** The deployment-values namespace + key the dev-wallet connection rides.
+ *  Shared between the producer (this decl's `idConfigValues`) and the
+ *  Vite plugin's `optionalValue(dep, DEV_WALLET_VALUES_NAMESPACE,
+ *  DEV_WALLET_VALUES_KEY)` reader so the two can never drift. */
+export const DEV_WALLET_VALUES_NAMESPACE = 'dev-wallet' as const;
+export const DEV_WALLET_VALUES_KEY = 'connection' as const;
+
 // ----------------------------------------------------------------------
 // Decl construction
 // ----------------------------------------------------------------------
@@ -72,29 +75,41 @@ export interface DevWalletConfig {
 /**
  * Construct the Codegenable contribution.
  *
- *  Emits `dapp-kit/config.ts` with `sensitive: true` → the orchestrator
- *  writes the file with `0o600` and gitignores it. The emitted shape
- *  carries the unredacted pair URL; the side-channel token file is
- *  also `0o600`.
- *
- *  The `resolved` arg is supplied AFTER acquire (the substrate's
- *  "resolve-once" memo). At factory time the barrel passes a
- *  placeholder so the type plumbing works; at codegen time the
- *  substrate re-evaluates with the resolved values.
+ *  Values-only: emits NO standalone file. It carries the non-secret
+ *  dev-wallet connection metadata through `aggregate.idConfigValues`, which
+ *  boot's `assembleDeployment` folds into the deployment envelope's
+ *  `values['dev-wallet'].connection`. The secret token is never routed here
+ *  — it stays in the `0o600` side-channel file (`pairing.ts:tokenPath`).
  */
-export const makeWalletCodegen = (resolved: DevWalletConfig): CodegenableDecl<'dapp-kit-config'> =>
+export const makeWalletCodegen = (
+	connection: DevWalletConnection,
+): CodegenableDecl<'dev-wallet-connection'> =>
 	defineSimpleConstExport({
-		emitterName: 'dapp-kit-config',
+		emitterName: 'dev-wallet-connection',
+		// Never written: `aggregateOnly` skips the standalone file, and the
+		// aggregate carries ONLY `idConfigValues` (no `bucket` file emit at
+		// `assembleDeployment`, which special-cases `config.ts` / `accounts.ts`).
 		outputPath: 'dev-wallet.ts',
 		exportName: 'devWallet',
-		value: resolved,
-		// Dev-only + secret-bearing: lands in the gitignored
-		// `generated-extras` tree (reached via `@devstack-dev`). The
-		// token never enters the runtime `src/generated/` tree.
-		outputLocation: 'generated-extras',
-		// SENSITIVE: drives 0o600. The architecture has this hook
-		// (`SnapshotableDecl` mirrors it for the snapshot subtree).
-		// `generated-extras` is already gitignored at the `.devstack`
-		// level, so the codegen `.gitignore` does not list it.
-		sensitive: true,
+		value: connection,
+		aggregateOnly: true,
+		aggregate: {
+			// A neutral bucket name: `assembleDeployment` only PROJECTS the
+			// `config.ts` / `accounts.ts` buckets into the typed deployment
+			// fields; every other bucket contributes via `idConfigValues` only.
+			// The committed-tree emit cycle never sees this decl (boot emits
+			// only the STATIC id-free contributions + the deployment file).
+			bucket: 'dev-wallet.ts',
+			kind: 'dev-wallet',
+			// Pass-through: the connection rides `idConfigValues`, so the
+			// projection contributes nothing to a file bucket.
+			project: () => null,
+			// The non-secret connection metadata folded into the deployment
+			// envelope's `values['dev-wallet'].connection` by `assembleDeployment`.
+			idConfigValues: {
+				[DEV_WALLET_VALUES_NAMESPACE]: {
+					[DEV_WALLET_VALUES_KEY]: connection,
+				},
+			},
+		},
 	});

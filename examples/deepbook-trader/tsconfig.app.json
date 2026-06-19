@@ -6,10 +6,9 @@
 		"types": ["vite/client"],
 		"paths": {
 			"@/*": ["./src/*"],
-			"@generated/*": ["./src/generated/*"],
-			"@devstack-dev/*": ["./.devstack/stacks/deepbook-trader/generated-extras/*"]
+			"@generated/*": ["./src/generated/*"]
 		}
 	},
-	"include": ["src/**/*", "deployments/**/*", ".devstack/stacks/deepbook-trader/generated-extras/**/*"],
+	"include": ["src/**/*", "deployments/**/*"],
 	"exclude": ["dist", "node_modules", "tests"]
 }

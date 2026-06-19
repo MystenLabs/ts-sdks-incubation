@@ -26,7 +26,7 @@
 // machinery the playwright/vitest integrations use.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
@@ -44,13 +44,6 @@ import {
  *  `tsconfig` `paths` entry, and its import specifiers. */
 export const DEFAULT_GENERATED_ALIAS = '@generated';
 
-/** Default dev-extras import-alias prefix. Resolves the PRIMARY stack's
- *  `.devstack/stacks/<stack>/generated-extras` tree (dev-only / secret
- *  artifacts — `accounts.ts`, `dev-wallet.ts`). Mirror the `@generated`
- *  three-place discipline: this option, the `tsconfig` `paths` entry,
- *  and the import specifiers. */
-export const DEFAULT_DEV_EXTRAS_ALIAS = '@devstack-dev';
-
 /** The committed generated-bindings subpath, relative to the Vite root.
  *  The single source of bindings — written by `devstack codegen` — that
  *  `@generated` always resolves to (absent the `options.generatedDir`
@@ -60,15 +53,10 @@ const GENERATED_SUBPATH = 'src/generated';
 export interface DevstackVitePluginOptions {
 	/** Import-alias prefix. Default `'@generated'`. */
 	readonly alias?: string;
-	/** Dev-extras import-alias prefix. Default `'@devstack-dev'`. */
-	readonly devExtrasAlias?: string;
 	/** Explicit generated dir — bypasses manifest discovery entirely
 	 *  (escape hatch for unusual layouts / tests). Relative paths
 	 *  resolve against the Vite root. */
 	readonly generatedDir?: string;
-	/** Explicit dev-extras dir — bypasses manifest discovery. Relative
-	 *  paths resolve against the Vite root. */
-	readonly extrasDir?: string;
 	/** Inject + register the devstack dev wallet on the page in DEV
 	 *  (wallet-standard, so dApp Kit auto-discovers it). Defaults to
 	 *  `true`. Production builds (`command === 'build'`) inject nothing
@@ -235,8 +223,8 @@ export interface DevstackVitePlugin {
  *  and throws on a version mismatch) so an out-of-date or partially-written
  *  manifest degrades gracefully instead of crashing the dev server. Never
  *  throws — the single discover→parse→guard→degrade-to-null reader every
- *  manifest field above (`codegen.deploymentFile`, `codegen.extrasDir`,
- *  `identity.network`) routes through. */
+ *  manifest field above (`codegen.deploymentFile`, `identity.network`)
+ *  routes through. */
 const readManifestField = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
@@ -442,14 +430,6 @@ const resolveInjectedDeployment = async (
 	return mergeDeployment(command, committed, live, options.defaultNetwork);
 };
 
-/** The manifest-recorded dev-extras tree (`codegen.extrasDir`) the
- *  `@devstack-dev` alias points at for the active stack, or `null` on any
- *  miss. */
-const readExtrasDirFromManifest = (
-	env: Readonly<Record<string, string | undefined>>,
-	cwd: string,
-): string | null => readManifestField(env, cwd, 'codegen.extrasDir');
-
 /**
  * Build the devstack Vite plugin that aliases `options.alias`
  * (default `@generated`) at the committed `<root>/src/generated` tree.
@@ -462,39 +442,30 @@ const readExtrasDirFromManifest = (
  * The plugin's `config` hook merges `resolve.alias[<prefix>] = <dir>`
  * into the user config (Vite deep-merges the returned partial). Async
  * (it awaits the committed `deployments` thunks); reads `process.env` +
- * the manifest (for `__DEVSTACK_DEPLOYMENT__` / the `@devstack-dev` extras
- * dir) once at config-load.
+ * the manifest (for `__DEVSTACK_DEPLOYMENT__`) once at config-load.
  */
-/** Derive the cold-start fallback dev-extras dir
- *  (`<root>/.devstack/stacks/<stack>/generated-extras`) for the active
- *  stack — used when no manifest / `codegen.extrasDir` is on disk yet.
- *  Mirrors `output-location.ts`'s `extrasDirFor`. Best-effort: a
- *  discovery failure collapses to the `default` stack name. */
-const fallbackExtrasDir = (
-	env: Readonly<Record<string, string | undefined>>,
-	root: string,
-): string => {
-	let stack = 'default';
-	try {
-		stack = resolveDiscoveryEnv(env, { cwd: root }).stack;
-	} catch {
-		// keep the `default` fallback.
-	}
-	return resolve(root, '.devstack', 'stacks', stack, 'generated-extras');
-};
 
-/** Resolve the dev-extras dir for the active stack (shared by the alias
- *  config and the dev-wallet virtual module). Explicit option wins, else
- *  manifest `codegen.extrasDir`, else the derived cold-start path. */
-const resolveExtrasDir = (
-	options: DevstackVitePluginOptions,
-	root: string,
+/** The on-disk dev-wallet pairing-token path for the active stack. The
+ *  token lives in a `0o600` side-channel file (`<stackRoot>/wallet/token`,
+ *  written by `pairing.ts`), NEVER in the world-readable `deployment.json`.
+ *  The boot writes `deployment.json` into the SAME `<stackRoot>`, so the
+ *  token sits at `<dirname(deploymentFile)>/wallet/token`. Read in Node by
+ *  the `load` hook (which runs server-side) so the secret stays off the
+ *  manifest/deployment surface. Returns `null` on any miss. */
+const readDevWalletToken = (
 	env: Readonly<Record<string, string | undefined>>,
-): string => {
-	const explicitExtras = options.extrasDir;
-	return explicitExtras !== undefined
-		? resolve(root, explicitExtras)
-		: (readExtrasDirFromManifest(env, root) ?? fallbackExtrasDir(env, root));
+	cwd: string,
+): string | null => {
+	const deploymentFile = readIdsFileFromManifest(env, cwd);
+	if (deploymentFile === null) return null;
+	const tokenFile = resolve(dirname(deploymentFile), 'wallet', 'token');
+	try {
+		if (!existsSync(tokenFile)) return null;
+		const raw = readFileSync(tokenFile, 'utf8').trim();
+		return /^[0-9a-f]{32}$/.test(raw) ? raw : null;
+	} catch {
+		return null;
+	}
 };
 
 /** Read the `DEVSTACK_AUTO_APPROVE` env (`'1'`/`'true'`, case-insensitive). */
@@ -550,14 +521,13 @@ const devWalletInstalled = (root: string): boolean =>
 
 export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): DevstackVitePlugin => {
 	const alias = options.alias ?? DEFAULT_GENERATED_ALIAS;
-	const devExtrasAlias = options.devExtrasAlias ?? DEFAULT_DEV_EXTRAS_ALIAS;
 	const injectDevWallet = options.injectDevWallet ?? true;
 
 	// Captured across hooks. `config` runs first (alias resolution + committed
 	// deployment validation), `configResolved` records the command (DEV-gate),
-	// and `load` re-reads the dev-wallet config off `extrasDir`.
+	// and `load` reads the dev-wallet connection off the injected deployment +
+	// the secret token off its side-channel file.
 	let resolvedRoot = process.cwd();
-	let resolvedExtrasDir: string | null = null;
 	let isServe = false;
 	// The committed per-network deployments, resolved + validated ONCE in the
 	// async `config` hook (the thunks are async; the runtime-global path in
@@ -587,9 +557,6 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			const explicit = options.generatedDir;
 			const generatedDir =
 				explicit !== undefined ? resolve(root, explicit) : resolve(root, GENERATED_SUBPATH);
-			// `@devstack-dev` mirrors `@generated` exactly.
-			const extrasDir = resolveExtrasDir(options, root, env);
-			resolvedExtrasDir = extrasDir;
 			// Return a partial config; Vite deep-merges it. `resolve.dedupe`
 			// pins a single Lit copy, and — when this app carries the dev
 			// wallet — we pre-bundle the injected dev-wallet entries so Vite
@@ -640,7 +607,6 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 					// string-alias resolution.
 					alias: {
 						[alias]: generatedDir,
-						[devExtrasAlias]: extrasDir,
 					},
 					dedupe: resolvableLitDedupe(root),
 				},
@@ -666,15 +632,20 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 
 		load: (id: string): string | undefined => {
 			if (id !== RESOLVED_VIRTUAL_DEV_WALLET_ID) return undefined;
-			// Graceful no-op when injection is off, not a dev serve, or the
-			// dev-extras config is absent (no `devstack apply` yet).
-			const extrasDir = resolvedExtrasDir ?? resolveExtrasDir(options, resolvedRoot, process.env);
-			const devWalletFile = resolve(extrasDir, 'dev-wallet.ts');
-			const accountsFile = resolve(extrasDir, 'accounts.ts');
-			if (!injectDevWallet || !isServe || !existsSync(devWalletFile) || !existsSync(accountsFile)) {
+			const env = process.env as Readonly<Record<string, string | undefined>>;
+			// The dev-wallet connection metadata rides the injected deployment's
+			// `values['dev-wallet'].connection` channel (non-secret); the secret
+			// pairing token stays in its `0o600` side-channel file, read HERE in
+			// Node (the `load` hook runs server-side) so it never lands in the
+			// world-readable `deployment.json`. Graceful no-op when injection is
+			// off, not a dev serve, or no live stack has written the token yet
+			// (no `devstack up`). The presence of BOTH the deployment file (for the
+			// connection) and the token gate injection — the browser side resolves
+			// the connection off the injected envelope.
+			const token = readDevWalletToken(env, resolvedRoot);
+			if (!injectDevWallet || !isServe || token === null) {
 				return 'export {};';
 			}
-			const env = process.env as Readonly<Record<string, string | undefined>>;
 			// Auto-approve resolution (highest precedence first): explicit
 			// `options.autoApprove`, then the `DEVSTACK_AUTO_APPROVE` env, then
 			// the active network's `autoApproveSigning` per-network policy. The
@@ -692,42 +663,55 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			const netOpts = resolveNetworkOptions(network, options.networkOptions);
 			const autoApprove =
 				options.autoApprove ?? (autoApproveFromEnv(env) || netOpts.autoApproveSigning);
-			// Re-export the generated config through the `@devstack-dev`
-			// alias (already wired in `config`), parse the token, and
-			// register the page wallet on load. Kept as source the dev
-			// server transpiles — it imports `@mysten-incubation/dev-wallet`
-			// + the generated extras, both resolvable in the app graph.
+			// Browser-side registration source the dev server transpiles. It reads
+			// the dev-only account name→address map (`resolveAccounts()`) and the
+			// non-secret dev-wallet connection (`optionalValue(dep, 'dev-wallet',
+			// 'connection')`) off the injected deployment envelope (via the
+			// generated `config-runtime.ts`), and the FULL network set the app
+			// supports off the generated `config.networks` map (each with its
+			// routed `rpc` + optional `faucet`). The wallet advertises each network
+			// as a wallet-standard chain and operates on whichever dApp Kit has
+			// selected, so it PERSISTS across a UI `switchNetwork` (registered once;
+			// only the active chain changes). The token is baked in from the Node
+			// read above — the only secret on this surface.
 			return [
 				`import { registerDevstackDevWallet } from '@mysten-incubation/dev-wallet/inject';`,
-				`import { parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';`,
-				`import { devWallet } from '${devExtrasAlias}/dev-wallet.js';`,
-				`import { accounts } from '${devExtrasAlias}/accounts.js';`,
-				// Hand the wallet the FULL network set the app supports — every
-				// network in the injected deployment envelope (the live local
-				// network AND any committed live networks), each with its routed
-				// `rpc` + optional `faucet`. The wallet advertises each as a
-				// wallet-standard chain and operates on whichever dApp Kit has
-				// selected, so it PERSISTS across a UI `switchNetwork` (registered
-				// once; only the active chain changes). The RPCs are the SAME
-				// routed endpoints dApp Kit uses (a raw 127.0.0.1 RPC is
-				// CORS-blocked from the routed page origin) — sourced from the
-				// generated runtime config's per-network `networks` map.
 				`import { config as __devstackConfig } from '${alias}/config.js';`,
+				`import { resolveAccounts, optionalValue } from '${alias}/config-runtime.js';`,
+				`const __devstackToken = ${JSON.stringify(token)};`,
+				// name → address (from the injected envelope's dev `accounts`),
+				// mapped to the inject API's `{ address }` shape.
+				`const __devstackAccounts = Object.fromEntries(`,
+				`  Object.entries(resolveAccounts()).map(([__name, __address]) => [`,
+				`    __name,`,
+				`    { name: __name, address: __address },`,
+				`  ]),`,
+				`);`,
+				// The full routed network set (live local + any committed live).
 				`const __devstackNetworks = Object.fromEntries(`,
 				`  Object.entries(__devstackConfig.networks).map(([__net, __dep]) => [`,
 				`    __net,`,
 				`    { rpc: __dep.rpc, faucet: __dep.faucet ?? null },`,
 				`  ]),`,
 				`);`,
-				`registerDevstackDevWallet({`,
-				`  serverOrigin: devWallet.walletUrl,`,
-				`  token: parseDevstackToken(devWallet.pairUrl),`,
-				`  accounts,`,
-				`  networks: __devstackNetworks,`,
-				`  defaultNetwork: __devstackConfig.defaultNetwork,`,
-				`  autoApprove: ${autoApprove ? 'true' : 'false'},`,
-				`  mountUI: true,`,
-				`}).catch((err) => console.error('[devstack] dev-wallet injection failed:', err));`,
+				// Non-secret connection (server URL + protocol paths), resolved off
+				// the default network's `values['dev-wallet'].connection`. No
+				// stack ⇒ undefined ⇒ no injection.
+				`const __devstackDefaultDep = __devstackConfig.networks[__devstackConfig.defaultNetwork];`,
+				`const __devstackConnection = __devstackDefaultDep`,
+				`  ? optionalValue(__devstackDefaultDep, 'dev-wallet', 'connection')`,
+				`  : undefined;`,
+				`if (__devstackConnection) {`,
+				`  registerDevstackDevWallet({`,
+				`    serverOrigin: __devstackConnection.walletUrl,`,
+				`    token: __devstackToken,`,
+				`    accounts: __devstackAccounts,`,
+				`    networks: __devstackNetworks,`,
+				`    defaultNetwork: __devstackConfig.defaultNetwork,`,
+				`    autoApprove: ${autoApprove ? 'true' : 'false'},`,
+				`    mountUI: true,`,
+				`  }).catch((err) => console.error('[devstack] dev-wallet injection failed:', err));`,
+				`}`,
 			].join('\n');
 		},
 

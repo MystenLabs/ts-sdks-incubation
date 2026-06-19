@@ -6,10 +6,9 @@
 		"types": ["vite/client"],
 		"paths": {
 			"@/*": ["./src/*"],
-			"@generated/*": ["./src/generated/*"],
-			"@devstack-dev/*": ["./.devstack/stacks/private-content/generated-extras/*"]
+			"@generated/*": ["./src/generated/*"]
 		}
 	},
-	"include": ["src/**/*", "deployments/**/*", ".devstack/stacks/private-content/generated-extras/**/*"],
+	"include": ["src/**/*", "deployments/**/*"],
 	"exclude": ["dist", "node_modules", "tests"]
 }

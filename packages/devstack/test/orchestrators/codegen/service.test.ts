@@ -53,7 +53,6 @@ const fakeDecl = (parts: {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly sensitive?: boolean;
-	readonly outputLocation?: 'generated' | 'generated-extras';
 	readonly aggregateOnly?: boolean;
 	readonly allowEmitterNameRepetition?: boolean;
 	readonly aggregate?: AggregateContribution;
@@ -63,7 +62,6 @@ const fakeDecl = (parts: {
 	emitterName: parts.emitterName,
 	outputPath: parts.outputPath,
 	sensitive: parts.sensitive,
-	outputLocation: parts.outputLocation,
 	aggregateOnly: parts.aggregateOnly,
 	allowEmitterNameRepetition: parts.allowEmitterNameRepetition,
 	aggregate: parts.aggregate,
@@ -94,16 +92,9 @@ const stubMoveLayers = Layer.mergeAll(
 
 const nodePlatformLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 
-// Extras tree is a sibling of the runtime tree (mirrors production:
-// `generated-extras` lives outside `outputDir`). Tests that assert on
-// `generated-extras` artifacts import from `${root}-extras`.
-const extrasOf = (root: string): string => `${root}-extras`;
-
 const baseLayer = (root: string) =>
 	Layer.mergeAll(stubMoveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
-		Layer.provide(
-			layerCodegenRoot({ outputDir: root, stackSubdir: null, extrasDir: extrasOf(root) }),
-		),
+		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
 		Layer.provide(nodePlatformLayer),
 	);
 
@@ -112,9 +103,7 @@ const baseLayerWithMove = (
 	moveLayers: Layer.Layer<MoveCodegenService | MoveSummaryRunnerService>,
 ) =>
 	Layer.mergeAll(moveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
-		Layer.provide(
-			layerCodegenRoot({ outputDir: root, stackSubdir: null, extrasDir: extrasOf(root) }),
-		),
+		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
 		Layer.provide(nodePlatformLayer),
 	);
 
@@ -365,39 +354,17 @@ describe('codegen.runEmitCycle', () => {
 		}),
 	);
 
-	it.effect(
-		'deep-merges sui + packages into one config.ts and routes accounts to generated-extras',
-		() =>
-			withTempRoot('codegen-test', (root) =>
-				Effect.gen(function* () {
-					// Each decl below carries its own `aggregate` contribution
-					// matching what the real account/coin/sui/package plugins
-					// register. The orchestrator must remain plugin-name-blind.
-					// sui + package both deep-merge into `config.ts`; account
-					// routes to the gitignored `generated-extras` tree.
-					const result = yield* runEmitCycle({
-						contributions: [
-							fakeDecl({
-								emitterName: 'account/alice',
-								outputPath: 'accounts/alice.ts',
-								outputLocation: 'generated-extras',
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'accounts.ts',
-									outputLocation: 'generated-extras',
-									project: (e) => e,
-								},
-								exports: {
-									alice: {
-										name: 'alice',
-										address: '0xabc',
-										scheme: 'ed25519',
-										source: 'real',
-									},
-								},
-							}),
-							fakeDecl({
-								emitterName: 'coin/mock_usdc',
+	it.effect('deep-merges sui + packages into one config.ts (name-blind aggregation)', () =>
+		withTempRoot('codegen-test', (root) =>
+			Effect.gen(function* () {
+				// Each decl below carries its own `aggregate` contribution
+				// matching what the real coin/sui/package plugins register. The
+				// orchestrator must remain plugin-name-blind. sui + package both
+				// deep-merge into `config.ts`; coins into `coins.ts`.
+				const result = yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'coin/mock_usdc',
 								outputPath: 'coins/mock_usdc.ts',
 								aggregate: {
 									bucket: 'coins.ts',
@@ -485,13 +452,6 @@ describe('codegen.runEmitCycle', () => {
 					expect(
 						result.filesWritten.some((path) => path.endsWith(`${root}/config-runtime.ts`)),
 					).toBe(true);
-					// accounts.ts lands in the extras tree, NOT the runtime tree.
-					expect(
-						result.filesWritten.some((path) => path.endsWith(`${extrasOf(root)}/accounts.ts`)),
-					).toBe(true);
-					expect(result.filesWritten.some((path) => path.endsWith(`${root}/accounts.ts`))).toBe(
-						false,
-					);
 					expect(result.bindings?.packagesEmitted).toEqual([]);
 
 					// The committed `config.ts` now opens with
@@ -554,14 +514,6 @@ describe('codegen.runEmitCycle', () => {
 								};
 							}>,
 					);
-					const accountsModule = yield* Effect.promise(
-						() =>
-							import(
-								`${pathToFileURL(`${extrasOf(root)}/accounts.ts`).href}?t=${Date.now()}`
-							) as Promise<{
-								readonly accounts: { readonly alice: { readonly address: string } };
-							}>,
-					);
 					// sui's `networks.localnet` and the package's `packages.*`
 					// coexist in ONE config.ts (deep-merge, not last-write-wins).
 					expect(configModule.config.network).toBe('localnet');
@@ -596,7 +548,6 @@ describe('codegen.runEmitCycle', () => {
 					expect(coinsModule.coins.forNetwork('localnet').mock_usdc.fullCoinType).toBe(
 						'0x1::mock_usdc::MOCK_USDC',
 					);
-					expect(accountsModule.accounts.alice.address).toBe('0xabc');
 				}).pipe(Effect.provide(baseLayer(root))),
 			),
 	);
@@ -750,52 +701,6 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 		}),
 	);
 
-	it.effect('fails fast when two contributors to one bucket disagree on outputLocation', () =>
-		withTempRoot('codegen-test', (root) =>
-			Effect.gen(function* () {
-				const result = yield* runEmitCycle({
-					contributions: [
-						// First contributor establishes `generated` (non-sensitive).
-						fakeDecl({
-							emitterName: 'first',
-							outputPath: 'first.ts',
-							aggregateOnly: true,
-							aggregate: {
-								bucket: 'config.ts',
-								outputLocation: 'generated',
-								project: (e) => e,
-							},
-							exports: { a: { x: 1 } },
-						}),
-						// Later contributor disagrees: routes to extras +
-						// sensitive. MUST be rejected, not silently ignored
-						// (would otherwise land the secret in committed tree).
-						fakeDecl({
-							emitterName: 'second',
-							outputPath: 'second.ts',
-							aggregateOnly: true,
-							aggregate: {
-								bucket: 'config.ts',
-								outputLocation: 'generated-extras',
-								sensitive: true,
-								project: (e) => e,
-							},
-							exports: { b: { y: 2 } },
-						}),
-					],
-				}).pipe(Effect.flip);
-				expect(result).toBeInstanceOf(CodegenAggregateConflict);
-				if (result instanceof CodegenAggregateConflict) {
-					expect(result.bucket).toBe('config.ts');
-					expect(result.field).toBe('outputLocation');
-					expect(result.established).toBe('generated');
-					expect(result.conflicting).toBe('generated-extras');
-					expect([...result.emitters]).toEqual(['first', 'second']);
-				}
-			}).pipe(Effect.provide(baseLayer(root))),
-		),
-	);
-
 	it.effect('fails fast when two contributors to one bucket disagree on sensitive', () =>
 		withTempRoot('codegen-test', (root) =>
 			Effect.gen(function* () {
@@ -852,7 +757,6 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 							aggregateOnly: true,
 							aggregate: {
 								bucket: 'secrets.ts',
-								outputLocation: 'generated',
 								sensitive: true,
 								project: (e) => e,
 							},
@@ -895,101 +799,6 @@ describe('codegen orchestrator source — plugin-name blindness', () => {
 	});
 });
 
-describe('codegen.emitExtras', () => {
-	it.effect('flushes ONLY the generated-extras decls, leaving the runtime tree untouched', () =>
-		withTempRoot('codegen-extras-test', (root) =>
-			Effect.scoped(
-				Effect.gen(function* () {
-					const codegen = yield* CodegenOrchestratorService;
-					// A dev-wallet-shaped decl routed to generated-extras (sensitive,
-					// like the real one) plus an account-shaped aggregate into
-					// `accounts.ts` (also generated-extras).
-					yield* codegen.registerContribution(
-						'wallet',
-						fakeDecl({
-							emitterName: 'dapp-kit-config',
-							outputPath: 'dev-wallet.ts',
-							outputLocation: 'generated-extras',
-							sensitive: true,
-							exports: { devWallet: { url: 'http://127.0.0.1:9999' } },
-						}),
-					);
-					yield* codegen.registerContribution(
-						'account',
-						fakeDecl({
-							emitterName: 'account/alice',
-							outputPath: 'accounts/alice.ts',
-							outputLocation: 'generated-extras',
-							aggregateOnly: true,
-							aggregate: {
-								kind: 'account',
-								bucket: 'accounts.ts',
-								outputLocation: 'generated-extras',
-								project: (exported) => exported,
-							},
-							exports: { alice: { address: '0xa11ce' } },
-						}),
-					);
-					// A `generated`-located decl that emitExtras MUST skip — it
-					// belongs to the committed `src/generated` tree written only by
-					// the stack-free `codegen` verb.
-					yield* codegen.registerContribution(
-						'sui',
-						fakeDecl({
-							emitterName: 'config',
-							outputPath: 'config.ts',
-							outputLocation: 'generated',
-							exports: { network: 'localnet' },
-						}),
-					);
-
-					const result = yield* codegen.emitExtras();
-
-					// dev-wallet.ts + accounts.ts land in the extras tree...
-					const extras = extrasOf(root);
-					const walletPath = `${extras}/dev-wallet.ts`;
-					const accountsPath = `${extras}/accounts.ts`;
-					expect(result.filesWritten).toContain(walletPath);
-					expect(result.filesWritten).toContain(accountsPath);
-					const walletSource = yield* Effect.promise(() => readFile(walletPath, 'utf8'));
-					expect(walletSource).toContain('devWallet');
-					// ...the sensitive wallet file is 0o600.
-					expect(statSync(walletPath).mode & 0o777).toBe(0o600);
-					const accountsSource = yield* Effect.promise(() => readFile(accountsPath, 'utf8'));
-					expect(accountsSource).toContain('0xa11ce');
-
-					// The `generated` decl is NEVER written by emitExtras.
-					expect(existsSync(`${root}/config.ts`)).toBe(false);
-					expect(result.filesWritten.some((p) => p === `${root}/config.ts`)).toBe(false);
-				}),
-			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
-		),
-	);
-
-	it.effect('is a no-op (empty result) when nothing is routed to generated-extras', () =>
-		withTempRoot('codegen-extras-empty', (root) =>
-			Effect.scoped(
-				Effect.gen(function* () {
-					const codegen = yield* CodegenOrchestratorService;
-					yield* codegen.registerContribution(
-						'sui',
-						fakeDecl({
-							emitterName: 'config',
-							outputPath: 'config.ts',
-							outputLocation: 'generated',
-							exports: { network: 'localnet' },
-						}),
-					);
-					const result = yield* codegen.emitExtras();
-					expect(result.filesWritten).toEqual([]);
-					expect(result.filesChmod).toEqual([]);
-					expect(existsSync(extrasOf(root))).toBe(false);
-				}),
-			).pipe(Effect.provide(baseLayer(root)), Effect.provide(layerCodegenOrchestrator)),
-		),
-	);
-});
-
 describe('codegen.emitBindings', () => {
 	// The dev-`up` invariant: `emitBindings` regenerates the committed tree from
 	// the caller's STATIC (id-free) contributions and IGNORES the live
@@ -1010,7 +819,6 @@ describe('codegen.emitBindings', () => {
 						fakeDecl({
 							emitterName: 'config',
 							outputPath: 'config.ts',
-							outputLocation: 'generated',
 							exports: { liveBakedId: '0xliveBAKEDid' },
 						}),
 					);
@@ -1022,7 +830,6 @@ describe('codegen.emitBindings', () => {
 						fakeDecl({
 							emitterName: 'config',
 							outputPath: 'config.ts',
-							outputLocation: 'generated',
 							exports: { idFreeResolver: 'RESOLVE_ID_PLACEHOLDER' },
 						}),
 					]);
@@ -1063,12 +870,10 @@ describe('codegen.assembleDeployment — active-network agreement', () => {
 		fakeDecl({
 			emitterName: 'sui-network',
 			outputPath: 'config.ts',
-			outputLocation: 'generated',
 			aggregateOnly: true,
 			aggregate: {
 				kind: 'sui-network',
 				bucket: 'config.ts',
-				outputLocation: 'generated',
 				// Project the emitted `network` + `networks` straight into the
 				// config.ts bucket (what the real sui projection does).
 				project: (exported) => ({
@@ -1111,15 +916,15 @@ describe('codegen.assembleDeployment — active-network agreement', () => {
 	);
 });
 
-// Regression: an extras-only emit (boot's `emitExtras`) writes solely into
-// `extrasDir` (under the already-gitignored `.devstack/` root), so it must NOT
-// write a managed `.gitignore` at the committed `<outputDir>/.gitignore`. At
-// boot `outputDir` is only a stand-in — clobbering its tracked `.gitignore`
-// with the ignore-all policy on every `devstack up` would break `tsc`/`vite
+// Regression: a metadata-only emit (no standalone files, no aggregate files —
+// e.g. the values-only account / dev-wallet decls that feed the deployment
+// envelope, projecting nothing to a committed file) must NOT write a managed
+// `.gitignore` at the committed `<outputDir>/.gitignore`. Clobbering its
+// tracked `.gitignore` with the ignore-all policy would break `tsc`/`vite
 // build` on a fresh clone (the committed bindings would become untracked).
-describe('codegen extras emit — committed .gitignore is never clobbered', () => {
-	it.effect('an extras-only emit leaves the committed tree’s TRACKED .gitignore untouched', () =>
-		withTempRoot('codegen-extras-gitignore', (root) =>
+describe('codegen — a values-only emit never clobbers the committed .gitignore', () => {
+	it.effect('a values-only emit leaves the committed tree’s TRACKED .gitignore untouched', () =>
+		withTempRoot('codegen-values-only-gitignore', (root) =>
 			Effect.gen(function* () {
 				const committedIgnore = `${root}/.gitignore`;
 
@@ -1135,16 +940,22 @@ describe('codegen extras emit — committed .gitignore is never clobbered', () =
 				const tracked = readFileSync(committedIgnore, 'utf8');
 				expect(tracked).toContain('track the whole committed projection tree');
 
-				// 2. An extras-only emit (only `generated-extras` decls) must NOT
-				//    touch the committed `.gitignore` — extras need no managed
-				//    ignore (they live under the gitignored `.devstack/` root).
+				// 2. A values-only emit (an aggregate-only decl whose `project`
+				//    returns null — like the dev-wallet connection / account decls,
+				//    which carry their data on `idConfigValues` for the deployment
+				//    envelope and write no committed file) must NOT touch the
+				//    committed `.gitignore`.
 				yield* runEmitCycle({
 					contributions: [
 						fakeDecl({
-							emitterName: 'account/alice',
-							outputPath: 'accounts/alice.ts',
-							outputLocation: 'generated-extras',
-							exports: { alice: { name: 'alice', address: '0xabc' } },
+							emitterName: 'dev-wallet-connection',
+							outputPath: 'dev-wallet.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'dev-wallet.ts',
+								project: () => null,
+							},
+							exports: { devWallet: { walletUrl: 'http://127.0.0.1:9999' } },
 						}),
 					],
 					trackTree: false,

@@ -56,13 +56,6 @@ export interface CodegenRootShape {
 	 *  parallel stacks emit into sibling directories under the same
 	 *  output root (distilled-doc §"per-stack subdirectory"). */
 	readonly stackSubdir: string | null;
-	/** Absolute path to the dev-only + secret `generated-extras` tree
-	 *  (`.devstack/stacks/<stack>/generated-extras`). Decls / aggregates
-	 *  with `outputLocation: 'generated-extras'` emit here. Outside the
-	 *  staging-and-swap tree of `outputDir` — extras are gitignored and
-	 *  written in place (no atomic swap), so warm restarts never churn
-	 *  the runtime tree's mtimes. */
-	readonly extrasDir: string;
 }
 
 export class CodegenRoot extends Context.Service<CodegenRoot, CodegenRootShape>()(
@@ -92,20 +85,10 @@ export interface CodegenPaths {
 	 *  the substrate lock is reserved for short sections per the
 	 *  cross-process safety protocol. */
 	readonly codegenLockFile: string;
-	/** The dev-only + secret `generated-extras` tree. Decls /
-	 *  aggregates with `outputLocation: 'generated-extras'` resolve
-	 *  against this. Preserved verbatim across `withRoot` — the extras
-	 *  tree lives OUTSIDE the staging-and-swap of `outputDir`, so the
-	 *  staging rebase must still name the real extras dir. */
-	readonly extrasDir: string;
 	/** Helper: resolve an emitter's `outputPath` (e.g. `config.ts`)
 	 *  against the output root. Fails with `CodegenPathConflict({kind:
 	 *  'non-relative'})` if the supplied path escapes the root. */
 	readonly resolve: (outputPath: string) => Effect.Effect<string, CodegenPathConflict>;
-	/** Helper: resolve an emitter's `outputPath` against the
-	 *  `generated-extras` tree (`extrasDir`). Same `..`-rejecting
-	 *  discipline as `resolve`. */
-	readonly resolveExtras: (outputPath: string) => Effect.Effect<string, CodegenPathConflict>;
 	/** Helper: resolve a per-package bindings subtree path. */
 	readonly resolveBindingsPackage: (packageName: string) => string;
 	/** Data-driven rebase: re-root the entire bundle at `newRoot`.
@@ -139,32 +122,15 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 			const outputDir = root.stackSubdir
 				? path.join(root.outputDir, root.stackSubdir)
 				: root.outputDir;
-			// Captured once at boot. Preserved verbatim through `withRoot`
-			// (the extras tree is OUTSIDE the staging swap of `outputDir`,
-			// so the rebased view must keep naming the real extras dir).
-			const extrasDir = root.extrasDir;
-			// Lock the codegen subsystem on a sibling of `extrasDir`, NOT of
-			// `outputDir`. At BOOT nothing is ever emitted into the live
-			// `outputDir` (`generated`) tree — boot's only codegen write is
-			// `emitExtras`, which lands in `extrasDir` — so deriving the lock
-			// from `extrasDir` keeps the live `generated` basename entirely
-			// out of the boot footprint (no phantom `…/generated.codegen.lock`
-			// next to a directory that is never created). The `codegen` verb
-			// (the one path that DOES stage into `<outputDir>.staging.<id>`)
-			// still gets a stable sibling lock — `<extrasDir>.codegen.lock` —
-			// outside both its `outputDir` swap and the `extrasDir` tree.
-			// Sibling-NOT-inside is what matters for the stage-and-swap rename
-			// of `outputDir`, and an `extrasDir` sibling satisfies that.
-			// Captured once at boot — `withRoot` re-roots the rest of the
-			// bundle but preserves this lock path verbatim so the rebased
-			// staging view names the real cross-process lock (the lock is
+			// Lock the codegen subsystem on a stable SIBLING of the canonical
+			// `outputDir` — `<outputDir>.codegen.lock`. Sibling-NOT-inside is
+			// what matters: the `codegen` verb stages into `<outputDir>.staging.<id>`
+			// and renames it over `outputDir`, so a lock inside either would be
+			// swapped out mid-cycle. Captured once at boot — `withRoot` re-roots
+			// the rest of the bundle but preserves this lock path verbatim so the
+			// rebased staging view names the real cross-process lock (the lock is
 			// acquired ONCE outside the staging build).
-			const codegenLockFile = `${extrasDir}.codegen.lock`;
-			const resolveExtras = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
-				Effect.gen(function* () {
-					yield* assertRelativeCodegenOutputPath(outputPath);
-					return path.join(extrasDir, outputPath);
-				});
+			const codegenLockFile = `${outputDir}.codegen.lock`;
 			const buildAt = (atRoot: string): CodegenPaths => {
 				const bindingsDir = path.join(atRoot, 'bindings');
 				const resolve = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
@@ -179,9 +145,7 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 					gitignoreFile: path.join(atRoot, '.gitignore'),
 					bindingsDir,
 					codegenLockFile,
-					extrasDir,
 					resolve,
-					resolveExtras,
 					resolveBindingsPackage,
 					withRoot: (newRoot: string) => buildAt(newRoot),
 				};

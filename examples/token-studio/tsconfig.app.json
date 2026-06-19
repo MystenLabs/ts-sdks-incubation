@@ -6,10 +6,9 @@
 		"types": ["vite/client"],
 		"paths": {
 			"@/*": ["./src/*"],
-			"@generated/*": ["./src/generated/*"],
-			"@devstack-dev/*": ["./.devstack/stacks/token-studio/generated-extras/*"]
+			"@generated/*": ["./src/generated/*"]
 		}
 	},
-	"include": ["src/**/*", "deployments/**/*", ".devstack/stacks/token-studio/generated-extras/**/*"],
+	"include": ["src/**/*", "deployments/**/*"],
 	"exclude": ["dist", "node_modules", "tests"]
 }

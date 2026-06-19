@@ -25,8 +25,9 @@ import type { AutoApprovePolicy, DevWallet } from '../wallet/dev-wallet.js';
 import { mountAndRegisterDevWallet } from '../wallet/mount-and-register.js';
 import { DevstackSignerAdapter } from '../adapters/devstack-adapter.js';
 
-/** Shape of a single entry in the generated `accounts` map
- *  (`generated-extras/accounts.ts`). Only `address` is consumed here. */
+/** Shape of a single entry in the dev `accounts` map (resolved off the
+ *  injected deployment envelope via `resolveAccounts()`). Only `address` is
+ *  consumed here. */
 export interface DevstackAccountInfo {
 	readonly address: string;
 	readonly name?: string;
@@ -49,11 +50,13 @@ export interface DevstackNetworkInfo {
 }
 
 export interface RegisterDevstackDevWalletConfig {
-	/** Wallet-app origin (`devWallet.walletUrl`). */
+	/** Wallet-app origin (the dev-wallet connection's `walletUrl`). */
 	readonly serverOrigin: string;
-	/** Bearer token (`parseDevstackToken(devWallet.pairUrl)`), or null. */
+	/** Bearer pairing token (read by the Vite dev server from the wallet's
+	 *  `0o600` side-channel token file), or null. */
 	readonly token?: string | null;
-	/** Generated name→account map (`accounts` from `generated-extras/accounts.ts`). */
+	/** Dev name→account map (resolved off the injected deployment envelope via
+	 *  `resolveAccounts()`). */
 	readonly accounts: Readonly<Record<string, DevstackAccountInfo>>;
 	/** The FULL network set the app supports — `{ <name>: { rpc, faucet? } }`,
 	 *  covering BOTH the live local network and any live (devnet/testnet/…)

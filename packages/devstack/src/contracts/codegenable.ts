@@ -127,14 +127,6 @@ export interface AggregateContribution {
 	 *  orchestrator MUST NOT branch on this value — it is annotation-
 	 *  only. */
 	readonly kind?: string;
-	/** Where the synthesized aggregate file lands. `'generated'` is
-	 *  the canonical runtime tree (`src/generated/`); `'generated-extras'`
-	 *  routes the aggregate to the gitignored
-	 *  `.devstack/stacks/<stack>/generated-extras/` tree (dev-only +
-	 *  secret artifacts). All decls contributing to one bucket MUST
-	 *  agree on this; the orchestrator reads it from the first
-	 *  contributor it sees for the bucket. Defaults to `'generated'`. */
-	readonly outputLocation?: OutputLocation;
 	/** When `true`, the synthesized aggregate file is written with
 	 *  tightened `0o600` perms and injected into `.gitignore`. Mirrors
 	 *  `CodegenableDecl.sensitive` for aggregate files. Defaults to
@@ -151,13 +143,6 @@ export interface AggregateContribution {
 	};
 }
 
-/** Which codegen output tree a decl (or aggregate) emits into.
- *  `'generated'` is the runtime-imported `src/generated/` tree;
- *  `'generated-extras'` is the gitignored
- *  `.devstack/stacks/<stack>/generated-extras/` dev-only tree reached
- *  via the `@devstack-dev` alias. */
-export type OutputLocation = 'generated' | 'generated-extras';
-
 /**
  * Static, stack-free codegen-decl source. A plugin that can describe its
  * codegen contributions from CONFIG ALONE (no live acquire) exposes this
@@ -167,8 +152,9 @@ export type OutputLocation = 'generated' | 'generated-extras';
  * from the declared `networks` literals, LOCAL ids stay the all-zero
  * sentinel (`UNRESOLVED_ID`) resolved at app build/dev time through the
  * injected `__DEVSTACK_DEPLOYMENT__` global. Plugins whose contributions genuinely
- * require live resolution (or which only land in the gitignored
- * `generated-extras` dev tree) omit this — the verb simply skips them.
+ * require live resolution (e.g. the values-only account / dev-wallet decls,
+ * which feed the deployment envelope rather than a committed file) omit this
+ * — the verb simply skips them.
  */
 export type StaticCodegenSource = () => ReadonlyArray<CodegenableDecl>;
 
@@ -181,11 +167,6 @@ export interface CodegenableDecl<Emitter extends string = string> {
 	readonly emitterName: Emitter;
 	/** Relative path under the codegen staging dir. */
 	readonly outputPath: string;
-	/** Which codegen tree this decl's standalone file emits into.
-	 *  `'generated'` (default) → `src/generated/`; `'generated-extras'`
-	 *  → the gitignored `.devstack/stacks/<stack>/generated-extras/`
-	 *  dev-only tree (reached via the `@devstack-dev` alias). */
-	readonly outputLocation?: OutputLocation;
 	/** When `true`, this decl contributes ONLY to its `aggregate`
 	 *  bucket — the orchestrator skips emitting the standalone
 	 *  per-decl file. Use when the per-decl singleton has no consumer

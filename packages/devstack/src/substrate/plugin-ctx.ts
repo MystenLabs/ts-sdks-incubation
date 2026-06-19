@@ -137,12 +137,12 @@ export interface PluginCtx {
 	 *  so it cannot be a static spec field; that is exactly why it is a
 	 *  buffered verb). Since codegen was decoupled from boot this is the
 	 *  LIVE half ONLY: at boot the orchestrator projects the decl into the
-	 *  loadable deployment (`assembleDeployment`) and, for dev-only decls,
-	 *  writes the `generated-extras` tree (`emitExtras`) — it does NOT write
-	 *  the committed `src/generated` tree. That committed, stack-free tree is
-	 *  emitted separately by the `devstack codegen` verb from the plugin
-	 *  spec's `staticCodegen` hook, derived from the SAME `ConfigBindingSet`.
-	 *  Returns void (the orchestrator owns rendering). */
+	 *  loadable deployment (`assembleDeployment`) — folding both typed fields
+	 *  and the values-only channels (dev accounts, the dev-wallet connection)
+	 *  — and does NOT write the committed `src/generated` tree. That committed,
+	 *  stack-free tree is emitted separately by the `devstack codegen` verb
+	 *  from the plugin spec's `staticCodegen` hook, derived from the SAME
+	 *  `ConfigBindingSet`. Returns void (the orchestrator owns rendering). */
 	readonly codegen: <E extends string>(decl: CodegenableDecl<E>) => void;
 	/** Buffered: declare a routable endpoint for the router orchestrator.
 	 *  Replayed in the supervisor frame after a successful `start`.

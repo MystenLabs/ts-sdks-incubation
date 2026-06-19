@@ -271,7 +271,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	});
 	const routerDispatchDir = routerProfile.dispatchDir;
 	const codegenOutputDir = join(runtimeRoot, 'codegen');
-	const codegenExtrasDir = join(runtimeRoot, 'generated-extras');
 
 	const platformBase = Layer.mergeAll(
 		layerIdentity(identity),
@@ -355,7 +354,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				layerCodegenRoot({
 					outputDir: codegenOutputDir,
 					stackSubdir: null,
-					extrasDir: codegenExtrasDir,
 				}),
 			),
 		),

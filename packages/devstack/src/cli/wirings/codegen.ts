@@ -103,10 +103,6 @@ const buildCodegenLayer = (appRoot: string) => {
 			layerCodegenRoot({
 				outputDir: generatedDir,
 				stackSubdir: null,
-				// Static contributions never target `generated-extras` (those
-				// decls are dev-only and carry no `staticCodegen`), so this
-				// path is declared but never written.
-				extrasDir: resolvePath(appRoot, 'src', 'generated-extras'),
 			}),
 		),
 	);

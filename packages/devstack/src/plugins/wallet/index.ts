@@ -11,9 +11,9 @@
 //        sign-transaction, sign-personal-message).
 //
 //     2. The BROWSER-SIDE ADAPTER. Owned by `dev-wallet`. Reads the
-//        codegen-emitted `dapp-kit/config.ts`, constructs a
-//        `DevstackSignerAdapter`, registers it with `@mysten/dapp-
-//        kit`'s wallet-standard surface.
+//        dev-wallet connection metadata (off the deployment envelope's
+//        `values['dev-wallet']`), constructs a `DevstackSignerAdapter`,
+//        registers it with `@mysten/dapp-kit`'s wallet-standard surface.
 //
 //   The HTTP protocol is the ONE cross-boundary contract. THIS PACKAGE
 //   NEVER IMPORTS `@mysten/dapp-kit*` OR `@mysten/wallet-standard`.
@@ -21,8 +21,10 @@
 // During `start`, the plugin emits (via the typed `ctx.*` verbs):
 //
 //   1. `ctx.snapshotExtra` — pairing token under `wallet/token`.
-//   2. `ctx.codegen` — `dapp-kit-config` bindings (the dev-wallet
-//      adapter consumes this). Sensitive flag set — 0o600 + gitignore.
+//   2. `ctx.codegen` — `dev-wallet-connection` values (the dev-wallet
+//      adapter's NON-secret connection metadata, folded into the
+//      deployment envelope's `values['dev-wallet']`; the secret token
+//      stays in its 0o600 side-channel file).
 //   3. `ctx.endpoint` — wallet UI URL on the stack-scoped router.
 
 import { Effect } from 'effect';
@@ -127,8 +129,9 @@ const walletResource = resource<'wallet', WalletValue>('wallet');
  *
  *   - Constant-time bearer compare on every request.
  *
- *   - Token file `0o600`. Codegen output (`dapp-kit/config.ts`)
- *     `0o600` + gitignored via `sensitive: true`.
+ *   - Token file `0o600`. The connection metadata rides the deployment
+ *     envelope's `values['dev-wallet']`; the token NEVER leaves the
+ *     `0o600` side-channel file.
  */
 export function wallet<const Accounts extends ReadonlyArray<WalletAccountMember>>(
 	opts: Omit<WalletOptions, 'accounts'> & { readonly accounts: Accounts },
@@ -320,7 +323,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				// shapes are load-bearing. The verbs are void and buffer for the
 				// supervisor's post-start replay.
 				ctx.snapshotExtra(makeWalletSnapshotable());
-				ctx.codegen(makeWalletCodegen(resolved.bindings));
+				ctx.codegen(makeWalletCodegen(resolved.connection));
 				ctx.endpoint(
 					makeWalletRoutable({
 						app: identity.app,
@@ -345,7 +348,11 @@ export type {
 	WalletAccountsAll,
 } from './service.ts';
 export { WALLET_ACCOUNTS_ALL } from './service.ts';
-export type { DevWalletConfig } from './codegen.ts';
+export type { DevWalletConnection } from './codegen.ts';
+export {
+	DEV_WALLET_VALUES_NAMESPACE,
+	DEV_WALLET_VALUES_KEY,
+} from './codegen.ts';
 export {
 	WalletHttpPath,
 	WALLET_PROTOCOL_PREFIX,

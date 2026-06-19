@@ -62,9 +62,8 @@ describe('network-scoped options', () => {
 		});
 
 		it('HARD-CLAMPS devWallet OFF on mainnet even with an explicit opt-in', () => {
-			// `{ mainnet: { devWallet: true } }` MUST NOT mount the test-only dev
-			// wallet on real mainnet — it would flush the secret generated-extras
-			// tree and inject a signer into a production build.
+			// `{ mainnet: { devWallet: true } }` MUST NOT signal mounting the
+			// test-only dev wallet on real mainnet (the resolved flag stays off).
 			expect(resolveNetworkOptions('mainnet', { mainnet: { devWallet: true } })).toEqual({
 				devWallet: false,
 				faucet: false,

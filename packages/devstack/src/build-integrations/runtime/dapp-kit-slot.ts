@@ -9,7 +9,7 @@
 
 /** The literal property name on `globalThis` that the app writes the
  *  kit handle to. Renames here cascade through every consumer
- *  (Playwright config-load, in-spec helpers, app-side dapp-kit-config
+ *  (Playwright config-load, in-spec helpers, app-side dapp-kit
  *  emit). The slot's name is part of the contract. */
 export const DAPP_KIT_SLOT_KEY = '__devstackDAppKit__' as const;
 

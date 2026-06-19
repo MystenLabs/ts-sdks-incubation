@@ -11,11 +11,7 @@
 
 import { Effect } from 'effect';
 
-import type {
-	AggregateContribution,
-	CodegenableDecl,
-	OutputLocation,
-} from '../../contracts/codegenable.ts';
+import type { AggregateContribution, CodegenableDecl } from '../../contracts/codegenable.ts';
 
 /** Spec for a `CodegenableDecl` that emits a single `export const`.
  *
@@ -28,9 +24,6 @@ export interface SimpleConstExportSpec<Emitter extends string, Value> {
 	readonly exportName: string;
 	readonly value: Value;
 	readonly sensitive?: boolean;
-	/** Which codegen tree the standalone file lands in. Default
-	 *  `'generated'`. */
-	readonly outputLocation?: OutputLocation;
 	/** Contribute only to the `aggregate` bucket — skip the standalone
 	 *  file. Default `false`. */
 	readonly aggregateOnly?: boolean;
@@ -49,7 +42,6 @@ export const defineSimpleConstExport = <Emitter extends string, Value>(
 	emitterName: spec.emitterName,
 	outputPath: spec.outputPath,
 	sensitive: spec.sensitive ?? false,
-	...(spec.outputLocation ? { outputLocation: spec.outputLocation } : {}),
 	...(spec.aggregateOnly ? { aggregateOnly: spec.aggregateOnly } : {}),
 	...(spec.aggregate ? { aggregate: spec.aggregate } : {}),
 	emit: (ctx) =>

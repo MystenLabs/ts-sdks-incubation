@@ -12,10 +12,13 @@
  * CONSISTENT mechanism: declare these once per network in the config
  * instead of scattering one-off flags.
  *
- *   - `devWallet` — per-network override is FORWARDED. Gates the
- *     dev-wallet `generated-extras` flush at boot (`orchestrators/boot.ts`,
- *     which resolves these options against the substrate-forwarded
- *     `networkOptions` record), which the Vite plugin injects.
+ *   - `devWallet` — documents per-network intent to mount the dev wallet.
+ *     The dev-wallet connection now rides the deployment envelope's
+ *     `values['dev-wallet']` channel unconditionally (when `wallet()` is
+ *     mounted); the Vite plugin gates injection on a live stack's token
+ *     file existing, and a prod `build` never injects regardless. So this
+ *     flag carries no active boot gate today — it remains as the documented
+ *     per-network knob.
  *   - `autoApproveSigning` — per-network override is FORWARDED. Gates the
  *     dev-wallet auto-approve policy the Vite plugin emits into the
  *     injected dev-wallet (`build-integrations/vite/index.ts`) — on
@@ -27,10 +30,12 @@
  *     `faucet:request:<chainId>`.
  */
 export interface NetworkScopedOptions {
-	/** ENFORCED. Mount the test-only dev wallet and flush its
-	 *  `generated-extras` tree (`dev-wallet.ts` + `accounts.ts`) at boot so
-	 *  the Vite plugin's `@devstack-dev` injection has files to load. Off →
-	 *  no flush, and the Vite `load` hook gracefully no-ops. */
+	/** Documents per-network intent to mount the test-only dev wallet. The
+	 *  dev-wallet connection rides the deployment envelope's
+	 *  `values['dev-wallet']` channel (folded by `assembleDeployment` when
+	 *  `wallet()` is mounted), and the Vite plugin gates injection on a live
+	 *  stack's `0o600` token file existing — a prod `build` injects nothing
+	 *  regardless. No active boot gate consumes this today. */
 	readonly devWallet?: boolean;
 	/** Funding-faucet strategy gate (`faucet:request:<chainId>`) in the sui
 	 *  plugin. The plugin follows the POLICY DEFAULT only — on for every
@@ -100,8 +105,8 @@ export const resolveNetworkOptions = (
 	// default policy is already off for `mainnet`; the clamp ALSO blocks a
 	// silent explicit opt-in. Each clamp guards a distinct production-safety
 	// failure mode:
-	//   - `devWallet` — flushing the secret `generated-extras` tree and
-	//     injecting a test-only signer into a production build.
+	//   - `devWallet` — documenting intent to inject a test-only signer
+	//     against a real network.
 	//   - `faucet` — exposing a funding-faucet strategy against a real
 	//     network (there is no mainnet faucet to begin with).
 	//   - `autoApproveSigning` — auto-approving a real-funds signature with
