@@ -879,17 +879,24 @@ const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').repla
 const CONFIG_BUCKET = 'config.ts';
 
 /**
- * Inject the four DEPLOYMENT envelope-accessor fields into the committed
+ * Inject the DEPLOYMENT envelope-accessor fields into the committed
  * `config.ts` aggregate's `config` object literal as raw expressions:
  *   - `defaultNetwork: __deployment.defaultNetwork`
  *   - `networkNames:   __deployment.networkNames`
  *   - `forNetwork:     __deployment.forNetwork`
- *   - `activeNetwork:  dep`
+ *
+ * There is deliberately NO `activeNetwork` field: the genuinely active network
+ * is whatever dapp-kit currently has selected (it can `switchNetwork` at
+ * runtime), so a statically-resolved "active" entry would lie the moment the
+ * user switches. Apps resolve per-network data through
+ * `config.forNetwork(<dapp-kit-selected network>)` — e.g.
+ * `createClient(network) => config.forNetwork(network)` — so nothing drifts out
+ * of sync with the selected network.
  *
  * STATIC-render-only: these are wired into the emitted committed tree so apps
- * can switch networks / enumerate them off `config`, but they are NOT part of
- * the live id-config path (`assembleIdConfig` / `idConfigFromBucket` slice the
- * raw `network`/`networks`/`packages`/`mvrOverrides` fields, never these). The
+ * can enumerate / look up networks off `config`, but they are NOT part of the
+ * live id-config path (`assembleIdConfig` / `idConfigFromBucket` slice the raw
+ * `network`/`networks`/`packages`/`mvrOverrides` fields, never these). The
  * aggregate file's `exports` is `{ config: {...} }`; mutate the inner object.
  */
 const withConfigEnvelopeAccessors = (file: AggregateFile): AggregateFile => {
@@ -902,7 +909,6 @@ const withConfigEnvelopeAccessors = (file: AggregateFile): AggregateFile => {
 		defaultNetwork: rawExpr('__deployment.defaultNetwork'),
 		networkNames: rawExpr('__deployment.networkNames'),
 		forNetwork: rawExpr('__deployment.forNetwork'),
-		activeNetwork: rawExpr('dep'),
 	};
 	return { ...file, exports: { ...file.exports, [stem]: augmented } };
 };

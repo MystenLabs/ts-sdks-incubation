@@ -11,7 +11,6 @@ import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit'
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
-import { resolveActiveNetwork } from '@generated/config-runtime.js';
 
 const deepbookNetwork = 'localnet' as const;
 
@@ -19,16 +18,19 @@ export const dAppKit = createDAppKit({
 	networks: [deepbookNetwork],
 	defaultNetwork: deepbookNetwork,
 	autoConnect: import.meta.env.DEV,
-	createClient() {
-		// The active network's connection is runtime-resolved (injected via
-		// `__DEVSTACK_IDS__`, never baked into the committed tree).
-		// `resolveActiveNetwork()` returns the active entry with a non-undefined
-		// type and fails loudly if absent — no `config.networks[config.network]`
-		// index-signature footgun.
-		const activeNetwork = resolveActiveNetwork();
+	// `createClient` is called per network dApp Kit manages, with the network it
+	// is building a client for — so EVERYTHING flows through dApp Kit's selected
+	// network and stays in sync across a runtime `switchNetwork`. The connection
+	// is runtime-resolved off the loaded deployment (injected via
+	// `__DEVSTACK_IDS__`, never baked into the committed tree);
+	// `config.forNetwork(network)` returns the network's resolved entry with a
+	// non-undefined type and fails loudly if absent — no
+	// `config.networks[config.network]` index-signature footgun.
+	createClient(network) {
+		const deployment = config.forNetwork(network);
 		return new SuiGrpcClient({
-			network: deepbookNetwork,
-			baseUrl: activeNetwork.rpc,
+			network,
+			baseUrl: deployment.rpc,
 			// `config.mvrOverrides` is the codegen-emitted active-network
 			// name→id map: each generated Move binding defaults its `package`
 			// to the `@local/<name>` MVR name (e.g. `@local/demo-coins`), and

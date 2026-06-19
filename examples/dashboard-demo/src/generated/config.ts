@@ -9,7 +9,6 @@ const __deployment = loadDeployment();
 const dep = __deployment.forNetwork(__deployment.defaultNetwork);
 
 export const config = {
-	activeNetwork: dep,
 	defaultNetwork: __deployment.defaultNetwork,
 	forNetwork: __deployment.forNetwork,
 	network: dep.network,

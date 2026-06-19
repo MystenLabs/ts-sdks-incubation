@@ -509,7 +509,7 @@ describe('codegen.runEmitCycle', () => {
 									readonly network: string;
 									readonly defaultNetwork: string;
 									readonly networkNames: readonly string[];
-									readonly activeNetwork: { readonly rpc: string };
+									readonly forNetwork: (network: string) => { readonly rpc: string };
 									readonly networks: {
 										readonly localnet: { readonly rpc: string };
 									};
@@ -543,10 +543,14 @@ describe('codegen.runEmitCycle', () => {
 					expect(configModule.config.networks.localnet.rpc).toBe('http://127.0.0.1:9000');
 					// The static-only DEPLOYMENT envelope accessors are wired off
 					// the loaded deployment: default network, the available network
-					// names, and the active network entry resolved from the ids.
+					// names, and the per-network lookup. There is deliberately NO
+					// `activeNetwork` — apps resolve per-network data through
+					// `config.forNetwork(<dapp-kit-selected network>)` so nothing
+					// drifts out of sync with the runtime-selected network.
 					expect(configModule.config.defaultNetwork).toBe('localnet');
 					expect(configModule.config.networkNames).toEqual(['localnet']);
-					expect(configModule.config.activeNetwork.rpc).toBe('http://127.0.0.1:9000');
+					expect(configModule.config.forNetwork('localnet').rpc).toBe('http://127.0.0.1:9000');
+					expect('activeNetwork' in configModule.config).toBe(false);
 					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
 					expect(configModule.config.packages.mock_usdc.byNetwork.localnet).toBe('0x1');
 					// Top-level `mvrOverrides` is the active-network name→id map

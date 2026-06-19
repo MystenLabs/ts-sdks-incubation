@@ -11,7 +11,6 @@ import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit'
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { config } from '@generated/config.js';
-import { resolveActiveNetwork } from '@generated/config-runtime.js';
 
 const devstackNetwork = 'localnet' as const;
 
@@ -27,20 +26,22 @@ const devstackNetwork = 'localnet' as const;
  */
 export const vaultPackageId: string | undefined = config.mvrOverrides['@local/vault'];
 
-// The active network's connection map is runtime-resolved (injected via
-// `__DEVSTACK_IDS__`, not baked into the committed tree). `resolveActiveNetwork`
-// returns the active entry with a non-undefined type and fails loudly if it is
-// missing — no index-signature footgun.
-const activeNetwork = resolveActiveNetwork();
-
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],
 	defaultNetwork: devstackNetwork,
 	autoConnect: import.meta.env.DEV,
-	createClient() {
+	// `createClient` is called per network dApp Kit manages, with the network it
+	// is building a client for — so EVERYTHING flows through dApp Kit's selected
+	// network and stays in sync across a runtime `switchNetwork`. The connection
+	// is resolved off the loaded deployment (injected via `__DEVSTACK_IDS__`, not
+	// baked into the committed tree); `config.forNetwork(network)` returns that
+	// network's resolved entry — a non-undefined type that fails loudly if
+	// absent, no index-signature footgun.
+	createClient(network) {
+		const deployment = config.forNetwork(network);
 		return new SuiGrpcClient({
-			network: devstackNetwork,
-			baseUrl: activeNetwork.rpc,
+			network,
+			baseUrl: deployment.rpc,
 			// `config.mvrOverrides` is the codegen-emitted active-network
 			// name→id map: the vault bindings default `options.package ??
 			// '@local/vault'`, and this map resolves that name to the deployed
