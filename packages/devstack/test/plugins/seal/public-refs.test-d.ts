@@ -35,7 +35,6 @@ export const _localNamespace = sealFor(localNet).localKeygen({ signer: publisher
 export const _liveTestnet = sealFor(liveNet).testnet();
 export const _liveTestnetCommittee = sealFor(liveNet).testnet({ server: 'committee' });
 export const _liveMainnetCommittee = sealFor(mainnetNet).mainnet({
-	apiKey: 'k',
 	apiKeyName: 'X-API-Key',
 });
 export const _liveCustom = sealFor(liveNet).custom({

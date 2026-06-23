@@ -21,7 +21,9 @@
 //     no API key required.
 //   - mainnet COMMITTEE: a single 5-of-8 committee object reached
 //     through the mainnet aggregator. This is the mainnet DEFAULT and
-//     REQUIRES an `apiKey`. Mainnet ships NO independent default — so
+//     requires credentials — declare the non-secret `apiKeyName`; the
+//     secret apiKey value is injected by the app at runtime, never by
+//     devstack. Mainnet ships NO independent default — so
 //     `mainnet({ server: 'independent' })` throws.
 
 import { sealConfigError } from '../errors.ts';
@@ -55,7 +57,7 @@ interface CommitteeSpec {
 	/** Threshold `m-of-n`, carried for diagnostics / display only. */
 	readonly threshold: { readonly m: number; readonly n: number };
 	/** When `true`, the committee aggregator demands an API key and the
-	 *  factory throws `SealConfigError` if the caller omits `apiKey`. */
+	 *  factory throws `SealConfigError` if the caller omits `apiKeyName`. */
 	readonly requiresApiKey: boolean;
 }
 
@@ -125,9 +127,12 @@ export interface LiveModeInputs {
 	/** Which known server kind to resolve. Defaults to the network's
 	 *  `defaultServer` (testnet→independent, mainnet→committee). */
 	readonly server?: SealServerKind;
-	/** API-key pair for committee servers that require one (mainnet). */
+	/** The NON-secret header name for a credentialed committee (mainnet).
+	 *  devstack emits this so the generated config tells the app which header
+	 *  to set. The secret apiKey VALUE is NEVER taken by devstack — the app
+	 *  injects it at runtime when constructing `SealClient` (a committed
+	 *  config + the world-readable `deployment.json` must not carry secrets). */
 	readonly apiKeyName?: string;
-	readonly apiKey?: string;
 	/** Whether the SDK should verify the key servers against their on-chain
 	 *  registration. Defaults to `true` for live / fork-known (real Mysten
 	 *  servers). */
@@ -164,7 +169,8 @@ export interface ResolvedLiveInputs {
  *     `defaultServer`.
  *   - `independent` → map every standalone server to `{objectId, weight:1}`.
  *   - `committee` → a single entry `{objectId, weight:1, aggregatorUrl,
- *     …apiKey}`; throw if the committee `requiresApiKey` and none given.
+ *     …apiKeyName}` (NO secret apiKey value); throw if the committee
+ *     `requiresApiKey` and no `apiKeyName` is declared.
  *   - mainnet has no independent → `mainnet({server:'independent'})` throws. */
 export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs => {
 	const context = `seal.live: network=${String(inputs.network)}, server=${String(inputs.server)}`;
@@ -182,15 +188,15 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 				message: `${context}: serverConfigs override must carry at least one entry.`,
 			});
 		}
-		// Codegen emits a single `requireValue(dep, 'seal:<name>', 'apiKey')`
-		// slot per instance, so at most ONE committee entry may carry an
-		// apiKey — multiple credentialed entries would all resolve from that
-		// one slot, silently pointing at the wrong credential. Refuse early.
-		const apiKeyEntries = configs.filter((c) => c.apiKey !== undefined);
-		if (apiKeyEntries.length > 1) {
+		// Secrets never ride a committed/world-readable config. devstack does
+		// NOT carry the committee `apiKey` value (the committed `seal.ts` and the
+		// browser-injected `deployment.json` are both world-readable). Reject an
+		// override that embeds one — pass `apiKeyName` here and inject the secret
+		// apiKey VALUE into `serverConfigs` at runtime when constructing SealClient.
+		if (configs.some((c) => c.apiKey !== undefined)) {
 			throw sealConfigError({
 				field: 'serverConfigs',
-				message: `${context}: serverConfigs override carries ${apiKeyEntries.length} entries with an apiKey, but only one credentialed committee entry is supported (codegen exposes a single apiKey slot per seal instance). Split the credentialed entry into its own seal instance, or drop the extra apiKeys.`,
+				message: `${context}: serverConfigs override embeds an apiKey, but devstack never carries the secret apiKey value (the committed config + deployment.json are world-readable). Drop apiKey here (keep apiKeyName) and inject the apiKey at runtime when you build SealClient.`,
 			});
 		}
 		const first = configs[0]!;
@@ -222,7 +228,7 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 		if (servers === null) {
 			throw sealConfigError({
 				field: 'server',
-				message: `${context}: no independent (standalone) key server ships for this network — use { server: 'committee' } (with an apiKey where required).`,
+				message: `${context}: no independent (standalone) key server ships for this network — use { server: 'committee' } (declare { apiKeyName } where required; inject the apiKey at runtime).`,
 			});
 		}
 		const serverConfigs: ReadonlyArray<SealKeyServerEntry> = servers.map((s) => ({
@@ -245,25 +251,26 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 			message: `${context}: no committee key server ships for this network.`,
 		});
 	}
-	if (committee.requiresApiKey && (inputs.apiKey === undefined || inputs.apiKey.length === 0)) {
+	// A committee that requires credentials needs the NON-secret `apiKeyName`
+	// declared so the generated config tells the app which header to set. The
+	// secret apiKey VALUE is NEVER taken or emitted by devstack — the app
+	// injects it at runtime when constructing SealClient (committed config +
+	// deployment.json are world-readable).
+	if (
+		committee.requiresApiKey &&
+		(inputs.apiKeyName === undefined || inputs.apiKeyName.length === 0)
+	) {
 		throw sealConfigError({
-			field: 'apiKey',
-			message: `${context}: the ${committee.threshold.m}-of-${committee.threshold.n} committee requires an apiKey. Pass { apiKey, apiKeyName } (e.g. apiKey: requireValue(...) / process.env.SEAL_API_KEY).`,
+			field: 'apiKeyName',
+			message: `${context}: the ${committee.threshold.m}-of-${committee.threshold.n} committee requires credentials. Pass { apiKeyName } (the non-secret header name); inject the secret apiKey value at runtime when you build SealClient — devstack does not carry it.`,
 		});
 	}
-	const apiKeyPart =
-		inputs.apiKey !== undefined && inputs.apiKey.length > 0
-			? {
-					apiKey: inputs.apiKey,
-					...(inputs.apiKeyName !== undefined ? { apiKeyName: inputs.apiKeyName } : {}),
-				}
-			: {};
 	const serverConfigs: ReadonlyArray<SealKeyServerEntry> = [
 		{
 			objectId: committee.objectId,
 			weight: 1,
 			aggregatorUrl: committee.aggregatorUrl,
-			...apiKeyPart,
+			...(inputs.apiKeyName !== undefined ? { apiKeyName: inputs.apiKeyName } : {}),
 		},
 	];
 	return {

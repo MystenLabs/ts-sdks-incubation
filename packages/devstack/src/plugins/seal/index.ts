@@ -131,28 +131,32 @@ export interface SealLocalKeygenOptions<
 /** Live-mode options (testnet / mainnet).
  *
  *  Zero-config `testnet()` resolves BOTH independent servers;
- *  `mainnet()` resolves the committee (which requires an `apiKey`).
- *  `{ server: 'committee' }` opts a testnet stack into the committee
- *  aggregator. `serverConfigs` is the raw verbatim override.
- *  `verifyKeyServers` defaults to the SDK default (true) on live /
- *  known — omit it; only local-keygen forces it false. */
+ *  `mainnet()` resolves the committee (which requires credentials — declare
+ *  the non-secret `apiKeyName`). `{ server: 'committee' }` opts a testnet
+ *  stack into the committee aggregator. `serverConfigs` is the raw verbatim
+ *  override. `verifyKeyServers` defaults to the SDK default (true) on live /
+ *  known — omit it; only local-keygen forces it false.
+ *
+ *  NOTE: devstack never carries the secret committee `apiKey` value (committed
+ *  config + the browser-injected `deployment.json` are world-readable). Pass
+ *  `apiKeyName` (the header name) and inject the apiKey at runtime when you
+ *  construct `SealClient`. */
 export interface SealLiveOptions extends SealCommonOptions {
 	readonly network?: KnownNetwork;
 	readonly server?: SealServerKind;
 	readonly apiKeyName?: string;
-	readonly apiKey?: string;
 	readonly verifyKeyServers?: boolean;
 	readonly serverConfigs?: ReadonlyArray<SealKeyServerEntry>;
 }
 
 /** Fork-known-mode options. The `*-fork` network routes to the wrapped
- *  upstream's known deployment; `server` / `apiKey` mirror the live
- *  selectors. */
+ *  upstream's known deployment; `server` / `apiKeyName` mirror the live
+ *  selectors (the secret apiKey is injected by the app at runtime, never
+ *  carried by devstack). */
 export interface SealForkKnownOptions extends SealCommonOptions {
 	readonly upstream: ForkUpstream;
 	readonly server?: SealServerKind;
 	readonly apiKeyName?: string;
-	readonly apiKey?: string;
 	readonly verifyKeyServers?: boolean;
 }
 
@@ -365,7 +369,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 	// Validate + resolve inputs at factory time so misconfigurations fail
 	// before any plugin row starts work. `resolved.serverConfigs` is the
 	// full SDK-ready array (independent fan-out OR a single committee entry
-	// with aggregatorUrl + optional apiKey).
+	// with aggregatorUrl + the non-secret apiKeyName; never a secret apiKey).
 	const resolved: ResolvedLiveInputs = validateLiveInputs({ name, ...opts });
 	const bindings: SealBindings = {
 		name,
@@ -384,9 +388,8 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		// Live mode resolves its `{objectId, keyServerUrl, serverConfigs}` tuple
 		// at factory time (DECLARED config) — bake them as literals in the
 		// committed `seal.ts` (mirrors `knownPackage`). The committed
-		// `serverConfigs` carries ALL entries + aggregatorUrl; any committee
-		// `apiKey` is emitted as a `requireValue(...)` reference, never a literal
-		// (locked decision #4).
+		// `serverConfigs` carries ALL entries + aggregatorUrl + apiKeyName; the
+		// secret apiKey is NEVER emitted (the app injects it at runtime).
 		staticCodegen: () => [
 			makeSealStaticCodegen({
 				name,
@@ -455,8 +458,8 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		// — bake them as literals in the committed `seal.ts` (mirrors
 		// `knownPackage`). The resolved `serverConfigs` is the full SDK-ready
 		// array (independent fan-out or the committee entry + aggregatorUrl), so
-		// it is declared config too; a committee `apiKey` is emitted as a
-		// `requireValue(...)` reference, never a literal.
+		// it is declared config too; the secret committee apiKey is NEVER
+		// emitted (the app injects it at runtime).
 		staticCodegen: () => [
 			makeSealStaticCodegen({
 				name,

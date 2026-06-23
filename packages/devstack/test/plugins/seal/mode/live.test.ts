@@ -3,9 +3,13 @@
 // Pins the locked-decision resolution rules:
 //   - testnet zero-config = BOTH independent servers (weight 1 each).
 //   - `{ server: 'committee' }` resolves the testnet committee (no apiKey).
-//   - mainnet default = committee, which REQUIRES an apiKey (throws otherwise).
+//   - mainnet default = committee, which REQUIRES the non-secret `apiKeyName`
+//     (throws otherwise); the secret apiKey VALUE is never carried by devstack.
+//   - a committee resolve emits `apiKeyName` (never an apiKey) on the entry.
+//   - a verbatim `serverConfigs` override that embeds an `apiKey` is rejected.
 //   - `mainnet({ server: 'independent' })` throws (none ships).
 //   - a verbatim `serverConfigs` override wins.
+//   - `verifyKeyServers` defaults to `true` on a live resolve; honored when set.
 //
 // `validateLiveInputs` is a synchronous pure function — no Effect
 // harness required.
@@ -36,7 +40,7 @@ describe('KNOWN_DEPLOYMENTS — shape', () => {
 		expect(c?.requiresApiKey).toBe(false);
 	});
 
-	it('mainnet has NO independent default and a 5-of-8 committee requiring an apiKey', () => {
+	it('mainnet has NO independent default and a 5-of-8 committee requiring credentials', () => {
 		expect(KNOWN_DEPLOYMENTS.mainnet.independent).toBeNull();
 		expect(KNOWN_DEPLOYMENTS.mainnet.defaultServer).toBe('committee');
 		const c = KNOWN_DEPLOYMENTS.mainnet.committee;
@@ -77,11 +81,10 @@ describe('validateLiveInputs — committee opt-in', () => {
 		expect(r.keyServerUrl).toBe('https://seal-aggregator-testnet.mystenlabs.com');
 	});
 
-	it('mainnet committee with apiKey carries the key + name on the entry', () => {
+	it('mainnet committee with apiKeyName carries the NON-secret name and NO apiKey', () => {
 		const r = validateLiveInputs({
 			name: 'seal',
 			network: 'mainnet',
-			apiKey: 'secret-key',
 			apiKeyName: 'X-API-Key',
 		});
 		expect(r.serverConfigs).toEqual([
@@ -89,15 +92,19 @@ describe('validateLiveInputs — committee opt-in', () => {
 				objectId: MAINNET_COMMITTEE,
 				weight: 1,
 				aggregatorUrl: 'https://seal-aggregator-mainnet.mystenlabs.com',
-				apiKey: 'secret-key',
 				apiKeyName: 'X-API-Key',
 			},
 		]);
+		// devstack never carries the secret apiKey VALUE — the app injects it at
+		// runtime when constructing SealClient (committed config + deployment.json
+		// are world-readable).
+		expect(r.serverConfigs[0]).not.toHaveProperty('apiKey');
+		expect(JSON.stringify(r.serverConfigs)).not.toContain('apiKey"');
 	});
 });
 
 describe('validateLiveInputs — config errors', () => {
-	it('mainnet committee WITHOUT apiKey is a SealConfigError', () => {
+	it('mainnet committee WITHOUT apiKeyName is a SealConfigError (field apiKeyName)', () => {
 		let thrown: unknown = null;
 		try {
 			validateLiveInputs({ name: 'seal', network: 'mainnet' });
@@ -105,7 +112,29 @@ describe('validateLiveInputs — config errors', () => {
 			thrown = err;
 		}
 		expect((thrown as { _tag?: string } | null)?._tag).toBe('SealConfigError');
-		expect((thrown as { field?: string } | null)?.field).toBe('apiKey');
+		expect((thrown as { field?: string } | null)?.field).toBe('apiKeyName');
+	});
+
+	it('a verbatim serverConfigs override that embeds an apiKey is a SealConfigError (field serverConfigs)', () => {
+		let thrown: unknown = null;
+		try {
+			validateLiveInputs({
+				name: 'seal',
+				serverConfigs: [
+					{
+						objectId: '0xabc',
+						weight: 1,
+						aggregatorUrl: 'https://custom.example/agg',
+						apiKeyName: 'X-API-Key',
+						apiKey: 'secret-key',
+					},
+				],
+			});
+		} catch (err) {
+			thrown = err;
+		}
+		expect((thrown as { _tag?: string } | null)?._tag).toBe('SealConfigError');
+		expect((thrown as { field?: string } | null)?.field).toBe('serverConfigs');
 	});
 
 	it('mainnet({ server: independent }) throws (none ships)', () => {
@@ -153,5 +182,26 @@ describe('validateLiveInputs — verbatim serverConfigs override', () => {
 			thrown = err;
 		}
 		expect((thrown as { _tag?: string } | null)?._tag).toBe('SealConfigError');
+	});
+});
+
+describe('validateLiveInputs — verifyKeyServers resolution', () => {
+	it('defaults to true for a live testnet resolve (real Mysten servers)', () => {
+		const r = validateLiveInputs({ name: 'seal', network: 'testnet' });
+		expect(r.verifyKeyServers).toBe(true);
+	});
+
+	it('defaults to true for a live mainnet committee resolve', () => {
+		const r = validateLiveInputs({ name: 'seal', network: 'mainnet', apiKeyName: 'X-API-Key' });
+		expect(r.verifyKeyServers).toBe(true);
+	});
+
+	it('honors an explicit { verifyKeyServers: false }', () => {
+		const r = validateLiveInputs({
+			name: 'seal',
+			network: 'testnet',
+			verifyKeyServers: false,
+		});
+		expect(r.verifyKeyServers).toBe(false);
 	});
 });

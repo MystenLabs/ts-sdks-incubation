@@ -54,7 +54,6 @@ export const validateForkKnownInputs = (inputs: {
 	readonly upstream: ForkUpstream;
 	readonly server?: SealServerKind;
 	readonly apiKeyName?: string;
-	readonly apiKey?: string;
 	readonly verifyKeyServers?: boolean;
 }): ResolvedLiveInputs => {
 	try {
@@ -63,7 +62,6 @@ export const validateForkKnownInputs = (inputs: {
 			network: resolveDeploymentNetwork(inputs.upstream),
 			...(inputs.server !== undefined ? { server: inputs.server } : {}),
 			...(inputs.apiKeyName !== undefined ? { apiKeyName: inputs.apiKeyName } : {}),
-			...(inputs.apiKey !== undefined ? { apiKey: inputs.apiKey } : {}),
 			...(inputs.verifyKeyServers !== undefined
 				? { verifyKeyServers: inputs.verifyKeyServers }
 				: {}),

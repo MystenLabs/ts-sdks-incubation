@@ -69,13 +69,13 @@ describe('seal public refs', () => {
 		expect(plugin.id).toBe('seal:committee-seal');
 	});
 
-	it('sealFor live mainnet committee with apiKey constructs a plugin', () => {
+	it('sealFor live mainnet committee with apiKeyName constructs a plugin', () => {
 		const live = { mode: 'live', chainId: 'sui:mainnet' } as const;
-		const plugin = sealFor(live).mainnet({ apiKey: 'k', apiKeyName: 'X-API-Key' });
+		const plugin = sealFor(live).mainnet({ apiKeyName: 'X-API-Key' });
 		expect(plugin.id).toBe('seal:seal');
 	});
 
-	it('sealFor live mainnet WITHOUT apiKey is a SealConfigError at factory time', () => {
+	it('sealFor live mainnet WITHOUT apiKeyName is a SealConfigError at factory time', () => {
 		const live = { mode: 'live', chainId: 'sui:mainnet' } as const;
 		let thrown: unknown = null;
 		try {
@@ -84,6 +84,6 @@ describe('seal public refs', () => {
 			thrown = err;
 		}
 		expect((thrown as { _tag?: string } | null)?._tag).toBe('SealConfigError');
-		expect((thrown as { field?: string } | null)?.field).toBe('apiKey');
+		expect((thrown as { field?: string } | null)?.field).toBe('apiKeyName');
 	});
 });

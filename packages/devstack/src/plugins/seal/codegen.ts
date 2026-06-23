@@ -17,7 +17,6 @@
 // config data), resolved at app build/dev time.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import { rawExpr } from '../../contracts/codegenable.ts';
 import {
 	keyedBucketSpec,
 	liveBucketCodegen,
@@ -30,33 +29,25 @@ import type { SealKeyServerEntry } from './registry-publish.ts';
 
 /** Static-codegen TS type for the `serverConfigs` field — mirrors
  *  `SealKeyServerEntry` (the structural literal so the committed `seal.ts`
- *  carries the concrete type with NO emitted import). Includes the optional
- *  committee fields (`apiKeyName?` / `apiKey?` / `aggregatorUrl?`). */
+ *  carries the concrete type with NO emitted import). The `apiKey?` slot is
+ *  kept in the TYPE so a consumer can inject the secret at runtime, but devstack
+ *  never emits a `apiKey` VALUE (see `stripApiKey`). */
 const SERVER_CONFIGS_TS_TYPE =
 	'ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly apiKeyName?: string; readonly apiKey?: string; readonly aggregatorUrl?: string }>';
 
-/** Replace any committee `apiKey` literal in a declared `serverConfigs` array
- *  with a `requireValue(...)` raw expression so the COMMITTED `seal.ts` never
- *  bakes the key (locked decision #4). The renderer emits an embedded
- *  `RawExpr` verbatim, so the entry's `apiKey` reads as
- *  `requireValue<string>(dep, 'seal:<name>', 'apiKey')`. All other fields
- *  (objectId / weight / aggregatorUrl / apiKeyName) stay literals. */
-const dekeyServerConfigs = (
-	name: string,
-	serverConfigs: ReadonlyArray<SealKeyServerEntry>,
-): JsonValue =>
-	serverConfigs.map((entry) =>
-		entry.apiKey !== undefined
-			? {
-					objectId: entry.objectId,
-					weight: entry.weight,
-					...(entry.apiKeyName !== undefined ? { apiKeyName: entry.apiKeyName } : {}),
-					...(entry.aggregatorUrl !== undefined ? { aggregatorUrl: entry.aggregatorUrl } : {}),
-					// Runtime reference, NOT a baked literal.
-					apiKey: rawExpr(`requireValue<string>(dep, ${JSON.stringify(`seal:${name}`)}, "apiKey")`),
-				}
-			: entry,
-	) as unknown as JsonValue;
+/** Defense-in-depth: drop any `apiKey` from an emitted `serverConfigs` array.
+ *  devstack NEVER carries the secret committee apiKey value — both the committed
+ *  `seal.ts` and the browser-injected `deployment.json` (the `values` channel)
+ *  are world-readable. `validateLiveInputs` already refuses to accept an apiKey,
+ *  so this is belt-and-suspenders at the codegen boundary. The app injects the
+ *  apiKey into `serverConfigs` at runtime, keyed by the emitted non-secret
+ *  `apiKeyName`. */
+const stripApiKey = (serverConfigs: ReadonlyArray<SealKeyServerEntry>): JsonValue =>
+	serverConfigs.map((entry) => {
+		const rest: Record<string, unknown> = { ...entry };
+		delete rest.apiKey;
+		return rest;
+	}) as unknown as JsonValue;
 
 /** Codegen-emitted shape for seal. */
 export interface SealBindings {
@@ -113,13 +104,10 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 					{
 						key: 'serverConfigs',
 						variant: 'literal',
-						// Bake ALL entries + aggregatorUrl as literals; a committee
-						// `apiKey` is swapped for a `requireValue(...)` reference so the
-						// committed tree carries no secret (locked decision #4). At most
-						// ONE entry may carry an apiKey — the override path enforces this
-						// single-apiKey invariant (`validateLiveInputs`), since the
-						// `requireValue(...)` reference uses one shared `'apiKey'` slot.
-						value: dekeyServerConfigs(structural.name, known.serverConfigs),
+						// Bake objectId / weight / aggregatorUrl / apiKeyName as literals.
+						// Any apiKey is stripped — devstack never carries the secret; the
+						// app injects it at runtime keyed by apiKeyName.
+						value: stripApiKey(known.serverConfigs),
 					},
 					// Declared config: a plain boolean literal (not a secret, so never
 					// a `requireValue`). True on live / fork-known.
@@ -140,8 +128,10 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 						variant: 'resolved',
 						// Inline structural literal mirroring `SealKeyServerEntry` so the
 						// committed `seal.ts` carries the concrete type (no emitted import).
+						// `stripApiKey` guards the world-readable `values` channel — the
+						// resolved blob must never carry a secret apiKey.
 						tsType: SERVER_CONFIGS_TS_TYPE,
-						live: (s) => s.serverConfigs as unknown as JsonValue,
+						live: (s) => stripApiKey(s.serverConfigs),
 					},
 					{
 						key: 'verifyKeyServers',
@@ -153,11 +143,29 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 	return keyedBucketSpec({ bucket: 'seal.ts', kind: 'seal', key: structural.name, fields });
 };
 
-/** Build the LIVE Codegenable contribution for a seal instance. Bakes the
- *  resolved key-server fields + feeds the generic deployment `values`
- *  channel. */
-export const makeSealCodegenable = (bindings: SealBindings): CodegenableDecl =>
-	liveBucketCodegen(sealBucketSpec({ name: bindings.name, mode: bindings.mode }), bindings);
+/** Build the LIVE Codegenable contribution for a seal instance.
+ *
+ *  Live / fork-known deployments resolve their ids at factory time, so they
+ *  are DECLARED config — pass `known` so they bake as literals (the SAME branch
+ *  the static codegen uses). This keeps the two derivations consistent AND
+ *  keeps the known `serverConfigs` OUT of the world-readable `values` channel
+ *  entirely (literals don't ride `values`). Only `local-keygen`'s
+ *  dynamically-deployed ids flow through the resolved/`values` channel. */
+export const makeSealCodegenable = (bindings: SealBindings): CodegenableDecl => {
+	const known: SealKnownIds | undefined =
+		bindings.mode === 'local-keygen'
+			? undefined
+			: {
+					objectId: bindings.objectId,
+					keyServerUrl: bindings.keyServerUrl,
+					serverConfigs: bindings.serverConfigs,
+					verifyKeyServers: bindings.verifyKeyServers,
+				};
+	return liveBucketCodegen(
+		sealBucketSpec({ name: bindings.name, mode: bindings.mode, known }),
+		bindings,
+	);
+};
 
 /** Build the STATIC (stack-free) Codegenable contribution for a seal
  *  instance. Emits `requireValue(dep, 'seal:<name>', '<key>')` for the runtime
