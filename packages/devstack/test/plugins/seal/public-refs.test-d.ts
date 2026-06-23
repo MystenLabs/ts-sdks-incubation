@@ -10,6 +10,8 @@ import type { NetworkConfig } from '../../../src/plugins/sui/network-config.ts';
 import type { ResourceValueOf } from '../../../src/substrate/plugin.ts';
 
 const localNet: NetworkConfig<'local'> = { mode: 'local', chainId: 'sui:localnet' };
+const liveNet: NetworkConfig<'live'> = { mode: 'live', chainId: 'sui:testnet' };
+const mainnetNet: NetworkConfig<'live'> = { mode: 'live', chainId: 'sui:mainnet' };
 const forkNet: NetworkConfig<'fork'> = {
 	mode: 'fork',
 	chainId: 'sui:testnet-fork',
@@ -27,6 +29,30 @@ export const _manager: SealKeyManager | null = (null as never as LocalSealResolv
 export const _rotate = (null as never as SealKeyManager).rotate;
 
 export const _localNamespace = sealFor(localNet).localKeygen({ signer: publisher });
+
+// Live mode: zero-config testnet (both independent servers), committee opt-in,
+// and the verbatim serverConfigs override on `.custom`.
+export const _liveTestnet = sealFor(liveNet).testnet();
+export const _liveTestnetCommittee = sealFor(liveNet).testnet({ server: 'committee' });
+export const _liveMainnetCommittee = sealFor(mainnetNet).mainnet({
+	apiKey: 'k',
+	apiKeyName: 'X-API-Key',
+});
+export const _liveCustom = sealFor(liveNet).custom({
+	serverConfigs: [{ objectId: '0x1', weight: 1, aggregatorUrl: 'https://agg.example' }],
+});
+
+// `.custom` REQUIRES `serverConfigs` — omitting it is a compile error.
+export const _customWithoutServerConfigsRefused = sealFor(liveNet).custom(
+	// @ts-expect-error — serverConfigs is required on the verbatim override
+	{},
+);
+
+// `server` is a closed 'independent' | 'committee' selector — a typo is refused.
+export const _badServerKindRefused = sealFor(liveNet).testnet({
+	// @ts-expect-error — 'aggregator' is not a SealServerKind
+	server: 'aggregator',
+});
 
 export const _magicStringSignerRefused = seal({
 	mode: 'local-keygen',

@@ -33,6 +33,12 @@
 // Resource id: `deepbook/<name>`. Plugin key: `deepbook:<name>`.
 
 import { Effect } from 'effect';
+import {
+	mainnetPackageIds,
+	mainnetPythConfigs,
+	testnetPackageIds,
+	testnetPythConfigs,
+} from '@mysten/deepbook-v3';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceValueOf } from '../../api/define-plugin.ts';
@@ -204,6 +210,12 @@ interface DeepbookKnownExplicitOptions extends DeepbookKnownCommonOptions {
 
 export type DeepbookKnownOptions = DeepbookKnownNetworkOptions | DeepbookKnownExplicitOptions;
 
+/** Per-network factory options for `deepbookFor(net).testnet()`/`.mainnet()`.
+ *  The `network` is injected by the namespace method, so the caller only
+ *  supplies optional per-field overrides (`packageId`/`registryId`/`name`).
+ *  Plugin-INTERNAL — deliberately NOT re-exported from `src/index.ts`. */
+type DeepbookKnownByNetworkOptions = Omit<DeepbookKnownNetworkOptions, 'network'>;
+
 export type DeepbookOptions<
 	Publisher extends AccountMemberAlias = AccountMemberAlias,
 	Pyth extends PythOptions | undefined = PythOptions | undefined,
@@ -225,6 +237,16 @@ export type DeepbookOptions<
 
 const DEFAULT_NAME = 'deepbook';
 
+// Known-deployment ids are DERIVED from the `@mysten/deepbook-v3` SDK
+// constants rather than hand-copied, so they can never drift from the SDK
+// (a stale mainnet packageId is exactly what this guards against). Future
+// SDK bumps flow through automatically. DeepBook ships testnet + mainnet
+// only — there is no devnet deployment.
+//
+// We surface only the core ids the plugin needs. The SDK's MARGIN_*/
+// LIQUIDATION_* package ids and its coin/pool maps are intentionally NOT
+// re-exported here (out of scope); consumers that need them import from
+// `@mysten/deepbook-v3` directly.
 const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
 	DeepbookKnownNetwork,
 	{
@@ -237,25 +259,25 @@ const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
 > = {
 	testnet: {
 		network: 'testnet',
-		packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
-		registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
-		deepTreasuryId: '0x69fffdae0075f8f71f4fa793549c11079266910e8905169845af1f5d00e09dcb',
+		packageId: testnetPackageIds.DEEPBOOK_PACKAGE_ID,
+		registryId: testnetPackageIds.REGISTRY_ID,
+		deepTreasuryId: testnetPackageIds.DEEP_TREASURY_ID,
 		pyth: {
 			packageId: null,
-			stateId: '0x243759059f4c3111179da5878c12f68d612c21a8d54d85edc86164bb18be1c7c',
-			wormholeStateId: '0x31358d198147da50db32eda2562951d53973a0c0ad5ed738e9b17d88b213d790',
+			stateId: testnetPythConfigs.pythStateId,
+			wormholeStateId: testnetPythConfigs.wormholeStateId,
 			feeds: [],
 		},
 	},
 	mainnet: {
 		network: 'mainnet',
-		packageId: '0xf48222c4e057fa468baf136bff8e12504209d43850c5778f76159292a96f621e',
-		registryId: '0xaf16199a2dff736e9f07a845f23c5da6df6f756eddb631aed9d24a93efc4549d',
-		deepTreasuryId: '0x032abf8948dda67a271bcc18e776dbbcfb0d58c8d288a700ff0d5521e57a1ffe',
+		packageId: mainnetPackageIds.DEEPBOOK_PACKAGE_ID,
+		registryId: mainnetPackageIds.REGISTRY_ID,
+		deepTreasuryId: mainnetPackageIds.DEEP_TREASURY_ID,
 		pyth: {
 			packageId: null,
-			stateId: '0x1f9310238ee9298fb703c3419030b35b22bb1cc37113e3bb5007c99aec79e5b8',
-			wormholeStateId: '0xaeab97f96cf9877fee2883315d459552b2b921edc16d7ceac6eab944dd88919c',
+			stateId: mainnetPythConfigs.pythStateId,
+			wormholeStateId: mainnetPythConfigs.wormholeStateId,
 			feeds: [],
 		},
 	},
@@ -1036,14 +1058,21 @@ export function deepbookCore<
  *      const local = { mode: 'local', network: 'localnet' } as const;
  *      deepbookFor(local).local({publisher, package, pools})    // OK
  *      deepbookFor(local).override({packageId, registryId, adminCapId}) // OK
- *      deepbookFor(local).known({...})                          // OK
+ *      deepbookFor(local).testnet()                             // OK (known testnet)
+ *      deepbookFor(local).known({packageId, registryId})        // OK (raw-id override)
+ *
+ *      const live = { mode: 'live', chainId: 'sui:testnet' } as const;
+ *      deepbookFor(live).mainnet()                              // OK (known mainnet)
  *
  *      const fork = { mode: 'fork', network: 'mainnet-fork', upstream: 'mainnet' } as const;
  *      deepbookFor(fork).local({...})                       // COMPILE ERROR
  *      deepbookFor(fork).override({...})                    // COMPILE ERROR
  *
- *  The fork branch has NO `.local` or `.override` entry — `deepbookFor(forkNetwork).local`
- *  is a compile-time refusal. */
+ *  Per-network methods (`.testnet`/`.mainnet`) inject the network into
+ *  `buildKnownPlugin`; `.known(...)` is now the raw-id explicit-override form
+ *  only (`DeepbookKnownExplicitOptions`) — the `network`-in-`.known()` path was
+ *  HARD CUT. The fork branch has NO `.local` or `.override` entry —
+ *  `deepbookFor(forkNetwork).local` is a compile-time refusal. */
 export const deepbookFor = defineModeNamespace({
 	local: {
 		local: <
@@ -1055,14 +1084,26 @@ export const deepbookFor = defineModeNamespace({
 			opts: DeepbookLocalOptions<Publisher, Package, Pools, Pyth>,
 		) => buildLocalPluginPublic(opts),
 		override: (opts: DeepbookOverrideOptions) => buildOverridePlugin(opts),
-		known: (opts: DeepbookKnownOptions) => buildKnownPlugin(opts),
+		known: (opts: DeepbookKnownExplicitOptions) => buildKnownPlugin(opts),
+		testnet: (opts: DeepbookKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'testnet', ...opts }),
+		mainnet: (opts: DeepbookKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'mainnet', ...opts }),
 	},
 	live: {
-		known: (opts: DeepbookKnownOptions) => buildKnownPlugin(opts),
+		known: (opts: DeepbookKnownExplicitOptions) => buildKnownPlugin(opts),
+		testnet: (opts: DeepbookKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'testnet', ...opts }),
+		mainnet: (opts: DeepbookKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'mainnet', ...opts }),
 	},
 	fork: {
 		// `.override` intentionally absent — compile-time refusal.
-		known: (opts: DeepbookKnownOptions) => buildKnownPlugin(opts),
+		known: (opts: DeepbookKnownExplicitOptions) => buildKnownPlugin(opts),
+		testnet: (opts: DeepbookKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'testnet', ...opts }),
+		mainnet: (opts: DeepbookKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'mainnet', ...opts }),
 	},
 });
 

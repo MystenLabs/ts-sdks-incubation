@@ -21,7 +21,13 @@
 
 import { Effect } from 'effect';
 
-import { acquireLive, validateLiveInputs, type KnownNetwork } from './live.ts';
+import {
+	acquireLive,
+	validateLiveInputs,
+	type KnownNetwork,
+	type ResolvedLiveInputs,
+	type SealServerKind,
+} from './live.ts';
 import type { SealError } from '../errors.ts';
 import type { SealKnownResolved } from '../registry-publish.ts';
 
@@ -48,26 +54,30 @@ export const resolveDeploymentNetwork = (upstream: ForkUpstream): KnownNetwork =
 export interface ForkKnownInputs {
 	readonly name: string;
 	readonly upstream: ForkUpstream;
-	readonly resolved: { readonly objectId: string; readonly keyServerUrl: string };
+	readonly resolved: ResolvedLiveInputs;
 }
 
 /** Resolve the fork-known overrides + upstream-derived defaults into
- *  a validated tuple. Pure synchronous projection — mirrors the
- *  factory-boundary `validateLiveInputs` call in `index.ts` for the
- *  live branch. Throws on missing fields after fallback (matches the
- *  live branch's behaviour — see `validateLiveInputs`). */
+ *  a resolved bundle. Pure synchronous projection — delegates to
+ *  `validateLiveInputs` (the live branch's resolver) after mapping the
+ *  upstream alias to a `KnownNetwork`, so the resolved `serverConfigs`
+ *  (independent fan-out or committee) is threaded through unchanged.
+ *  Throws `SealConfigError` on missing fields (matches the live
+ *  branch's behaviour). */
 export const validateForkKnownInputs = (inputs: {
 	readonly name: string;
 	readonly upstream: ForkUpstream;
-	readonly objectId?: string;
-	readonly keyServerUrl?: string;
-}): { readonly objectId: string; readonly keyServerUrl: string } => {
+	readonly server?: SealServerKind;
+	readonly apiKeyName?: string;
+	readonly apiKey?: string;
+}): ResolvedLiveInputs => {
 	try {
 		return validateLiveInputs({
 			name: inputs.name,
 			network: resolveDeploymentNetwork(inputs.upstream),
-			objectId: inputs.objectId,
-			keyServerUrl: inputs.keyServerUrl,
+			...(inputs.server !== undefined ? { server: inputs.server } : {}),
+			...(inputs.apiKeyName !== undefined ? { apiKeyName: inputs.apiKeyName } : {}),
+			...(inputs.apiKey !== undefined ? { apiKey: inputs.apiKey } : {}),
 		});
 	} catch (err) {
 		// Re-throw the original tagged error so downstream

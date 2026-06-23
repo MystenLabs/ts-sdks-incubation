@@ -79,29 +79,31 @@ for local development, not custody of real assets.
 Some services only run locally. To point Walrus, Seal, or DeepBook at a live chain, use the
 mode-specific factories — they narrow the type to the branches available on a live network:
 
+For a known public network, call the per-network method (`.testnet()` / `.mainnet()`). These are
+zero-config: the on-chain ids come straight from the `@mysten/*` SDK package configs, so there's
+nothing to copy and nothing to drift. The only exception is Walrus, whose testnet committee has 100+
+dynamic storage nodes — you still pass the `nodes` list.
+
 ```ts
 import { chainIdForNetwork, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
 
 const live = { mode: 'live', chainId: chainIdForNetwork('testnet') } as const;
 
-const wal = walrusFor(live).known({
-	systemObjectId: '0x...',
-	stakingPoolId: '0x...',
+// Walrus testnet — ids default from the @mysten/walrus package config; pass the node list.
+const wal = walrusFor(live).testnet({
 	nodes: [],
 });
 
-const keyServer = sealFor(live).testnet({
-	objectId: '0x...',
-	keyServerUrl: 'https://example.test/key',
-});
+// Seal testnet — zero-config, resolves both Mysten independent key servers (no API key).
+const keyServer = sealFor(live).testnet();
 
-const dex = deepbookFor(live).known({
-	packageId: '0x...',
-	registryId: '0x...',
-});
+// DeepBook testnet — zero-config, ids derive from @mysten/deepbook-v3.
+const dex = deepbookFor(live).testnet();
 ```
 
-See [Forking](/devstack/forking) for the fork-mode variants of these factories.
+`.known({ packageId, registryId })` (DeepBook) and `.known({ systemObjectId, stakingPoolId, nodes })`
+(Walrus) remain as raw-id overrides for deployments outside the SDK constants. See
+[Forking](/devstack/forking) for the fork-mode variants of these factories.
 
 ## Dev conveniences per network
 

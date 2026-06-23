@@ -53,4 +53,36 @@ describe('seal public refs', () => {
 		expect('makeSealManagerTag' in SealPublic).toBe(false);
 		expect('sealManagerTagId' in SealPublic).toBe(false);
 	});
+
+	it('sealFor live testnet resolves both independent servers (zero-config)', () => {
+		const live = { mode: 'live', chainId: 'sui:testnet' } as const;
+		const plugin = sealFor(live).testnet();
+		expect(plugin.id).toBe('seal:seal');
+		// No dependsOn for known modes (remote handle, no on-chain work).
+		expect(plugin.dependsOn).toEqual([]);
+	});
+
+	it('sealFor live testnet committee opt-in constructs a plugin', () => {
+		const live = { mode: 'live', chainId: 'sui:testnet' } as const;
+		const plugin = sealFor(live).testnet({ server: 'committee', name: 'committee-seal' });
+		expect(plugin.id).toBe('seal:committee-seal');
+	});
+
+	it('sealFor live mainnet committee with apiKey constructs a plugin', () => {
+		const live = { mode: 'live', chainId: 'sui:mainnet' } as const;
+		const plugin = sealFor(live).mainnet({ apiKey: 'k', apiKeyName: 'X-API-Key' });
+		expect(plugin.id).toBe('seal:seal');
+	});
+
+	it('sealFor live mainnet WITHOUT apiKey is a SealConfigError at factory time', () => {
+		const live = { mode: 'live', chainId: 'sui:mainnet' } as const;
+		let thrown: unknown = null;
+		try {
+			sealFor(live).mainnet();
+		} catch (err) {
+			thrown = err;
+		}
+		expect((thrown as { _tag?: string } | null)?._tag).toBe('SealConfigError');
+		expect((thrown as { field?: string } | null)?.field).toBe('apiKey');
+	});
 });

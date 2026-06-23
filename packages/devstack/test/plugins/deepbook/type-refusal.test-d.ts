@@ -58,7 +58,18 @@ export const _localKnown = deepbookFor(localNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
-export const _localKnownByNetwork = deepbookFor(localNet).known({
+// --- Positive: per-network methods replace the `network`-in-`.known()` path -
+export const _localTestnet = deepbookFor(localNet).testnet();
+export const _localMainnet = deepbookFor(localNet).mainnet();
+export const _localTestnetOverride = deepbookFor(localNet).testnet({ name: 'arena' });
+
+// --- Negative: `.known()` is raw-id override only — the network-keyed branch
+// was hard cut, so `{ network }` ALONE (no ids) no longer satisfies `.known()`;
+// it now requires explicit packageId + registryId. Use `.testnet()`/`.mainnet()`
+// for the known-by-network path.
+// @ts-expect-error — `.known()` requires packageId + registryId; the
+// `network`-only branch was removed. Use `.testnet()`/`.mainnet()`.
+export const _localKnownByNetworkRefused = deepbookFor(localNet).known({
 	network: 'testnet',
 });
 
@@ -96,14 +107,13 @@ export const _localMarketMakerRefused = deepbookFor(localNet).local({
 	},
 });
 
-// --- Positive: live mode allows .known -----------------------------------
+// --- Positive: live mode allows .known + per-network methods -------------
 export const _liveKnown = deepbookFor(liveNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
-export const _liveKnownByNetwork = deepbookFor(liveNet).known({
-	network: 'mainnet',
-});
+export const _liveTestnet = deepbookFor(liveNet).testnet();
+export const _liveMainnet = deepbookFor(liveNet).mainnet();
 
 // --- Negative: live mode has no .local or .override ----------------------
 // @ts-expect-error — `.local` doesn't exist on the live branch
@@ -120,14 +130,13 @@ export const _liveOverrideRefused = deepbookFor(liveNet).override({
 	adminCapId: '0xadmin',
 });
 
-// --- Positive: fork mode allows .known ----------------------------------
+// --- Positive: fork mode allows .known + per-network methods -------------
 export const _forkKnown = deepbookFor(forkNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
-export const _forkKnownByNetwork = deepbookFor(forkNet).known({
-	network: 'mainnet',
-});
+export const _forkTestnet = deepbookFor(forkNet).testnet();
+export const _forkMainnet = deepbookFor(forkNet).mainnet();
 
 // --- Negative: fork mode has no .local or .override ----------------------
 // @ts-expect-error — `.local` doesn't exist on the fork branch

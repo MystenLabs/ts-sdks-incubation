@@ -21,8 +21,51 @@ const keyServer = seal({
 export default defineDevstack({ members: [localnet, keyServer] });
 ```
 
-Live modes reference an existing key server. Fork stacks can point at the upstream key server
-through `sealFor(forkNetwork).forkKnown(...)`; local keygen runs only on local networks.
+## Live modes
+
+Live modes reference existing Mysten key servers. Seal models two kinds of backing, and the
+per-network methods pick a sensible default for each network:
+
+```ts
+import { chainIdForNetwork, sealFor } from '@mysten-incubation/devstack';
+
+const live = { mode: 'live', chainId: chainIdForNetwork('testnet') } as const;
+
+// testnet, zero-config: both Mysten independent (Open-mode) key servers, no API key.
+const independent = sealFor(live).testnet();
+
+// testnet committee: the 3-of-5 threshold committee + aggregator. Still no API key.
+const committee = sealFor(live).testnet({ server: 'committee' });
+```
+
+- **`testnet()`** is zero-config and resolves **both** Mysten independent key servers (weight 1
+  each). No API key.
+- **`testnet({ server: 'committee' })`** opts into the testnet **3-of-5 committee** reached through
+  the testnet aggregator — also no API key.
+- **`mainnet({ server: 'committee', apiKey, apiKeyName })`** resolves the mainnet **5-of-8
+  committee**. Mainnet ships **no** independent option, so the committee is the default — and it
+  **requires API credentials** issued through [Enoki](https://docs.enoki.mystenlabs.com/). The
+  factory throws a `SealConfigError` synchronously if `apiKey` is missing, so a misconfigured stack
+  fails before boot rather than at decrypt time.
+
+```ts
+// mainnet: the committee requires Enoki API credentials.
+const mainnetCommittee = sealFor(live).mainnet({
+	server: 'committee',
+	apiKey: process.env.SEAL_API_KEY!,
+	apiKeyName: 'my-app',
+});
+```
+
+The known ids come from devstack's maintained table (Seal has no `@mysten/*` SDK constants for these,
+unlike Walrus and DeepBook). **The object id is the source of truth** — the SDK reads each server's
+URL from its on-chain key-server object, so devstack no longer carries any hardcoded endpoint URL.
+For raw overrides — a private deployment or a hand-tuned committee — pass
+`sealFor(live).custom({ serverConfigs: [...] })` with the full SDK-ready config array.
+
+Fork stacks point at the upstream network's key servers through
+`sealFor(forkNetwork).forkKnown({ upstream: 'testnet' })` (add `{ server: 'committee' }` /
+`{ apiKey }` to mirror the live selectors); local keygen runs only on local networks.
 
 In a bare stack you can add `seal(...)` directly to `members`, as the snippet above does. In a real
 app, put only `localnet`, your app host-service, and `dashboard()` in `members`, and order the key

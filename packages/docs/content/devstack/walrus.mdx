@@ -34,9 +34,14 @@ const alice = account('alice', {
 export default defineDevstack({ members: [localnet, localWalrus, alice] });
 ```
 
-Known mode points at an existing deployment and requires explicit on-chain ids plus an explicit node
-list. Fork stacks can use `walrusFor(forkNetwork).known(...)` for upstream deployments; local Walrus
-clusters run only on local networks.
+Known mode points at an existing deployment. The per-network methods —
+`walrusFor(network).testnet({ nodes })` / `.mainnet({ nodes })` — are the common path: the on-chain
+ids (including `systemObjectId` and `stakingPoolId`) default from the `@mysten/walrus` SDK package
+config, so you only supply the storage-node list. (Walrus testnet runs 100+ dynamic nodes, so the
+node list can't be derived and stays required.) Use `walrusFor(network).known({ systemObjectId,
+stakingPoolId, nodes })` to override the ids for a deployment outside the SDK constants. Fork stacks
+use the same `walrusFor(forkNetwork).testnet({ nodes })` methods; local Walrus clusters run only on
+local networks.
 
 `walCoin(walrusMember)` returns the WAL funding coin for that Walrus member. Pass it to account
 funding like any other coin ref to give an account WAL.

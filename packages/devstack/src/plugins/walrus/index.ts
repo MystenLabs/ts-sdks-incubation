@@ -491,34 +491,62 @@ export const walCoin = (walrusMember: ResourceRef<'walrus', WalrusResolved>) => 
 // User-facing factories
 // ---------------------------------------------------------------------------
 
-/** Local-cluster shorthand. Known deployments are selected through
- *  `walrusFor(network).known(...)` so network choice stays explicit. */
+/** Local-cluster shorthand. Known deployments are selected through the
+ *  per-network methods `walrusFor(network).testnet(...)` /
+ *  `.mainnet(...)` so network choice stays explicit; `.known(...)` is the
+ *  raw-id override form. */
 export const walrus = (opts?: { readonly local?: WalrusLocalClusterOptions }) => {
 	return buildLocalPlugin(opts?.local ?? {});
 };
+
+/** Per-network factory options for `walrusFor(net).testnet()`/`.mainnet()`.
+ *  The `network` is injected by the namespace method, so the caller only
+ *  supplies the (still-required) `nodes` committee plus optional per-field
+ *  overrides — the on-chain ids default from the `@mysten/walrus` SDK package
+ *  config. Plugin-INTERNAL — deliberately NOT re-exported from `src/index.ts`. */
+type WalrusKnownByNetworkOptions = Omit<WalrusKnownDeploymentOptions, 'network'>;
 
 /** Mode-narrowed factory namespace.
  *
  *  Usage:
  *      const network = { mode: 'local', network: 'localnet' } as const;
- *      walrusFor(network).local({...})    // OK
- *      walrusFor(network).known({...})    // type error: 'known' not in 'local' branch
+ *      walrusFor(network).local({...})        // OK
+ *      walrusFor(liveNet).testnet({ nodes })  // OK — network injected
+ *      walrusFor(forkNet).local({...})        // compile error: no `.local` on fork
  *
- *  Critically, the fork branch exposes ONLY `.known` — calling
+ *  Per-network methods (`.testnet`/`.mainnet`) inject the network into
+ *  `buildKnownPlugin`; `nodes` is still REQUIRED, so `.testnet({ nodes })` is
+ *  the minimal call. `.known(...)` is now the raw-id explicit-override form only
+ *  (`systemObjectId`/`stakingPoolId`/`nodes`) — the `network`-in-`.known()` path
+ *  was HARD CUT.
+ *
+ *  Critically, the fork branch exposes NO `.local` — calling
  *  `.local` on a fork-mode network is a **compile error** at the
  *  call site (distilled-doc invariant 12 — type-level refusal). */
 export const walrusFor = defineModeNamespace({
 	local: {
 		local: (opts: WalrusLocalClusterOptions = {}) => buildLocalPlugin(opts),
-		known: (opts: WalrusKnownDeploymentOptions) => buildKnownPlugin(opts),
+		known: (opts: WalrusKnownByNetworkOptions) => buildKnownPlugin(opts),
+		testnet: (opts: WalrusKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'testnet', ...opts }),
+		mainnet: (opts: WalrusKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'mainnet', ...opts }),
 	},
 	live: {
-		known: (opts: WalrusKnownDeploymentOptions) => buildKnownPlugin(opts),
+		known: (opts: WalrusKnownByNetworkOptions) => buildKnownPlugin(opts),
+		testnet: (opts: WalrusKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'testnet', ...opts }),
+		mainnet: (opts: WalrusKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'mainnet', ...opts }),
 	},
 	fork: {
 		// `.local` is intentionally absent — calling
 		// `walrusFor(forkNetwork).local(...)` is a compile error.
-		known: (opts: WalrusKnownDeploymentOptions) => buildKnownPlugin(opts),
+		known: (opts: WalrusKnownByNetworkOptions) => buildKnownPlugin(opts),
+		testnet: (opts: WalrusKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'testnet', ...opts }),
+		mainnet: (opts: WalrusKnownByNetworkOptions = {}) =>
+			buildKnownPlugin({ network: 'mainnet', ...opts }),
 	},
 });
 
