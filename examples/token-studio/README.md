@@ -30,32 +30,16 @@ at runtime and never bakes them in. The published coin's discovery-only object i
 
 ## Deploy to a real network
 
-The build needs a known deployment's deployment file (the same `deployment.json` schema the
-local stack writes). Either point the stack at the target network once and copy the file it
-emits, or hand-author one:
-
-```bash
-# Option A: boot against the target network, then copy the emitted deployment
-devstack up --network testnet
-cp .devstack/stacks/main/deployment.json config/testnet.ids.json
-```
-
-For the full deployment schema (Option B, hand-authoring) see the canonical
-[Deploy to a real network](https://ts-sdks-incubation.vercel.app/devstack/features/codegen#deploy-to-a-real-network)
-section in the devstack docs. Commit the file, then point the build at it:
-
-```bash
-# via the Vite plugin option (vite.config.ts):
-#   devstackVitePlugin({ ids: './config/testnet.ids.json' })
-# or via env:
-DEVSTACK_DEPLOYMENT_FILE=./config/testnet.ids.json pnpm build
-```
-
-Then deploy the static `dist/` bundle. A build with no ids throws `DevstackConfigMissingError`
-at runtime — loud, not a silent zero.
+Publish the Move packages to the target network, then scaffold a typed, committed
+`deployments/<network>.ts` (`devstack dump-deployment --network <net>`). The bare
+`devstackVitePlugin()` in `vite.config.ts` auto-discovers `deployments/*.ts`; a production
+`pnpm build` ships only the committed networks. There is no `ids` Vite option and no
+`config/<net>.ids.json` file. See the canonical
+[Going to production](https://ts-sdks-incubation.vercel.app/devstack/going-to-production) guide
+for the full flow.
 
 ## See also
 
 - [examples/README.md](../README.md) — every runnable example.
-- [Coins and funding](https://ts-sdks-incubation.vercel.app/devstack/features/coins-and-funding) —
+- [Coins and funding](https://ts-sdks-incubation.vercel.app/devstack/configure/coins-and-funding) —
   managed-coin and funding-spec guidance the stack relies on.

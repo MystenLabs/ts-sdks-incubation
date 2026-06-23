@@ -42,7 +42,7 @@ export const mything = () =>
 ```
 
 The supervisor's plugin acquisition path provides `ContainerRuntimeService` before any plugin's
-`start` body runs. Built-in plugins usually go through the substrate `managedContainer` helper
+`start` body runs. Built-in plugins usually go through the substrate `ensureManagedContainer` helper
 rather than calling `ensureContainer` directly — the helper stamps the `ContainerLabelTuple` so
 `prune` / `wipe` can find the resource.
 
@@ -63,15 +63,13 @@ rather than calling `ensureContainer` directly — the helper stamps the `Contai
   `pg_isready` non-zero as "retry").
 - `runOneShot(spec)` — `docker run --rm` for transient containers (e.g. the Move build path).
 - `inspectByLabels(labels)` — enumerate by ownership labels.
-- `followLogs(handle)` — `Stream<string, ContainerRuntimeError>`.
-- `pause(handle)`, `unpause(handle)`, `stop(handle, grace)` — explicit lifecycle.
+- `stop(handle, grace)` — explicit, grace-bounded stop.
 - `pauseAndCommit(handle)` — snapshot commit; running containers are paused first.
-- `saveImage(ref, opts?)`, `saveImages(refs, opts?)`, `loadImage(tar)`,
-  `tagImage(src, newTag, opts?)`, `removeImage(ref)` — snapshot image transport.
-- `sweepOrphans(labelMatch)`, `removeManagedContainers(labelMatch)`,
-  `removeManagedImages(labelMatch)`, `removeManagedNetworks(labelMatch)`,
-  `removeManagedVolumes(labelMatch)` — `prune` and `wipe` use these, enumerating by ownership
-  labels.
+- `saveImages(refs, opts?)`, `loadImage(tar)`, `tagImage(src, newTag, opts?)`, `removeImage(ref)`,
+  `inspectImageDigest(ref)` — snapshot image transport and digest resolution.
+- `removeManagedContainers(labelMatch)`, `removeManagedImages(labelMatch)`,
+  `removeManagedNetworks(labelMatch)`, `removeManagedVolumes(labelMatch)` — `prune` and `wipe` use
+  these, enumerating by ownership labels.
 
 ## Abstraction boundaries
 

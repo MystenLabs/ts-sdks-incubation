@@ -12,25 +12,36 @@ import {
 	devstackPlaywrightBaseConfig,
 	devstackPlaywrightProjects,
 	devstackPlaywrightUse,
-	devstackPlaywrightWebServer,
 } from '@mysten-incubation/devstack/playwright';
+
+const stack = 'e2e' as const;
 
 export default defineConfig({
 	...devstackPlaywrightBaseConfig(),
-	use: devstackPlaywrightUse(),
+	use: devstackPlaywrightUse({ stack }),
 	projects: devstackPlaywrightProjects(),
-	webServer: devstackPlaywrightWebServer(),
 });
 ```
 
-These helpers run a single worker, start `pnpm dev`, and point Playwright's `baseURL` at the app
-endpoint read from the devstack manifest. Before the manifest exists, they fall back to the
-conventional dev-server route on port `5175`; pass your own `baseURL` if your stack serves the app
+These helpers run a single worker (`workers: 1`, `fullyParallel: false`), default `testDir` to
+`./tests/browser`, and point Playwright's `baseURL` at the app endpoint read from the devstack
+manifest. Before the manifest exists, `baseURL` falls back to the conventional dev-server route on
+port `5175`; pass your own `baseURL` to `devstackPlaywrightUse(...)` if your stack serves the app
 elsewhere.
 
-To require a ready manifest before any spec runs, add a thin global setup module:
+The stack is booted by a `globalSetup` module — **not** by Playwright's `webServer`. `webServer`
+shells out (`pnpm dev`) and force-kills the supervisor on teardown before its container drain
+finishes, orphaning containers; the in-process `globalSetup` boot drains cleanly. By default
+`devstackPlaywrightBaseConfig()` wires the built-in setup
+(`@mysten-incubation/devstack/playwright/global-setup`), which boots the stack named by
+`DEVSTACK_STACK` (the `test:browser` script sets `DEVSTACK_STACK=e2e`) and tears it down on
+completion. If a matching stack is already running — for example your `pnpm dev` stack — set
+`DEVSTACK_TEST_REUSE=1` and the setup attaches to it instead of booting and tearing down its own.
 
-```ts title="e2e/global-setup.ts"
+To require specific endpoints before any spec runs, author your own thin global-setup module and
+point the config at it:
+
+```ts title="tests/browser/global-setup.ts"
 import { buildGlobalSetup } from '@mysten-incubation/devstack/playwright';
 
 export default buildGlobalSetup({
@@ -38,34 +49,33 @@ export default buildGlobalSetup({
 });
 ```
 
-Then point the config at it:
-
 ```ts title="playwright.config.ts"
 import { defineConfig } from '@playwright/test';
 import {
 	devstackPlaywrightBaseConfig,
 	devstackPlaywrightProjects,
 	devstackPlaywrightUse,
-	devstackPlaywrightWebServer,
 } from '@mysten-incubation/devstack/playwright';
 
+const stack = 'e2e' as const;
+
 export default defineConfig({
-	...devstackPlaywrightBaseConfig({ globalSetup: './e2e/global-setup.ts' }),
-	use: devstackPlaywrightUse(),
+	...devstackPlaywrightBaseConfig({ globalSetup: './tests/browser/global-setup.ts' }),
+	use: devstackPlaywrightUse({ stack }),
 	projects: devstackPlaywrightProjects(),
-	webServer: devstackPlaywrightWebServer(),
 });
 ```
 
 The spec-side helpers let you drive the dev wallet and read the stack:
 
 - `connectAs(page, name)` — switch the dev wallet to a named account from your config.
-- `selectAccount` — select an account on an adapter you already hold.
+- `selectAccount(page, name)` — the lower-level switch `connectAs` wraps (same signature).
+- `switchNetwork(page, network)` — switch the app's active dApp Kit network.
 - `createWalletAdapter` — get a wallet adapter to inspect accounts (for example, to list them).
 - `loadStackManifest` / `readStackContext` — read the booted stack's manifest and context (endpoints
   and ids) from a spec.
 
-```ts title="e2e/connect.spec.ts"
+```ts title="tests/browser/connect.spec.ts"
 import { expect, test } from '@playwright/test';
 import { connectAs, createWalletAdapter } from '@mysten-incubation/devstack/playwright';
 
@@ -79,9 +89,31 @@ test('connects alice', async ({ page }) => {
 });
 ```
 
-To let `connectAs` switch accounts without clicking through the wallet UI, expose your dapp-kit
-account switcher to the test by setting `globalThis.__devstackDAppKit__ = { selectAccount }` in your
-app's dapp-kit setup. This is a test-only bridge, not a general app API.
+## Exposing the account switcher to tests
+
+`connectAs` switches accounts without clicking through the wallet UI by driving your dApp Kit
+instance through a dev-only test bridge. Register your dApp Kit instance once, DEV-only, in your
+app's `src/dapp-kit.ts`:
+
+```ts title="src/dapp-kit.ts"
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit';
+
+export const dAppKit = createDAppKit({
+	/* …networks, defaultNetwork, createClient… */
+});
+
+// DEV-only: a production build strips this branch (the dev wallet is never
+// injected), so the app ships with no test surface.
+if (import.meta.env.DEV) {
+	registerDAppKitForTesting(dAppKit);
+}
+```
+
+`registerDAppKitForTesting(dAppKit)` connects through dApp Kit's public API
+(`connectWallet`/`switchAccount`/`switchNetwork`) — there is no localStorage seeding and no
+hand-written global. Account names resolve to the dev wallet's accounts by label (the devstack
+account name). This is the same wiring every example app uses.
 
 ## Asserting a signed transaction
 
@@ -94,7 +126,7 @@ signs and executes a serialized transaction as a named account and returns the e
 `loadStackManifest().endpoint('sui-rpc')` resolves the live stack's fullnode so you can read the
 object the transaction created.
 
-```ts title="e2e/signed-tx.spec.ts"
+```ts title="tests/browser/signed-tx.spec.ts"
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiClient } from '@mysten/sui/client';
 import { expect, test } from '@playwright/test';

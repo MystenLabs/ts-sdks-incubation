@@ -3,49 +3,65 @@ title: Testing
 description: The three-suite testing layout for devstack apps — unit, e2e, and browser.
 ---
 
-Pick the level that matches what you're testing:
+devstack splits tests into three suites by **directory**. Pick the level that matches what you're
+testing:
 
-- **Unit** — test your generated bindings directly: BCS encode/decode, Move-call builders, pure
-  logic. No stack, no Docker, no on-chain ids. Fast. See [Vitest](/devstack/testing/testing-vitest).
-- **E2e** — test real transactions against a live local stack. The suite boots a stack, publishes
-  your packages, runs against the real ids, and tears down. See
+- **Unit** (`tests/unit/`) — test your generated bindings directly: BCS encode/decode, Move-call
+  builders, pure logic. No stack, no Docker, no on-chain ids. Fast. See
   [Vitest](/devstack/testing/testing-vitest).
-- **Browser** — test the running app in a real browser, signing through the dev wallet. Asserts what
-  the app actually renders after a signed on-chain action. See
+- **E2e** (`tests/e2e/`) — test real transactions against a live local stack, in node. The suite
+  boots a stack, publishes your packages, runs against the real ids, and tears down. See
+  [Vitest](/devstack/testing/testing-vitest).
+- **Browser** (`tests/browser/`) — test the running app in a real browser, signing through the dev
+  wallet. Asserts what the app actually renders after a signed on-chain action. See
   [Playwright](/devstack/testing/testing-playwright).
 
-Each suite runs against its own stack, so all three can run in parallel with each other and with a
-`pnpm dev` session.
+The split is purely by directory. The vitest configs scope themselves to `tests/unit/` or
+`tests/e2e/` and exclude `tests/browser/`; Playwright runs `tests/browser/` and vitest never touches
+it. Each full-stack suite boots its own stack, so the suites can run in parallel with each other and
+with a `pnpm dev` session.
 
-| Suite   | What you test                | Helper subpath                                  | Stack  |
-| ------- | ---------------------------- | ----------------------------------------------- | ------ |
-| Unit    | generated bindings           | `@mysten-incubation/devstack/vite` (alias only) | none   |
-| E2e     | real transactions on a stack | `@mysten-incubation/devstack/vitest`            | `test` |
-| Browser | the running app + dev wallet | `@mysten-incubation/devstack/playwright`        | `e2e`  |
+| Suite   | Directory        | What you test                | Helper subpath                                  | Stack  |
+| ------- | ---------------- | ---------------------------- | ----------------------------------------------- | ------ |
+| Unit    | `tests/unit/`    | generated bindings           | `@mysten-incubation/devstack/vite` (alias only) | none   |
+| E2e     | `tests/e2e/`     | real transactions on a stack | `@mysten-incubation/devstack/vitest`            | `test` |
+| Browser | `tests/browser/` | the running app + dev wallet | `@mysten-incubation/devstack/playwright`        | `e2e`  |
+
+The example apps ship the unit and browser suites; the vitest e2e suite is the same mechanism wired
+to `tests/e2e/` (`autoBoot: true`), useful for full-stack coverage without a browser.
 
 ## Run matrix
-
-The template wires one script per suite:
 
 ```json title="package.json"
 {
 	"scripts": {
 		"test": "vitest run",
 		"test:e2e": "vitest run --config vitest.e2e.config.ts",
-		"test:browser": "DEVSTACK_STACK=e2e DEVSTACK_AUTO_APPROVE=1 playwright test"
+		"test:browser": "DEVSTACK_STACK=e2e DEVSTACK_AUTO_APPROVE=1 DEVSTACK_E2E=1 playwright test"
 	}
 }
 ```
 
-- **`pnpm test`** runs unit tests. No stack, no Docker — plain Vitest over your generated bindings.
-- **`pnpm test:e2e`** boots a dedicated `test` stack (codegen included), runs the suite against it,
-  and tears it down. Self-contained, and isolated from a running `pnpm dev` stack.
+- **`pnpm test`** runs the unit suite (`tests/unit/`). No stack, no Docker — plain Vitest over your
+  generated bindings.
+- **`pnpm test:e2e`** boots a dedicated `test` stack (codegen included), runs the `tests/e2e/` suite
+  against it in node, and tears it down. Self-contained, and isolated from a running `pnpm dev`
+  stack. `test` is the recommended stack name for non-browser tests so they don't contend with a
+  developer's `pnpm dev` stack.
 - **`pnpm test:browser`** boots the `e2e` stack and drives the app in a browser through the dev
-  wallet. `DEVSTACK_AUTO_APPROVE=1` makes the dev wallet sign without showing its approval UI.
+  wallet (`tests/browser/`).
+
+Two distinct env vars gate the browser suite, and they do different things:
+
+- `DEVSTACK_AUTO_APPROVE=1` makes the dev wallet sign without showing its approval UI.
+- `DEVSTACK_E2E=1` is a dedicated signal — distinct from auto-approve — that the Vite plugin injects
+  as the `__DEVSTACK_E2E__` global. It gates dApp Kit's `autoConnect` **on** only under e2e, so a
+  normal `pnpm dev` serve still loads disconnected. Browser specs that expect the app to
+  auto-connect need it set.
 
 Each suite resolves `@generated` to its own stack's deployment, so the same import reads whichever
 stack is live; `DEVSTACK_STACK` selects it. To run a suite against an already-deployed stack instead
-of a fresh local one, point `DEVSTACK_STACK` at that stack and set `DEVSTACK_TEST_REUSE=1` — the e2e
+of a fresh local one, point `DEVSTACK_STACK` at that stack and set `DEVSTACK_TEST_REUSE=1` — the
 boot seam then reuses the running stack instead of booting and tearing down its own. See
 [Running against an already-deployed stack](/devstack/testing/testing-vitest#running-against-an-already-deployed-stack).
 
@@ -79,10 +95,9 @@ These need no stack and no on-chain ids: import the bindings only, never `@gener
 
 E2e tests run real transactions against a freshly booted local stack.
 `devstackVitestTestConfig({ autoBoot: true })` boots a `test` stack before the run and tears it down
-after, so the suite is self-contained.
+after, so the suite is self-contained, and scopes the run to `tests/e2e/`.
 
 ```ts title="vitest.e2e.config.ts"
-import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
 import {
 	devstackVitestServerConfig,
 	devstackVitestTestConfig,
@@ -90,7 +105,6 @@ import {
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-	plugins: [devstackVitePlugin()],
 	server: devstackVitestServerConfig(),
 	test: devstackVitestTestConfig({ autoBoot: true, test: { testTimeout: 60_000 } }),
 });
@@ -154,10 +168,12 @@ test('connects, creates a counter, and increments it on chain', async ({ page })
 });
 ```
 
-`connectAs(page, name)` switches the dev wallet's active account; `selectAccount` and
-`createWalletAdapter` round out the helper set. For multi-account flows, call `connectAs` between
-turns to alternate seats, and across networks when the app exposes `switchNetwork`. Because
-`DEVSTACK_AUTO_APPROVE=1` is set for the suite, signatures are approved with no UI step.
+`connectAs(page, name)` switches the dev wallet's active account through the dApp Kit test bridge
+the app registers (see [Playwright](/devstack/testing/testing-playwright));
+`selectAccount(page, name)` is the lower-level switch it wraps, and `createWalletAdapter` rounds out
+the helper set. For multi-account flows, call `connectAs` between turns to alternate seats, and
+`switchNetwork(page, network)` to move across networks. Because `DEVSTACK_AUTO_APPROVE=1` is set for
+the suite, signatures are approved with no UI step.
 
 The example above asserts on what the app renders. To prove a transaction was actually signed and
 executed, sign through the dev wallet explicitly with `createWalletAdapter().signTransaction(...)`

@@ -1,4 +1,4 @@
 {
 	"title": "Reference",
-	"pages": ["cli", "errors", "plugins", "internals", "api"]
+	"pages": ["cli", "errors", "plugins", "api", "internals"]
 }

@@ -63,20 +63,21 @@ A snapshot lives under `.devstack/stacks/<stack>/snapshots/<snapshotId>/` with t
 
 ```txt
 meta.json
-state.json              # present only when the stack state store exists
 host-tree.tar
 containers/images.tar
 contributions/<encoded-plugin>.json
+integrity.json
 ```
 
-Treat `meta.json`, `state.json`, `host-tree.tar`, and `containers/images.tar` as the stable artifact
-contract; anything else under the directory is internal.
+Treat `meta.json`, `host-tree.tar`, and `containers/images.tar` as the stable artifact contract;
+anything else under the directory (including `integrity.json`) is internal.
 
 ## Things to know
 
 - Snapshots are stack-scoped — you save and restore one stack at a time.
-- `restore` and `up --from-snapshot` refuse to run while `devstack up` owns the stack, and prompt
-  for `y` unless you pass `--yes`.
+- `restore` and `up --from-snapshot` refuse to run while `devstack up` owns the stack.
+  `snapshot restore` prompts for `y` unless you pass `--yes`; `up --from-snapshot` has no `--yes`
+  flag.
 - Restore raises `IdentityMismatchError` if the snapshot was captured for a different app, stack, or
   network, before changing anything.
 - A stale snapshot — one captured for a different stack configuration — restores with a warning by

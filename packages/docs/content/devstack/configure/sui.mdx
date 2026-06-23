@@ -69,7 +69,7 @@ Other local-mode options:
 - **`ports`** — pin exact host ports keyed by container port (`{ 9000: 9000 }`). Omit it and
   devstack assigns host ports for you, reassigning on collision; the public `9000` / `9123` / `9125`
   entrypoints stay fixed through the router.
-- **`readyTimeout`** — the ready-probe timeout.
+- **`readyTimeout`** — the ready-probe timeout, an Effect `Duration` (e.g. `Duration.seconds(120)`).
 
 ## Live mode
 
@@ -94,22 +94,8 @@ const custom = sui({
 
 ## Fork mode
 
-Fork mode runs a `sui-fork` node that mirrors a real chain at a checkpoint, so your app sees live
-on-chain state but you can still publish, fund, and mutate against it. Forking funds test accounts
-by impersonating a large-reserve **whale** address and transferring SUI from it — there's no real
-faucet on a fork.
-
-```ts title="devstack.config.ts"
-const fork = sui({
-	mode: 'fork',
-	upstream: 'mainnet', // mainnet | testnet | devnet
-	checkpoint: 12345678, // optional; omit for the latest
-	faucet: { whale: '0x…', perRequestCapMist: 1_000_000_000_000n }, // optional overrides
-});
-```
-
-The fork faucet is enabled by default with a per-upstream whale. See [Forking](/devstack/forking)
-for the full fork walkthrough.
+`sui({ mode: 'fork', upstream })` runs a `sui-fork` node mirroring a real chain at a checkpoint. See
+[Forking](/devstack/forking) for the options, the whale-based fork faucet, and the full walkthrough.
 
 ## The resolved network
 

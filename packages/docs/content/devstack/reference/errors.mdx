@@ -15,7 +15,7 @@ you match on; full shapes and the helper constructors live in each plugin's `err
 ## Account
 
 - `AccountAcquireError` —
-  `phase: 'validate-name' | 'validate-funding' | 'load-keystore' | 'read-env' | 'decode-inline' | 'bind-signer' | …`.
+  `phase: 'validate-name' | 'validate-funding' | 'decode-inline' | 'bind-signer' | 'generate-keypair' | 'derive-address' | …`.
   Surfaces during account boot.
 - `AccountSignError` —
   `phase: 'build-tx' | 'sign' | 'submit' | 'no-digest' | 'await-finality' | 'dependent-package-not-found'`.
@@ -76,7 +76,7 @@ substrate `StrategyNotFoundError` (see [Substrate](#substrate)).
 ## Sui
 
 - `SuiPluginError` —
-  `phase: 'image-build' | 'port-allocate' | 'container-start' | 'rpc-probe' | 'faucet-probe' | 'graphql-probe'`.
+  `phase: 'image-build' | 'port-allocate' | 'container-start' | 'grpc-probe' | 'faucet-probe' | 'graphql-probe'`.
   Localnet boot.
 - `SuiConfigError` — invalid `sui(...)` options.
 - `SuiCliError` — `op`-tagged failure from a Sui CLI shell-out.

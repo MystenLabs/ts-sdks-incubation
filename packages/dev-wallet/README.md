@@ -28,7 +28,7 @@ A development-only wallet for building and testing Sui dApps.
 ## Installation
 
 ```bash
-npm install @mysten-incubation/dev-wallet
+pnpm add @mysten-incubation/dev-wallet
 ```
 
 ## Quick start
@@ -91,7 +91,7 @@ Run a self-contained wallet as a separate web app — signing works via popup, s
 browser wallet.
 
 ```bash
-npx @mysten-incubation/dev-wallet serve
+pnpm dlx @mysten-incubation/dev-wallet serve
 ```
 
 Register it through `walletInitializers` using `devWalletClientInitializer`:
@@ -114,7 +114,8 @@ import { DevWalletClient } from '@mysten-incubation/dev-wallet/client';
 DevWalletClient.register({ origin: 'http://localhost:5174' });
 ```
 
-The default port is 5174. Use `--port` to set a different port.
+The default port is 5174. Use `--port` to set a different port — the `origin` you pass to
+`devWalletClientInitializer` / `DevWalletClient.register` must match whatever port `serve` runs on.
 
 The standalone wallet includes WebCrypto and InMemory adapters by default. If `sui` is on your PATH,
 the CLI adapter is also available — so you can sign with the same address you published contracts
@@ -202,7 +203,7 @@ The Remote CLI adapter connects to your local `sui` CLI over HTTP. Private keys 
 The easiest way is the standalone wallet:
 
 ```bash
-npx @mysten-incubation/dev-wallet serve
+pnpm dlx @mysten-incubation/dev-wallet serve
 ```
 
 The terminal prints a URL with an auth token (e.g. `http://localhost:5174/?token=abc123`). Open it

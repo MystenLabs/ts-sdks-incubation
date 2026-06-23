@@ -1,11 +1,12 @@
 ---
 title: Adapters
+description: Pluggable key-management layer — InMemory, WebCrypto, Passkey, and Remote CLI signers
 ---
 
-Adapters are the pluggable key management layer of Dev Wallet. Each adapter manages its own set of
-accounts and provides signers for transaction signing.
+Adapters are the pluggable key management layer of the dev wallet. Each adapter manages its own set
+of accounts and provides signers for transaction signing.
 
-## What Is a SignerAdapter?
+## What is a SignerAdapter?
 
 A `SignerAdapter` handles:
 
@@ -17,18 +18,18 @@ DevWallet aggregates accounts from all its adapters into a single wallet. You ca
 adapters simultaneously — for example, InMemory for quick testing and WebCrypto for persistent
 accounts.
 
-## Adapter Comparison
+## Adapter comparison
 
-| Adapter                                                 | Key Type  | Persistence  | Auto-Sign | Best For                      |
+| Adapter                                                 | Key type  | Persistence  | Auto-sign | Best for                      |
 | ------------------------------------------------------- | --------- | ------------ | --------- | ----------------------------- |
 | [InMemory](/dev-wallet/reference/adapters/in-memory)    | Ed25519   | None         | Yes       | Quick prototyping, unit tests |
 | [WebCrypto](/dev-wallet/reference/adapters/webcrypto)   | Secp256r1 | IndexedDB    | Yes       | Persistent dev accounts       |
 | [Passkey](/dev-wallet/reference/adapters/passkey)       | Secp256r1 | Browser + OS | No        | Testing passkey flows         |
 | [Remote CLI](/dev-wallet/reference/adapters/remote-cli) | Any       | External     | No        | Using `sui` CLI keystore      |
 
-## Using Multiple Adapters
+## Using multiple adapters
 
-```typescript
+```ts
 import { DevWallet } from '@mysten-incubation/dev-wallet';
 import {
 	InMemorySignerAdapter,
@@ -44,7 +45,7 @@ const wallet = new DevWallet({ adapters });
 // wallet.accounts includes accounts from both adapters
 ```
 
-## The BaseSignerAdapter
+## The BaseSignerAdapter base class
 
 All built-in adapters extend `BaseSignerAdapter`, which handles common boilerplate:
 
@@ -56,9 +57,9 @@ All built-in adapters extend `BaseSignerAdapter`, which handles common boilerpla
 If you need a custom adapter, extending `BaseSignerAdapter` is the recommended approach. See
 [Custom Adapters](/dev-wallet/reference/adapters/custom).
 
-## The SignerAdapter Interface
+## The SignerAdapter interface
 
-```typescript
+```ts
 interface SignerAdapter {
 	readonly id: string;
 	readonly name: string;
@@ -71,7 +72,7 @@ interface SignerAdapter {
 	createAccount?(options?: CreateAccountOptions): Promise<ManagedAccount>;
 	importAccount?(options: ImportAccountOptions): Promise<ManagedAccount>;
 	listAvailableAccounts?(): Promise<
-		Array<{ address: string; scheme: string; alias: string | null }>
+		Array<{ address: string; scheme: string; alias?: string | null }>
 	>;
 	removeAccount?(address: string): Promise<boolean>;
 	renameAccount?(address: string, label: string): Promise<boolean>;

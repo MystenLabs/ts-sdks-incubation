@@ -1,5 +1,6 @@
 ---
 title: Auto-Approval
+description: Skip the approval modal with a boolean or a fine-grained per-request policy
 ---
 
 import { AutoApprovalDemo } from '../../../examples/dev-wallet-demos-client';
@@ -8,11 +9,11 @@ Skip the approval modal for automated testing, CI pipelines, or rapid prototypin
 stays exactly the same — same wallet-standard APIs, same signing calls — auto-approval just removes
 the manual step.
 
-## Boolean Policy
+## Boolean policy
 
 Approve all requests automatically:
 
-```typescript
+```ts
 const wallet = new DevWallet({
 	adapters: [adapter],
 	autoApprove: true,
@@ -23,11 +24,11 @@ const wallet = new DevWallet({
 Every signing request is approved immediately — no modal, no queue. Useful for tests and CI where
 you need zero interaction.
 
-## Function Policy
+## Function policy
 
 Fine-grained control over which requests to auto-approve:
 
-```typescript
+```ts
 const wallet = new DevWallet({
 	adapters: [adapter],
 	autoApprove: ({ type, account, chain }) => {
@@ -42,7 +43,7 @@ const wallet = new DevWallet({
 });
 ```
 
-### Policy Parameters
+### Policy parameters
 
 The auto-approve function receives:
 
@@ -53,13 +54,13 @@ The auto-approve function receives:
 | `chain`   | `string`               | Chain identifier (e.g., `'sui:devnet'`)                                              |
 | `data`    | `string \| Uint8Array` | Transaction JSON or message bytes                                                    |
 
-## Per-Adapter Override
+## Per-adapter override
 
 Adapters can opt out of auto-approval by setting `allowAutoSign: false`. This overrides the
 wallet-level policy. The Passkey and Remote CLI adapters use this because they physically require
 user interaction:
 
-```typescript
+```ts
 // Even with autoApprove: true, passkey accounts still require biometric
 const wallet = new DevWallet({
 	adapters: [
@@ -70,17 +71,17 @@ const wallet = new DevWallet({
 });
 ```
 
-## Try It
+## Try it
 
 Toggle between manual and auto-approval to see the difference:
 
 <AutoApprovalDemo />
 
-## Testing Example
+## Testing example
 
-Using Dev Wallet with `autoApprove` in a vitest test:
+Using the dev wallet with `autoApprove` in a vitest test:
 
-```typescript
+```ts
 import { DevWallet } from '@mysten-incubation/dev-wallet';
 import { WebCryptoSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
 import { describe, it, expect } from 'vitest';
@@ -120,7 +121,7 @@ describe('my dApp', () => {
 Separate from `autoApprove`, the `autoConnect` option skips the account picker when a dApp calls
 `standard:connect`:
 
-```typescript
+```ts
 const wallet = new DevWallet({
 	adapters: [adapter],
 	autoConnect: true, // Connect returns all accounts immediately

@@ -1,10 +1,11 @@
 ---
 title: Architecture
+description: Request flow, embedded vs standalone modes, and the subpath export map
 ---
 
-## System Overview
+## System overview
 
-The request flow through Dev Wallet has three layers:
+The request flow through the dev wallet has three layers:
 
 ```mermaid
 flowchart TD
@@ -26,7 +27,7 @@ flowchart TD
 **Adapters** — InMemory (Ed25519), WebCrypto (Secp256r1), Passkey (WebAuthn), and Remote CLI (HTTP)
 all implement the same `SignerAdapter` interface.
 
-## Embedded vs Standalone
+## Embedded vs standalone
 
 ```mermaid
 flowchart LR
@@ -58,7 +59,7 @@ directly, and the UI renders in your DOM. Best for development and testing.
 **Standalone mode** — the wallet runs as a separate web app. Your dApp uses `DevWalletClient` to
 communicate via popup windows and PostMessage. Supports CLI signing and team sharing.
 
-## The Signing Pipeline
+## The signing pipeline
 
 When a dApp calls `signTransaction`:
 
@@ -69,7 +70,7 @@ When a dApp calls `signTransaction`:
 4. Manual: stored as `pendingRequest`, listeners notified, UI shows the modal
 5. `approveRequest()` → adapter signs → promise resolves; `rejectRequest()` → promise rejects
 
-## Export Map Architecture
+## Export map architecture
 
 The package is split into subpath exports to support different environments:
 
@@ -82,9 +83,9 @@ The package is split into subpath exports to support different environments:
 | `@mysten-incubation/dev-wallet/client`   | `DevWalletClient`, `devWalletClientInitializer`, `parseWalletRequest` |
 | `@mysten-incubation/dev-wallet/server`   | `createCliSigningMiddleware` (Hono sub-app for CLI signing)           |
 
-## Wallet-Standard Compliance
+## Wallet-standard compliance
 
-Dev Wallet implements the full wallet-standard interface:
+The dev wallet implements the full wallet-standard interface:
 
 | Feature                         | Version | Description                                    |
 | ------------------------------- | ------- | ---------------------------------------------- |
@@ -95,7 +96,7 @@ Dev Wallet implements the full wallet-standard interface:
 | `sui:signAndExecuteTransaction` | 2.0.0   | Sign and execute a transaction                 |
 | `sui:signPersonalMessage`       | 1.1.0   | Sign an arbitrary message                      |
 
-## Key Design Decisions
+## Key design decisions
 
 **One request at a time** — prevents confusion. The user always reviews exactly one transaction.
 DApps that batch transactions should serialize their signing calls.

@@ -1,10 +1,11 @@
 ---
 title: React Integration
+description: useDevWallet hook, DevWalletProvider context, and React-wrapped Lit components
 ---
 
-Dev Wallet provides React hooks, a context provider, and React-wrapped Lit components.
+The dev wallet provides React hooks, a context provider, and React-wrapped Lit components.
 
-## useDevWallet Hook
+## useDevWallet hook
 
 The primary hook that initializes a DevWallet, registers it with wallet-standard, and optionally
 mounts the UI:
@@ -48,9 +49,9 @@ function App() {
 | `container`            | `HTMLElement`            | `document.body` | Where to mount the panel                  |
 | `clientFactory`        | `function`               | `SuiGrpcClient` | Factory for creating clients              |
 
-### Return Value
+### Return value
 
-```typescript
+```ts
 {
 	wallet: DevWallet | null; // null during initialization
 	error: Error | null; // initialization error, if any
@@ -88,7 +89,7 @@ function ChildComponent() {
 }
 ```
 
-## React-Wrapped Lit Components
+## React-wrapped Lit components
 
 These React components wrap the underlying Lit Web Components using `@lit/react`:
 
@@ -130,7 +131,7 @@ const WalletSetup = dynamic(() => import('./WalletSetup'), { ssr: false });
 
 </Callout>
 
-## Full dApp Kit Integration
+## Full dApp Kit integration
 
 The recommended approach uses `devWalletInitializer` to register the wallet through dApp Kit's
 plugin system. The wallet automatically uses dApp Kit's networks and clients:
@@ -173,7 +174,7 @@ function App() {
 			<header>
 				<ConnectButton />
 			</header>
-			<main>{/* Your app content — Dev Wallet appears in the wallet picker */}</main>
+			<main>{/* Your app content — the dev wallet appears in the wallet picker */}</main>
 		</DAppKitProvider>
 	);
 }
@@ -198,7 +199,7 @@ const dAppKit = createDAppKit({
 });
 ```
 
-### Using useDevWallet Instead
+### Using useDevWallet instead
 
 For finer-grained control within React components, you can still use the `useDevWallet` hook
 directly. This is useful when you need the wallet instance in React state or want to manage the

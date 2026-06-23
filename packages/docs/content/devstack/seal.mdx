@@ -24,8 +24,12 @@ export default defineDevstack({ members: [localnet, keyServer] });
 Live modes reference an existing key server. Fork stacks can point at the upstream key server
 through `sealFor(forkNetwork).forkKnown(...)`; local keygen runs only on local networks.
 
-Add `seal(...)` to `members`, and order any app server or package action that needs the key server
-after it.
+In a bare stack you can add `seal(...)` directly to `members`, as the snippet above does. In a real
+app, put only `localnet`, your app host-service, and `dashboard()` in `members`, and order the key
+server (and any package action that needs it) via the consuming server's `after:` list so it boots
+first — see
+[`examples/private-content/devstack.config.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/devstack.config.ts)
+(`after: [localnet, vault, walrusCluster, sealKeyServer, devWallet]` on the `hostService`).
 
 ## Connect the SDK
 
@@ -54,6 +58,10 @@ const client = new SealClient({
 
 `s.serverConfigs` is the resolved key-server list — `objectId`, `weight`, and aggregator URL — ready
 to pass to the client. Set `verifyKeyServers: false` for the local key server; on live networks
-leave it on so the SDK verifies the server's on-chain registration. See
-[`examples/private-content`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/seal.ts)
+leave it on so the SDK verifies the server's on-chain registration.
+
+The example app splits these two concerns: the `seal.forNetwork(network).seal` projection lives in
+[`examples/private-content/src/lib/deployment.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/deployment.ts),
+which passes the resolved `serverConfigs` into
+[`examples/private-content/src/lib/seal.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/seal.ts)
 for the full encrypt/decrypt flow with session keys.

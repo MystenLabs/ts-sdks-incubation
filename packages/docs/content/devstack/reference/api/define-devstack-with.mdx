@@ -38,9 +38,8 @@ function defineDevstackWith<Mode extends NetworkMode, Members extends ReadonlyAr
   carrying the resolved-narrow `NetworkConfig<Mode>`.
 - `build` — a callback that receives a `BuildCtx<Mode>` and returns the member tuple.
 
-As of 0.1.0, the `stateDir` field on this options bag is honored: `runStack` resolves it as the
-state-directory source when no `runtimeRoot` and no `--state-dir` flag are supplied. Earlier
-releases declared the field but did not read it.
+The `stateDir` field on this options bag is honored: `runStack` resolves it as the state-directory
+source when no `runtimeRoot` and no `--state-dir` flag are supplied.
 
 ## `BuildCtx`
 

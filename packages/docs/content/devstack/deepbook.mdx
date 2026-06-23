@@ -36,7 +36,9 @@ import {
 const localnet = sui();
 
 // The publisher both deploys DeepBook and seeds the pool, so fund it with ample
-// SUI for the publish + pool-creation gas and the quote-side seed deposit.
+// SUI for the publish + pool-creation gas and the quote-side seed deposit. For
+// clarity the example app splits this across dedicated accounts
+// (`publisher`/`usdcPublisher`/`pythPublisher`); any funded `account(...)` works.
 const publisher = account('publisher', {
 	kind: 'ephemeral',
 	funding: [{ coin: 'sui', amount: 1_000_000_000_000n }],
@@ -50,19 +52,20 @@ const deepbookPackage = localPackage('deepbook', {
 	git: {
 		url: 'https://github.com/MystenLabs/deepbookv3.git',
 		subdir: 'packages/deepbook',
-		rev: 'main',
+		rev: '5411ef3aa93f7722409b2a85047baa3d4d830c07', // pin a concrete SHA
 	},
 	publisher,
 	capture: {
 		registryId: '::registry::Registry',
 		adminCapId: '::registry::DeepbookAdminCap',
+		deepTreasuryId: '::deep::ProtectedTreasury',
 	},
 });
 const pythPackage = localPackage('pyth', {
 	git: {
 		url: 'https://github.com/MystenLabs/deepbook-sandbox.git',
 		subdir: 'sandbox/packages/pyth',
-		rev: 'main',
+		rev: 'e62fa7df04b444a2ad72362802fd2ad3e8e61408', // pin a concrete SHA
 	},
 	publisher,
 });
@@ -74,6 +77,9 @@ const dex = deepbook({
 	mode: 'local',
 	publisher,
 	package: deepbookPackage,
+	// Surface the captured DEEP treasury id in the bindings so the SDK
+	// extension can read DEEP_TREASURY_ID (see "Connect the SDK" below).
+	deepTreasuryIdKey: 'deepTreasuryId',
 	pyth: {
 		package: pythPackage,
 		pusher: publisher,
@@ -152,7 +158,7 @@ resolved `dex` value exposes `hasSeedLiquidity: true` once any pool placed its s
 
 ### Reading pools and prices from your app
 
-`deepbook(...)` generates typed bindings into `src/generated/deepbook.ts`. DeepBook is a per-network
+`deepbook(...)` generates bindings into `src/generated/deepbook.ts`. DeepBook is a per-network
 service: `deepbook.forNetwork(net).deepbook` returns the bindings for the network your wallet is on,
 so the pool, coin, and feed ids stay in lockstep with a runtime `switchNetwork`. Read them to get
 the created pool ids and Pyth feed prices without hard-coding anything:
@@ -186,23 +192,28 @@ bindings — `deepbook.forNetwork(network).deepbook` — so the package, pool, a
 runtime `switchNetwork`:
 
 ```ts title="src/App.tsx"
-import { useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
 import { deepbook as deepbookExtension } from '@mysten/deepbook-v3';
 
+import { coins } from '@generated/coins.js';
 import { deepbook } from '@generated/deepbook.js';
 
+const currentAccount = useCurrentAccount();
 const suiClient = useCurrentClient();
 const network = useCurrentNetwork();
 const bindings = deepbook.forNetwork(network).deepbook;
+// Per-network coin bindings drive the extension's coin map (see the example
+// app's `deriveDemoCoinBindings` for the full mapping).
+const coinBindings = deriveDemoCoinBindings(coins.forNetwork(network));
 
 const deepbookClient = suiClient.$extend(
 	deepbookExtension({
-		address: account.address,
+		address: currentAccount.address,
 		// `packageIds`, `coins`, and `pools` map the bindings' resolved ids
 		// (bindings.packageId, bindings.registryId, bindings.pools[].poolId)
 		// into the extension's shapes.
 		packageIds: buildPackageIds(bindings),
-		coins: buildCoinMap(coins),
+		coins: buildCoinMap(coinBindings),
 		pools: buildPoolMap(bindings),
 	}),
 );
@@ -212,8 +223,8 @@ The extension carries DeepBook's package, registry, coin, and pool ids — all r
 nothing hard-coded — so `deepbookClient.deepbook.deepBook.swapExactQuoteForBase(...)` and the rest
 of the SDK target the pools your stack just created. See
 [`examples/deepbook-trader`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader/src/App.tsx)
-for the `buildPackageIds` / `buildCoinMap` / `buildPoolMap` helpers and a complete trading UI —
-multiple pools, multiple feeds, and swap execution.
+for the `deriveDemoCoinBindings` / `buildPackageIds` / `buildCoinMap` / `buildPoolMap` helpers and a
+complete trading UI — multiple pools, multiple feeds, and swap execution.
 
 ## Pyth price feeds
 
@@ -295,5 +306,10 @@ const dex = deepbook({
 });
 ```
 
-`deepbook(...)` returns a service member you add to `members`. Known testnet/mainnet helpers may
-also contribute funding strategies for service-owned coins when the mode supports them.
+`deepbook(...)` returns a service member. In a bare stack you can add it directly to `members`, as
+the snippets above do. In a real app, though, you typically put only `localnet`, your app
+host-service, and `dashboard()` in `members`, and wire the DeepBook service into the consuming
+server's `after:` ordering list so it boots before the app starts — see
+[`examples/deepbook-trader/devstack.config.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/deepbook-trader/devstack.config.ts)
+(`after: [dex, devWallet]` on the `hostService`). Known testnet/mainnet helpers may also contribute
+funding strategies for service-owned coins when the mode supports them.

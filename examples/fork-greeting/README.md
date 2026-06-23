@@ -31,5 +31,5 @@ specific on-chain address, use `account(name, { kind: 'impersonate', address })`
 ## See also
 
 - [examples/README.md](../README.md) — overview of every runnable app.
-- [Live & fork networks](https://ts-sdks-incubation.vercel.app/devstack/features/live-networks) —
+- [Live & fork networks](https://ts-sdks-incubation.vercel.app/devstack/live-networks) —
   fork mode, the fork faucet, and impersonation.

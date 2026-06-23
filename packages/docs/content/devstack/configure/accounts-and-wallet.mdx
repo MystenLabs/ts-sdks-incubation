@@ -26,6 +26,11 @@ const demo = account('demo', {
 });
 ```
 
+The `kind` field selects one of three account variants: `ephemeral` (the default — a fresh generated
+key), `signer` (bring your own keypair, as above), and `impersonate` — fork-mode only —
+`account('whale', { kind: 'impersonate', address: '0x…' })`, which acts as an existing on-chain
+address by paying from a seeded reserve rather than signing.
+
 To fund an account with specific coins and amounts, pass a `funding` list of `{ coin, amount }`
 entries:
 
@@ -79,5 +84,7 @@ carries no dev wallet.
 
 The wallet runs a small local server (bound to `0.0.0.0` by default) that the injected page talks
 to. It keeps its pairing token and dApp Kit handles under the per-stack gitignored runtime output at
-`.devstack/stacks/<stack>/`, and accepts the stack-scoped dev-server origin such as
-`http://dev.<app>.localhost:5175`. Add `allowedOrigins` for nonstandard browser origins.
+`.devstack/stacks/<stack>/`, and accepts the stack-scoped dev-server origin —
+`http://dev.<app>.localhost:5175` for the default stack, or
+`http://dev.<stack>.<app>.localhost:5175` for a named stack. Add `allowedOrigins` for nonstandard
+browser origins.

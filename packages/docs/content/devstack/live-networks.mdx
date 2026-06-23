@@ -18,7 +18,10 @@ import {
 	wallet,
 } from '@mysten-incubation/devstack';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5173;
 
 const alice = account('alice', {
@@ -36,6 +39,7 @@ const devWallet = wallet({
 const app = hostService({
 	name: 'app',
 	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
 	port: DEV_PORT,
 	ready: { kind: 'http' },
 	after: [registry, devWallet] as const,
@@ -61,9 +65,8 @@ each, with no `sui:` prefix or alias form. Any other value is rejected.
 
 ## Forking a public network
 
-The `*-fork` networks run a local fork of a public network: you develop against real on-chain state
-while every write stays local. Forking adds its own options for seeding upstream state, funding
-accounts, and advancing the chain — see [Forking](/devstack/forking) for the full guide.
+The `*-fork` networks run a local fork of a public network — real on-chain state, every write local.
+See [Forking](/devstack/forking) for the full guide.
 
 ## Live accounts
 

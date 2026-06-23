@@ -17,8 +17,9 @@ looks up a funding strategy by the active network's chain id:
 faucet:request:<chainId>
 ```
 
-where `<chainId>` is the resolved network — `sui:localnet`, `sui:testnet`,
-`sui:mainnet-fork@<height>`, and so on. If a strategy is registered for that key, the request goes
+where `<chainId>` is the active network's genesis-digest chain identifier — the node's real chain
+id, not the network name (`localnet` / `testnet`). Two same-named localnets get distinct chain ids,
+so their faucet keys never collide. If a strategy is registered for that key, the request goes
 through it. If none is registered, SUI funding raises `StrategyNotFoundError`, which lists the keys
 that are registered so you can see what's wired.
 
@@ -48,8 +49,8 @@ export const myFaucet = (chainId: `sui:${string}`) =>
 				chainId,
 				strategy: {
 					request: ({ address, amount }) =>
-						// ... call the actual faucet wire here.
-						Effect.succeed({ address, amount }),
+						// ... call the actual faucet wire here; `request` resolves to `Effect<void>`.
+						Effect.void,
 				},
 			}),
 		],
@@ -64,7 +65,8 @@ Two options shape how it behaves:
 
 - **`autoMounted: false`** (default) — the contribution shows up in the dashboard so you can see
   what funding is wired. Pass `true` for built-ins the orchestrator includes automatically.
-- **`priority: 1`** (default) — a user strategy wins over the built-in's `0`. Higher wins.
+- **`priority`** — higher wins. An unset `priority` resolves to `0`, the same level built-ins
+  register at, so pass `priority` ≥ 1 to make your strategy win over a built-in for the same chain.
 
 ### Failure handling
 

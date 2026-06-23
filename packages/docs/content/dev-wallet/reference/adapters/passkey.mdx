@@ -1,5 +1,6 @@
 ---
 title: PasskeySignerAdapter
+description: WebAuthn/passkey accounts where each signing requires a biometric or PIN prompt
 ---
 
 Uses [WebAuthn/Passkeys](https://developer.mozilla.org/en-US/docs/Web/API/Web_Authentication_API)
@@ -8,7 +9,7 @@ from the operating system.
 
 ## Usage
 
-```typescript
+```ts
 import { PasskeySignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
 
 const adapter = new PasskeySignerAdapter();
@@ -21,7 +22,7 @@ const account = await adapter.createAccount({ label: 'My Passkey' });
 The constructor accepts optional `dbName`, `storeName`, and `provider` (a custom `PasskeyProvider`,
 useful for testing). Defaults: `'dev-wallet-passkey'` and `'accounts'`.
 
-## Key Behavior
+## Key behavior
 
 - **Private keys never enter JavaScript** — the browser/OS manages the credential entirely
 - **Signing always requires user interaction** — biometric scan, PIN, or security key touch

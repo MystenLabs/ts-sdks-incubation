@@ -1,5 +1,6 @@
 ---
 title: E2E Testing
+description: Auto-approve signing requests so headless tests run without the approval modal
 ---
 
 Automated tests can't click "Approve" in a headless browser. Set `autoApprove: true` and the wallet
@@ -7,7 +8,7 @@ signs everything immediately — same wallet-standard APIs, no approval modal.
 
 **Vitest:**
 
-```typescript
+```ts
 import { DevWallet } from '@mysten-incubation/dev-wallet';
 import { WebCryptoSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
 import { getFaucetHost, requestSuiFromFaucetV2 } from '@mysten/sui/faucet';
@@ -48,7 +49,7 @@ describe('my dApp', () => {
 
 **With dApp Kit:**
 
-```typescript
+```ts
 devWalletInitializer({
 	adapters: [new WebCryptoSignerAdapter()],
 	autoApprove: true,
@@ -60,7 +61,7 @@ devWalletInitializer({
 
 Pass a function to control which requests are auto-approved:
 
-```typescript
+```ts
 devWalletInitializer({
 	adapters: [new WebCryptoSignerAdapter()],
 	autoApprove: (request) => {
@@ -82,7 +83,7 @@ devWalletInitializer({
 wallet-level `autoApprove` policy. These adapters always require explicit interaction regardless of
 your auto-approval settings.
 
-```typescript
+```ts
 const wallet = new DevWallet({
 	adapters: [
 		new WebCryptoSignerAdapter(), // auto-approved ✓
@@ -94,5 +95,5 @@ const wallet = new DevWallet({
 
 ## Related
 
-- [Auto-Approval reference](/dev-wallet/reference/auto-approval) — full API and policy parameters
-- [Signing Flow](/dev-wallet/reference/signing-flow) — how the request queue works
+- [Auto-approval reference](/dev-wallet/reference/auto-approval) — full API and policy parameters
+- [Signing flow](/dev-wallet/reference/signing-flow) — how the request queue works

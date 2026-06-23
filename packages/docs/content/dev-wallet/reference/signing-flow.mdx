@@ -1,10 +1,11 @@
 ---
 title: Signing Flow
+description: How the one-at-a-time request queue, approval, and programmatic signing work
 ---
 
 import { SigningFlowDemo } from '../../../examples/dev-wallet-demos-client';
 
-## How It Works
+## How it works
 
 ```mermaid
 sequenceDiagram
@@ -35,7 +36,7 @@ sequenceDiagram
     end
 ```
 
-## One Request at a Time
+## One request at a time
 
 The wallet processes one signing request at a time. If a second request arrives while one is
 pending, it's immediately rejected with `"A signing request is already pending."`
@@ -45,7 +46,7 @@ pending, it's immediately rejected with `"A signing request is already pending."
 	before sending the next.
 </Callout>
 
-## Request Types
+## Request types
 
 | Type                           | Triggered By                    | Data                       |
 | ------------------------------ | ------------------------------- | -------------------------- |
@@ -53,21 +54,21 @@ pending, it's immediately rejected with `"A signing request is already pending."
 | `sign-and-execute-transaction` | `sui:signAndExecuteTransaction` | Transaction JSON string    |
 | `sign-personal-message`        | `sui:signPersonalMessage`       | `Uint8Array` message bytes |
 
-## The Signing Modal
+## The signing modal
 
 ![Signing modal showing approval required with message details](/dev-wallet/signing-modal.png)
 
-## Try It
+## Try it
 
 Click the button to trigger a signing request, then open the wallet panel to approve or reject it:
 
 <SigningFlowDemo />
 
-## Programmatic Approval
+## Programmatic approval
 
 You can approve or reject requests without the UI — useful for testing:
 
-```typescript
+```ts
 // Enqueue a request (returns a Promise)
 const resultPromise = wallet.features['sui:signPersonalMessage'].signPersonalMessage({
 	message: new TextEncoder().encode('Hello'),
@@ -86,16 +87,16 @@ const result = await resultPromise;
 console.log(result.signature);
 ```
 
-### Rejecting a Request
+### Rejecting a request
 
-```typescript
+```ts
 wallet.rejectRequest('User declined');
 // The promise rejects with Error('User declined')
 ```
 
-## Subscribing to Request Changes
+## Subscribing to request changes
 
-```typescript
+```ts
 const unsubscribe = wallet.onRequestChange((request) => {
 	if (request) {
 		console.log('New request:', request.type, request.id);
@@ -107,14 +108,14 @@ const unsubscribe = wallet.onRequestChange((request) => {
 // Later: unsubscribe()
 ```
 
-## Connect Approval
+## Connect approval
 
 Connect requests follow the same pattern: auto-connect if `autoConnect: true`, otherwise queue a
 connect request so the user can select which accounts to expose.
 
 ![Connect dialog showing wallet picker with Dev Wallet option](/dev-wallet/connect-dialog.png)
 
-```typescript
+```ts
 // Subscribe to connect requests
 wallet.onConnectChange((request) => {
 	if (request) {
@@ -129,7 +130,7 @@ wallet.approveConnect(['0xabc...', '0xdef...']);
 wallet.rejectConnect('User cancelled');
 ```
 
-## Transaction Analysis
+## Transaction analysis
 
 The signing modal analyzes transaction commands and displays:
 

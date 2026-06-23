@@ -1,5 +1,7 @@
 ---
 title: Custom Adapters
+description:
+  Build your own signer adapter by extending BaseSignerAdapter or implementing the interface
 ---
 
 You can create custom adapters by implementing the `SignerAdapter` interface or extending
@@ -10,7 +12,7 @@ You can create custom adapters by implementing the `SignerAdapter` interface or 
 `BaseSignerAdapter` handles common boilerplate — account list management, change notifications, and
 cleanup. You only need to implement the initialization and key management logic.
 
-```typescript
+```ts
 import { BaseSignerAdapter, buildManagedAccount } from '@mysten-incubation/dev-wallet/adapters';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import type { ManagedAccount, CreateAccountOptions } from '@mysten-incubation/dev-wallet';
@@ -60,9 +62,9 @@ class LocalStorageAdapter extends BaseSignerAdapter {
 }
 ```
 
-## Using Your Custom Adapter
+## Using your custom adapter
 
-```typescript
+```ts
 import { DevWallet } from '@mysten-incubation/dev-wallet';
 
 const adapter = new LocalStorageAdapter();
@@ -73,7 +75,7 @@ const wallet = new DevWallet({
 });
 ```
 
-## BaseSignerAdapter Helper Methods
+## BaseSignerAdapter helper methods
 
 | Method                             | Description                                        |
 | ---------------------------------- | -------------------------------------------------- |
@@ -84,9 +86,9 @@ const wallet = new DevWallet({
 | `_performRename(address, label)`   | Rename by rebuilding the account with a new label  |
 | `notifyListeners()`                | Manually trigger account change notifications      |
 
-## The ManagedAccount Interface
+## The ManagedAccount interface
 
-```typescript
+```ts
 interface ManagedAccount {
 	address: string; // Sui address
 	label: string; // Human-readable name

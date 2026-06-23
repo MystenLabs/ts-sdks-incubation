@@ -1,15 +1,14 @@
 ---
 title: Get started
 description:
-  Boot a local Sui stack, fund accounts, publish packages, wire your app, and generate typed
-  bindings — all from one TypeScript config.
+  Boot a local Sui stack, fund accounts, publish packages, wire your app, and generate bindings —
+  all from one TypeScript config.
 ---
 
 Spin up everything your Sui app needs to run locally from one TypeScript file. A single
 `devstack.config.ts` boots a local network, funds named accounts, publishes your Move packages,
-wires your dev server and a browser dev wallet, and generates typed bindings plus a runtime config
-your app imports — so `pnpm dev` gives you a working chain, funded wallets, and your published
-contracts.
+wires your dev server and a browser dev wallet, and generates bindings plus a runtime config your
+app imports — so `pnpm dev` gives you a working chain, funded wallets, and your published contracts.
 
 You describe the stack as a list of members — `sui()`, `account()`, `localPackage()`, `wallet()`,
 `walrus()`, `seal()`, `deepbook()`, `action()`, and `dashboard()` — and devstack stands them up.
@@ -129,14 +128,14 @@ how the deployment loader resolves ids.
 
 ## First boot
 
-Generate the typed bindings your app builds against:
+Generate the bindings your app builds against:
 
 ```bash
 pnpm devstack codegen
 ```
 
-This writes the generated `src/generated` tree — typed Move bindings and the runtime config your app
-imports — from your Move source. It needs no running stack; run it whenever the Move source changes.
+This writes the `src/generated` tree — typed Move bindings and the runtime config your app imports —
+from your Move source. It needs no running stack; run it whenever the Move source changes.
 
 Then run the stack:
 
@@ -158,8 +157,8 @@ runtime state only.
 
 1. Put stack members in `devstack.config.ts`. Include your dev server as a `hostService(...)` member
    when the stack backs a browser app.
-2. Run `devstack codegen` to write the typed bindings and runtime config under `src/generated` — the
-   tree your app builds against. Rerun it when the Move source changes.
+2. Run `devstack codegen` to write the bindings and runtime config under `src/generated` — the tree
+   your app builds against. Rerun it when the Move source changes.
 3. Run `devstack up` to start the stack and keep it running, or `devstack apply` to reconcile from
    another shell or CI.
 4. Import the generated files from `src/generated`; runtime state, snapshots, and logs stay under
@@ -172,7 +171,7 @@ runtime state only.
 - [Configure your stack](/devstack/configure/sui) for sui, accounts, packages, and funding.
 - [Walrus](/devstack/walrus), [Seal](/devstack/seal), and [DeepBook](/devstack/deepbook) for the
   local and known stack services.
-- [Codegen & deployments](/devstack/codegen) for generated outputs and the deployment config.
+- [Codegen & deployments](/devstack/codegen) for generated bindings and the deployment config.
 - [Testing](/devstack/testing) for unit, e2e, and browser tests.
 - [Live networks](/devstack/live-networks) for running against public networks.
 - [Forking](/devstack/forking) for mirroring a real chain at a checkpoint.
