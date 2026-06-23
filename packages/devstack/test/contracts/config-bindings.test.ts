@@ -342,6 +342,7 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 							weight: 1,
 						},
 					],
+					verifyKeyServers: true,
 				},
 			}),
 			literalOnly: true,
@@ -425,6 +426,7 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 						weight: 1,
 					},
 				],
+				verifyKeyServers: true,
 			},
 		});
 		const projected = decl.aggregate?.project({}) ?? {};

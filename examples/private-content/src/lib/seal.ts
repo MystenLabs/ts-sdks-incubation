@@ -47,11 +47,11 @@ export function getSealClient(
 	cachedClient = new SealClient({
 		suiClient,
 		serverConfigs: [...configs],
-		// Self-signed key server in Open mode — the SDK can't verify it
-		// against the on-chain registration without the public key
-		// matching what we generated locally; skipping verification is
-		// fine for a single-server localnet.
-		verifyKeyServers: false,
+		// Per-network value from the binding: false for the local-keygen dev
+		// stack (self-signed Open-mode server whose public key can't be verified
+		// against its on-chain registration), true for live networks (real
+		// Mysten key servers, which must be verified).
+		verifyKeyServers: dep.seal.verifyKeyServers,
 	});
 	cachedClientKey = key;
 	return cachedClient;

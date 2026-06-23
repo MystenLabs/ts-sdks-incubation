@@ -38,6 +38,7 @@ describe('seal public refs', () => {
 			objectId: '0x1',
 			keyServerUrl: 'http://key-server.localhost',
 			serverConfigs: [{ objectId: '0x1', weight: 1 }],
+			verifyKeyServers: false,
 			manager: {
 				masterKeyEnvFile: '/tmp/master-key.env',
 			},

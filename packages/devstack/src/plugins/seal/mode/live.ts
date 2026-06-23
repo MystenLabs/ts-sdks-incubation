@@ -128,6 +128,10 @@ export interface LiveModeInputs {
 	/** API-key pair for committee servers that require one (mainnet). */
 	readonly apiKeyName?: string;
 	readonly apiKey?: string;
+	/** Whether the SDK should verify the key servers against their on-chain
+	 *  registration. Defaults to `true` for live / fork-known (real Mysten
+	 *  servers). */
+	readonly verifyKeyServers?: boolean;
 	/** Raw override — bypasses the known table entirely. */
 	readonly serverConfigs?: ReadonlyArray<SealKeyServerEntry>;
 }
@@ -144,6 +148,9 @@ export interface ResolvedLiveInputs {
 	readonly serverConfigs: ReadonlyArray<SealKeyServerEntry>;
 	readonly objectId: string;
 	readonly keyServerUrl: string;
+	/** SDK key-server verification flag. `true` by default for live /
+	 *  fork-known (real Mysten servers); the caller may override. */
+	readonly verifyKeyServers: boolean;
 }
 
 /** Validate + resolve the inputs at the factory boundary. Pure
@@ -162,6 +169,10 @@ export interface ResolvedLiveInputs {
 export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs => {
 	const context = `seal.live: network=${String(inputs.network)}, server=${String(inputs.server)}`;
 
+	// SDK default for live / fork-known is to verify the key servers against
+	// their on-chain registration (real Mysten servers). The caller may opt out.
+	const verifyKeyServers = inputs.verifyKeyServers ?? true;
+
 	// 1. Verbatim override.
 	if (inputs.serverConfigs !== undefined) {
 		const configs = inputs.serverConfigs;
@@ -171,11 +182,27 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 				message: `${context}: serverConfigs override must carry at least one entry.`,
 			});
 		}
+		// Codegen emits a single `requireValue(dep, 'seal:<name>', 'apiKey')`
+		// slot per instance, so at most ONE committee entry may carry an
+		// apiKey — multiple credentialed entries would all resolve from that
+		// one slot, silently pointing at the wrong credential. Refuse early.
+		const apiKeyEntries = configs.filter((c) => c.apiKey !== undefined);
+		if (apiKeyEntries.length > 1) {
+			throw sealConfigError({
+				field: 'serverConfigs',
+				message: `${context}: serverConfigs override carries ${apiKeyEntries.length} entries with an apiKey, but only one credentialed committee entry is supported (codegen exposes a single apiKey slot per seal instance). Split the credentialed entry into its own seal instance, or drop the extra apiKeys.`,
+			});
+		}
 		const first = configs[0]!;
 		return {
 			serverConfigs: configs,
 			objectId: first.objectId,
+			// `keyServerUrl` is best-effort / legacy for raw overrides: a
+			// KeyServerConfig has no `url` field (the URL lives on the on-chain
+			// object), so we derive it from `aggregatorUrl` when present and
+			// fall back to empty. Consumers should read `serverConfigs`, not this.
 			keyServerUrl: first.aggregatorUrl ?? '',
+			verifyKeyServers,
 		};
 	}
 
@@ -206,6 +233,7 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 			serverConfigs,
 			objectId: servers[0]!.objectId,
 			keyServerUrl: servers[0]!.url,
+			verifyKeyServers,
 		};
 	}
 
@@ -242,5 +270,6 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 		serverConfigs,
 		objectId: committee.objectId,
 		keyServerUrl: committee.aggregatorUrl,
+		verifyKeyServers,
 	};
 };

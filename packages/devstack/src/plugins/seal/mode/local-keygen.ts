@@ -436,6 +436,9 @@ const startLocalKeygenContainer = (
 				serverConfigs,
 				keyServerUrl: deps.routedUrl,
 				objectId: state.keyServerObjectId,
+				// Self-signed Open-mode localnet server: the SDK can't verify it
+				// against its on-chain registration, so verification is off.
+				verifyKeyServers: false,
 			},
 			keyManager,
 			packageId: state.packageId,

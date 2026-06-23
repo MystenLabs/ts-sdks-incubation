@@ -55,6 +55,7 @@ export const validateForkKnownInputs = (inputs: {
 	readonly server?: SealServerKind;
 	readonly apiKeyName?: string;
 	readonly apiKey?: string;
+	readonly verifyKeyServers?: boolean;
 }): ResolvedLiveInputs => {
 	try {
 		return validateLiveInputs({
@@ -63,6 +64,9 @@ export const validateForkKnownInputs = (inputs: {
 			...(inputs.server !== undefined ? { server: inputs.server } : {}),
 			...(inputs.apiKeyName !== undefined ? { apiKeyName: inputs.apiKeyName } : {}),
 			...(inputs.apiKey !== undefined ? { apiKey: inputs.apiKey } : {}),
+			...(inputs.verifyKeyServers !== undefined
+				? { verifyKeyServers: inputs.verifyKeyServers }
+				: {}),
 		});
 	} catch (err) {
 		// Re-throw the original tagged error so downstream

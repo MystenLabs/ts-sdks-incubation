@@ -343,6 +343,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 						objectId: resolvedValue.objectId,
 						keyServerUrl: resolvedValue.keyServerUrl,
 						serverConfigs: resolvedValue.serverConfigs,
+						verifyKeyServers: resolvedValue.verifyKeyServers,
 						mode: 'local-keygen',
 					}),
 				);
@@ -371,6 +372,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		objectId: resolved.objectId,
 		keyServerUrl: resolved.keyServerUrl,
 		serverConfigs: resolved.serverConfigs,
+		verifyKeyServers: resolved.verifyKeyServers,
 		mode: 'live',
 	};
 	const snap = makeKnownSnapshotable({ name });
@@ -393,6 +395,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 					objectId: bindings.objectId,
 					keyServerUrl: bindings.keyServerUrl,
 					serverConfigs: bindings.serverConfigs,
+					verifyKeyServers: bindings.verifyKeyServers,
 				},
 			}),
 		],
@@ -412,6 +415,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 					serverConfigs: resolved.serverConfigs,
 					keyServerUrl: resolved.keyServerUrl,
 					objectId: resolved.objectId,
+					verifyKeyServers: resolved.verifyKeyServers,
 					mode: 'live',
 					manager: null,
 				} satisfies SealResolved;
@@ -461,6 +465,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 					objectId: validated.objectId,
 					keyServerUrl: validated.keyServerUrl,
 					serverConfigs: validated.serverConfigs,
+					verifyKeyServers: validated.verifyKeyServers,
 				},
 			}),
 		],
@@ -481,6 +486,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 						objectId: validated.objectId,
 						keyServerUrl: validated.keyServerUrl,
 						serverConfigs: validated.serverConfigs,
+						verifyKeyServers: validated.verifyKeyServers,
 						mode: 'fork-known',
 					}),
 				);
@@ -488,6 +494,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 					serverConfigs: validated.serverConfigs,
 					keyServerUrl: validated.keyServerUrl,
 					objectId: validated.objectId,
+					verifyKeyServers: validated.verifyKeyServers,
 					mode: 'fork-known',
 					manager: null,
 				} satisfies SealResolved;

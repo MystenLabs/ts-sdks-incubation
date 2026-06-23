@@ -15,6 +15,7 @@ export const seal = {
 				name: "seal",
 				objectId: requireValue<string>(dep, "seal:seal", "objectId"),
 				serverConfigs: requireValue<ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly apiKeyName?: string; readonly apiKey?: string; readonly aggregatorUrl?: string }>>(dep, "seal:seal", "serverConfigs"),
+				verifyKeyServers: requireValue<boolean>(dep, "seal:seal", "verifyKeyServers"),
 			},
 		} as const;
 	},

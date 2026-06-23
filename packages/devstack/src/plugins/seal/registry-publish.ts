@@ -65,6 +65,12 @@ export interface SealKeyServer {
 	readonly serverConfigs: ReadonlyArray<SealKeyServerEntry>;
 	readonly keyServerUrl: string;
 	readonly objectId: string;
+	/** Whether the SDK should verify the key servers against their on-chain
+	 *  registration. `true` on live / fork-known (real Mysten servers);
+	 *  `false` on local-keygen (self-signed Open-mode localnet server whose
+	 *  public key can't be verified). Required so every construction site
+	 *  sets it explicitly. */
+	readonly verifyKeyServers: boolean;
 }
 
 /** Public Seal resolved value. The key-server fields stay top-level

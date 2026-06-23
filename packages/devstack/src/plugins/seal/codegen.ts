@@ -64,6 +64,11 @@ export interface SealBindings {
 	readonly objectId: string;
 	readonly keyServerUrl: string;
 	readonly serverConfigs: ReadonlyArray<SealKeyServerEntry>;
+	/** Whether the SDK should verify the key servers (true on live /
+	 *  fork-known, false on local-keygen). Declared config — known at
+	 *  factory time, emitted as a plain boolean literal (never a
+	 *  `requireValue`, since it's not a secret). */
+	readonly verifyKeyServers: boolean;
 	readonly mode: 'local-keygen' | 'live' | 'fork-known';
 }
 
@@ -76,6 +81,7 @@ export interface SealKnownIds {
 	readonly objectId: string;
 	readonly keyServerUrl: string;
 	readonly serverConfigs: ReadonlyArray<SealKeyServerEntry>;
+	readonly verifyKeyServers: boolean;
 }
 
 /** Static-config shape a seal instance knows BEFORE acquire — the
@@ -109,9 +115,15 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 						variant: 'literal',
 						// Bake ALL entries + aggregatorUrl as literals; a committee
 						// `apiKey` is swapped for a `requireValue(...)` reference so the
-						// committed tree carries no secret (locked decision #4).
+						// committed tree carries no secret (locked decision #4). At most
+						// ONE entry may carry an apiKey — the override path enforces this
+						// single-apiKey invariant (`validateLiveInputs`), since the
+						// `requireValue(...)` reference uses one shared `'apiKey'` slot.
 						value: dekeyServerConfigs(structural.name, known.serverConfigs),
 					},
+					// Declared config: a plain boolean literal (not a secret, so never
+					// a `requireValue`). True on live / fork-known.
+					{ key: 'verifyKeyServers', variant: 'literal', value: known.verifyKeyServers },
 				]
 			: [
 					{ key: 'name', variant: 'literal', value: structural.name },
@@ -130,6 +142,12 @@ const sealBucketSpec = (structural: SealStaticConfig): SiblingBucketSpec<SealLiv
 						// committed `seal.ts` carries the concrete type (no emitted import).
 						tsType: SERVER_CONFIGS_TS_TYPE,
 						live: (s) => s.serverConfigs as unknown as JsonValue,
+					},
+					{
+						key: 'verifyKeyServers',
+						variant: 'resolved',
+						tsType: 'boolean',
+						live: (s) => s.verifyKeyServers,
 					},
 				];
 	return keyedBucketSpec({ bucket: 'seal.ts', kind: 'seal', key: structural.name, fields });
