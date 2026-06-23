@@ -42,17 +42,6 @@ export const resolveDeploymentNetwork = (upstream: ForkUpstream): KnownNetwork =
 // Inputs
 // ---------------------------------------------------------------------------
 
-/** Pre-validated fork-known inputs. Symmetric with the live mode's
- *  `{ name, resolved }` shape — the barrel resolves
- *  `upstream → KnownNetwork → validated tuple` synchronously at
- *  factory time so both branches project the same resolved
- *  `ResolvedLiveInputs` bundle in `start`. */
-export interface ForkKnownInputs {
-	readonly name: string;
-	readonly upstream: ForkUpstream;
-	readonly resolved: ResolvedLiveInputs;
-}
-
 /** Resolve the fork-known overrides + upstream-derived defaults into
  *  a resolved bundle. Pure synchronous projection — delegates to
  *  `validateLiveInputs` (the live branch's resolver) after mapping the
