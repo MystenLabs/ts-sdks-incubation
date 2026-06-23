@@ -67,12 +67,10 @@ import {
 	makeSealResource,
 	type SealKeyServerEntry,
 	type SealLocalKeygenResolved,
-	type SealKnownResolved,
 	type SealResolved,
 } from './registry-publish.ts';
 import { buildSealKeyServerPublicRoute, makeSealRoutable } from './routable.ts';
 import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.ts';
-import { bootSealService, type SealMode } from './service.ts';
 import { DEFAULT_SEAL_VERSION } from './bootstrap-assets/source-fetch.ts';
 
 // ---------------------------------------------------------------------------
@@ -404,17 +402,16 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		start: () =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				const mode: SealMode = { mode: 'live', name, resolved };
-				const publisher = yield* CacheService;
-				const bootResolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
-				// Emit inline: snapshot → codegen. `snap` + `bindings` are
-				// resolved at FACTORY time for live mode (validated
-				// `{objectId, keyServerUrl}`), so the emit reuses the same
-				// precomputed values.
+				// Live mode resolves its `{objectId, keyServerUrl, serverConfigs}`
+				// tuple at FACTORY time (`resolved`), so `start` only projects the
+				// already-resolved value — there is no runtime boot. `snap` +
+				// `bindings` are likewise factory-scoped.
 				ctx.snapshotExtra(snap);
 				ctx.codegen(makeSealCodegenable(bindings));
 				return {
-					...bootResolved.keyServer,
+					serverConfigs: resolved.serverConfigs,
+					keyServerUrl: resolved.keyServerUrl,
+					objectId: resolved.objectId,
 					mode: 'live',
 					manager: null,
 				} satisfies SealResolved;
@@ -473,37 +470,27 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		start: () =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				// Symmetric with the live branch's `{ mode, name, resolved }`
-				// envelope. `upstream` rides through for downstream
-				// span attribution; `resolved` carries the validated
-				// `{objectId, keyServerUrl}` tuple.
-				const mode: SealMode = {
-					mode: 'fork-known',
-					name,
-					upstream: opts.upstream,
-					resolved: validated,
-				};
-				const publisher = yield* CacheService;
-				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
-				const resolvedValue: SealResolved = {
-					...resolved.keyServer,
-					mode: 'fork-known',
-					manager: null,
-				};
-				// Emit inline: snapshot → codegen. `bindings` is built from the
-				// post-acquire `resolved.keyServer` (`{objectId, keyServerUrl,
-				// serverConfigs}`); `snap` is factory-scoped.
+				// Fork-known resolves its `{objectId, keyServerUrl, serverConfigs}`
+				// bundle at FACTORY time (`validated`, via `validateForkKnownInputs`),
+				// so `start` only projects the already-resolved value — no runtime
+				// boot. `snap` is factory-scoped.
 				ctx.snapshotExtra(snap);
 				ctx.codegen(
 					makeSealCodegenable({
 						name,
-						objectId: resolved.keyServer.objectId,
-						keyServerUrl: resolved.keyServer.keyServerUrl,
-						serverConfigs: resolved.keyServer.serverConfigs,
+						objectId: validated.objectId,
+						keyServerUrl: validated.keyServerUrl,
+						serverConfigs: validated.serverConfigs,
 						mode: 'fork-known',
 					}),
 				);
-				return resolvedValue;
+				return {
+					serverConfigs: validated.serverConfigs,
+					keyServerUrl: validated.keyServerUrl,
+					objectId: validated.objectId,
+					mode: 'fork-known',
+					manager: null,
+				} satisfies SealResolved;
 			}),
 	});
 };

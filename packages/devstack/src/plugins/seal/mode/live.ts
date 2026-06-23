@@ -24,10 +24,8 @@
 //     REQUIRES an `apiKey`. Mainnet ships NO independent default — so
 //     `mainnet({ server: 'independent' })` throws.
 
-import { Effect } from 'effect';
-
 import { sealConfigError } from '../errors.ts';
-import type { SealKeyServerEntry, SealKnownResolved } from '../registry-publish.ts';
+import type { SealKeyServerEntry } from '../registry-publish.ts';
 
 // ---------------------------------------------------------------------------
 // Server-kind selector
@@ -244,25 +242,3 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 	};
 };
 
-// ---------------------------------------------------------------------------
-// Mode acquire
-// ---------------------------------------------------------------------------
-
-/** Acquire body for the live mode. Validation/resolution already ran
- *  at the factory boundary (see `index.ts:buildLivePlugin`); this
- *  projects the resolved bundle into the read-side shape. Returns the
- *  read-side handle ONLY (no manager tag — distilled-doc invariant #15). */
-export const acquireLive = (inputs: {
-	readonly name: string;
-	readonly resolved: ResolvedLiveInputs;
-}): Effect.Effect<SealKnownResolved> =>
-	Effect.sync(
-		() =>
-			({
-				keyServer: {
-					serverConfigs: inputs.resolved.serverConfigs,
-					keyServerUrl: inputs.resolved.keyServerUrl,
-					objectId: inputs.resolved.objectId,
-				},
-			}) satisfies SealKnownResolved,
-	);

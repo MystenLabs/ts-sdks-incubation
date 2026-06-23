@@ -14,22 +14,18 @@
 // this file's mode body simply consumes the resolved network the
 // barrel passed.
 //
-// The mode body re-uses `acquireLive` since the boot pipeline is
-// identical. We expose a distinct factory only so the mode-narrowed
-// factory namespace (`sealFor(network).forkKnown(opts)`) can
-// route by mode without leaking the live-mode internals.
-
-import { Effect } from 'effect';
+// The mode body re-uses live mode's resolver (`validateLiveInputs`)
+// since the resolution pipeline is identical. We expose a distinct
+// factory only so the mode-narrowed factory namespace
+// (`sealFor(network).forkKnown(opts)`) can route by mode without
+// leaking the live-mode internals.
 
 import {
-	acquireLive,
 	validateLiveInputs,
 	type KnownNetwork,
 	type ResolvedLiveInputs,
 	type SealServerKind,
 } from './live.ts';
-import type { SealError } from '../errors.ts';
-import type { SealKnownResolved } from '../registry-publish.ts';
 
 // ---------------------------------------------------------------------------
 // Fork → upstream network mapping
@@ -49,8 +45,8 @@ export const resolveDeploymentNetwork = (upstream: ForkUpstream): KnownNetwork =
 /** Pre-validated fork-known inputs. Symmetric with the live mode's
  *  `{ name, resolved }` shape — the barrel resolves
  *  `upstream → KnownNetwork → validated tuple` synchronously at
- *  factory time so both branches reach `acquireLive` with the same
- *  structural envelope. */
+ *  factory time so both branches project the same resolved
+ *  `ResolvedLiveInputs` bundle in `start`. */
 export interface ForkKnownInputs {
 	readonly name: string;
 	readonly upstream: ForkUpstream;
@@ -102,21 +98,3 @@ const isSealConfigError = (
 	value !== null &&
 	(value as { _tag?: unknown })._tag === 'SealConfigError' &&
 	typeof (value as { message?: unknown }).message === 'string';
-
-// ---------------------------------------------------------------------------
-// Mode acquire
-// ---------------------------------------------------------------------------
-
-/** Acquire body for the fork-known mode. Inputs already pre-validated
- *  by the barrel via `validateForkKnownInputs`; delegates the
- *  read-side projection to live mode. The `upstream` field rides
- *  through for downstream span attribution.
- *
- *  Error channel kept typed as `SealError` for forward-compatibility
- *  with any future fallible work this body needs to do (currently
- *  `acquireLive` is `Effect.sync` so the channel is effectively
- *  `never`). */
-export const acquireForkKnown = (
-	inputs: ForkKnownInputs,
-): Effect.Effect<SealKnownResolved, SealError> =>
-	acquireLive({ name: inputs.name, resolved: inputs.resolved });
