@@ -39,7 +39,7 @@ export interface AppNetworkDeployment
 		"seal:seal": {
 			"keyServerUrl": string;
 			"objectId": string;
-			"serverConfigs": ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly aggregatorUrl?: string }>;
+			"serverConfigs": ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly apiKeyName?: string; readonly apiKey?: string; readonly aggregatorUrl?: string }>;
 		};
 		"walrus": {
 			"aggregatorUrl": string | null;

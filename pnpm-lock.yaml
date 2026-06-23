@@ -714,6 +714,9 @@ importers:
       '@mysten/sui':
         specifier: ^2.18.0
         version: 2.18.0(typescript@6.0.3)
+      '@mysten/walrus':
+        specifier: ^1.2.0
+        version: 1.2.0(@mysten/sui@2.18.0(typescript@6.0.3))
       '@pothos/core':
         specifier: 'catalog:'
         version: 4.12.0(graphql@16.14.2)
@@ -753,9 +756,6 @@ importers:
         version: link:../tsconfig
       '@mysten/seal':
         specifier: 'catalog:'
-        version: 1.2.0(@mysten/sui@2.18.0(typescript@6.0.3))
-      '@mysten/walrus':
-        specifier: ^1.2.0
         version: 1.2.0(@mysten/sui@2.18.0(typescript@6.0.3))
       '@types/node':
         specifier: 'catalog:'

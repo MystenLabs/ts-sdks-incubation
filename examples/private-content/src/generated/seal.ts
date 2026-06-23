@@ -14,7 +14,7 @@ export const seal = {
 				mode: "local-keygen",
 				name: "seal",
 				objectId: requireValue<string>(dep, "seal:seal", "objectId"),
-				serverConfigs: requireValue<ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly aggregatorUrl?: string }>>(dep, "seal:seal", "serverConfigs"),
+				serverConfigs: requireValue<ReadonlyArray<{ readonly objectId: string; readonly weight: number; readonly apiKeyName?: string; readonly apiKey?: string; readonly aggregatorUrl?: string }>>(dep, "seal:seal", "serverConfigs"),
 			},
 		} as const;
 	},
