@@ -26,7 +26,9 @@ const serverConfigsCacheKey = (configs: ReadonlyArray<KeyServerConfig>) =>
 	configs
 		.map(
 			(config) =>
-				`${config.objectId}:${config.weight}:${config.aggregatorUrl ?? ''}:${config.apiKeyName ?? ''}`,
+				// Include `apiKey` so rotating a runtime-injected credential (same
+				// apiKeyName) busts the cached SealClient instead of reusing a stale one.
+				`${config.objectId}:${config.weight}:${config.aggregatorUrl ?? ''}:${config.apiKeyName ?? ''}:${config.apiKey ?? ''}`,
 		)
 		.join('|');
 

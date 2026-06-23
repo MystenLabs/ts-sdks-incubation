@@ -135,7 +135,10 @@ export interface SealLocalKeygenOptions<
  *  the non-secret `apiKeyName`). `{ server: 'committee' }` opts a testnet
  *  stack into the committee aggregator. `serverConfigs` is the raw verbatim
  *  override. `verifyKeyServers` defaults to the SDK default (true) on live /
- *  known — omit it; only local-keygen forces it false.
+ *  known — omit it; only local-keygen forces it false. This default also
+ *  applies to a verbatim `serverConfigs` override: for a private / unregistered
+ *  key server (whose on-chain registration can't be verified), pass
+ *  `verifyKeyServers: false` explicitly.
  *
  *  NOTE: devstack never carries the secret committee `apiKey` value (committed
  *  config + the browser-injected `deployment.json` are world-readable). Pass
