@@ -1,9 +1,9 @@
 ---
-title: Generated Outputs
+title: Codegen & deployments
 description: Current generated-file behavior.
 ---
 
-Import typed bindings for your Move packages and the services in your stack from one place:
+Import generated bindings for your Move packages and the services in your stack from one place:
 `src/generated`. Run `devstack codegen` to (re)write that tree from your Move source. It's
 deterministic — running it twice on the same source produces the same files — and needs no running
 stack, Docker, or on-chain ids. It does require the
@@ -16,7 +16,7 @@ The tree lives at one fixed location, shared across every stack:
 src/generated/
 ```
 
-Codegen emits a flat set of files, one per domain:
+Codegen emits a set of files, one per domain:
 
 ```txt
 config.ts            # sui networks + package handles (id-free; deployment lookups)
@@ -28,6 +28,11 @@ seal.ts              # seal key-server / vault handles
 walrus.ts            # walrus endpoints and config
 bindings/<pkg>/<module>.ts   # generated Move bindings, one file per module
 ```
+
+The `config.ts`, `config-runtime.ts`, `deployment.ts`, and `bindings/` outputs are always present.
+The service files (`coins.ts`, `deepbook.ts`, `seal.ts`, `walrus.ts`) appear only when your stack
+declares the corresponding plugin — an app with no `seal(...)`/`walrus(...)` member emits no
+`seal.ts`/`walrus.ts`.
 
 The `bindings/` tree is standard Sui Move codegen — `MoveStruct` BCS definitions and typed function
 builders, one file per module. Devstack drives the

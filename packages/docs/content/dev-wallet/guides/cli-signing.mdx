@@ -1,5 +1,6 @@
 ---
 title: CLI Signing
+description: Sign dApp transactions with the same sui CLI address you published your package from
 ---
 
 If you published a package with `sui move publish` and need to call admin functions from a dApp
@@ -12,7 +13,7 @@ transaction bytes are sent for signing.
 Start the standalone wallet. If `sui` is on your PATH, the CLI adapter is enabled automatically:
 
 ```bash
-npx @mysten-incubation/dev-wallet serve
+pnpm dlx @mysten-incubation/dev-wallet serve
 ```
 
 Open the URL printed in the terminal to authenticate. The wallet UI shows your CLI accounts — import
@@ -20,7 +21,7 @@ the address you used for `sui move publish`.
 
 In your dApp, register the wallet:
 
-```typescript
+```ts
 import { DevWalletClient } from '@mysten-incubation/dev-wallet/client';
 
 DevWalletClient.register({ origin: 'http://localhost:5174' });
@@ -31,7 +32,7 @@ the same key that deployed your package, giving you access to `AdminCap` and oth
 
 ## Programmatic usage
 
-```typescript
+```ts
 import { RemoteCliAdapter } from '@mysten-incubation/dev-wallet/adapters';
 
 const adapter = new RemoteCliAdapter({
@@ -58,6 +59,6 @@ await adapter.initialize();
 
 ## Related
 
-- [Remote CLI Adapter reference](/dev-wallet/reference/adapters/remote-cli) — full API
-- [Standalone Mode](/dev-wallet/reference/standalone-mode) — running the wallet as a separate web
+- [Remote CLI adapter reference](/dev-wallet/reference/adapters/remote-cli) — full API
+- [Standalone mode](/dev-wallet/reference/standalone-mode) — running the wallet as a separate web
   app

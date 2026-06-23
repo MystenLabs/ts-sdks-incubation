@@ -1,5 +1,6 @@
 ---
 title: WebCryptoSignerAdapter
+description: Persistent Secp256r1 keys generated via the Web Crypto API and stored in IndexedDB
 ---
 
 Generates Secp256r1 key pairs via the browser's
@@ -9,15 +10,15 @@ in IndexedDB. Keys survive page reloads and browser restarts.
 <Callout type="info">
 Requires the `@mysten/signers` peer dependency:
 
-```sh npm2yarn
-npm i @mysten/signers
+```bash
+pnpm add @mysten/signers
 ```
 
 </Callout>
 
 ## Usage
 
-```typescript
+```ts
 import { WebCryptoSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
 
 const adapter = new WebCryptoSignerAdapter();
@@ -30,7 +31,7 @@ const account = await adapter.createAccount({ label: 'Persistent Dev' });
 The constructor accepts optional `dbName` and `storeName` to control which IndexedDB database is
 used (defaults: `'dev-wallet-webcrypto'` and `'accounts'`).
 
-## How Persistence Works
+## How persistence works
 
 1. When you create an account, a non-extractable `CryptoKeyPair` is generated via
    `crypto.subtle.generateKey()`

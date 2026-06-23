@@ -1,14 +1,15 @@
 ---
 title: Standalone Mode
+description: Run the dev wallet as a separate web app shared across dApps via popup signing
 ---
 
-Run Dev Wallet as a separate web application. Your dApp communicates with it via popup windows and
-PostMessage.
+Run the dev wallet as a separate web application. Your dApp communicates with it via popup windows
+and PostMessage.
 
-## Starting the Server
+## Starting the server
 
 ```bash
-npx @mysten-incubation/dev-wallet serve
+pnpm dlx @mysten-incubation/dev-wallet serve
 ```
 
 This starts a Vite dev server (default port 5174) with:
@@ -20,8 +21,10 @@ This starts a Vite dev server (default port 5174) with:
 
 ### Options
 
+The only flags are `--port` (default `5174`) and `--help`:
+
 ```bash
-npx @mysten-incubation/dev-wallet serve --port 3000
+pnpm dlx @mysten-incubation/dev-wallet serve --port 3000
 ```
 
 ## Connecting from a dApp
@@ -31,7 +34,7 @@ npx @mysten-incubation/dev-wallet serve --port 3000
 If your dApp uses `@mysten/dapp-kit-react`, register the standalone wallet through
 `walletInitializers`:
 
-```typescript
+```ts
 import { createDAppKit } from '@mysten/dapp-kit-react';
 import { devWalletClientInitializer } from '@mysten-incubation/dev-wallet/client';
 
@@ -45,7 +48,7 @@ const dAppKit = createDAppKit({
 
 If you're not using dApp Kit, register the wallet client directly:
 
-```typescript
+```ts
 import { DevWalletClient } from '@mysten-incubation/dev-wallet/client';
 
 const unregister = DevWalletClient.register({
@@ -70,7 +73,7 @@ document.head.appendChild(s);
 
 The bookmarklet automatically detects the wallet server origin from the script URL.
 
-## How Popup Signing Works
+## How popup signing works
 
 ```mermaid
 sequenceDiagram
@@ -101,7 +104,7 @@ sequenceDiagram
 
 Returns a wallet initializer object for use with `createDAppKit({ walletInitializers: [...] })`:
 
-```typescript
+```ts
 function devWalletClientInitializer(options?: DevWalletClientOptions): {
 	id: string;
 	initialize(): { unregister: () => void };
@@ -112,7 +115,7 @@ function devWalletClientInitializer(options?: DevWalletClientOptions): {
 
 For direct registration without dApp Kit:
 
-```typescript
+```ts
 class DevWalletClient implements Wallet {
 	constructor(options?: DevWalletClientOptions);
 	static register(options?: DevWalletClientOptions): () => void;
@@ -127,7 +130,7 @@ class DevWalletClient implements Wallet {
 | `icon`   | `WalletIcon` | Built-in icon             | Wallet icon                     |
 | `origin` | `string`     | `'http://localhost:5174'` | Origin of the standalone wallet |
 
-## CLI Signer
+## CLI signer
 
 When `sui` is detected on your PATH, the standalone server enables the Remote CLI adapter
 automatically. This means you can use your real keystore accounts (`~/.sui/sui_config/sui.keystore`)
@@ -135,7 +138,7 @@ for signing.
 
 The CLI adapter supports all key schemes available in your keystore (Ed25519, Secp256k1, Secp256r1).
 
-## Session Management
+## Session management
 
 The standalone wallet uses JWT-based sessions:
 
@@ -144,20 +147,20 @@ The standalone wallet uses JWT-based sessions:
 3. The token is stored in `localStorage` and reused for subsequent signing requests
 4. On `disconnect()`, the session is cleared
 
-## Multiple dApps
+## Multiple dApps connecting at once
 
 Because the standalone wallet runs independently, any number of dApps can connect to the same
 instance. Each dApp gets its own JWT session scoped to its origin, but all sessions share the same
 underlying accounts and balances. Useful when working across several dApps simultaneously, sharing
 dev accounts with a team, or when you can't modify a dApp's source to embed a wallet.
 
-## Embedded vs Standalone
+## Embedded vs standalone
 
-|                 | Embedded                              | Standalone                                |
-| --------------- | ------------------------------------- | ----------------------------------------- |
-| **Setup**       | `useDevWallet()` in your app          | `npx @mysten-incubation/dev-wallet serve` |
-| **Import**      | `@mysten-incubation/dev-wallet/react` | `@mysten-incubation/dev-wallet/client`    |
-| **UI Location** | In your app's DOM                     | Separate popup windows                    |
-| **Signing**     | In-process, same origin               | Cross-origin via PostMessage              |
-| **CLI Keys**    | Not available                         | Available if `sui` on PATH                |
-| **Best For**    | Development, testing                  | Teams sharing a wallet server             |
+|                 | Embedded                              | Standalone                                     |
+| --------------- | ------------------------------------- | ---------------------------------------------- |
+| **Setup**       | `useDevWallet()` in your app          | `pnpm dlx @mysten-incubation/dev-wallet serve` |
+| **Import**      | `@mysten-incubation/dev-wallet/react` | `@mysten-incubation/dev-wallet/client`         |
+| **UI location** | In your app's DOM                     | Separate popup windows                         |
+| **Signing**     | In-process, same origin               | Cross-origin via PostMessage                   |
+| **CLI keys**    | Not available                         | Available if `sui` on PATH                     |
+| **Best for**    | Development, testing                  | Teams sharing a wallet server                  |

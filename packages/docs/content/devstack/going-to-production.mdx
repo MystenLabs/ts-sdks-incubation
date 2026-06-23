@@ -10,26 +10,27 @@ live networks the app supports, scaffold a typed `deployments/<net>.ts` from an 
 dapp-kit switch between networks at runtime, and produce a build that talks only to the live network
 — no local RPC, no dev wallet.
 
-It's one config flowing through five steps. The
+It's one config flowing through a handful of steps. The
 [connect-four example](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four)
 ships a worked devnet deployment you can follow, and it's referenced throughout below.
 
-## 1. Declare the live network set
+## 1. How the live network set is declared
 
-To support a live network, drop a `deployments/<net>.ts` file in your project. That's it — there's
-no config field and no manual wiring.
+A live network is declared by a committed `deployments/<net>.ts` file. There's no config field and
+no manual wiring — codegen derives the live-network set from the `deployments/*.ts` filenames.
+`localnet` is implicit (it's your dev stack), so the supported set is `[localnet, ...<files>]`.
 
 ```
 my-app/
 ├── deployments/
-│   └── devnet.ts        ← drop this → "devnet" is a live network
+│   └── devnet.ts        ← a deployments/<net>.ts file ⇒ "devnet" is a live network
 ├── src/
 │   └── generated/
 └── devstack.config.ts
 ```
 
-Codegen derives the live-network set from the `deployments/*.ts` filenames. `localnet` is implicit —
-it's your dev stack. Your `src/generated/deployment.ts` reflects exactly the files present:
+You don't hand-author that file — you generate it from a real deploy in the next step, then commit
+it. Once it's present, `src/generated/deployment.ts` reflects exactly the files present:
 
 ```ts title="src/generated/deployment.ts"
 /** The LIVE network names this app ships — the `deployments/*.ts` filenames. */
@@ -39,13 +40,23 @@ export type ProvidedNetwork = 'devnet';
 export const NETWORK_NAMES = ['localnet', 'devnet'] as const;
 ```
 
-## 2. Scaffold a typed deployment from a live deploy
+## 2. Generate a typed deployment from a real deploy
 
-You don't hand-type 0x-strings. Publish your package to the target network, then run
-`dump-deployment` to scaffold a typed deployment file from the resolved stack:
+You don't hand-type 0x-strings. The flow is two steps: publish your package to the target network,
+then run `dump-deployment` to scaffold a typed deployment file from the resolved stack.
+
+First publish to the target network, which writes the real package id:
 
 ```sh
-devstack dump-deployment --network devnet
+sui client switch --env devnet
+sui client test-publish move/connect_four --build-env devnet
+```
+
+Then scaffold the typed file. `dump-deployment --network <net>` does not publish — it resolves the
+stack for that network and emits the deployment file from it:
+
+```sh
+pnpm exec devstack dump-deployment --network devnet
 ```
 
 This writes `deployments/devnet.ts` as typed TypeScript —
@@ -76,8 +87,9 @@ export const deployment = {
 } satisfies AppNetworkDeployment;
 ```
 
-From here you edit and complete it like any source file. The `satisfies AppNetworkDeployment` ties
-it to the app's strict generated type
+From here you edit and complete it like any source file, then commit it — the committed
+`deployments/<net>.ts` is the authoring surface for that network. The
+`satisfies AppNetworkDeployment` ties it to the app's strict generated type
 ([Config & deployments](/devstack/codegen/config-and-deployments)): `packages` must cover every
 declared package, and `mvrOverrides.packages` must carry every `@local/<slug>` placeholder. A
 missing or mistyped id is a type error, so you catch it at `tsc` rather than in the running app.
@@ -118,6 +130,11 @@ The wiring reads straight off `config`:
 export const dAppKit = createDAppKit({
 	networks: [...config.networkNames],
 	defaultNetwork: config.defaultNetwork,
+	// `autoConnect` is omitted here (it defaults off) so a production build shows
+	// the real connect prompt; the [Get started](/devstack/) snippet enables it
+	// in dev for fast local iteration. dApp Kit discovers the dev wallet via
+	// wallet-standard either way — `autoConnect` only controls reconnect, not
+	// whether the wallet is present.
 	createClient(network) {
 		const net = config.forNetwork(network);
 		return new SuiGrpcClient({
@@ -161,10 +178,10 @@ A clean grep confirms the localnet RPC, the dev wallet, and the dev-only globals
 full check, serve the bundle and confirm it connects to the live network's RPC, reads the real
 package id, and lands a tx signed by an external wallet.
 
-## Worked example: the connect-four devnet capstone
+## Worked example: connect-four on devnet
 
-connect-four ships the full path as a runnable capstone. `deployments/devnet.ts` (above) is its
-committed live network, published to Sui devnet. Two browser scenarios prove it:
+connect-four ships the full path end to end. `deployments/devnet.ts` (above) is its committed live
+network, published to Sui devnet. Two browser scenarios prove it:
 
 - **Switch**
   ([`tests/browser/network-switch.spec.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/connect-four/tests/browser/network-switch.spec.ts))

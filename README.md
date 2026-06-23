@@ -1,9 +1,8 @@
 # ts-sdks-incubation
 
-Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosystem. Some
-packages are published to npm under the `@mysten-incubation` scope. Devstack is installable
-from npm, but it is still prototype-stage: the public surface can break freely as we
-iterate toward a stable release.
+Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosystem, published to
+npm under the `@mysten-incubation` scope. They are pre-1.0 and unstable: the public surface can
+break freely as we iterate toward a stable release.
 
 ## Packages
 
@@ -45,7 +44,7 @@ For contributors working on devstack, the living docs are:
 - [`packages/devstack/STYLE_GUIDE.md`](packages/devstack/STYLE_GUIDE.md) — code-level patterns and explicit bans (Effect v4 idioms, tagged errors, atomic writes, span vocabulary, etc.).
 - [`packages/devstack/ARCHITECTURE.md`](packages/devstack/ARCHITECTURE.md) — layer / capability-contract boundaries; the answer to "is this the right place for X?".
 
-## Getting Started
+## Getting started
 
 ```bash
 pnpm install
@@ -83,10 +82,9 @@ Use these to try a change in a downstream app before it lands on `main`.
 
 ## Contributing
 
-Packages that go through normal versioned releases require
-[changesets](https://github.com/changesets/changesets) for version management — run
-`pnpm changeset` to create one. Prototype packages may still ship manually while APIs churn;
-breaking changes go in directly without deprecation cycles.
+The published packages use [changesets](https://github.com/changesets/changesets) for version
+management — run `pnpm changeset` to record a version bump for any PR that changes published
+behavior. The packages are pre-1.0, so breaking changes go in directly without deprecation cycles.
 
 See [AGENTS.md](AGENTS.md) for repo-wide development guidance.
 

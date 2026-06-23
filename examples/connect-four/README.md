@@ -61,16 +61,12 @@ At runtime the app switches between every network it supports (`localnet` plus e
 `config.networkNames` and resolves each per-network client off `config.forNetwork(net)`, so a
 `switchNetwork(...)` repoints rpc + package ids in lockstep.
 
-Then deploy the static `dist/` bundle.
-
-For the end-to-end validation harness (publish → build → browser-verified devnet tx, including a
-runtime localnet→devnet switch), see [`capstone/README.md`](./capstone/README.md). For the
-canonical reference, see the
+Then deploy the static `dist/` bundle. For the canonical reference, see the
 [Going to production](https://ts-sdks-incubation.vercel.app/devstack/going-to-production) page in
 the devstack docs.
 
 ## See also
 
 - [examples/README.md](../README.md) — every runnable example.
-- [Actions feature page](https://ts-sdks-incubation.vercel.app/devstack/features/actions) —
+- [Actions](https://ts-sdks-incubation.vercel.app/devstack/configure/actions) —
   background on the post-publish action wired into this stack.

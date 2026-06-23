@@ -7,14 +7,12 @@ Use the `vitest` subpath to run node-mode unit and e2e tests against a devstack 
 
 ```ts title="vitest.config.ts"
 import { defineConfig } from 'vitest/config';
-import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
 import {
 	devstackVitestServerConfig,
 	devstackVitestTestConfig,
 } from '@mysten-incubation/devstack/vitest';
 
 export default defineConfig({
-	plugins: [devstackVitePlugin()],
 	server: devstackVitestServerConfig(),
 	test: devstackVitestTestConfig({
 		threads: 'single',
@@ -23,8 +21,10 @@ export default defineConfig({
 });
 ```
 
-Vitest runs its own Vite pipeline, so add `devstackVitePlugin()` here too — without it the
-`@generated` alias won't resolve when you import generated code under test.
+Vitest reads your `vite.config.ts` by default, so it inherits the `devstackVitePlugin()` you already
+have there — that's what resolves the `@generated` alias when you import generated code under test.
+If you don't have a `vite.config.ts`, add `plugins: [devstackVitePlugin()]` here too, or the alias
+won't resolve.
 
 The `@mysten-incubation/devstack/vitest` subpath exports:
 
@@ -32,7 +32,10 @@ The `@mysten-incubation/devstack/vitest` subpath exports:
   to boot and tear down a stack around the run.
 - `devstackVitestServerConfig` — build the `server` block for `defineConfig`.
 - `useDevstackTestSetup` — wire boot/teardown into a shared setup file with your own
-  `beforeAll`/`afterAll`.
+  `beforeAll`/`afterAll`. This is the programmatic equivalent of the `testSetup` config knob above:
+  use `testSetup` to let `devstackVitestTestConfig` wire the bundled setup file for you, or
+  `useDevstackTestSetup` when you own a setup file and want to call the hooks yourself. Both take
+  the same options (e.g. `{ requireDevstack: true }`).
 - `runDevstackBeforeAll` / `runDevstackAfterAll` — the boot and teardown steps on their own, if you
   prefer to call them directly instead of through `useDevstackTestSetup`.
 - `getStackContext` — read the booted stack's context (endpoints, manifest) inside a test.
@@ -74,7 +77,6 @@ and the teardown and only publishes the env handoff (`DEVSTACK_STACK` + `DEVSTAC
 and `DEVSTACK_DEPLOYMENT_FILE` for the generated config) to the existing manifest.
 
 ```ts title="vitest.e2e.config.ts"
-import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
 import {
 	devstackVitestServerConfig,
 	devstackVitestTestConfig,
@@ -82,7 +84,6 @@ import {
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-	plugins: [devstackVitePlugin()],
 	server: devstackVitestServerConfig(),
 	test: devstackVitestTestConfig({ autoBoot: true, test: { testTimeout: 60_000 } }),
 });

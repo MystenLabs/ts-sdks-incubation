@@ -1,5 +1,6 @@
 ---
 title: Dev Wallet
+description: A development-only wallet for building and testing Sui dApps, no extension required
 ---
 
 A development-only wallet for building and testing Sui dApps — no browser extension required.
@@ -13,27 +14,17 @@ A development-only wallet for building and testing Sui dApps — no browser exte
 	until the API stabilizes at 1.0.
 </Callout>
 
-![Dev Wallet panel showing account and balances](/dev-wallet/wallet-panel-open.png)
+![Dev wallet panel showing account and balances](/dev-wallet/wallet-panel-open.png)
 
-## Use cases
+## Quick start
 
-| I want to...                                                   | How                                                                                                | Details                                                       |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| Connect a wallet to **localnet** or a custom network           | Built-in — devnet, testnet, localnet included by default. Pass custom URLs via `networks` config.  | [Getting Started](/dev-wallet/getting-started)                |
-| **Test my dApp end-to-end** without click-through approvals    | Set `autoApprove: true`                                                                            | [E2E Testing](/dev-wallet/guides/e2e-testing)                 |
-| Keep a **persistent dev wallet** that survives page reloads    | Use `WebCryptoSignerAdapter` — keys stored in IndexedDB, survive refresh and restart               | [WebCrypto adapter](/dev-wallet/reference/adapters/webcrypto) |
-| Sign with the **same address I published contracts from**      | Use standalone wallet + `RemoteCliAdapter`                                                         | [CLI Signing](/dev-wallet/guides/cli-signing)                 |
-| **Share one wallet** across multiple dApps                     | Run standalone wallet, register in each dApp                                                       | [Standalone Mode](/dev-wallet/reference/standalone-mode)      |
-| Build a **demo app** users can try without installing a wallet | Set `autoConnect: true`, `mountUI: true` — wallet embeds directly, no extension needed             | [Getting Started](/dev-wallet/getting-started)                |
-| **Prototype fast** with zero setup                             | Use `WebCryptoSignerAdapter` with defaults — three lines of config                                 | [Getting Started](/dev-wallet/getting-started)                |
-| Keep dev keys **separate from mainnet credentials**            | All adapters are isolated from production wallets by design — keys are ephemeral or browser-scoped | [Adapters](/dev-wallet/reference/adapters)                    |
+The recommended path: if your app uses `@mysten/dapp-kit-react`, embed the wallet directly with the
+dApp Kit plugin. It inherits your network config, appears in the wallet picker, and needs no
+extension.
 
-## Quick Start
-
-### Embedded in your app (dApp Kit plugin)
-
-If your app uses `@mysten/dapp-kit-react`, embed the wallet directly — it inherits your network
-config automatically:
+```bash
+pnpm add @mysten-incubation/dev-wallet
+```
 
 ```tsx
 import { createDAppKit } from '@mysten/dapp-kit-react';
@@ -52,13 +43,41 @@ const dAppKit = createDAppKit({
 });
 ```
 
+That's it — the dev wallet now shows up in dApp Kit's wallet picker. See
+[Getting started](/dev-wallet/getting-started) for the full setup, peer dependencies, and a
+non-dApp-Kit path.
+
+## How it works
+
+The dev wallet implements the wallet-standard interface (`sui:signTransaction`,
+`sui:signAndExecuteTransaction`, `sui:signPersonalMessage`) and registers itself in the
+wallet-standard registry. It appears in dApp Kit's wallet picker alongside production wallets.
+
+Key management is handled by pluggable **adapters** — InMemory (ephemeral), WebCrypto (persistent),
+Passkey (biometric), and Remote CLI (sui keystore). See [Adapters](/dev-wallet/reference/adapters)
+for details.
+
+## Other ways to use it
+
+Beyond the embedded happy path, the dev wallet covers a few more workflows:
+
+| I want to...                                                   | How                                                                                                | Details                                                       |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Connect a wallet to **localnet** or a custom network           | Built-in — devnet, testnet, localnet included by default. Pass custom URLs via `networks` config.  | [Getting started](/dev-wallet/getting-started)                |
+| **Test my dApp end-to-end** without click-through approvals    | Set `autoApprove: true`                                                                            | [e2e testing](/dev-wallet/guides/e2e-testing)                 |
+| Keep a **persistent dev wallet** that survives page reloads    | Use `WebCryptoSignerAdapter` — keys stored in IndexedDB, survive refresh and restart               | [WebCrypto adapter](/dev-wallet/reference/adapters/webcrypto) |
+| Sign with the **same address I published contracts from**      | Use the standalone wallet + `RemoteCliAdapter`                                                     | [CLI signing](/dev-wallet/guides/cli-signing)                 |
+| **Share one wallet** across multiple dApps                     | Run the standalone wallet, register it in each dApp                                                | [Standalone mode](/dev-wallet/reference/standalone-mode)      |
+| Build a **demo app** users can try without installing a wallet | Set `autoConnect: true`, `mountUI: true` — wallet embeds directly, no extension needed             | [Getting started](/dev-wallet/getting-started)                |
+| Keep dev keys **separate from mainnet credentials**            | All adapters are isolated from production wallets by design — keys are ephemeral or browser-scoped | [Adapters](/dev-wallet/reference/adapters)                    |
+
 ### Standalone wallet
 
 Run the wallet as its own web app — your dApp connects via popup, just like a production wallet.
 Start the server, then register it through `walletInitializers`:
 
 ```bash
-npx @mysten-incubation/dev-wallet serve
+pnpm dlx @mysten-incubation/dev-wallet serve
 ```
 
 ```tsx
@@ -71,23 +90,13 @@ const dAppKit = createDAppKit({
 });
 ```
 
-The default port is 5174 (Vite's default). If the port is busy, Vite picks the next available —
-check the terminal output. See [Standalone Mode](/dev-wallet/reference/standalone-mode) for details.
-
-## How it works
-
-Dev Wallet implements the wallet-standard interface (`sui:signTransaction`,
-`sui:signAndExecuteTransaction`, `sui:signPersonalMessage`) and registers itself in the
-wallet-standard registry. It appears in dApp Kit's wallet picker alongside production wallets.
-
-Key management is handled by pluggable **adapters** — InMemory (ephemeral), WebCrypto (persistent),
-Passkey (biometric), and Remote CLI (sui keystore). See [Adapters](/dev-wallet/reference/adapters)
-for details.
+The default port is 5174. If the port is busy, the server picks the next available one — check the
+terminal output. See [Standalone mode](/dev-wallet/reference/standalone-mode) for details.
 
 ## Guides
 
-- [Getting Started](/dev-wallet/getting-started) — installation and first setup
-- [E2E Testing](/dev-wallet/guides/e2e-testing) — automated testing with auto-approval
-- [CLI Signing](/dev-wallet/guides/cli-signing) — sign with your contract publish address
-- [Standalone Mode](/dev-wallet/reference/standalone-mode) — one wallet across multiple dApps
+- [Getting started](/dev-wallet/getting-started) — installation and first setup
+- [e2e testing](/dev-wallet/guides/e2e-testing) — automated testing with auto-approval
+- [CLI signing](/dev-wallet/guides/cli-signing) — sign with your contract publish address
+- [Standalone mode](/dev-wallet/reference/standalone-mode) — one wallet across multiple dApps
 - [Reference](/dev-wallet/reference/adapters) — adapters, APIs, and architecture

@@ -9,14 +9,15 @@ resolves to a typed value from `start`.
 - `id`: graph identity and generated default resource id.
 - `dependsOn`: a single plugin/ref, an array, or an object.
 - `role`: lifecycle classification for the supervisor (`'service' | 'task' | …`).
-- `start`: the effect that produces the resolved value.
-- `capabilities`: optional declarations for routing, snapshots, strategies, projection events, and
-  generated files.
+- `start`: the effect that produces the resolved value. Contributions (routing, snapshots,
+  strategies, projection events, generated files) are emitted inline from `start` via the per-plugin
+  `PluginContext` service — `const ctx = yield* PluginContext`, then `ctx.codegen` / `ctx.endpoint`
+  / `ctx.snapshotExtra` / `ctx.publish` / `ctx.provides`. There is no separate `capabilities` field.
 
 The public helpers are available from the root export:
 
 ```ts
-import { definePlugin, defineCapability, codegenable } from '@mysten-incubation/devstack';
+import { definePlugin, PluginContext } from '@mysten-incubation/devstack';
 ```
 
 Direct plugin/resource references are the public cross-plugin pattern:

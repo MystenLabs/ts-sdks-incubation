@@ -24,10 +24,6 @@ boot it with `--network`:
 devstack up --network testnet
 ```
 
-The apps that do ship a frontend (`connect-four`, `deepbook-trader`) cover the full deploy flow:
-`pnpm dev` injects live ids automatically, `pnpm build` is stack-free, and production builds read
-a committed `deployment.json`-schema file via `devstackVitePlugin({ ids: './config/<network>.ids.json' })`
-or `DEVSTACK_DEPLOYMENT_FILE`. See the canonical
-[Deploy to a real network](https://ts-sdks-incubation.vercel.app/devstack/features/codegen#deploy-to-a-real-network)
-docs for the deployment schema and the loud `DevstackConfigMissingError` thrown when no ids are
-injected.
+For apps that ship a frontend, the production deploy flow (a committed typed
+`deployments/<network>.ts` auto-discovered by `devstackVitePlugin()`) is covered by the canonical
+[Going to production](https://ts-sdks-incubation.vercel.app/devstack/going-to-production) guide.

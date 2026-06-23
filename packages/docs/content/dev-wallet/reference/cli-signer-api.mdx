@@ -1,13 +1,14 @@
 ---
 title: CLI Signer API
+description: HTTP endpoints the standalone server exposes for signing with the sui CLI keystore
 ---
 
 HTTP API for signing transactions using the local `sui` CLI keystore. Private keys never leave the
 `sui` binary — only transaction bytes are sent for signing.
 
 This API is served by the dev wallet's standalone server
-(`npx @mysten-incubation/dev-wallet serve`). The endpoints are implemented as middleware that can be
-mounted on any HTTP server.
+(`pnpm dlx @mysten-incubation/dev-wallet serve`). The endpoints are implemented as middleware that
+can be mounted on any HTTP server.
 
 ## Endpoints
 
@@ -24,6 +25,10 @@ Authorization: Bearer <token>
 
 **Response (200):**
 
+The `accounts` array is the raw, verbatim output of `sui keytool list --json` — the server runs that
+command and returns its parsed JSON unchanged. The exact field shape is defined by the `sui` CLI,
+not by the dev wallet, and may change between CLI versions. A representative entry looks like:
+
 ```json
 {
 	"accounts": [
@@ -37,12 +42,9 @@ Authorization: Bearer <token>
 }
 ```
 
-| Field             | Type             | Description                                     |
-| ----------------- | ---------------- | ----------------------------------------------- |
-| `suiAddress`      | `string`         | Hex address with `0x` prefix                    |
-| `publicBase64Key` | `string`         | Base64-encoded public key with flag byte prefix |
-| `keyScheme`       | `string`         | `ed25519`, `secp256k1`, or `secp256r1`          |
-| `alias`           | `string \| null` | Human-friendly account name, if set             |
+Because this is a passthrough, treat the field names and types as owned by
+`sui keytool list --json`. Run that command locally to see the precise schema for your installed CLI
+version.
 
 ### POST /api/v1/sign-transaction
 
@@ -82,7 +84,7 @@ Content-Type: application/json
 
 **Personal message signing is not supported** — `sui keytool sign` only accepts TransactionData.
 
-## Error Responses
+## Error responses
 
 All errors return JSON with an `error` field:
 
@@ -90,14 +92,18 @@ All errors return JSON with an `error` field:
 { "error": "description of what went wrong" }
 ```
 
-| Status | When                                                      |
-| ------ | --------------------------------------------------------- |
-| `400`  | Invalid JSON body, bad address format, or invalid txBytes |
-| `401`  | Missing or invalid authentication token                   |
-| `403`  | Request not from localhost                                |
-| `404`  | Address not found in keystore                             |
-| `413`  | Request body exceeds 2 MB (based on `content-length`)     |
-| `500`  | `sui` CLI not found or signing failure                    |
+The status codes are not uniform across endpoints — `404` and `413` only apply to
+`POST /api/v1/sign-transaction`, and a failed account listing returns `500`, not `404`:
+
+| Status | Endpoint         | When                                                                       |
+| ------ | ---------------- | -------------------------------------------------------------------------- |
+| `400`  | sign-transaction | Invalid JSON body, bad address format, or invalid `txBytes`                |
+| `401`  | both             | Missing or invalid bearer token (token middleware runs on `/api/*`)        |
+| `403`  | both             | `Host` header is not `localhost`/`127.0.0.1`/`[::1]` (DNS-rebinding guard) |
+| `404`  | sign-transaction | Address not found in the keystore                                          |
+| `413`  | sign-transaction | Request body exceeds 2 MB (based on `content-length`)                      |
+| `500`  | accounts         | `sui` CLI not found, or `sui keytool list` failed                          |
+| `500`  | sign-transaction | `sui keytool sign` failed for a reason other than a missing key            |
 
 ## Authentication
 
@@ -109,12 +115,13 @@ The API uses a **token-in-URL** approach (same pattern as Jupyter notebooks):
 4. All API requests require the token in the `Authorization: Bearer <token>` header
 5. Token comparison uses `timingSafeEqual()` to prevent timing attacks
 
-## Client Integration
+## Client integration
 
 The `RemoteCliAdapter` from `@mysten-incubation/dev-wallet/adapters` implements the browser-side
-client for this API. See [Remote CLI Adapter](/dev-wallet/reference/adapters/remote-cli) for usage.
+client for this API. The token is read from the URL printed at server start and persisted to
+`localStorage`. See [Remote CLI adapter](/dev-wallet/reference/adapters/remote-cli) for usage.
 
-```typescript
+```ts
 import { RemoteCliAdapter } from '@mysten-incubation/dev-wallet/adapters';
 
 const adapter = new RemoteCliAdapter({

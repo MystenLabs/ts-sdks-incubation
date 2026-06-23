@@ -87,7 +87,8 @@ account('trader', {
   strategy.
 - `via` adds a dependency edge on the member that provides the strategy (e.g. a DeepBook instance),
   so that provider resolves before funding runs. Use it when the coin's funding comes from a service
-  rather than its own package publish.
+  rather than its own package publish. `via` is only valid on a coin-ref entry (`{ coin: <ref> }`);
+  the `{ coin: 'sui' }` shorthand always funds through the faucet and takes no `via`.
 
 Amounts are in the coin's smallest unit (MIST for SUI).
 

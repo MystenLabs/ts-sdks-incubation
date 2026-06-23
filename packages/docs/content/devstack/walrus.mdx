@@ -13,10 +13,13 @@ WAL.
 import { account, defineDevstack, sui, walCoin, walrus } from '@mysten-incubation/devstack';
 
 const localnet = sui();
+// `nodeCount` is the number of storage nodes in the committee (default 1). The
+// committee's shards are split across them — `shards` (default 100) is the total
+// shard count and must be >= `nodeCount`; raise `nodeCount` for a multi-node
+// committee.
 const localWalrus = walrus({
 	local: {
-		nodeCount: 1,
-		shards: 4,
+		nodeCount: 4,
 	},
 });
 const wal = walCoin(localWalrus);
@@ -38,6 +41,12 @@ clusters run only on local networks.
 `walCoin(walrusMember)` returns the WAL funding coin for that Walrus member. Pass it to account
 funding like any other coin ref to give an account WAL.
 
+In a bare stack you can add the cluster directly to `members`, as the snippet above does. In a real
+app, put only `localnet`, your app host-service, and `dashboard()` in `members`, and order the
+cluster via the consuming server's `after:` list so it boots before the app starts — see
+[`examples/private-content/devstack.config.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/devstack.config.ts)
+(`after: [localnet, vault, walrusCluster, sealKeyServer, devWallet]` on the `hostService`).
+
 ## Connect the SDK
 
 The config above runs the cluster; the [generated bindings](/devstack/codegen) carry its resolved
@@ -57,7 +66,13 @@ const w = walrus.forNetwork(network);
 
 const client = new WalrusClient({
 	suiClient,
-	packageConfig: w.packageConfig,
+	packageConfig: {
+		systemObjectId: w.packageConfig.systemObjectId,
+		stakingPoolId: w.packageConfig.stakingPoolId,
+		// `exchangeIds` is optional on the resolved config — only spread it
+		// when present so the shape matches `WalrusClient`'s expected type.
+		...(w.packageConfig.exchangeIds ? { exchangeIds: [...w.packageConfig.exchangeIds] } : {}),
+	},
 	// Local clusters serve plain HTTP behind the devstack proxy; live
 	// networks serve HTTPS.
 	storageNodeUrlScheme: w.mode === 'local' ? 'http' : 'https',
@@ -65,8 +80,9 @@ const client = new WalrusClient({
 });
 ```
 
-`w.packageConfig` already holds `systemObjectId`, `stakingPoolId`, and `exchangeIds` resolved at
-boot — pass it straight through. Keying `storageNodeUrlScheme` off `w.mode` lets the same code reach
-a local cluster over HTTP and a known deployment over HTTPS as the connected network changes. See
+`w.packageConfig` holds `systemObjectId`, `stakingPoolId`, and an optional `exchangeIds` resolved at
+boot — build the client's `packageConfig` field-by-field as above, spreading `exchangeIds` only when
+it's present. Keying `storageNodeUrlScheme` off `w.mode` lets the same code reach a local cluster
+over HTTP and a known deployment over HTTPS as the connected network changes. See
 [`examples/private-content`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/walrus.ts)
 for the full client with blob write/read.

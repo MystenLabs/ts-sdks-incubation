@@ -6,7 +6,7 @@ Walrus, Seal, and DeepBook, and generate typed files for app and test code.
 
 The current docs live at <https://ts-sdks-incubation.vercel.app/devstack>.
 
-## Quick Start
+## Quick start
 
 Scaffold a new app from the canonical template:
 
@@ -67,7 +67,6 @@ const app = hostService({
 export default defineDevstack({
 	members: [localnet, app],
 	stackName: 'main',
-	codegen: { outputDir: 'src/generated' },
 });
 ```
 
@@ -90,10 +89,10 @@ pnpm devstack apply
 If `pnpm devstack up` is already live for this stack, `apply` asks that supervisor to reconcile and
 waits for completion. Without a live supervisor, it runs one-shot setup and exits.
 
-Generated files are written under `src/generated` by default. Runtime state, manifests, snapshots,
-and logs stay under `.devstack/`.
+Generated bindings are written under `src/generated` by default. Runtime state, manifests,
+snapshots, and logs stay under `.devstack/`.
 
-## Package Surface
+## Package surface
 
 - Root API: stack composition, built-in factories, plugin-author helpers, and public types.
 - CLI: `devstack up`, `apply`, `codegen`, `dump-deployment`, `status`, `doctor`, `config`, `schema`,
@@ -108,8 +107,8 @@ engine internals directly.
 
 ## Docs
 
-- [Quickstart](https://ts-sdks-incubation.vercel.app/devstack/quickstart)
-- [Local development](https://ts-sdks-incubation.vercel.app/devstack/features/local-dev)
-- [Vitest integration](https://ts-sdks-incubation.vercel.app/devstack/features/testing-vitest)
-- [Playwright integration](https://ts-sdks-incubation.vercel.app/devstack/features/testing-playwright)
-- [Services](https://ts-sdks-incubation.vercel.app/devstack/features/services)
+- [Overview](https://ts-sdks-incubation.vercel.app/devstack)
+- [Local development](https://ts-sdks-incubation.vercel.app/devstack/configure/local-dev)
+- [Vitest integration](https://ts-sdks-incubation.vercel.app/devstack/testing/testing-vitest)
+- [Playwright integration](https://ts-sdks-incubation.vercel.app/devstack/testing/testing-playwright)
+- [Codegen & deployments](https://ts-sdks-incubation.vercel.app/devstack/codegen/config-and-deployments)

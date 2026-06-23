@@ -1,15 +1,16 @@
 ---
 title: UI Components
+description: Framework-agnostic Lit Web Components and the mountDevWallet helper, with CSS theming
 ---
 
-Dev Wallet ships [Lit](https://lit.dev/) Web Components for wallet management UI. These work in any
-framework — React, Vue, vanilla JS, or anything that renders HTML.
+The dev wallet ships [Lit](https://lit.dev/) Web Components for wallet management UI. These work in
+any framework — React, Vue, vanilla JS, or anything that renders HTML.
 
-## Quick Start: mountDevWallet
+## Quick start: mountDevWallet
 
 The simplest way to add the wallet UI:
 
-```typescript
+```ts
 import { mountDevWallet } from '@mysten-incubation/dev-wallet/ui';
 
 // Mount the floating panel (default: appends to document.body)
@@ -24,7 +25,7 @@ const unmount = mountDevWallet(wallet, {
 unmount();
 ```
 
-## The Wallet Panel
+## The wallet panel
 
 The `<dev-wallet-panel>` element renders a compact wallet dock in the bottom-right corner. Clicking
 it opens a slide-out drawer with tabs:
@@ -39,13 +40,13 @@ The panel also shows the signing modal when a request is pending.
 
 ![Signing modal with Approve and Reject buttons](/dev-wallet/signing-modal.png)
 
-### Settings Tab
+### Settings tab
 
 The Settings tab lets you manage networks and accounts:
 
 ![Settings tab showing networks and accounts](/dev-wallet/network-settings.png)
 
-## Component Catalog
+## Component catalog
 
 | Component                       | Description                                         |
 | ------------------------------- | --------------------------------------------------- |
@@ -62,7 +63,7 @@ The Settings tab lets you manage networks and accounts:
 | `<dev-wallet-network-badge>`    | Network indicator badge                             |
 | `<dev-wallet-fork-panel>`       | Fork controls (advance clock / checkpoint, status)  |
 
-## Using Components Directly
+## Using components directly
 
 All components accept a `wallet` property:
 
@@ -83,7 +84,7 @@ All components accept a `wallet` property:
 Components use Shadow DOM and CSS custom properties prefixed with `--dev-wallet-*`. They render in a
 self-contained dark theme that doesn't interfere with your app's styles.
 
-### Customizing Colors
+### Customizing colors
 
 Override CSS custom properties on the host element:
 
@@ -96,7 +97,7 @@ dev-wallet-panel {
 }
 ```
 
-### Available CSS Custom Properties
+### Available CSS custom properties
 
 **Colors:**
 

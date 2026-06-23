@@ -5,11 +5,11 @@
 	"pages": [
 		"index",
 		"configure",
+		"codegen",
+		"testing",
 		"walrus",
 		"seal",
 		"deepbook",
-		"codegen",
-		"testing",
 		"live-networks",
 		"forking",
 		"going-to-production",

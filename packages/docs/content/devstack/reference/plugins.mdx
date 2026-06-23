@@ -7,8 +7,7 @@ A plugin is a function that returns a stack member. The root package exports the
 `contracts` and `substrate` are internal source modules, not package subpaths for app or plugin
 author imports.
 
-A plugin returned by `definePlugin(...)` is a
-`{ id, role, section, dependsOn?, start, capabilities? }` bundle.
+A plugin returned by `definePlugin(...)` is a `{ id, role, section, dependsOn?, start }` bundle.
 
 - `id` — graph identity and the default resource id; the resolved value is published under this id.
 - `role` — lifecycle classification. `'service'` means a long-lived resource (a container, an HTTP
@@ -20,14 +19,19 @@ A plugin returned by `definePlugin(...)` is a
   usually `'service'`.
 - `dependsOn` — a single plugin/ref, an array, or an object of plugin/refs. Resolved upstream values
   are passed to `start` in the same shape — single, positional array, or keyed object.
-- `start` — the `Effect` that produces the resolved value. May yield substrate services
-  (`ContainerRuntimeService`, `IdentityContext`, `StackPathsService`) the supervisor provides.
-- `capabilities` — optional array (or factory) of capability decls: `codegenable`, `snapshotable`,
-  `routable`, strategy contributors, etc.
+- `start` — the `Effect` that produces the resolved value. It may yield substrate services (e.g.
+  `ContainerRuntimeService`, `IdentityContext`) the supervisor provides, and it emits the plugin's
+  contributions (codegen, endpoints, snapshots, projection events, strategies) **inline** via the
+  per-plugin `PluginContext` service (`const ctx = yield* PluginContext`).
+
+There is no separate `capabilities` field. A plugin contributes by reaching its `ctx` inside `start`
+and calling the typed verbs `ctx.codegen` / `ctx.endpoint` / `ctx.snapshotExtra` / `ctx.publish` /
+`ctx.provides`. Each verb buffers a typed decl that the supervisor replays in its own frame after
+`start` resolves, so a contribution can carry post-acquire runtime state (resolved ids, RPC URLs).
 
 ```ts
 import { Effect } from 'effect';
-import { account, codegenable, definePlugin, sui } from '@mysten-incubation/devstack';
+import { account, definePlugin, PluginContext, sui } from '@mysten-incubation/devstack';
 
 interface CacheResolved {
 	readonly url: string;
@@ -42,22 +46,27 @@ export const cache = (signer: ReturnType<typeof account>) =>
 		// Resolved values arrive in the shape of `dependsOn`. Here the object
 		// keys (`sui`, `signer`) match the keys the start body destructures.
 		dependsOn: { sui: sui(), signer },
-		start: ({ sui, signer }) =>
-			Effect.succeed({
-				url: 'http://127.0.0.1:6379',
-				tokenAddress: signer.address,
-			} satisfies CacheResolved),
-		capabilities: ({ value }) => [
-			codegenable({
-				emitterName: 'cache',
-				outputPath: 'cache.ts',
-				emit: (ctx) =>
-					Effect.sync(() => {
-						ctx.exportConst('cache', value);
-						return ctx.done();
-					}),
+		start: ({ signer }) =>
+			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
+				const value: CacheResolved = {
+					url: 'http://127.0.0.1:6379',
+					tokenAddress: signer.address,
+				};
+				// Emit a generated `cache.ts` inline. The codegen decl carries the
+				// just-resolved value, so the emitted file holds the real address.
+				ctx.codegen({
+					kind: 'codegenable',
+					emitterName: 'cache',
+					outputPath: 'cache.ts',
+					emit: (emit) =>
+						Effect.sync(() => {
+							emit.exportConst('cache', value);
+							return emit.done();
+						}),
+				});
+				return value;
 			}),
-		],
 	});
 ```
 

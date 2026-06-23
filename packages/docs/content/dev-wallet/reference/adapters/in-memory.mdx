@@ -1,5 +1,6 @@
 ---
 title: InMemorySignerAdapter
+description: Ephemeral Ed25519 keypairs held in memory, ideal for prototyping and unit tests
 ---
 
 import { InMemoryAdapterDemo } from '../../../../examples/dev-wallet-demos-client';
@@ -9,7 +10,7 @@ prototyping, unit tests, and documentation demos.
 
 ## Usage
 
-```typescript
+```ts
 import { InMemorySignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
 
 const adapter = new InMemorySignerAdapter();
@@ -21,15 +22,15 @@ console.log(account.address); // 0x...
 console.log(account.label); // 'My Dev Account'
 ```
 
-## Try It
+## Try it
 
 Create and manage accounts interactively:
 
 <InMemoryAdapterDemo />
 
-## Importing an Existing Keypair
+## Importing an existing keypair
 
-```typescript
+```ts
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 const keypair = new Ed25519Keypair();

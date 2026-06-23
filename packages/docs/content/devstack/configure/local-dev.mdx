@@ -54,17 +54,19 @@ State is scoped by app and stack name:
   stacks/
     main/
       manifest.json
-      projection.v3.json
       deployment.json
+      roster.json
+      stack.lock
+      cache/
       snapshots/
-      runtime/
 ```
 
 A `hostService(...)` dev server is reached through a stable routed endpoint —
-`http://dev.<app>.localhost:5175` by default — even though its raw process port may change between
-runs. See [Dev servers](/devstack/configure/dev-server) for ports and routing, and
-[Refs and dependencies](/devstack/reference/internals/refs-and-tags) for how plugins publish named
-endpoints.
+`http://dev.<app>.localhost:5175` for the default stack — even though its raw process port may
+change between runs. Non-default stacks insert the stack segment:
+`http://dev.<stack>.<app>.localhost:5175`. See [Dev servers](/devstack/configure/dev-server) for
+ports and routing, and [Refs and dependencies](/devstack/reference/internals/refs-and-tags) for how
+plugins publish named endpoints.
 
 ## Outputs
 

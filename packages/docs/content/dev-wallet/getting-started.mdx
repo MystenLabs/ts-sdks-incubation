@@ -1,11 +1,12 @@
 ---
 title: Getting Started
+description: Install the dev wallet and wire it into a dApp Kit app
 ---
 
 ## Installation
 
-```sh npm2yarn
-npm i @mysten-incubation/dev-wallet
+```bash
+pnpm add @mysten-incubation/dev-wallet
 ```
 
 <Callout type="info">
@@ -13,16 +14,16 @@ npm i @mysten-incubation/dev-wallet
 	`@mysten/signers`. For React integration, install `react` and `@lit/react`.
 </Callout>
 
-## Subpath Exports
+## Subpath exports
 
-| Import Path                              | Description                                               |
-| ---------------------------------------- | --------------------------------------------------------- |
-| `@mysten-incubation/dev-wallet`          | Core `DevWallet` class and types                          |
-| `@mysten-incubation/dev-wallet/adapters` | Signer adapters (InMemory, WebCrypto, Passkey, RemoteCli) |
-| `@mysten-incubation/dev-wallet/ui`       | Lit Web Components and `mountDevWallet`                   |
-| `@mysten-incubation/dev-wallet/react`    | React hooks, context, and component wrappers              |
-| `@mysten-incubation/dev-wallet/client`   | `DevWalletClient` for connecting to a standalone wallet   |
-| `@mysten-incubation/dev-wallet/server`   | Request handling and CLI signing middleware               |
+| Import Path                              | Description                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------- |
+| `@mysten-incubation/dev-wallet`          | Core `DevWallet` class and types                                      |
+| `@mysten-incubation/dev-wallet/adapters` | Signer adapters (InMemory, WebCrypto, Passkey, RemoteCli)             |
+| `@mysten-incubation/dev-wallet/ui`       | Lit Web Components and `mountDevWallet`                               |
+| `@mysten-incubation/dev-wallet/react`    | React hooks, context, and component wrappers                          |
+| `@mysten-incubation/dev-wallet/client`   | `DevWalletClient`, `devWalletClientInitializer`, `parseWalletRequest` |
+| `@mysten-incubation/dev-wallet/server`   | `createCliSigningMiddleware` (Hono sub-app for CLI signing)           |
 
 ## Using with dApp Kit
 
@@ -56,7 +57,7 @@ function App() {
 	return (
 		<DAppKitProvider dAppKit={dAppKit}>
 			<ConnectButton />
-			{/* Dev Wallet appears in the wallet picker */}
+			{/* the dev wallet appears in the wallet picker */}
 		</DAppKitProvider>
 	);
 }
@@ -67,12 +68,13 @@ function App() {
 	Integration](/dev-wallet/reference/react-integration).
 </Callout>
 
-## Standalone Wallet
+## Standalone wallet
 
-Run the wallet as a separate web app with zero code changes to your dApp:
+Run the wallet as a separate web app with zero code changes to your dApp. `serve` is the only
+subcommand; it accepts `--port` and `--help`:
 
 ```bash
-npx @mysten-incubation/dev-wallet serve
+pnpm dlx @mysten-incubation/dev-wallet serve
 ```
 
 This starts a full wallet UI at `http://localhost:5174` with WebCrypto and InMemory adapters. If
@@ -80,7 +82,7 @@ This starts a full wallet UI at `http://localhost:5174` with WebCrypto and InMem
 
 Register it through `walletInitializers` using `devWalletClientInitializer`:
 
-```typescript
+```ts
 import { createDAppKit } from '@mysten/dapp-kit-react';
 import { devWalletClientInitializer } from '@mysten-incubation/dev-wallet/client';
 
@@ -92,24 +94,24 @@ const dAppKit = createDAppKit({
 
 Or register it directly without dApp Kit:
 
-```typescript
+```ts
 import { DevWalletClient } from '@mysten-incubation/dev-wallet/client';
 
 DevWalletClient.register({ origin: 'http://localhost:5174' });
 ```
 
 <Callout type="info">
-	The default port is 5174 (Vite's default). If the port is already in use, Vite picks the next
-	available port — check the terminal output and update the origin accordingly. You can also set a
-	fixed port with `npx @mysten-incubation/dev-wallet serve --port 5174`.
+	The default port is 5174. If the port is already in use, the server picks the next available port
+	— check the terminal output and update the origin accordingly. You can also set a fixed port with
+	`pnpm dlx @mysten-incubation/dev-wallet serve --port 5174`.
 </Callout>
 
 Signing works via popup windows — same flow as a production browser wallet. See
 [Standalone Mode](/dev-wallet/reference/standalone-mode) for full options.
 
-## Vanilla JavaScript Setup
+## Vanilla JavaScript setup
 
-```typescript
+```ts
 import { DevWallet } from '@mysten-incubation/dev-wallet';
 import { WebCryptoSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
 import { mountDevWallet } from '@mysten-incubation/dev-wallet/ui';
@@ -140,7 +142,7 @@ const unmountUI = mountDevWallet(wallet);
 // wallet.destroy();
 ```
 
-## React Setup
+## React setup
 
 ```tsx
 import { useDevWallet } from '@mysten-incubation/dev-wallet/react';
@@ -171,9 +173,9 @@ function App() {
 	render causes infinite re-initialization loops.
 </Callout>
 
-## Default Networks
+## Default networks
 
-If you don't provide a `networks` config, Dev Wallet includes these defaults:
+If you don't provide a `networks` config, the dev wallet includes these defaults:
 
 | Network  | URL                                   |
 | -------- | ------------------------------------- |
@@ -181,11 +183,11 @@ If you don't provide a `networks` config, Dev Wallet includes these defaults:
 | testnet  | `https://fullnode.testnet.sui.io:443` |
 | localnet | `http://127.0.0.1:9000`               |
 
-## Funding Your Wallet
+## Funding your wallet
 
 After setup, request test coins from the faucet so you can send transactions:
 
-```typescript
+```ts
 import { requestSuiFromFaucetV2, getFaucetHost } from '@mysten/sui/faucet';
 
 await requestSuiFromFaucetV2({
@@ -198,7 +200,7 @@ With `WebCryptoSignerAdapter`, you only need to faucet once — the coins persis
 
 ## Next
 
-- **Writing e2e tests?** [E2E Testing](/dev-wallet/guides/e2e-testing)
-- **Publishing contracts with `sui move`?** [CLI Signing](/dev-wallet/guides/cli-signing)
-- **Sharing one wallet across apps?** [Standalone Mode](/dev-wallet/reference/standalone-mode)
+- **Writing e2e tests?** [e2e testing](/dev-wallet/guides/e2e-testing)
+- **Publishing contracts with `sui move`?** [CLI signing](/dev-wallet/guides/cli-signing)
+- **Sharing one wallet across apps?** [Standalone mode](/dev-wallet/reference/standalone-mode)
 - **Choosing an adapter?** [Adapters](/dev-wallet/reference/adapters)

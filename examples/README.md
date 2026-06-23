@@ -4,17 +4,13 @@ These are the curated devstack examples. Each one consumes
 `@mysten-incubation/devstack` from the workspace and uses the final directory
 name that a developer should reach for.
 
-The bindings under `src/generated/` are committed: `devstack codegen` writes
-id-free Move/config bindings plus a runtime resolver (`config-runtime.ts`),
-which reads on-chain ids at app build/dev time via the injected
-`__DEVSTACK_DEPLOYMENT__` global. Because the tree carries no stack-specific
-ids, the same committed bindings serve every stack. Dev-only data — the managed
-account name→address map and the dev-wallet connection — rides the injected
-deployment envelope itself (`resolveAccounts()` / `values['dev-wallet']`); the
-secret dev-wallet pairing token stays in a `0o600` side-channel file the Vite
-dev server reads at serve time. Nothing dev-only lands in the committed tree.
+The generated bindings under `src/generated/` are committed: `devstack codegen`
+writes id-free Move and config bindings that resolve live on-chain ids at app
+build/dev time. Because the committed tree carries no stack-specific ids, the
+same bindings serve every stack, and nothing dev-only lands in the committed
+tree.
 
-## Runnable Apps
+## Runnable apps
 
 | App                                    | What it shows                                                                                                                   | Command                                                      |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -48,22 +44,22 @@ Each app exposes two test commands:
 `fork-greeting` and `dashboard-demo` ship no browser e2e; their `pnpm test` runs the
 relevant checks only (`dashboard-demo` asserts its stack config composes).
 
-## Adding An Example
+## Adding an example
 
-Scaffold a new browser app from the canonical template with
-[`create-devstack-app`](../packages/create-devstack-app):
+Scaffold a new app with [`create-devstack-app`](../packages/create-devstack-app):
 
 ```sh
 pnpm create @mysten-incubation/devstack-app <your-app>
 ```
 
-The scaffolder copies the authored template
-([`packages/create-devstack-app/template/`](../packages/create-devstack-app/template)),
-which includes a Move package, a compact UI with core/walrus/seal/deepbook
-panels (pick which plugins to keep at scaffold time), and an e2e spec. It
-rewrites the `DEVSTACK_APP` runtime identity, tsconfig paths, and Playwright
-host tokens to your app name automatically.
+The scaffolder prompts for what you are building (**Web dapp** or **TypeScript
+only**) and which optional services to include (walrus, seal, deepbook, pyth),
+then copies the matching template (`templates/app/` or `templates/ts/`) and
+renders `devstack.config.ts` from your selection. See the
+[create-devstack-app README](../packages/create-devstack-app/README.md) for the
+full prompt and option reference.
 
-To grow the curated examples here, scaffold into `examples/<your-app>` and pick
-non-conflicting port hints — existing examples occupy ports 5170, 5173, 5176,
-5179, and 5182; the per-stack allocator handles collisions at runtime.
+To grow the curated examples here, scaffold directly into `examples/<your-app>`
+with `--target-dir ./examples`, and pick non-conflicting port hints — existing
+examples occupy ports 5170, 5173, 5176, 5179, and 5182; the per-stack allocator
+handles collisions at runtime.

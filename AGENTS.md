@@ -2,21 +2,22 @@
 
 This file provides guidance to AI agents working with code in this repository.
 
-## Project status — prototype, not released
+## Project status — published, but pre-1.0 and unstable
 
-Nothing in this repo is published to npm yet, and we are **not publishing anytime soon**.
-There are no consumers outside the monorepo, no compatibility surface to honor, no
-deprecation cycle. **Break the API directly when something is wrong** — rename, restructure,
-delete; update every callsite in the same commit. Don't ship shims, fallbacks, `@deprecated`
-markers, or "v2 alongside v1" exports. We get one shot to set the public surface right before
-anyone depends on it.
+The `@mysten-incubation/*` packages **are published to npm** (devstack 0.4.0, dev-wallet 0.5.0,
+create-devstack-app 0.4.0, plus tsconfig), but they're all pre-1.0 and explicitly unstable: the
+public surface can break freely as we iterate toward a stable release. There is no compatibility
+guarantee and no deprecation cycle. **Break the API directly when something is wrong** — rename,
+restructure, delete; update every callsite in the same commit. Don't ship shims, fallbacks,
+`@deprecated` markers, or "v2 alongside v1" exports. We get the public surface right while minor
+bumps are still allowed to break.
 
 ## Overview
 
-This is a monorepo containing prototype TypeScript packages for the Sui blockchain ecosystem
+This is a monorepo containing pre-1.0 TypeScript packages for the Sui blockchain ecosystem
 under the `@mysten-incubation` namespace. It uses pnpm workspaces and turbo for build
-orchestration. The `@mysten-incubation/*` scope is reserved for an eventual release; until
-then the packages are workspace-only.
+orchestration. The packages are published to npm; see "Project status" above for the
+stability policy.
 
 ## Common Commands
 
@@ -62,9 +63,10 @@ pnpm lint:fix
 
 ### Package Management
 
-Changesets are present in the repo but unused day-to-day — nothing is published yet
-(see "Project status" above). Don't add changesets to PRs unless you're explicitly
-preparing for a release.
+The `@mysten-incubation/*` packages are released via changesets — run `pnpm changeset` to
+record a version bump and changelog entry for any PR that changes published behavior. See
+"Project status" above for the pre-1.0 stability policy (breaking changes are allowed in minor
+bumps).
 
 ## Architecture
 
@@ -202,5 +204,5 @@ plugin barrel and consumers cast to that.
 - **Tests verify contracts.** Round-trip every encode/decode pair. For
   generated code, have at least one test that actually imports a generated
   symbol — string-match assertions alone don't prove it compiles.
-- **Prototype-stage discipline.** As covered in "Project status" above: no
-  shims, no `@deprecated`, no v2-alongside-v1. Renames are atomic.
+- **Pre-1.0 discipline.** As covered in "Project status" above: no shims, no
+  `@deprecated`, no v2-alongside-v1. Renames are atomic.

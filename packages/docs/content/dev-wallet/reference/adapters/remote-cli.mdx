@@ -1,13 +1,15 @@
 ---
 title: RemoteCliAdapter
+description: Sign from the browser with your local sui CLI keystore over HTTP
 ---
 
 Delegates signing to a remote server that calls the `sui` CLI's `keytool sign` command. This lets
 you use your real CLI keystore (`~/.sui/sui_config/sui.keystore`) from a browser-based dApp.
 
-## How It Works
+## How it works
 
-1. Run `npx @mysten-incubation/dev-wallet serve` — starts a Vite dev server with signing middleware
+1. Run `pnpm dlx @mysten-incubation/dev-wallet serve` — starts the standalone server with signing
+   middleware
 2. The CLI detects if `sui` is on your PATH and enables the Remote CLI adapter
 3. The adapter lists available accounts from your CLI keystore
 4. Signing requests are sent to the server via HTTP
@@ -19,16 +21,20 @@ you use your real CLI keystore (`~/.sui/sui_config/sui.keystore`) from a browser
 The Remote CLI adapter is primarily used automatically when running in
 [standalone mode](/dev-wallet/reference/standalone-mode). You can also use it programmatically:
 
-```typescript
+```ts
 import { RemoteCliAdapter } from '@mysten-incubation/dev-wallet/adapters';
 
 const adapter = new RemoteCliAdapter({
 	serverOrigin: 'http://localhost:5174',
-	token: 'your-auth-token',
+	token: 'your-auth-token', // printed in the server's terminal URL at startup
 });
 
 await adapter.initialize(); // Restores imported accounts from CLI if paired
 ```
+
+The `token` is the bearer token the standalone server generates on startup and prints as part of the
+URL. See [CLI Signer API → Authentication](/dev-wallet/reference/cli-signer-api#authentication) for
+how it is issued and stored.
 
 ## API
 

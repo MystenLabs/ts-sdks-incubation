@@ -215,7 +215,13 @@ stays in sync:
 
 ```ts title="src/dapp-kit.ts (connect-four)"
 export const dAppKit = createDAppKit({
-	networks: [...config.networkNames],
+	// Offer only the networks present in the injected deployment envelope, not
+	// the static `networkNames` superset. A prod build drops local networks, so
+	// the unfiltered list would let the user select a network absent from
+	// `config.networks` — `config.forNetwork` then throws
+	// `DevstackConfigMissingError`. Filtering keeps the list and the resolvable
+	// set in lockstep while preserving the literal element union.
+	networks: [...config.networkNames].filter((n) => config.networks[n] !== undefined),
 	defaultNetwork: config.defaultNetwork,
 	createClient(network) {
 		const net = config.forNetwork(network);

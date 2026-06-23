@@ -49,7 +49,7 @@ There are two ports involved:
   the allocated process port before the command starts.
 - The routed dev endpoint is the stable browser-facing URL. For the default dev server endpoint, the
   router serves `http://dev.<app>.localhost:5175` and forwards traffic to whatever process port was
-  allocated.
+  allocated. Non-default stacks insert the stack segment: `http://dev.<stack>.<app>.localhost:5175`.
 
 The raw process port can change between runs while the routed URL stays predictable. Open the routed
 URL for everyday work — it's the one that makes stack-scoped browser behavior, wallet origin checks,
