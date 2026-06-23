@@ -101,9 +101,10 @@ const keyServer = sealFor(live).testnet();
 const dex = deepbookFor(live).testnet();
 ```
 
-`.known({ packageId, registryId })` (DeepBook) and `.known({ systemObjectId, stakingPoolId, nodes })`
-(Walrus) remain as raw-id overrides for deployments outside the SDK constants. See
-[Forking](/devstack/forking) for the fork-mode variants of these factories.
+`.known({ packageId, registryId })` (DeepBook) and
+`.known({ systemObjectId, stakingPoolId, nodes })` (Walrus) remain as raw-id overrides for
+deployments outside the SDK constants. See [Forking](/devstack/forking) for the fork-mode variants
+of these factories.
 
 ## Dev conveniences per network
 

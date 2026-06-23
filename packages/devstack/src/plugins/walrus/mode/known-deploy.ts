@@ -22,10 +22,7 @@
 //         Only the node committee stays explicit: testnet has 100+
 //         nodes that the SDK fetches dynamically, so we don't pin them.
 
-import {
-	MAINNET_WALRUS_PACKAGE_CONFIG,
-	TESTNET_WALRUS_PACKAGE_CONFIG,
-} from '@mysten/walrus';
+import { MAINNET_WALRUS_PACKAGE_CONFIG, TESTNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
 import { Effect, type Scope } from 'effect';
 
 import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';

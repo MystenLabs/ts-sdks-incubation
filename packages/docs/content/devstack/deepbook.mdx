@@ -13,9 +13,9 @@ from the generated bindings and drive trades with the DeepBook SDK. It runs in o
   for development: the whole DEX is created from scratch every boot and torn down with the stack.
 - **`known`** — point at an existing DeepBook deployment (testnet / mainnet). The zero-config
   per-network shortcut (`deepbookFor(network).testnet()` / `.mainnet()`) derives the ids from the
-  `@mysten/deepbook-v3` SDK, so there's nothing to copy and nothing to drift; `.known({ packageId,
-  registryId })` is the raw-id override. Nothing is published; your app reads and trades against the
-  live DEX.
+  `@mysten/deepbook-v3` SDK, so there's nothing to copy and nothing to drift;
+  `.known({ packageId, registryId })` is the raw-id override. Nothing is published; your app reads
+  and trades against the live DEX.
 - **`override`** — wrap deployment ids you manage yourself, without publishing or managing DeepBook.
 
 ## Local mode
@@ -294,8 +294,8 @@ export default defineDevstack({ members: [liveSui, dex] });
 ```
 
 To wrap a deployment whose ids aren't in the SDK constants, use the raw-id override
-`deepbookFor(network).known({ packageId, registryId })` (or `deepbook({ mode: 'known', packageId,
-registryId })`) and pass both ids explicitly.
+`deepbookFor(network).known({ packageId, registryId })` (or
+`deepbook({ mode: 'known', packageId, registryId })`) and pass both ids explicitly.
 
 ## Override mode
 

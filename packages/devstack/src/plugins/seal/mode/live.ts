@@ -225,7 +225,10 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 	}
 	const apiKeyPart =
 		inputs.apiKey !== undefined && inputs.apiKey.length > 0
-			? { apiKey: inputs.apiKey, ...(inputs.apiKeyName !== undefined ? { apiKeyName: inputs.apiKeyName } : {}) }
+			? {
+					apiKey: inputs.apiKey,
+					...(inputs.apiKeyName !== undefined ? { apiKeyName: inputs.apiKeyName } : {}),
+				}
 			: {};
 	const serverConfigs: ReadonlyArray<SealKeyServerEntry> = [
 		{
@@ -241,4 +244,3 @@ export const validateLiveInputs = (inputs: LiveModeInputs): ResolvedLiveInputs =
 		keyServerUrl: committee.aggregatorUrl,
 	};
 };
-

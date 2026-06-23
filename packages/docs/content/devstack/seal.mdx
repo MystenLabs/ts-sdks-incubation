@@ -57,10 +57,10 @@ const mainnetCommittee = sealFor(live).mainnet({
 });
 ```
 
-The known ids come from devstack's maintained table (Seal has no `@mysten/*` SDK constants for these,
-unlike Walrus and DeepBook). **The object id is the source of truth** — the SDK reads each server's
-URL from its on-chain key-server object, so devstack no longer carries any hardcoded endpoint URL.
-For raw overrides — a private deployment or a hand-tuned committee — pass
+The known ids come from devstack's maintained table (Seal has no `@mysten/*` SDK constants for
+these, unlike Walrus and DeepBook). **The object id is the source of truth** — the SDK reads each
+server's URL from its on-chain key-server object, so devstack no longer carries any hardcoded
+endpoint URL. For raw overrides — a private deployment or a hand-tuned committee — pass
 `sealFor(live).custom({ serverConfigs: [...] })` with the full SDK-ready config array.
 
 Fork stacks point at the upstream network's key servers through
