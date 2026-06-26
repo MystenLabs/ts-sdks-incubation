@@ -15,10 +15,14 @@
 //         when its own URL is present; a missing publisher URL does
 //         not suppress an available proxy/aggregator URL.
 //   - 16: throw synchronously when `nodes` is missing for a
-//         registered network. Testnet has 100+ nodes that the
-//         `@mysten/walrus` SDK fetches dynamically; pinning them
-//         statically would be misleading.
+//         registered network. The on-chain ids
+//         (`systemObjectId` / `stakingPoolId` / `exchangeIds`) ARE
+//         stable and come from the `@mysten/walrus` SDK package config
+//         — we default them from the SDK and let callers override.
+//         Only the node committee stays explicit: testnet has 100+
+//         nodes that the SDK fetches dynamically, so we don't pin them.
 
+import { MAINNET_WALRUS_PACKAGE_CONFIG, TESTNET_WALRUS_PACKAGE_CONFIG } from '@mysten/walrus';
 import { Effect, type Scope } from 'effect';
 
 import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
@@ -33,7 +37,11 @@ export interface WalrusKnownDeploymentOptions {
 	/** Network shortcut — looks up per-field defaults from a registry
 	 *  baked into this package. */
 	readonly network?: WalrusKnownNetwork;
-	/** Per-field overrides. Required when `network` is omitted. */
+	/** Per-field overrides for the on-chain ids. For `testnet`/`mainnet`
+	 *  these default from the `@mysten/walrus` SDK package config, so
+	 *  they're optional; for `devnet` (or when `network` is omitted)
+	 *  `systemObjectId`/`stakingPoolId` are required. An explicit value
+	 *  here always wins over the registry default. */
 	readonly systemObjectId?: string;
 	readonly stakingPoolId?: string;
 	readonly exchangeIds?: ReadonlyArray<string>;
@@ -66,8 +74,11 @@ export interface KnownDeploymentBootResult {
 }
 
 /** Known-deployment registry — baked-in record per network. The
- *  values here are the `knownDeployments.walrus.{testnet, mainnet}`
- *  entries. Devnet has no canonical record today. */
+ *  on-chain ids default from the `@mysten/walrus` SDK package config
+ *  (`{TESTNET,MAINNET}_WALRUS_PACKAGE_CONFIG`) so a caller only needs
+ *  to supply `nodes`; the aggregator/publisher/proxy URLs are
+ *  devstack-owned (the SDK ships none). Devnet has no canonical SDK
+ *  record today, so it keeps no id defaults. */
 const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 	Record<
 		WalrusKnownNetwork,
@@ -84,23 +95,23 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 > = {
 	testnet: {
 		network: 'testnet',
-		// Real ids must be supplied via the explicit options form
-		// (`walrusFor(testnet).known({ systemObjectId, stakingPoolId, ... })`).
-		// The known-deployment lookup table only canonicalises the URLs;
-		// the on-chain ids are network-specific and live outside this
-		// package.
-		systemObjectId: undefined,
-		stakingPoolId: undefined,
-		exchangeIds: [],
+		// On-chain ids default from the SDK package config; callers may
+		// still override per-field. The URLs below are devstack-owned —
+		// the SDK ships none.
+		systemObjectId: TESTNET_WALRUS_PACKAGE_CONFIG.systemObjectId,
+		stakingPoolId: TESTNET_WALRUS_PACKAGE_CONFIG.stakingPoolId,
+		exchangeIds: TESTNET_WALRUS_PACKAGE_CONFIG.exchangeIds,
 		aggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
 		publisherUrl: 'https://publisher.walrus-testnet.walrus.space',
 		proxyUrl: 'https://aggregator.walrus-testnet.walrus.space',
 	},
 	mainnet: {
 		network: 'mainnet',
-		systemObjectId: undefined,
-		stakingPoolId: undefined,
-		exchangeIds: [],
+		// On-chain ids default from the SDK package config; callers may
+		// still override per-field. Mainnet ships no `exchangeIds` in the
+		// SDK config (testnet-only faucet exchange), so it stays absent.
+		systemObjectId: MAINNET_WALRUS_PACKAGE_CONFIG.systemObjectId,
+		stakingPoolId: MAINNET_WALRUS_PACKAGE_CONFIG.stakingPoolId,
 		aggregatorUrl: 'https://aggregator.walrus.space',
 		publisherUrl: 'https://publisher.walrus.space',
 		proxyUrl: 'https://aggregator.walrus.space',
@@ -119,12 +130,16 @@ export const resolveKnownDeploymentOptions = (
 ): KnownDeploymentBootResult => {
 	const reg = opts.network ? KNOWN_DEPLOYMENT_REGISTRY[opts.network] : undefined;
 
+	// On-chain ids: caller override (`opts.*`) wins, else the registry
+	// default sourced from the `@mysten/walrus` SDK package config.
+	// Testnet/mainnet default from the SDK so only `nodes` is required;
+	// devnet has no SDK record, so these stay required there.
 	const systemObjectId = expectNonEmptyString(opts.systemObjectId ?? reg?.systemObjectId, {
 		field: 'systemObjectId',
 		mkError: ({ field }) =>
 			walrusConfigError(
 				field,
-				`walrusKnownDeployment: 'systemObjectId' is required (pass it explicitly, or pass network with a registered entry)`,
+				`walrusKnownDeployment: 'systemObjectId' is required (testnet/mainnet default from the @mysten/walrus SDK; pass it explicitly for devnet or networks without an SDK record)`,
 			),
 	});
 
@@ -133,15 +148,16 @@ export const resolveKnownDeploymentOptions = (
 		mkError: ({ field }) =>
 			walrusConfigError(
 				field,
-				`walrusKnownDeployment: 'stakingPoolId' is required (pass it explicitly, or pass network with a registered entry)`,
+				`walrusKnownDeployment: 'stakingPoolId' is required (testnet/mainnet default from the @mysten/walrus SDK; pass it explicitly for devnet or networks without an SDK record)`,
 			),
 	});
 
 	const nodes = opts.nodes;
 	if (!nodes) {
 		// Distilled-doc invariant 16: even when `network` is set, the
-		// nodes must be explicit. Testnet has 100+ nodes the SDK
-		// fetches dynamically; pinning would be misleading.
+		// node committee must be explicit. The on-chain ids come from
+		// the SDK package config, but the committee is dynamic — testnet
+		// has 100+ nodes the SDK fetches at runtime, so we don't pin it.
 		throw walrusConfigError(
 			'nodes',
 			`walrusKnownDeployment: explicit 'nodes' committee is required — ` +

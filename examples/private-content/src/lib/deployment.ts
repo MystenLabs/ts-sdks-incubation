@@ -17,6 +17,7 @@ export interface SealView {
 	keyServerObjectId: string;
 	keyServerUrl: string;
 	serverConfigs: ReturnType<typeof seal.forNetwork>['seal']['serverConfigs'];
+	verifyKeyServers: boolean;
 }
 
 /** Project the generated seal + walrus bindings for `network` into the
@@ -28,6 +29,7 @@ export function deploymentForNetwork(network: string) {
 		keyServerObjectId: s.objectId,
 		keyServerUrl: s.keyServerUrl,
 		serverConfigs: s.serverConfigs,
+		verifyKeyServers: s.verifyKeyServers,
 	};
 	return { seal: sealView, walrus: w } as const;
 }

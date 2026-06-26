@@ -4,6 +4,7 @@
 
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
+import { mainnetPackageIds, mainnetPythConfigs } from '@mysten/deepbook-v3';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
@@ -167,6 +168,38 @@ describe('deepbook(opts) — primary factory', () => {
 		});
 	});
 
+	// Drift canary: the mainnet known deployment must equal the SDK's CURRENT
+	// values (compared against the imported `@mysten/deepbook-v3` constants, not
+	// a literal). DeepBook's mainnet `packageId` previously drifted stale from a
+	// hand-copied table; this fails if anyone re-inlines a literal instead of
+	// deriving from the SDK.
+	it('mainnet known deployment tracks the @mysten/deepbook-v3 SDK constants', () => {
+		const member = deepbook({
+			mode: 'known',
+			network: 'mainnet',
+		});
+		const { provide } = makeTestPluginCtx({ identity: TEST_IDENTITY });
+		const resolved = Effect.runSync(
+			provide(member.start([{ chainId: 'sui:localnet' } as never])) as Effect.Effect<
+				DeepbookResolved,
+				unknown,
+				never
+			>,
+		);
+
+		expect(resolved).toMatchObject({
+			mode: 'known',
+			network: 'mainnet',
+			packageId: mainnetPackageIds.DEEPBOOK_PACKAGE_ID,
+			registryId: mainnetPackageIds.REGISTRY_ID,
+			deepTreasuryId: mainnetPackageIds.DEEP_TREASURY_ID,
+		});
+		expect(resolved.pyth).toMatchObject({
+			stateId: mainnetPythConfigs.pythStateId,
+			wormholeStateId: mainnetPythConfigs.wormholeStateId,
+		});
+	});
+
 	it('emits known Pyth state ids through generated bindings', () => {
 		const member = deepbook({
 			mode: 'known',
@@ -266,23 +299,27 @@ describe('deepbook(opts) — primary factory', () => {
 });
 
 describe('deepbookFor(network) — mode-narrowed namespace', () => {
-	it('exposes `.local`, `.override`, and `.known` on a local network', () => {
+	it('exposes `.local`, `.override`, `.known`, `.testnet`, and `.mainnet` on a local network', () => {
 		const network = { mode: 'local' as const, chainId: 'sui:localnet' };
 		const factories = deepbookFor(network);
 		expect(typeof factories.local).toBe('function');
 		expect(typeof factories.override).toBe('function');
 		expect(typeof factories.known).toBe('function');
+		expect(typeof factories.testnet).toBe('function');
+		expect(typeof factories.mainnet).toBe('function');
 	});
 
-	it('exposes `.known` only on a live network', () => {
+	it('exposes `.known`, `.testnet`, and `.mainnet` (but not `.local`/`.override`) on a live network', () => {
 		const network = { mode: 'live' as const, chainId: 'sui:testnet' };
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
+		expect(typeof factories.testnet).toBe('function');
+		expect(typeof factories.mainnet).toBe('function');
 		expect((factories as { local?: unknown }).local).toBeUndefined();
 		expect((factories as { override?: unknown }).override).toBeUndefined();
 	});
 
-	it('exposes `.known` only on a fork network', () => {
+	it('exposes `.known`, `.testnet`, and `.mainnet` (but not `.local`/`.override`) on a fork network', () => {
 		const network = {
 			mode: 'fork' as const,
 			chainId: 'sui:mainnet-fork',
@@ -290,8 +327,22 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 		};
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
+		expect(typeof factories.testnet).toBe('function');
+		expect(typeof factories.mainnet).toBe('function');
 		expect((factories as { local?: unknown }).local).toBeUndefined();
 		expect((factories as { override?: unknown }).override).toBeUndefined();
+	});
+
+	it('resolves built-in testnet ids through `.testnet()`', () => {
+		const member = deepbookFor({ mode: 'live' as const, chainId: 'sui:testnet' }).testnet();
+		expect(member.role).toBe('task');
+		expect(member.id).toBe('deepbook/deepbook');
+	});
+
+	it('resolves built-in mainnet ids through `.mainnet()`', () => {
+		const member = deepbookFor({ mode: 'live' as const, chainId: 'sui:mainnet' }).mainnet();
+		expect(member.role).toBe('task');
+		expect(member.id).toBe('deepbook/deepbook');
 	});
 });
 

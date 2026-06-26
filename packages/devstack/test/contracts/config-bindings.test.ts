@@ -28,7 +28,7 @@ import { knownPackage, localPackage } from '../../src/plugins/package/index.ts';
 import { makeCoinStaticCodegen } from '../../src/plugins/coin/codegen.ts';
 import { makeDeepbookStaticCodegen } from '../../src/plugins/deepbook/codegen.ts';
 import { makeWalrusStaticCodegen } from '../../src/plugins/walrus/codegen.ts';
-import { makeSealStaticCodegen } from '../../src/plugins/seal/codegen.ts';
+import { makeSealCodegenable, makeSealStaticCodegen } from '../../src/plugins/seal/codegen.ts';
 
 const CONFIG_BUCKET = 'config.ts';
 
@@ -342,6 +342,7 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 							weight: 1,
 						},
 					],
+					verifyKeyServers: true,
 				},
 			}),
 			literalOnly: true,
@@ -412,6 +413,45 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 		});
 	});
 
+	it('seal (committee) strips any apiKey from the emitted serverConfigs (defense-in-depth)', () => {
+		// Build the binding directly with a serverConfigs entry that carries a
+		// secret apiKey VALUE — `validateLiveInputs` rejects this upstream, so we
+		// hand it straight to `makeSealCodegenable` to exercise `stripApiKey`. The
+		// committed `seal.ts` literals AND the `values` channel are both
+		// world-readable, so neither may carry the secret.
+		const decl = makeSealCodegenable({
+			name: 'seal',
+			mode: 'live',
+			objectId: '0xdddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444',
+			keyServerUrl: 'https://seal-aggregator-mainnet.example',
+			serverConfigs: [
+				{
+					objectId: '0xdddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444',
+					weight: 1,
+					aggregatorUrl: 'https://seal-aggregator-mainnet.example',
+					apiKeyName: 'X-API-Key',
+					apiKey: 'super-secret-value',
+				},
+			],
+			verifyKeyServers: true,
+		});
+
+		// Literal projection (committed `seal.ts`) carries NO secret apiKey.
+		const projected = decl.aggregate?.project({}) ?? {};
+		expect(JSON.stringify(projected)).not.toContain('super-secret-value');
+		expect(JSON.stringify(projected)).not.toContain('"apiKey"');
+		// The non-secret header NAME still rides along so the app knows which
+		// header to set when it injects the apiKey at runtime.
+		expect(JSON.stringify(projected)).toContain('X-API-Key');
+
+		// The world-readable `values` channel (`deployment.json`) carries no
+		// secret apiKey either — known/live ids bake as literals, so the generic
+		// channel is empty, but assert defensively.
+		const idConfigValues = decl.aggregate?.idConfigValues ?? {};
+		expect(JSON.stringify(idConfigValues)).not.toContain('super-secret-value');
+		expect(JSON.stringify(idConfigValues)).not.toContain('"apiKey"');
+	});
+
 	it('seal (live) bakes the declared objectId/keyServerUrl as literals', () => {
 		const decl = makeSealStaticCodegen({
 			name: 'seal',
@@ -425,6 +465,7 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 						weight: 1,
 					},
 				],
+				verifyKeyServers: true,
 			},
 		});
 		const projected = decl.aggregate?.project({}) ?? {};

@@ -50,7 +50,7 @@ import { sealPluginKey } from './plugin-key.ts';
 import { makeSealCodegenable, makeSealStaticCodegen, type SealBindings } from './codegen.ts';
 import { sealError, type SealError } from './errors.ts';
 import { validateForkKnownInputs, type ForkUpstream } from './mode/fork-known.ts';
-import type { KnownNetwork } from './mode/live.ts';
+import type { KnownNetwork, ResolvedLiveInputs, SealServerKind } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
 import {
 	buildSealNetworkName,
@@ -65,13 +65,12 @@ import {
 } from './mode/local-keygen.ts';
 import {
 	makeSealResource,
+	type SealKeyServerEntry,
 	type SealLocalKeygenResolved,
-	type SealKnownResolved,
 	type SealResolved,
 } from './registry-publish.ts';
 import { buildSealKeyServerPublicRoute, makeSealRoutable } from './routable.ts';
 import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.ts';
-import { bootSealService, type SealMode } from './service.ts';
 import { DEFAULT_SEAL_VERSION } from './bootstrap-assets/source-fetch.ts';
 
 // ---------------------------------------------------------------------------
@@ -129,18 +128,39 @@ export interface SealLocalKeygenOptions<
 	readonly image?: { readonly pull: string } | { readonly build: { readonly context: string } };
 }
 
-/** Live-mode options (testnet / mainnet). */
+/** Live-mode options (testnet / mainnet).
+ *
+ *  Zero-config `testnet()` resolves BOTH independent servers;
+ *  `mainnet()` resolves the committee (which requires credentials — declare
+ *  the non-secret `apiKeyName`). `{ server: 'committee' }` opts a testnet
+ *  stack into the committee aggregator. `serverConfigs` is the raw verbatim
+ *  override. `verifyKeyServers` defaults to the SDK default (true) on live /
+ *  known — omit it; only local-keygen forces it false. This default also
+ *  applies to a verbatim `serverConfigs` override: for a private / unregistered
+ *  key server (whose on-chain registration can't be verified), pass
+ *  `verifyKeyServers: false` explicitly.
+ *
+ *  NOTE: devstack never carries the secret committee `apiKey` value (committed
+ *  config + the browser-injected `deployment.json` are world-readable). Pass
+ *  `apiKeyName` (the header name) and inject the apiKey at runtime when you
+ *  construct `SealClient`. */
 export interface SealLiveOptions extends SealCommonOptions {
 	readonly network?: KnownNetwork;
-	readonly objectId?: string;
-	readonly keyServerUrl?: string;
+	readonly server?: SealServerKind;
+	readonly apiKeyName?: string;
+	readonly verifyKeyServers?: boolean;
+	readonly serverConfigs?: ReadonlyArray<SealKeyServerEntry>;
 }
 
-/** Fork-known-mode options. */
+/** Fork-known-mode options. The `*-fork` network routes to the wrapped
+ *  upstream's known deployment; `server` / `apiKeyName` mirror the live
+ *  selectors (the secret apiKey is injected by the app at runtime, never
+ *  carried by devstack). */
 export interface SealForkKnownOptions extends SealCommonOptions {
 	readonly upstream: ForkUpstream;
-	readonly objectId?: string;
-	readonly keyServerUrl?: string;
+	readonly server?: SealServerKind;
+	readonly apiKeyName?: string;
+	readonly verifyKeyServers?: boolean;
 }
 
 export type SealOptions<Signer extends SealSignerMember = SealSignerMember> =
@@ -330,6 +350,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 						objectId: resolvedValue.objectId,
 						keyServerUrl: resolvedValue.keyServerUrl,
 						serverConfigs: resolvedValue.serverConfigs,
+						verifyKeyServers: resolvedValue.verifyKeyServers,
 						mode: 'local-keygen',
 					}),
 				);
@@ -348,14 +369,17 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 const buildLivePlugin = (opts: SealLiveOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
 	const sealResource = makeSealResource(name);
-	// Validate inputs at factory time so misconfigurations fail
-	// before any plugin row starts work.
-	const validated = validateLiveInputs({ name, ...opts });
+	// Validate + resolve inputs at factory time so misconfigurations fail
+	// before any plugin row starts work. `resolved.serverConfigs` is the
+	// full SDK-ready array (independent fan-out OR a single committee entry
+	// with aggregatorUrl + the non-secret apiKeyName; never a secret apiKey).
+	const resolved: ResolvedLiveInputs = validateLiveInputs({ name, ...opts });
 	const bindings: SealBindings = {
 		name,
-		objectId: validated.objectId,
-		keyServerUrl: validated.keyServerUrl,
-		serverConfigs: [{ objectId: validated.objectId, weight: 1 }],
+		objectId: resolved.objectId,
+		keyServerUrl: resolved.keyServerUrl,
+		serverConfigs: resolved.serverConfigs,
+		verifyKeyServers: resolved.verifyKeyServers,
 		mode: 'live',
 	};
 	const snap = makeKnownSnapshotable({ name });
@@ -366,7 +390,9 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		section: 'service',
 		// Live mode resolves its `{objectId, keyServerUrl, serverConfigs}` tuple
 		// at factory time (DECLARED config) — bake them as literals in the
-		// committed `seal.ts` (mirrors `knownPackage`).
+		// committed `seal.ts` (mirrors `knownPackage`). The committed
+		// `serverConfigs` carries ALL entries + aggregatorUrl + apiKeyName; the
+		// secret apiKey is NEVER emitted (the app injects it at runtime).
 		staticCodegen: () => [
 			makeSealStaticCodegen({
 				name,
@@ -375,6 +401,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 					objectId: bindings.objectId,
 					keyServerUrl: bindings.keyServerUrl,
 					serverConfigs: bindings.serverConfigs,
+					verifyKeyServers: bindings.verifyKeyServers,
 				},
 			}),
 		],
@@ -384,17 +411,17 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		start: () =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				const mode: SealMode = { mode: 'live', name, resolved: validated };
-				const publisher = yield* CacheService;
-				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
-				// Emit inline: snapshot → codegen. `snap` + `bindings` are
-				// resolved at FACTORY time for live mode (validated
-				// `{objectId, keyServerUrl}`), so the emit reuses the same
-				// precomputed values.
+				// Live mode resolves its `{objectId, keyServerUrl, serverConfigs}`
+				// tuple at FACTORY time (`resolved`), so `start` only projects the
+				// already-resolved value — there is no runtime boot. `snap` +
+				// `bindings` are likewise factory-scoped.
 				ctx.snapshotExtra(snap);
 				ctx.codegen(makeSealCodegenable(bindings));
 				return {
-					...resolved.keyServer,
+					serverConfigs: resolved.serverConfigs,
+					keyServerUrl: resolved.keyServerUrl,
+					objectId: resolved.objectId,
+					verifyKeyServers: resolved.verifyKeyServers,
 					mode: 'live',
 					manager: null,
 				} satisfies SealResolved;
@@ -429,11 +456,13 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		id: sealResource.id,
 		role: 'task',
 		section: 'service',
-		// Fork-known mode resolves its `{objectId, keyServerUrl}` tuple at
-		// factory time (DECLARED config, via `validateForkKnownInputs`) — bake
-		// them as literals in the committed `seal.ts` (mirrors `knownPackage`).
-		// The committee `serverConfigs` is the single declared key-server (the
-		// same shape `acquireLive` derives), so it is declared config too.
+		// Fork-known mode resolves its `{objectId, keyServerUrl, serverConfigs}`
+		// bundle at factory time (DECLARED config, via `validateForkKnownInputs`)
+		// — bake them as literals in the committed `seal.ts` (mirrors
+		// `knownPackage`). The resolved `serverConfigs` is the full SDK-ready
+		// array (independent fan-out or the committee entry + aggregatorUrl), so
+		// it is declared config too; the secret committee apiKey is NEVER
+		// emitted (the app injects it at runtime).
 		staticCodegen: () => [
 			makeSealStaticCodegen({
 				name,
@@ -441,7 +470,8 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 				known: {
 					objectId: validated.objectId,
 					keyServerUrl: validated.keyServerUrl,
-					serverConfigs: [{ objectId: validated.objectId, weight: 1 }],
+					serverConfigs: validated.serverConfigs,
+					verifyKeyServers: validated.verifyKeyServers,
 				},
 			}),
 		],
@@ -451,37 +481,29 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		start: () =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				// Symmetric with the live branch's `{ mode, name, resolved }`
-				// envelope. `upstream` rides through for downstream
-				// span attribution; `resolved` carries the validated
-				// `{objectId, keyServerUrl}` tuple.
-				const mode: SealMode = {
-					mode: 'fork-known',
-					name,
-					upstream: opts.upstream,
-					resolved: validated,
-				};
-				const publisher = yield* CacheService;
-				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
-				const resolvedValue: SealResolved = {
-					...resolved.keyServer,
-					mode: 'fork-known',
-					manager: null,
-				};
-				// Emit inline: snapshot → codegen. `bindings` is built from the
-				// post-acquire `resolved.keyServer` (`{objectId, keyServerUrl,
-				// serverConfigs}`); `snap` is factory-scoped.
+				// Fork-known resolves its `{objectId, keyServerUrl, serverConfigs}`
+				// bundle at FACTORY time (`validated`, via `validateForkKnownInputs`),
+				// so `start` only projects the already-resolved value — no runtime
+				// boot. `snap` is factory-scoped.
 				ctx.snapshotExtra(snap);
 				ctx.codegen(
 					makeSealCodegenable({
 						name,
-						objectId: resolved.keyServer.objectId,
-						keyServerUrl: resolved.keyServer.keyServerUrl,
-						serverConfigs: resolved.keyServer.serverConfigs,
+						objectId: validated.objectId,
+						keyServerUrl: validated.keyServerUrl,
+						serverConfigs: validated.serverConfigs,
+						verifyKeyServers: validated.verifyKeyServers,
 						mode: 'fork-known',
 					}),
 				);
-				return resolvedValue;
+				return {
+					serverConfigs: validated.serverConfigs,
+					keyServerUrl: validated.keyServerUrl,
+					objectId: validated.objectId,
+					verifyKeyServers: validated.verifyKeyServers,
+					mode: 'fork-known',
+					manager: null,
+				} satisfies SealResolved;
 			}),
 	});
 };
@@ -530,9 +552,11 @@ export const sealFor = defineModeNamespace({
 			buildLivePlugin({ network: 'testnet', ...opts }),
 		mainnet: (opts: Omit<SealLiveOptions, 'network'> = {}) =>
 			buildLivePlugin({ network: 'mainnet', ...opts }),
-		custom: (
-			opts: Required<Pick<SealLiveOptions, 'objectId' | 'keyServerUrl'>> & SealLiveOptions,
-		) => buildLivePlugin(opts),
+		// Raw verbatim override — the caller supplies the full SDK-ready
+		// `serverConfigs` array (e.g. a private deployment or a hand-tuned
+		// committee). No known table is consulted.
+		custom: (opts: Required<Pick<SealLiveOptions, 'serverConfigs'>> & SealLiveOptions) =>
+			buildLivePlugin(opts),
 	},
 	fork: {
 		forkKnown: (opts: SealForkKnownOptions) => buildForkKnownPlugin(opts),

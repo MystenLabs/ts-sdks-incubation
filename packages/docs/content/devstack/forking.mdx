@@ -170,16 +170,14 @@ import { chainIdForNetwork, walrusFor, sealFor } from '@mysten-incubation/devsta
 
 const fork = { mode: 'fork', chainId: chainIdForNetwork('testnet-fork') } as const;
 
-const forkWal = walrusFor(fork).known({
-	systemObjectId: '0x...',
-	stakingPoolId: '0x...',
+// Walrus fork — ids default from the @mysten/walrus package config; pass the node list.
+const forkWal = walrusFor(fork).testnet({
 	nodes: [],
 });
 
+// Seal fork — routes to the upstream network's known key servers (testnet independent by default).
 const forkKeyServer = sealFor(fork).forkKnown({
 	upstream: 'testnet',
-	objectId: '0x...',
-	keyServerUrl: 'https://example.test/key',
 });
 ```
 
