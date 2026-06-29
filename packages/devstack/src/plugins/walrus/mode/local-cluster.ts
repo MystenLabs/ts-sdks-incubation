@@ -20,10 +20,8 @@
 //   5. Exchange resolution — on-chain getObject + parse type.
 //                             Degrades to undefined on
 //                             OBJECT_NOT_FOUND.
-//   6. Storage-node fallback URL pick — nodes[0].rpcUrl is kept as an
-//                                      implementation/debug handle only.
-//  7a. WAL faucet strategy register — opt-in when an exchange exists.
-//   8. Registries — package + endpoint + walrus-state.
+//   6. WAL faucet strategy register — opt-in when an exchange exists.
+//   7. Registries — package + endpoint + walrus-state.
 //
 // What this file owns: the dispatch shape + the typed options
 // surface + the synchronous factory-time validation.
@@ -138,10 +136,6 @@ export interface LocalClusterBootResult {
 	readonly walrusPackageId: string;
 	readonly walPackageId: string;
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
-	readonly storageNodeProxyUrl: string;
-	readonly aggregatorUrl: string | null;
-	readonly publisherUrl: string | null;
-	readonly proxyUrl: string;
 	readonly exchangeObjectId: string | undefined;
 	readonly exchange: WalExchangeHandle | null;
 	/** WAL faucet strategy — present only when the local cluster has a
@@ -364,7 +358,6 @@ export interface LocalClusterDeps {
  *      the artifact publisher primitive; the produce body runs the walrus deploy
  *      one-shot.
  *    - Storage nodes — parallel boot via `startStorageNodes`.
- *    - Storage-node fallback URL pick — `nodes[0].rpcUrl`.
  *    - WAL faucet strategy — constructed if `state.exchangeObject`
  *      exists. Surfaced on the boot result; the barrel registers
  *      the contributor decl.
@@ -507,15 +500,13 @@ export const bootLocalCluster = (
 			readyTimeoutMs: opts.readyTimeoutMs,
 		});
 
-		// ---- storage-node fallback URL pick — nodes[0].rpcUrl ----
 		// `nodeCount >= 1` is enforced synchronously already; this is
 		// defense-in-depth.
 		if (nodes.length === 0) {
 			return yield* Effect.fail(
-				walrusPluginError('proxy', 'walrus: at least one storage node is required'),
+				walrusPluginError('storage-node', 'walrus: at least one storage node is required'),
 			);
 		}
-		const storageNodeProxyUrl = nodes[0]!.rpcUrl;
 
 		// ---- exchange resolution + WAL funding strategy ------
 		// Register a `coinType:<fullCoinType>` strategy that swaps the
@@ -543,10 +534,6 @@ export const bootLocalCluster = (
 			walrusPackageId: state.walrusPackageId,
 			walPackageId: resolvedWalPackageId,
 			nodes,
-			storageNodeProxyUrl,
-			aggregatorUrl: null,
-			publisherUrl: null,
-			proxyUrl: storageNodeProxyUrl,
 			exchangeObjectId: state.exchangeObject,
 			exchange,
 			walFaucetStrategy,
