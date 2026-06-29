@@ -25,6 +25,10 @@ import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 export const DEFAULT_WALRUS_CLIENT_SERVICE_PORT = 31_415;
 export const DEFAULT_WALRUS_CLIENT_SERVICE_READY_TIMEOUT_MS = 60_000;
 export const DEFAULT_WALRUS_CLIENT_SERVICE_STOP_GRACE_SECONDS = 10;
+export const WALRUS_CLIENT_SERVICE_STOP_SIGNAL = 'SIGINT';
+export const WALRUS_CLIENT_CONFIG_FILE = 'client_config.yaml';
+export const WALRUS_CLIENT_WALLET_FILE = 'sui_client.yaml';
+export const WALRUS_CLIENT_KEYSTORE_FILE = 'sui_client.keystore';
 
 export type WalrusClientServiceRole = 'aggregator' | 'publisher';
 
@@ -83,9 +87,10 @@ export const walrusClientServiceConfigHash = (parts: {
 	readonly suiRpcUrlInNetwork: string;
 }): string =>
 	[
-		'walrus-client-service-v1',
+		'walrus-client-service-v2',
 		`role=${parts.role}`,
 		parts.deployConfigHash,
+		`client=${WALRUS_CLIENT_CONFIG_FILE},${WALRUS_CLIENT_WALLET_FILE},${WALRUS_CLIENT_KEYSTORE_FILE}`,
 		`mount=${parts.deploySourceHostPath}->${parts.deployMountTarget}`,
 		`port=${parts.containerPort}`,
 		`net=${parts.walrusNetworkName},${parts.suiNetworkName}`,
@@ -93,7 +98,6 @@ export const walrusClientServiceConfigHash = (parts: {
 	].join('|');
 
 const SERVICE_READY_PROBE_INTERVAL_MS = 500;
-const WALRUS_CLIENT_WALLET_NODE = 'dryrun-node-0';
 
 export const startWalrusClientServices = (
 	runtime: ContainerRuntime,
@@ -148,7 +152,6 @@ export const startWalrusClientServices = (
 							env: {
 								DEPLOY_OUTPUT_DIR: deployMount.outputDirInContainer,
 								SUI_RPC_URL: spec.suiRpcUrlInNetwork,
-								WALRUS_CLIENT_WALLET_NODE,
 								WALRUS_CLIENT_SERVICE_BIND_ADDRESS: `0.0.0.0:${options.port}`,
 								WALRUS_CONTAINER_PORT: String(options.port),
 							},
@@ -163,6 +166,7 @@ export const startWalrusClientServices = (
 								},
 							],
 							stopGraceSeconds,
+							stopSignal: WALRUS_CLIENT_SERVICE_STOP_SIGNAL,
 						},
 						mapError: (cause) =>
 							walrusPluginError(
@@ -173,14 +177,20 @@ export const startWalrusClientServices = (
 					});
 				const handle = yield* Scope.provide(ensureService, serviceStopScope);
 
-				yield* setCurrentPluginPhase(`waiting for Walrus ${role} on 127.0.0.1:${options.port}`);
+				yield* setCurrentPluginPhase(
+					`waiting for Walrus ${role} HTTP status on 127.0.0.1:${options.port}`,
+				);
 				yield* waitForProbe({
 					label: `walrus.${role}`,
 					timeoutMs: readyTimeout,
 					intervalMs: SERVICE_READY_PROBE_INTERVAL_MS,
 					probe: () =>
 						runtime
-							.exec(handle, ['sh', '-c', `nc -z 127.0.0.1 ${options.port}`])
+							.exec(handle, [
+								'sh',
+								'-c',
+								`curl -fsS --max-time 2 http://127.0.0.1:${options.port}/status >/dev/null`,
+							])
 							.pipe(Effect.map(exitCodeProbeResult)),
 				}).pipe(
 					Effect.mapError((cause) => {
@@ -188,7 +198,7 @@ export const startWalrusClientServices = (
 							return walrusPluginError(
 								role,
 								`walrus ${role} never became ready within ${readyTimeout}ms ` +
-									`(container=${containerName}, probe=127.0.0.1:${options.port}).`,
+									`(container=${containerName}, probe=http://127.0.0.1:${options.port}/status).`,
 								{ cause: cause.lastError ?? cause.lastNotReady ?? cause },
 							);
 						}

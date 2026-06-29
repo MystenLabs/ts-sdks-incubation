@@ -49,6 +49,7 @@ describe('walrus cargo image resolver', () => {
 		expect(dockerfile).toContain('/opt/walrus/bin/walrus aggregator --help');
 		expect(dockerfile).toContain('/opt/walrus/bin/walrus publisher --help');
 		expect(dockerfile).toContain('run-walrus-client-service.sh');
+		expect(dockerfile).toContain('STOPSIGNAL SIGINT');
 		expect(dockerfile).not.toContain('cargo build');
 		expect(dockerfile).not.toContain('rustup');
 	});

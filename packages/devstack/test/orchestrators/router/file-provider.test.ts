@@ -111,6 +111,31 @@ describe('resolveRoute', () => {
 		}),
 	);
 
+	it.effect('resolves an HTTPS-upstream Routable using the shared-network IP', () =>
+		Effect.gen(function* () {
+			const r = yield* resolveRoute(
+				identity,
+				{
+					kind: 'routable',
+					endpointName: 'walrus-aggregator',
+					dispatchId: { serviceKey: 'walrus.local', role: 'walrus-node-0' },
+					upstream: {
+						type: 'container',
+						containerName: 'walrus-node-0',
+						containerPort: 9185,
+					},
+					wireProtocol: 'https',
+					cors: true,
+				},
+				registry,
+				stubUpstreams,
+			);
+			expect(r.wireProtocol).toBe('https');
+			expect(r.upstreamUrl).toBe('https://172.20.0.5:9185');
+			expect(r.hostname).toBe('walrus-node-0.my-app.localhost');
+		}),
+	);
+
 	it.effect('resolves a TCP Routable (postgres) — no Host rule, address-style upstream', () =>
 		Effect.gen(function* () {
 			const r = yield* resolveRoute(
@@ -316,6 +341,30 @@ describe('renderRouteYaml', () => {
 			entrypointName: 'postgres-tcp',
 			entrypointPort: 5432,
 			wireProtocol: 'tcp',
+		});
+	});
+
+	it('emits an insecure local TLS serversTransport for HTTPS upstreams', () => {
+		const https: ResolvedRoute = {
+			dispatchFileId: 'walrus-node-my-app-main--node-0',
+			hostname: 'walrus-node-0.my-app.localhost',
+			entrypointName: 'walrus-aggregator',
+			entrypointPort: 9185,
+			upstreamUrl: 'https://172.20.0.5:9185',
+			cors: true,
+			wireProtocol: 'https',
+		};
+		const yaml = renderRouteYaml(https, lease);
+		expect(yaml).toContain('# wireProtocol: https');
+		expect(yaml).toContain('- url: "https://172.20.0.5:9185"');
+		expect(yaml).toContain('serversTransport: "devstack-insecure-local-tls"');
+		expect(yaml).toContain('serversTransports:');
+		expect(yaml).toContain('insecureSkipVerify: true');
+		expect(parseDispatchRouteMetadata(yaml)).toMatchObject({
+			dispatchFileId: https.dispatchFileId,
+			entrypointName: 'walrus-aggregator',
+			entrypointPort: 9185,
+			wireProtocol: 'https',
 		});
 	});
 });

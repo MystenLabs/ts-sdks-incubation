@@ -49,7 +49,7 @@ import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
 	DEFAULT_CONTAINER_API_PORT,
 	WALRUS_NODE_IP_BASE,
-	computePublicHostname,
+	computeCommitteeHostname,
 	startStorageNodes,
 } from '../storage-nodes.ts';
 import { deployWalrusContracts, type CachedDeployState } from '../deploy.ts';
@@ -326,12 +326,13 @@ export const bootLocalCluster = (
 		// The deploy one-shot needs the walrus image + sui network so it
 		// can dial the per-stack sui RPC + faucet over docker DNS.
 		//
-		// Per-node IP CSV is derived from the subnet prefix; per-node
-		// hostnames likewise. Both must be in lockstep with the
-		// storage-node boot below — the deploy step writes per-node
-		// committee records on chain using these.
-		const publicHosts = Array.from({ length: opts.nodeCount }, (_, i) =>
-			computePublicHostname(deps.app, deps.stack, i),
+		// Per-node committee hostnames are Docker-network aliases, because the
+		// real Rust publisher/aggregator read these public_host values from chain
+		// and dial storage nodes from inside the Walrus network. Router-facing
+		// `.localhost` hostnames are still produced by `startStorageNodes` for
+		// devstack's public diagnostic URLs.
+		const committeeHosts = Array.from({ length: opts.nodeCount }, (_, i) =>
+			computeCommitteeHostname(i),
 		).join(',');
 		const listeningIps = Array.from(
 			{ length: opts.nodeCount },
@@ -345,7 +346,7 @@ export const bootLocalCluster = (
 			walrusName: opts.name,
 			chainId: deps.suiChainId,
 			contentHash: brandContentHash(
-				`walrus|${opts.version}|${opts.suiVersion}|${opts.nodeCount}|${opts.shards}|${opts.epochDuration}`,
+				`walrus|${opts.version}|${opts.suiVersion}|${opts.nodeCount}|${opts.shards}|${opts.epochDuration}|committee=${committeeHosts}|listen=${listeningIps}`,
 			),
 			outputDirHostPath: deps.deployHostMountPath,
 			stackRoot: deps.stackRoot,
@@ -355,7 +356,7 @@ export const bootLocalCluster = (
 			committeeSize: opts.nodeCount,
 			shards: opts.shards,
 			epochDuration: opts.epochDuration,
-			publicHostsCsv: publicHosts,
+			publicHostsCsv: committeeHosts,
 			listeningIpsCsv: listeningIps,
 			walrusImage,
 			suiNetworkName: deps.suiNetworkName,

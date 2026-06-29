@@ -66,6 +66,9 @@ const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount
 			`staking_object: ${state.stakingObject}`,
 		].join('\n'),
 	);
+	writeFileSync(join(dir, 'client_config.yaml'), 'client config\n');
+	writeFileSync(join(dir, 'sui_client.yaml'), 'sui client\n');
+	writeFileSync(join(dir, 'sui_client.keystore'), '[]\n');
 	for (let index = 0; index < nodeCount; index += 1) {
 		writeFileSync(join(dir, `dryrun-node-${index}.yaml`), 'node config\n');
 		writeFileSync(join(dir, `dryrun-node-${index}-sui.yaml`), 'sui config\n');

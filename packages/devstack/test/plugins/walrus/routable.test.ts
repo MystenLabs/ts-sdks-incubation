@@ -70,16 +70,20 @@ describe('walrus makeLocalRoutables', () => {
 		expect(routes.map((r) => r.endpointName)).toEqual(['walrus-node-0', 'walrus-node-1']);
 	});
 
-	it('every route flips cors:true (walrus storage REST lacks CORS headers)', () => {
+	it('uses HTTPS upstreams for storage nodes and HTTP upstreams for client services', () => {
 		const routes = makeRoutes(4);
 		for (const r of routes) {
-			// walrus emits only the HTTP variant — narrow before reading cors,
+			// walrus emits only the HTTP-family variant — narrow before reading cors,
 			// which is absent on the TCP variant of RoutableDecl.
-			expect(r.wireProtocol).toBe('http');
 			if (r.wireProtocol !== 'tcp') {
 				expect(r.cors).toBe(true);
 			}
 		}
+		expect(
+			routes.filter((r) => r.endpointName.startsWith('walrus-node-')).map((r) => r.wireProtocol),
+		).toEqual(['https', 'https', 'https', 'https']);
+		expect(routes.find((r) => r.endpointName === 'walrus-aggregator')?.wireProtocol).toBe('http');
+		expect(routes.find((r) => r.endpointName === 'walrus-publisher')?.wireProtocol).toBe('http');
 	});
 
 	it('per-node dispatchIds carry the service key + per-index role', () => {

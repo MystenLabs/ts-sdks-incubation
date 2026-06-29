@@ -18,43 +18,61 @@ case "$MODE" in
 esac
 
 WORKING_DIR="${DEPLOY_OUTPUT_DIR:-/opt/walrus/outputs}"
-WALLET_NODE="${WALRUS_CLIENT_WALLET_NODE:-dryrun-node-0}"
 BIND_ADDRESS="${WALRUS_CLIENT_SERVICE_BIND_ADDRESS:-0.0.0.0:31415}"
+CLIENT_CONFIG_SOURCE="$WORKING_DIR/client_config.yaml"
+CLIENT_WALLET_SOURCE="$WORKING_DIR/sui_client.yaml"
+CLIENT_KEYSTORE_SOURCE="$WORKING_DIR/sui_client.keystore"
+CLIENT_CONFIG_TARGET="/root/.config/walrus/client_config.yaml"
+CLIENT_WALLET_TARGET="/root/.sui/sui_config/client.yaml"
+CLIENT_KEYSTORE_TARGET="/root/.sui/sui_config/sui.keystore"
 
 mkdir -p /root/.sui/sui_config /root/.config/walrus /var/walrus
 
-echo "run-walrus-client-service: preparing ${MODE} wallet ${WALLET_NODE} from ${WORKING_DIR}"
+require_file() {
+	local path="$1"
+	local label="$2"
+	if [ ! -s "$path" ]; then
+		echo "run-walrus-client-service: missing ${label} at ${path}" >&2
+		exit 3
+	fi
+}
 
-cp "$WORKING_DIR/${WALLET_NODE}.keystore" /root/.sui/sui_config/sui.keystore
-cp "$WORKING_DIR/${WALLET_NODE}-sui.yaml" /root/.sui/sui_config/client.yaml
+require_file "$CLIENT_CONFIG_SOURCE" "Walrus client config"
+require_file "$CLIENT_WALLET_SOURCE" "Sui client wallet"
+require_file "$CLIENT_KEYSTORE_SOURCE" "Sui client keystore"
+
+echo "run-walrus-client-service: preparing ${MODE} client config from ${WORKING_DIR}"
+
+cp "$CLIENT_CONFIG_SOURCE" "$CLIENT_CONFIG_TARGET"
+cp "$CLIENT_WALLET_SOURCE" "$CLIENT_WALLET_TARGET"
+cp "$CLIENT_KEYSTORE_SOURCE" "$CLIENT_KEYSTORE_TARGET"
 
 sed -i \
-	"s|${WORKING_DIR}/${WALLET_NODE}.keystore|/root/.sui/sui_config/sui.keystore|" \
-	/root/.sui/sui_config/client.yaml 2>/dev/null || true
+	"s|${CLIENT_KEYSTORE_SOURCE}|${CLIENT_KEYSTORE_TARGET}|g" \
+	"$CLIENT_WALLET_TARGET"
+if ! grep -Fq "$CLIENT_KEYSTORE_TARGET" "$CLIENT_WALLET_TARGET"; then
+	echo "run-walrus-client-service: wallet config did not rewrite keystore path to ${CLIENT_KEYSTORE_TARGET}" >&2
+	exit 3
+fi
+sed -i \
+	"s|${CLIENT_WALLET_SOURCE}|${CLIENT_WALLET_TARGET}|g" \
+	"$CLIENT_CONFIG_TARGET"
 
 if [ -n "${SUI_RPC_URL:-}" ]; then
 	sed -i -E "s|^([[:space:]]*rpc:[[:space:]]*).*$|\\1${SUI_RPC_URL}|" \
-		/root/.sui/sui_config/client.yaml 2>/dev/null || true
-fi
-
-SYSTEM_OBJECT=$(grep '^system_object:' "$WORKING_DIR/deploy" | awk '{print $2}')
-STAKING_OBJECT=$(grep '^staking_object:' "$WORKING_DIR/deploy" | awk '{print $2}')
-EXCHANGE_OBJECT=$(grep '^exchange_object:' "$WORKING_DIR/deploy" | awk '{print $2}' || true)
-
-cat > /root/.config/walrus/client_config.yaml <<EOF
-system_object: ${SYSTEM_OBJECT}
-staking_object: ${STAKING_OBJECT}
-EOF
-if [ -n "${EXCHANGE_OBJECT:-}" ] && [ "$EXCHANGE_OBJECT" != "None" ]; then
-	echo "exchange_objects: [${EXCHANGE_OBJECT}]" >> /root/.config/walrus/client_config.yaml
+		"$CLIENT_WALLET_TARGET"
+	if ! grep -Fq "rpc: ${SUI_RPC_URL}" "$CLIENT_WALLET_TARGET"; then
+		echo "run-walrus-client-service: wallet config did not rewrite rpc to ${SUI_RPC_URL}" >&2
+		exit 3
+	fi
 fi
 
 cmd=(
 	/opt/walrus/bin/walrus
 	"$MODE"
 	--bind-address "$BIND_ADDRESS"
-	--config /root/.config/walrus/client_config.yaml
-	--wallet /root/.sui/sui_config/client.yaml
+	--config "$CLIENT_CONFIG_TARGET"
+	--wallet "$CLIENT_WALLET_TARGET"
 )
 
 case "$MODE" in

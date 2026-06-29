@@ -603,7 +603,11 @@ export const walrusFor = defineModeNamespace({
 // Re-exports for advanced callers
 // ---------------------------------------------------------------------------
 
-export type { WalrusLocalClusterOptions } from './mode/local-cluster.ts';
+export type {
+	WalrusLocalClusterOptions,
+	WalrusLocalPublisherOptions,
+	WalrusLocalServiceOptions,
+} from './mode/local-cluster.ts';
 export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/known-deploy.ts';
 export type { WalrusStorageNode } from './storage-nodes.ts';
 export type { WalrusBindings, WalrusNodeBinding } from './codegen.ts';

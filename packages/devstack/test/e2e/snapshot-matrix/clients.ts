@@ -39,6 +39,7 @@ export interface WalrusResolvedLite {
 	};
 	readonly nodes: ReadonlyArray<{ readonly rpcUrl: string }>;
 	readonly aggregatorUrl: string | null;
+	readonly publisherUrl: string | null;
 	readonly walCoinType: string | null;
 }
 
@@ -133,17 +134,114 @@ export const makeWalrusClient = (
 				? { exchangeIds: [...walrus.packageConfig.exchangeIds] }
 				: {}),
 		},
-		storageNodeUrlScheme: walrus.mode === 'local' ? 'http' : 'https',
+		storageNodeUrlScheme: 'https',
 	});
 
-/** writeBlob, retried. A blob write fans slivers out to every storage node;
- *  immediately after a snapshot pauses+commits+unpauses those containers (the
- *  matrix writes S2 right after `snapshot.capture`), the first write can fail
- *  with "too many failures while writing blob to nodes" while the nodes
- *  re-settle. Retry across that window — real walrus clients retry node writes
- *  too. Returns the content-addressed blob id. */
-export const writeBlobWithRetry = async (
-	walrusClient: WalrusClient,
+const nestedString = (
+	value: unknown,
+	paths: ReadonlyArray<ReadonlyArray<string>>,
+): string | undefined => {
+	for (const path of paths) {
+		let cursor = value;
+		for (const segment of path) {
+			cursor =
+				typeof cursor === 'object' && cursor !== null
+					? (cursor as Record<string, unknown>)[segment]
+					: undefined;
+		}
+		if (typeof cursor === 'string' && cursor.length > 0) return cursor;
+	}
+	return undefined;
+};
+
+const extractBlobId = (response: unknown): string => {
+	const blobId = nestedString(response, [
+		['newlyCreated', 'blobObject', 'blob_id'],
+		['newlyCreated', 'blobObject', 'blobId'],
+		['newlyCreated', 'blob_id'],
+		['newlyCreated', 'blobId'],
+		['alreadyCertified', 'blob_id'],
+		['alreadyCertified', 'blobId'],
+		['blob_id'],
+		['blobId'],
+	]);
+	if (blobId !== undefined) return blobId;
+	throw new Error(
+		`snapshot-matrix: Walrus publisher response did not contain a blob id: ${JSON.stringify(
+			response,
+		).slice(0, 1_000)}`,
+	);
+};
+
+const requireEndpoint = (
+	walrus: WalrusResolvedLite,
+	key: 'aggregatorUrl' | 'publisherUrl',
+): string => {
+	const value = walrus[key];
+	if (value === null) {
+		throw new Error(`snapshot-matrix: local Walrus ${key} is disabled`);
+	}
+	return value;
+};
+
+const putBlobViaPublisher = async (
+	walrus: WalrusResolvedLite,
+	args: {
+		readonly blob: Uint8Array;
+		readonly signer: Ed25519Keypair;
+		readonly epochs: number;
+		readonly deletable: boolean;
+	},
+): Promise<{ readonly blobId: string }> => {
+	const url = new URL('/v1/blobs', requireEndpoint(walrus, 'publisherUrl'));
+	url.searchParams.set('epochs', String(args.epochs));
+	if (args.deletable) url.searchParams.set('deletable', 'true');
+	url.searchParams.set('send_object_to', args.signer.toSuiAddress());
+
+	const response = await fetch(url, {
+		method: 'PUT',
+		body: new Uint8Array(args.blob).buffer as ArrayBuffer,
+	});
+	const text = await response.text();
+	if (!response.ok) {
+		throw new Error(
+			`snapshot-matrix: Walrus publisher PUT failed HTTP ${response.status}: ${text.slice(0, 1_000)}`,
+		);
+	}
+	return { blobId: extractBlobId(JSON.parse(text) as unknown) };
+};
+
+export const readWalrusBlob = async (
+	suiClient: ClientWithCoreApi,
+	walrus: WalrusResolvedLite,
+	blobId: string,
+): Promise<Uint8Array> => {
+	if (walrus.mode !== 'local') {
+		return await makeWalrusClient(suiClient, walrus).readBlob({ blobId });
+	}
+	const response = await fetch(
+		new URL(`/v1/blobs/${blobId}`, requireEndpoint(walrus, 'aggregatorUrl')),
+	);
+	if (!response.ok) {
+		throw new Error(
+			`snapshot-matrix: Walrus aggregator GET failed HTTP ${response.status}: ${(
+				await response.text()
+			).slice(0, 1_000)}`,
+		);
+	}
+	return new Uint8Array(await response.arrayBuffer());
+};
+
+/** writeBlob, retried. For local mode this goes through the real Rust
+ *  publisher endpoint instead of constructing a direct SDK client on the host;
+ *  the publisher then fans slivers out to every storage node using the
+ *  committee Docker aliases. Immediately after a snapshot pauses+commits+
+ *  unpauses those containers (the matrix writes S2 right after
+ *  `snapshot.capture`), the first write can fail while the nodes re-settle.
+ *  Retry across that window. Returns the content-addressed blob id. */
+export const writeWalrusBlobWithRetry = async (
+	suiClient: ClientWithCoreApi,
+	walrus: WalrusResolvedLite,
 	args: {
 		readonly blob: Uint8Array;
 		readonly signer: Ed25519Keypair;
@@ -154,7 +252,8 @@ export const writeBlobWithRetry = async (
 	let lastErr: unknown;
 	for (let attempt = 0; attempt < 5; attempt++) {
 		try {
-			const written = await walrusClient.writeBlob(args);
+			if (walrus.mode === 'local') return await putBlobViaPublisher(walrus, args);
+			const written = await makeWalrusClient(suiClient, walrus).writeBlob(args);
 			return { blobId: written.blobId };
 		} catch (err) {
 			lastErr = err;

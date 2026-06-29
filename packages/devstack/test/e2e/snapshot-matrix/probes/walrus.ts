@@ -8,11 +8,11 @@
 // the paused+committed node containers and the on-chain Blob roll back
 // together).
 //
-// Requires the real router (`useRealRouter`) — the SDK writes slivers
-// directly to each `walrus-node-i` vhost, which only routes through the real
-// Traefik, not the harness's host-loopback fake resolver.
+// Requires the real router (`useRealRouter`) — local mode writes/reads through
+// the routed publisher/aggregator URLs, while those real Walrus binaries fan out
+// to the storage-node committee.
 
-import { makeWalrusClient, writeBlobWithRetry, type ProbeEnv } from '../clients.ts';
+import { readWalrusBlob, writeWalrusBlobWithRetry, type ProbeEnv } from '../clients.ts';
 import type { Probe } from '../probe.ts';
 
 interface WalrusHandle {
@@ -30,13 +30,12 @@ export const walrusProbe: Probe<WalrusHandle> = {
 	// MUST orphan its S1.
 	orphansOnCacheLoss: true,
 	async createState(env: ProbeEnv, label: string): Promise<WalrusHandle> {
-		const walrusClient = makeWalrusClient(env.suiClient, env.walrus);
 		// Label + actor address make the content (and thus the content-addressed
 		// blobId) unique per S1/S2/S3 so the three are independently checkable.
 		const payload = new TextEncoder().encode(
 			`snapshot-matrix walrus ${label} ${env.address} ${'z'.repeat(48)}`,
 		);
-		const written = await writeBlobWithRetry(walrusClient, {
+		const written = await writeWalrusBlobWithRetry(env.suiClient, env.walrus, {
 			blob: payload,
 			signer: env.keypair,
 			epochs: 5,
@@ -45,14 +44,13 @@ export const walrusProbe: Probe<WalrusHandle> = {
 		return { blobId: written.blobId };
 	},
 	async exists(env: ProbeEnv, handle: WalrusHandle): Promise<boolean> {
-		const walrusClient = makeWalrusClient(env.suiClient, env.walrus);
 		// readBlob can briefly race a just-certified write, so retry a few times
 		// before concluding the blob is absent. A rolled-back blob (S2 after a
 		// restore) also lands here — readBlob throws and we return false, which
 		// is the correct "did not survive" answer.
 		for (let attempt = 0; attempt < 4; attempt++) {
 			try {
-				const read = await walrusClient.readBlob({ blobId: handle.blobId });
+				const read = await readWalrusBlob(env.suiClient, env.walrus, handle.blobId);
 				if (read.length > 0) return true;
 			} catch {
 				// transient, or a genuinely-absent blob — fall through to retry.

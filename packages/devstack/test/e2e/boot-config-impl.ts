@@ -37,6 +37,7 @@ import {
 	StrategyRegistryService,
 	layerStrategyRegistry,
 } from '../../src/substrate/runtime/strategy-registry/index.ts';
+import type { EntrypointDecl } from '../../src/contracts/routable.ts';
 import { layerEntrypointRegistry } from '../../src/orchestrators/router/entrypoints.ts';
 import { BUILT_IN_ENTRYPOINTS } from '../../src/plugins/router-entrypoints.ts';
 import type { ResolvedRoute } from '../../src/orchestrators/router/file-provider.ts';
@@ -171,6 +172,9 @@ export type BootOptions = BootSource & {
 	/** Opt-in: reuse router profile state across invocations. Useful with
 	 *  `runtimeRoot` for warm-restart e2e coverage. */
 	readonly routerStateRoot?: string;
+	/** Opt-in: limit router entrypoints for tests that need the real router
+	 *  but not every built-in host port. */
+	readonly routerEntrypoints?: ReadonlyArray<EntrypointDecl>;
 	/** Opt-in: project `{digest, objectChanges}` from a specific
 	 *  ready key's resolved value. Used by the connect-four test to assert
 	 *  the openLobby action produced a real digest + created object. */
@@ -271,6 +275,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	});
 	const routerDispatchDir = routerProfile.dispatchDir;
 	const codegenOutputDir = join(runtimeRoot, 'codegen');
+	const routerEntrypoints = opts.routerEntrypoints ?? BUILT_IN_ENTRYPOINTS;
 
 	const platformBase = Layer.mergeAll(
 		layerIdentity(identity),
@@ -316,14 +321,14 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		Layer.provideMerge(
 			opts.useRealRouter === true
 				? Layer.mergeAll(
-						layerEntrypointRegistry(BUILT_IN_ENTRYPOINTS),
+						layerEntrypointRegistry(routerEntrypoints),
 						layerTraefikContainerOpsDocker,
 						layerDockerUpstreamResolver(routerProfile),
 						routerConfig,
 					).pipe(Layer.provideMerge(withSpawnerAdapter))
 				: Layer.mergeAll(
 						platformBase,
-						layerEntrypointRegistry(BUILT_IN_ENTRYPOINTS),
+						layerEntrypointRegistry(routerEntrypoints),
 						layerTraefikContainerOpsStub,
 						fakeRouterUpstreams,
 						routerConfig,

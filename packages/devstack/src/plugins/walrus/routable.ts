@@ -7,7 +7,9 @@
 //
 // For the local cluster:
 //   - N × `walrus-node-<i>` routes — one per storage node, with
-//     `cors: true` (walrus storage REST API lacks CORS headers).
+//     `cors: true` (walrus storage REST API lacks CORS headers). These
+//     are HTTP public routes backed by HTTPS upstreams because Walrus
+//     storage nodes self-sign TLS with their network key.
 //   - 1 × `walrus-aggregator` route — release `walrus aggregator`
 //     service container
 //     exposing `GET /v1/blobs/:id` through a single app-facing URL.
@@ -78,7 +80,7 @@ export const makeLocalRoutables = (args: {
 			// Distilled-doc §"Routes registered": cors: true (walrus
 			// storage REST API lacks CORS headers).
 			cors: true,
-			wireProtocol: 'http',
+			wireProtocol: 'https',
 		}),
 	);
 

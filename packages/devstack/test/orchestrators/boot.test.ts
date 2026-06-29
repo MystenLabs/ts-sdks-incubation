@@ -101,6 +101,25 @@ const tcpRoutable: RoutableDecl = {
 	wireProtocol: 'tcp',
 };
 
+const httpsResolvedRoute: ResolvedRoute = {
+	dispatchFileId: 'walrus-node-abc789',
+	hostname: 'walrus-node-0.demo.localhost',
+	entrypointName: 'walrus-node-0',
+	entrypointPort: 9185,
+	upstreamUrl: 'https://172.20.0.5:9185',
+	cors: true,
+	wireProtocol: 'https',
+};
+
+const httpsRoutable: RoutableDecl = {
+	kind: 'routable',
+	endpointName: 'walrus-node-0',
+	dispatchId: { serviceKey: 'walrus', role: 'walrus-node-0' },
+	upstream: { type: 'container', containerName: 'walrus-node-0', containerPort: 9185 },
+	cors: true,
+	wireProtocol: 'https',
+};
+
 const identity: Identity = {
 	app: appName('router-runtime-composition'),
 	stack: stackName('main'),
@@ -343,6 +362,33 @@ describe('endpointSinksFromRoute', () => {
 		expect(event.endpoint.url).toBe(manifestEntry.url);
 		// tcp route carries the loopback form, NOT route.hostname.
 		expect(`tcp://127.0.0.1:${route.entrypointPort}`).toBe(manifestEntry.url);
+	});
+
+	it('keeps https upstream routes public as http endpoints', () => {
+		const { route, event, manifestEntry } = endpointSinksFromRoute(
+			httpsRoutable,
+			httpsResolvedRoute,
+			pluginKey('walrus#0'),
+			9012,
+		);
+		expect(route).toBe(httpsResolvedRoute);
+		expect(event.endpoint).toEqual({
+			endpointKey: endpointKey('walrus#0:walrus-node-0'),
+			pluginKey: pluginKey('walrus#0'),
+			name: 'walrus-node-0',
+			url: 'http://walrus-node-0.demo.localhost:9185',
+			displayUrl: null,
+			wireProtocol: 'http',
+			registeredAt: 9012,
+		});
+		expect(manifestEntry).toEqual({
+			endpointKey: 'walrus#0:walrus-node-0',
+			pluginKey: 'walrus#0',
+			name: 'walrus-node-0',
+			url: 'http://walrus-node-0.demo.localhost:9185',
+			displayUrl: null,
+			wireProtocol: 'http',
+		});
 	});
 });
 

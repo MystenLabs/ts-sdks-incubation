@@ -395,7 +395,13 @@ const liveRouteLeaseMismatch = (
 	});
 
 const resolvedWireProtocolFor = (decl: RoutableDecl): ResolvedWireProtocol =>
-	decl.wireProtocol === 'tcp' ? 'tcp' : decl.wireProtocol === 'h2c' ? 'h2c' : 'http';
+	decl.wireProtocol === 'tcp'
+		? 'tcp'
+		: decl.wireProtocol === 'h2c'
+			? 'h2c'
+			: decl.wireProtocol === 'https'
+				? 'https'
+				: 'http';
 
 const validateWireProtocolFamily = (
 	decl: RoutableDecl,
@@ -532,7 +538,7 @@ const resolveDisabledDirectRoute = (
 		const entrypoint = yield* registry.byName(decl.endpointName);
 		const wireProtocol = yield* validateWireProtocolFamily(decl, entrypoint);
 		const fileId = yield* dispatchFileId({ identity, dispatch: decl.dispatchId });
-		const scheme = wireProtocol === 'tcp' ? 'tcp' : 'http';
+		const scheme = wireProtocol === 'tcp' ? 'tcp' : wireProtocol === 'https' ? 'https' : 'http';
 		return {
 			dispatchFileId: fileId,
 			hostname: directLoopbackHost,

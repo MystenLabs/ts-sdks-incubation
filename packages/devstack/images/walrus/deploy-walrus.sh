@@ -31,6 +31,9 @@
 #   - dryrun-node-<i>.yaml         — per-node walrus-node config.
 #   - dryrun-node-<i>.keystore     — per-node sui keystore.
 #   - dryrun-node-<i>-sui.yaml     — per-node sui client config.
+#   - client_config.yaml           — funded Walrus client config.
+#   - sui_client.yaml              — funded Sui client wallet for publisher/aggregator.
+#   - sui_client.keystore          — funded Sui client keystore for publisher/aggregator.
 #
 # Stdout MUST include the deploy summary in `key: 0x<hex>` format
 # (plugins/walrus/deploy.ts::parseDeployOutput regexes pick these out).
@@ -45,6 +48,7 @@ FAUCET_URL=""
 PUBLIC_HOSTS_CSV=""
 LISTENING_IPS_CSV=""
 GC=false
+CLIENT_WALLET_SUI_AMOUNT_MIST="${WALRUS_CLIENT_WALLET_SUI_AMOUNT_MIST:-10000000000}"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -254,11 +258,12 @@ WALRUS_NETWORK_ARG="${SUI_RPC_URL};${FAUCET_URL}"
 
 "$WALRUS_DEPLOY_BIN" generate-dry-run-configs \
 	--working-dir "$WORKING_DIR" \
+	--admin-wallet-path "$ADMIN_WALLET_YAML" \
+	--sui-amount "$CLIENT_WALLET_SUI_AMOUNT_MIST" \
 	--listening-ips "${LISTENING_IPS[@]}"
 
 # Patch generated node configs: storage_path → writable layer, rebind on
-# 0.0.0.0, disable TLS (in-network plain HTTP behind router), optionally
-# enable blob GC + data deletion when --gc was passed.
+# 0.0.0.0, optionally enable blob GC + data deletion when --gc was passed.
 for f in "$WORKING_DIR"/dryrun-node-*[0-9].yaml; do
 	sed -i "s|^storage_path: ${WORKING_DIR}/|storage_path: /var/walrus/storage/|" "$f"
 	sed -i -E "s|^(rest_api_address): [0-9.]+:|\\1: 0.0.0.0:|" "$f"
@@ -269,8 +274,6 @@ for f in "$WORKING_DIR"/dryrun-node-*[0-9].yaml; do
 	  adaptive_downloader_config:
 	    max_workers: 2
 	    initial_workers: 2
-	tls:
-	  disable_tls: true
 	NODEEOF
 	if [ "$GC" = "true" ]; then
 		cat >> "$f" <<-GCEOF

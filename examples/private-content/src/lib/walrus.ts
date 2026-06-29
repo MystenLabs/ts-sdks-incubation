@@ -15,7 +15,7 @@ let cachedClient: WalrusClient | null = null;
 let cachedSuiClient: ClientWithCoreApi | null = null;
 let cachedNetwork: string | null = null;
 
-async function getClient(
+async function getSdkClient(
 	suiClient: ClientWithCoreApi,
 	network: string,
 	walrusConfig: WalrusConfig,
@@ -31,13 +31,88 @@ async function getClient(
 				? { exchangeIds: [...walrusConfig.packageConfig.exchangeIds] }
 				: {}),
 		},
-		storageNodeUrlScheme: walrusConfig.mode === 'local' ? 'http' : 'https',
+		storageNodeUrlScheme: 'https',
 		wasmUrl: walrusWasmUrl,
 	});
 	cachedClient = client;
 	cachedSuiClient = suiClient;
 	cachedNetwork = network;
 	return client;
+}
+
+const nestedString = (
+	value: unknown,
+	paths: ReadonlyArray<ReadonlyArray<string>>,
+): string | undefined => {
+	for (const path of paths) {
+		let cursor = value;
+		for (const segment of path) {
+			cursor =
+				typeof cursor === 'object' && cursor !== null
+					? (cursor as Record<string, unknown>)[segment]
+					: undefined;
+		}
+		if (typeof cursor === 'string' && cursor.length > 0) return cursor;
+	}
+	return undefined;
+};
+
+const extractPublishResult = (response: unknown): StoreBlobResult => {
+	const blobId = nestedString(response, [
+		['newlyCreated', 'blobObject', 'blob_id'],
+		['newlyCreated', 'blobObject', 'blobId'],
+		['newlyCreated', 'blob_id'],
+		['newlyCreated', 'blobId'],
+		['blob_id'],
+		['blobId'],
+	]);
+	const blobObjectId = nestedString(response, [
+		['newlyCreated', 'blobObject', 'id'],
+		['newlyCreated', 'blob_object', 'id'],
+		['blobObject', 'id'],
+		['blob_object', 'id'],
+		['blobObjectId'],
+	]);
+	if (blobId !== undefined && blobObjectId !== undefined) return { blobId, blobObjectId };
+	throw new Error(
+		`Walrus publisher response did not include the created blob object: ${JSON.stringify(
+			response,
+		).slice(0, 1_000)}`,
+	);
+};
+
+const requireLocalEndpoint = (
+	walrusConfig: WalrusConfig,
+	key: 'aggregatorUrl' | 'publisherUrl',
+): string => {
+	const value = walrusConfig[key];
+	if (value === null) {
+		throw new Error(`Local Walrus ${key} is disabled in this devstack`);
+	}
+	return value;
+};
+
+async function storeBlobThroughPublisher(args: {
+	walrusConfig: WalrusConfig;
+	signer: Signer;
+	data: Uint8Array;
+	epochs: number;
+}): Promise<StoreBlobResult> {
+	const url = new URL('/v1/blobs', requireLocalEndpoint(args.walrusConfig, 'publisherUrl'));
+	url.searchParams.set('epochs', String(args.epochs));
+	url.searchParams.set('deletable', 'true');
+	url.searchParams.set('force', 'true');
+	url.searchParams.set('send_object_to', args.signer.toSuiAddress());
+
+	const response = await fetch(url, {
+		method: 'PUT',
+		body: new Uint8Array(args.data).buffer as ArrayBuffer,
+	});
+	const text = await response.text();
+	if (!response.ok) {
+		throw new Error(`Walrus publisher failed HTTP ${response.status}: ${text.slice(0, 1_000)}`);
+	}
+	return extractPublishResult(JSON.parse(text) as unknown);
 }
 
 export interface StoreBlobResult {
@@ -57,7 +132,17 @@ export async function storeBlob(args: {
 	data: Uint8Array;
 	epochs?: number;
 }): Promise<StoreBlobResult> {
-	const client = await getClient(args.suiClient, args.network, walrus.forNetwork(args.network));
+	const walrusConfig = walrus.forNetwork(args.network);
+	if (walrusConfig.mode === 'local') {
+		return await storeBlobThroughPublisher({
+			walrusConfig,
+			signer: args.signer,
+			data: args.data,
+			epochs: args.epochs ?? DEFAULT_EPOCHS,
+		});
+	}
+
+	const client = await getSdkClient(args.suiClient, args.network, walrusConfig);
 	const result = await client.writeBlob({
 		blob: args.data,
 		signer: args.signer,
@@ -80,7 +165,23 @@ export async function readBlob(args: {
 	network: string;
 	blobId: string;
 }): Promise<Uint8Array> {
-	const client = await getClient(args.suiClient, args.network, walrus.forNetwork(args.network));
+	const walrusConfig = walrus.forNetwork(args.network);
+	if (walrusConfig.mode === 'local') {
+		const response = await fetch(
+			new URL(`/v1/blobs/${args.blobId}`, requireLocalEndpoint(walrusConfig, 'aggregatorUrl')),
+		);
+		if (!response.ok) {
+			throw new Error(
+				`Walrus aggregator failed HTTP ${response.status}: ${(await response.text()).slice(
+					0,
+					1_000,
+				)}`,
+			);
+		}
+		return new Uint8Array(await response.arrayBuffer());
+	}
+
+	const client = await getSdkClient(args.suiClient, args.network, walrusConfig);
 	return await client.readBlob({ blobId: args.blobId });
 }
 

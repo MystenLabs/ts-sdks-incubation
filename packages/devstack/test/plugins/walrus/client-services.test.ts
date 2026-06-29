@@ -9,6 +9,10 @@ import type {
 } from '../../../src/contracts/container-runtime.ts';
 import {
 	DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+	WALRUS_CLIENT_CONFIG_FILE,
+	WALRUS_CLIENT_KEYSTORE_FILE,
+	WALRUS_CLIENT_SERVICE_STOP_SIGNAL,
+	WALRUS_CLIENT_WALLET_FILE,
 	startWalrusClientServices,
 	walrusClientServiceConfigHash,
 } from '../../../src/plugins/walrus/client-services.ts';
@@ -74,13 +78,17 @@ describe('walrus client services', () => {
 			'0.0.0.0:31415',
 			'0.0.0.0:31415',
 		]);
-		expect(specs.map((spec) => spec.env?.WALRUS_CLIENT_WALLET_NODE)).toEqual([
-			'dryrun-node-0',
-			'dryrun-node-0',
-		]);
 		expect(specs.map((spec) => spec.env?.SUI_RPC_URL)).toEqual([
 			'http://host.docker.internal:9123',
 			'http://host.docker.internal:9123',
+		]);
+		expect(specs.map((spec) => spec.stopSignal)).toEqual([
+			WALRUS_CLIENT_SERVICE_STOP_SIGNAL,
+			WALRUS_CLIENT_SERVICE_STOP_SIGNAL,
+		]);
+		expect(specs.map((spec) => spec.extraHosts)).toEqual([
+			{ 'host.docker.internal': 'host-gateway' },
+			{ 'host.docker.internal': 'host-gateway' },
 		]);
 		expect(specs.map((spec) => spec.mounts?.[0])).toEqual([
 			{ source: '/tmp/devstack', target: '/opt/walrus/runtime', readonly: true },
@@ -132,6 +140,9 @@ describe('walrus client services', () => {
 			suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
 		};
 
+		expect(walrusClientServiceConfigHash(base)).toContain(
+			`client=${WALRUS_CLIENT_CONFIG_FILE},${WALRUS_CLIENT_WALLET_FILE},${WALRUS_CLIENT_KEYSTORE_FILE}`,
+		);
 		expect(walrusClientServiceConfigHash(base)).not.toBe(
 			walrusClientServiceConfigHash({ ...base, role: 'publisher' }),
 		);

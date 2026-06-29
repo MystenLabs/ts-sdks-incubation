@@ -323,6 +323,8 @@ export {
 	type WalCoinValue,
 	type WalrusResolved,
 	type WalrusLocalClusterOptions,
+	type WalrusLocalPublisherOptions,
+	type WalrusLocalServiceOptions,
 	type WalrusKnownDeploymentOptions,
 	type WalrusKnownNetwork,
 	type WalrusStorageNode,

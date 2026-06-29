@@ -120,6 +120,8 @@ RUN chmod +x /opt/walrus/scripts/*.sh
 
 ENV RUST_LOG=info,walrus=info
 
+STOPSIGNAL SIGINT
+
 # Storage-node REST port. Distilled-doc invariant 9. Client services bind
 # their release CLI default unless overridden by env.
 EXPOSE 9185

@@ -481,11 +481,12 @@ export const endpointSinksFromRoute = (
 		route.wireProtocol === 'tcp'
 			? `tcp://127.0.0.1:${route.entrypointPort}`
 			: `http://${route.hostname}:${route.entrypointPort}`;
+	const publicWireProtocol = route.wireProtocol === 'https' ? 'http' : route.wireProtocol;
 	const common = {
 		name: decl.endpointName,
 		url,
 		displayUrl: null,
-		wireProtocol: route.wireProtocol,
+		wireProtocol: publicWireProtocol,
 	} as const;
 	const endpointKeyString = `${pluginKey}:${decl.endpointName}`;
 	const event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }> = {
