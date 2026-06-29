@@ -19,13 +19,16 @@
 #      And emit per-node config files under /opt/walrus/outputs so the
 #      storage-node bind-mount (`readonly`) can find them.
 #
-#   2. Default entrypoint (storage-node mode) — bind HTTP on
-#      WALRUS_ROUTER_PORT (9185), answer `/v1/health`, and stay alive.
+#   2. Default entrypoint:
+#      - storage-node mode binds HTTPS on WALRUS_ROUTER_PORT (9185),
+#        answers `/v1/health`, and stays alive.
+#      - publisher / aggregator mode binds HTTP on the client-service
+#        port, answers `/status`, and stays alive.
 #      The plugin's write-ready probe runs `nc -z` and then fetches
 #      `/v1/health` with curl inside the container (storage-nodes.ts).
 #
 # Base image: alpine (busybox shell + bind tools) is the smallest
-# image with `nc`, `httpd`, and `sh` for both behaviors.
+# image with `nc`, `httpd`, `openssl`, and `sh` for both behaviors.
 
 FROM alpine:3.20
 
@@ -35,7 +38,7 @@ FROM alpine:3.20
 # with the real walrus binary's deploy output handling. xxd is used
 # to mint pseudo-random 32-byte hex object ids on each deploy run so
 # the parse regex matches a real-looking address.
-RUN apk add --no-cache busybox-extras coreutils curl
+RUN apk add --no-cache busybox-extras coreutils curl openssl
 
 COPY walrus /usr/local/bin/walrus
 RUN chmod +x /usr/local/bin/walrus

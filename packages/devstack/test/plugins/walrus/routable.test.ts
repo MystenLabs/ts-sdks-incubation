@@ -1,8 +1,8 @@
 // Unit tests for the walrus local-cluster Routable contributions.
 //
 // Each storage node carries one Traefik route; the aggregator and
-// publisher are aliases collapsed onto node-0 (distilled-doc
-// §"Routes registered"). These tests pin the fan-out shape.
+// publisher are release CLI service containers fronted through the same
+// Walrus router entrypoint. These tests pin the fan-out shape.
 
 import { describe, expect, it } from 'vitest';
 
@@ -15,10 +15,20 @@ const makeRoutes = (nodeCount: number, serviceKey = 'walrus:walrus') =>
 		walrusName: 'walrus',
 		serviceKey,
 		nodeCount,
+		aggregator: {
+			role: 'aggregator',
+			containerName: 'devstack-app-main-walrus-walrus-aggregator',
+			containerPort: 31415,
+		},
+		publisher: {
+			role: 'publisher',
+			containerName: 'devstack-app-main-walrus-walrus-publisher',
+			containerPort: 31415,
+		},
 	});
 
 describe('walrus makeLocalRoutables', () => {
-	it('emits N per-node routes + aggregator + publisher aliases', () => {
+	it('emits N per-node routes + aggregator + publisher service routes', () => {
 		const routes = makeRoutes(3);
 		expect(routes).toHaveLength(5); // 3 + aggregator + publisher
 		const names = routes.map((r) => r.endpointName);
@@ -31,29 +41,49 @@ describe('walrus makeLocalRoutables', () => {
 		]);
 	});
 
-	it('aggregator + publisher dispatch to node-0', () => {
+	it('aggregator + publisher dispatch to service containers', () => {
 		const routes = makeRoutes(2);
 		const agg = routes.find((r) => r.endpointName === 'walrus-aggregator');
 		const pub = routes.find((r) => r.endpointName === 'walrus-publisher');
 		expect(agg).toBeDefined();
 		expect(pub).toBeDefined();
-		// Both alias onto node-0's container.
-		const aggUpstream = (agg!.upstream as { containerName: string }).containerName;
-		const pubUpstream = (pub!.upstream as { containerName: string }).containerName;
-		expect(aggUpstream).toBe('devstack-app-main-walrus-walrus-node-0');
-		expect(pubUpstream).toBe('devstack-app-main-walrus-walrus-node-0');
+		expect(agg!.upstream).toEqual({
+			type: 'container',
+			containerName: 'devstack-app-main-walrus-walrus-aggregator',
+			containerPort: 31415,
+		});
+		expect(pub!.upstream).toEqual({
+			type: 'container',
+			containerName: 'devstack-app-main-walrus-walrus-publisher',
+			containerPort: 31415,
+		});
 	});
 
-	it('every route flips cors:true (walrus storage REST lacks CORS headers)', () => {
+	it('omits app-facing routes when their service ports are absent', () => {
+		const routes = makeLocalRoutables({
+			app: 'app',
+			stack: 'main',
+			walrusName: 'walrus',
+			serviceKey: 'walrus:walrus',
+			nodeCount: 2,
+		});
+		expect(routes.map((r) => r.endpointName)).toEqual(['walrus-node-0', 'walrus-node-1']);
+	});
+
+	it('uses HTTPS upstreams for storage nodes and HTTP upstreams for client services', () => {
 		const routes = makeRoutes(4);
 		for (const r of routes) {
-			// walrus emits only the HTTP variant — narrow before reading cors,
+			// walrus emits only the HTTP-family variant — narrow before reading cors,
 			// which is absent on the TCP variant of RoutableDecl.
-			expect(r.wireProtocol).toBe('http');
 			if (r.wireProtocol !== 'tcp') {
 				expect(r.cors).toBe(true);
 			}
 		}
+		expect(
+			routes.filter((r) => r.endpointName.startsWith('walrus-node-')).map((r) => r.wireProtocol),
+		).toEqual(['https', 'https', 'https', 'https']);
+		expect(routes.find((r) => r.endpointName === 'walrus-aggregator')?.wireProtocol).toBe('http');
+		expect(routes.find((r) => r.endpointName === 'walrus-publisher')?.wireProtocol).toBe('http');
 	});
 
 	it('per-node dispatchIds carry the service key + per-index role', () => {

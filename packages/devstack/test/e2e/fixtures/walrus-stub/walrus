@@ -3,17 +3,17 @@
 #
 #   - `deploy ...`  → emit parseable deploy output + per-node config
 #                      files; exit 0.
-#   - (no args)     → bind HTTP on WALRUS_ROUTER_PORT (9185), answer
-#                      `/v1/health` with an Active nodeStatus, and stay
-#                      alive, so the storage-node write-ready probe
-#                      succeeds.
+#   - `aggregator` / `publisher` → bind HTTP on WALRUS_CONTAINER_PORT
+#                      (default 9185), answer `/status`, and stay alive.
+#   - any other mode → bind HTTPS on WALRUS_CONTAINER_PORT (default 9185),
+#                      answer `/v1/health` with an Active nodeStatus, and
+#                      stay alive. This models storage-node readiness
+#                      without implementing Walrus.
 #
 # The real `walrus` binary uses subcommands; the plugin's argv path
 # always starts with `deploy` for the one-shot. Anything else is
-# treated as "long-lived node" (the real binary's `walrus node` /
-# `walrus aggregator` invocations dispatched via the wrapper image's
-# run.sh; we don't model the wrapper here — the stub IS the wrapper-
-# image-equivalent, so the bare ENTRYPOINT runs the listener).
+# treated as a long-lived listener. The stub is the wrapper-image equivalent,
+# so aggregator / publisher service containers also land here.
 
 set -eu
 
@@ -64,7 +64,11 @@ case "$mode" in
 		# bind-mount of /opt/walrus/outputs has something to find.
 		# (The real walrus deploy emits `dryrun-node-<i>.yaml` +
 		# `dryrun-node-<i>-sui.yaml` + `dryrun-node-<i>.keystore`
-		# per committee member.)
+		# per committee member, plus funded `sui_client` / Walrus client
+		# config files for publisher/aggregator.)
+		printf 'system_object: 0x2\nstaking_object: 0x2\nwallet_config: %s/sui_client.yaml\n' "$out_dir" > "$out_dir/client_config.yaml"
+		printf 'active_env: localnet\nenvs:\n  - alias: localnet\n    rpc: http://host.docker.internal:9123\nkeystore:\n  File: %s/sui_client.keystore\n' "$out_dir" > "$out_dir/sui_client.yaml"
+		printf 'stub-client-keystore\n' > "$out_dir/sui_client.keystore"
 		i=0
 		while [ "$i" -lt "$committee_size" ]; do
 			printf 'name: dryrun-node-%s\n' "$i" > "$out_dir/dryrun-node-$i.yaml"
@@ -87,14 +91,28 @@ EOF
 		exit 0
 		;;
 	*)
-		# Storage-node mode. Bind HTTP on 9185 and hold the listener.
-		# The production ready-gate first checks TCP with `nc -z`, then
-		# fetches `/v1/health` and classifies `nodeStatus`. Serve a small
-		# Active health body so the stub models a write-ready node.
+		# Long-lived service mode. Storage nodes keep Walrus' TLS shape;
+		# publisher / aggregator daemons expose plain HTTP.
 		port="${WALRUS_CONTAINER_PORT:-9185}"
 		root="/tmp/walrus-stub-http"
 		mkdir -p "$root/v1"
 		printf '{"nodeStatus":"Active"}\n' > "$root/v1/health"
-		exec httpd -f -p "$port" -h "$root"
+		printf '{"status":"OK"}\n' > "$root/status"
+		case "$mode" in
+			aggregator|publisher)
+				exec httpd -f -p "$port" -h "$root"
+				;;
+			*)
+				cert="$root/cert.pem"
+				key="$root/key.pem"
+				openssl req -x509 -newkey rsa:2048 -nodes \
+					-keyout "$key" \
+					-out "$cert" \
+					-days 1 \
+					-subj "/CN=walrus-stub.localhost" >/dev/null 2>&1
+				cd "$root"
+				exec openssl s_server -quiet -accept "$port" -cert "$cert" -key "$key" -WWW
+				;;
+		esac
 		;;
 esac

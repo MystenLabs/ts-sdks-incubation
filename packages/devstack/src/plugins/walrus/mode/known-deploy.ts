@@ -64,10 +64,10 @@ export interface KnownDeploymentBootResult {
 	readonly stakingPoolId: string;
 	readonly exchangeIds: ReadonlyArray<string>;
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
-	/** Null only when the proxy URL itself is unresolved (no explicit
-	 *  `proxyUrl` override and no registry/aggregator/publisher
-	 *  fallback). Surfaces independently of `aggregatorUrl` /
-	 *  `publisherUrl` — distilled-doc invariant 15. */
+	/** Null only when the read/proxy URL itself is unresolved (no explicit
+	 *  `proxyUrl` override, registry proxy URL, or aggregator URL). Surfaces
+	 *  independently of `aggregatorUrl` / `publisherUrl` — distilled-doc
+	 *  invariant 15. */
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
@@ -169,7 +169,7 @@ export const resolveKnownDeploymentOptions = (
 
 	const aggregatorUrl = opts.aggregatorUrl ?? reg?.aggregatorUrl ?? null;
 	const publisherUrl = opts.publisherUrl ?? reg?.publisherUrl ?? null;
-	const proxyUrl = opts.proxyUrl ?? reg?.proxyUrl ?? aggregatorUrl ?? publisherUrl ?? null;
+	const proxyUrl = opts.proxyUrl ?? reg?.proxyUrl ?? aggregatorUrl ?? null;
 
 	// Invariant 15: surface null per individual URL when missing so the
 	// plugin's projection can conditionally publish each tag. Previously

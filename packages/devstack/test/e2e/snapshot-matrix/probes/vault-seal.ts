@@ -27,9 +27,9 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import {
 	createdObjectOfType,
-	makeWalrusClient,
+	readWalrusBlob,
 	signAndExecuteAs,
-	writeBlobWithRetry,
+	writeWalrusBlobWithRetry,
 	type ProbeEnv,
 } from '../clients.ts';
 import type { Probe } from '../probe.ts';
@@ -107,8 +107,7 @@ export const vaultSealProbe: Probe<VaultSealHandle> = {
 		});
 
 		// 2) store the ciphertext on walrus.
-		const walrus = makeWalrusClient(env.suiClient, env.walrus);
-		const written = await writeBlobWithRetry(walrus, {
+		const written = await writeWalrusBlobWithRetry(env.suiClient, env.walrus, {
 			blob: encryptedObject,
 			signer: env.keypair,
 			epochs: 5,
@@ -152,8 +151,7 @@ export const vaultSealProbe: Probe<VaultSealHandle> = {
 				};
 				if (obj.object != null) {
 					// (b) the ciphertext must still be readable off walrus.
-					const walrus = makeWalrusClient(env.suiClient, env.walrus);
-					const ciphertext = await walrus.readBlob({ blobId: handle.blobId });
+					const ciphertext = await readWalrusBlob(env.suiClient, env.walrus, handle.blobId);
 					if (ciphertext.length > 0) {
 						// (c) SessionKey signed headlessly by the real Signer.
 						const sessionKey = await SessionKey.create({

@@ -4,7 +4,8 @@ description: Local Walrus clusters, known deployments, and WAL funding.
 ---
 
 Store and retrieve blobs from a Walrus cluster running on your local network. Add `walrus()` to your
-stack to start the cluster, then build a `WalrusClient` from the ids it resolves at boot.
+stack to start the cluster, then use the generated publisher and aggregator URLs to publish and read
+blobs through the release Walrus services.
 
 Local mode starts the cluster. Use `walCoin(localWalrus)` with account funding when an account needs
 WAL.
@@ -53,12 +54,58 @@ cluster via the consuming server's `after:` list so it boots before the app star
 [`examples/private-content/devstack.config.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/devstack.config.ts)
 (`after: [localnet, vault, walrusCluster, sealKeyServer, devWallet]` on the `hostService`).
 
-## Connect the SDK
+## Local publisher and aggregator
+
+Local mode starts app-facing publisher and aggregator HTTP endpoints by default. These endpoints let
+an app publish and read blobs through one URL instead of talking directly to every storage node. The
+generated Walrus binding exposes them as `publisherUrl` and `aggregatorUrl`. If you disable either
+service, that URL resolves to `null`.
+
+```ts
+if (!w.publisherUrl || !w.aggregatorUrl) {
+	throw new Error('Walrus publisher and aggregator services are disabled for this stack');
+}
+
+const publish = await fetch(`${w.publisherUrl}/v1/blobs?epochs=3&deletable=false`, {
+	method: 'PUT',
+	body: new TextEncoder().encode('hello walrus'),
+});
+const receipt = await publish.json();
+const blobId = receipt.newlyCreated.blobObject.blob_id;
+
+const read = await fetch(`${w.aggregatorUrl}/v1/blobs/${blobId}`);
+const bytes = new Uint8Array(await read.arrayBuffer());
+```
+
+Devstack runs the release-provided `walrus publisher` and `walrus aggregator` binaries in managed
+containers. The publisher uses the local deploy-generated wallet and native Walrus publisher
+behavior, including support for `send_object_to=<address>` on the publish URL.
+
+Tune or disable the services through `local.aggregator` and `local.publisher`:
+
+```ts title="devstack.config.ts"
+const localWalrus = walrus({
+	local: {
+		aggregator: { port: 40100 },
+		publisher: { port: 40101 },
+	},
+});
+
+const storageNodesOnly = walrus({ local: { aggregator: false, publisher: false } });
+```
+
+## Direct SDK access
 
 The config above runs the cluster; the [generated bindings](/devstack/codegen) carry its resolved
 ids into your app. Walrus is a per-network service: `walrus.forNetwork(network)` returns the config
 for the network your wallet is connected to, so a runtime `switchNetwork` flips the cluster ids in
-lockstep. Build a `WalrusClient` from it:
+lockstep.
+
+For local clusters, prefer the generated `publisherUrl` and `aggregatorUrl` shown above. The local
+storage-node committee records use Docker-network hostnames so the Rust publisher and aggregator
+containers can reach the nodes directly; those hostnames are not a browser API. Build a direct
+`WalrusClient` only for known/live deployments, or for advanced host-side tooling that deliberately
+manages storage-node routing itself:
 
 ```ts title="src/lib/walrus.ts"
 import { useCurrentNetwork } from '@mysten/dapp-kit-react';
@@ -70,6 +117,10 @@ import { walrus } from '@generated/walrus.js';
 const network = useCurrentNetwork();
 const w = walrus.forNetwork(network);
 
+if (w.mode === 'local') {
+	throw new Error('Use w.publisherUrl and w.aggregatorUrl for local Walrus clusters');
+}
+
 const client = new WalrusClient({
 	suiClient,
 	packageConfig: {
@@ -79,16 +130,13 @@ const client = new WalrusClient({
 		// when present so the shape matches `WalrusClient`'s expected type.
 		...(w.packageConfig.exchangeIds ? { exchangeIds: [...w.packageConfig.exchangeIds] } : {}),
 	},
-	// Local clusters serve plain HTTP behind the devstack proxy; live
-	// networks serve HTTPS.
-	storageNodeUrlScheme: w.mode === 'local' ? 'http' : 'https',
+	storageNodeUrlScheme: 'https',
 	wasmUrl: walrusWasmUrl,
 });
 ```
 
 `w.packageConfig` holds `systemObjectId`, `stakingPoolId`, and an optional `exchangeIds` resolved at
 boot — build the client's `packageConfig` field-by-field as above, spreading `exchangeIds` only when
-it's present. Keying `storageNodeUrlScheme` off `w.mode` lets the same code reach a local cluster
-over HTTP and a known deployment over HTTPS as the connected network changes. See
+it's present. See
 [`examples/private-content`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/walrus.ts)
-for the full client with blob write/read.
+for an endpoint-backed local write/read helper with direct-SDK fallback for non-local networks.

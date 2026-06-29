@@ -105,6 +105,9 @@ const WALRUS_DEPLOY_VERIFY_READINESS_DELAY = '3 seconds';
 
 const requiredDeployOutputFiles = (inputs: DeployInputs): ReadonlyArray<string> => [
 	join(inputs.outputDirHostPath, 'deploy'),
+	join(inputs.outputDirHostPath, 'client_config.yaml'),
+	join(inputs.outputDirHostPath, 'sui_client.yaml'),
+	join(inputs.outputDirHostPath, 'sui_client.keystore'),
 	...Array.from({ length: inputs.committeeSize }, (_, nodeIndex) => [
 		join(inputs.outputDirHostPath, `dryrun-node-${nodeIndex}.yaml`),
 		join(inputs.outputDirHostPath, `dryrun-node-${nodeIndex}-sui.yaml`),

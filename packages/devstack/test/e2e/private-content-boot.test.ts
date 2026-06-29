@@ -129,7 +129,7 @@ const findSentinel = (
 	}
 	for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
 		// Skip function-valued fields (resolved values carry closures
-		// like signer.signAndExecute, walrus.publisher.put) — they are
+		// like signer.signAndExecute) — they are
 		// not user-visible config and would never carry a sentinel.
 		if (typeof v === 'function') continue;
 		const hit = findSentinel(v, `${path}.${k}`, seen);

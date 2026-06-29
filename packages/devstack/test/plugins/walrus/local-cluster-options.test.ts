@@ -10,6 +10,7 @@ import {
 	DEFAULT_SUI_VERSION,
 	DEFAULT_WALRUS_REF,
 } from '../../../src/plugins/walrus/bootstrap-assets/cargo-image.ts';
+import { DEFAULT_WALRUS_CLIENT_SERVICE_PORT } from '../../../src/plugins/walrus/client-services.ts';
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 
 describe('resolveLocalClusterOptions', () => {
@@ -21,6 +22,8 @@ describe('resolveLocalClusterOptions', () => {
 		expect(r.version).toBe(DEFAULT_WALRUS_REF);
 		expect(r.suiVersion).toBe(DEFAULT_SUI_VERSION);
 		expect(r.epochDuration).toBe('24h');
+		expect(r.aggregator).toEqual({ port: DEFAULT_WALRUS_CLIENT_SERVICE_PORT });
+		expect(r.publisher).toEqual({ port: DEFAULT_WALRUS_CLIENT_SERVICE_PORT });
 	});
 
 	it('preserves user-supplied release versions for image resolution', () => {
@@ -45,14 +48,33 @@ describe('resolveLocalClusterOptions', () => {
 	it('keeps account funding out of the resolved local options', () => {
 		const r = resolveLocalClusterOptions({});
 		expect(Object.keys(r).sort()).toEqual([
+			'aggregator',
 			'containerApiPort',
 			'epochDuration',
 			'name',
 			'nodeCount',
+			'publisher',
 			'readyTimeoutMs',
 			'shards',
 			'suiVersion',
 			'version',
 		]);
+	});
+
+	it('supports disabling the local publisher/aggregator endpoints', () => {
+		const r = resolveLocalClusterOptions({ aggregator: false, publisher: false });
+		expect(r.aggregator).toBeNull();
+		expect(r.publisher).toBeNull();
+	});
+
+	it('preserves service ports', () => {
+		const r = resolveLocalClusterOptions({
+			aggregator: { port: 40100 },
+			publisher: {
+				port: 40101,
+			},
+		});
+		expect(r.aggregator).toEqual({ port: 40100 });
+		expect(r.publisher).toEqual({ port: 40101 });
 	});
 });

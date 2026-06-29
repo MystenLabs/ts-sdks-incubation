@@ -163,7 +163,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 		let alive = true;
 		const url = aggregator?.url ?? null;
 		if (!url) {
-			setProbe({ state: 'unreachable', detail: 'no aggregator endpoint' });
+			setProbe({ state: 'probing', detail: 'aggregator disabled' });
 			return;
 		}
 		setProbe({ state: 'probing', detail: '' });
@@ -175,20 +175,23 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 		};
 	}, [aggregator?.url, network]);
 
-	const clusterReady = probe.state === 'up';
-	const probeToken = PROBE_TOKEN[probe.state];
+	const clusterReady = aggregator !== null && probe.state === 'up';
+	const probeToken = aggregator === null ? 'dim' : PROBE_TOKEN[probe.state];
 	// Two distinct banner-worthy states. `down` = a readable non-2xx from the
 	// aggregator's HTTP API: a genuine outage, surfaced in red. `unreachable` = no
 	// readable response: the ambiguous CORS/network case, surfaced in soft yellow.
 	// `up`/`probing` get no banner. The shared `probeBanner` returns the tone +
 	// title + body; this panel supplies its verbatim copy and appends `probe.detail`.
-	const banner = probeBanner(probe.state, {
-		downTitle: 'Walrus aggregator is down',
-		unreachableTitle: 'Aggregator unreachable from the browser',
-		endpointPhrase: "aggregator's HTTP API",
-		unreachableSubject: 'daemon',
-		downConsequence: 'Storage',
-	});
+	const banner =
+		aggregator === null
+			? null
+			: probeBanner(probe.state, {
+					downTitle: 'Walrus aggregator is down',
+					unreachableTitle: 'Aggregator unreachable from the browser',
+					endpointPhrase: "aggregator's HTTP API",
+					unreachableSubject: 'daemon',
+					downConsequence: 'Storage',
+				});
 	const nodeCount = nodeEndpoints.length;
 	const epoch = epochQ.data ?? null;
 
@@ -196,7 +199,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 	const runProbe = () => {
 		const url = aggregator?.url ?? null;
 		if (!url) {
-			setProbe({ state: 'unreachable', detail: 'no aggregator endpoint' });
+			setProbe({ state: 'probing', detail: 'aggregator disabled' });
 			return;
 		}
 		setProbe({ state: 'probing', detail: '' });
@@ -271,13 +274,15 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 				<Kpi
 					label="Cluster"
 					value={
-						probe.state === 'probing'
-							? '…'
-							: clusterReady
-								? `${nodeCount}/${nodeCount}`
-								: `0/${nodeCount}`
+						aggregator === null
+							? EM_DASH
+							: probe.state === 'probing'
+								? '…'
+								: clusterReady
+									? `${nodeCount}/${nodeCount}`
+									: `0/${nodeCount}`
 					}
-					sub="nodes reachable"
+					sub={aggregator === null ? 'aggregator disabled' : 'nodes reachable'}
 					token={probeToken}
 					icon="database"
 				/>
@@ -342,7 +347,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 								<Dot token={probeToken} pulse={probe.state === 'probing'} />
 								<Tooltip label={probe.detail || 'probing the aggregator daemon'}>
 									<span style={{ fontSize: 12.5, color: `var(--c-${probeToken})` }}>
-										{PROBE_LABEL[probe.state]}
+										{aggregator === null ? 'disabled' : PROBE_LABEL[probe.state]}
 									</span>
 								</Tooltip>
 							</span>

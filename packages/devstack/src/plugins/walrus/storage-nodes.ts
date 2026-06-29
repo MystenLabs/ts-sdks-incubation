@@ -1,10 +1,10 @@
 // Walrus storage-node committee lifecycle.
 //
 // Distilled-doc reference (06-walrus.md §"Capabilities CONSUMED" +
-// §"Lifecycle phase 4"): N storage-node containers, pinned IPs on a
-// per-stack /24 docker network. Each node carries one Traefik route
-// via the `Routable` capability; the router binds host port 9185 once
-// globally and dispatches by `Host:` header.
+// §"Lifecycle phase 4"): N storage-node containers on a per-stack
+// docker network. Each node carries one Traefik route via the `Routable`
+// capability; the router binds host port 9185 once globally and dispatches
+// by `Host:` header.
 //
 // Substrate-side responsibilities:
 //   - `ContainerRuntime.ensureContainer` per node — content-addressed
@@ -86,7 +86,10 @@ export interface StorageNodesSpec {
 	readonly images: ReadonlyArray<ImageRef>;
 	readonly nodeCount: number;
 	/** Pre-allocated /24 prefix from `subnetForStack`. Example:
-	 *  `'10.42.7'` (the third octet is hashed per stack). */
+	 *  `'10.42.7'` (the third octet is hashed per stack). The deploy helper
+	 *  still needs deterministic generated listening IPs, but runtime routing
+	 *  between managed containers goes through Docker DNS aliases rather than
+	 *  assuming Docker assigned those addresses. */
 	readonly subnetPrefix: string;
 	readonly containerApiPort: number;
 	readonly walrusNetworkName: string;
@@ -110,9 +113,9 @@ export interface StorageNodesAcquired {
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
 }
 
-/** Distilled-doc invariant 1: pinned IPs start at `<prefix>.10`.
- *  Centralized so the deploy one-shot's `WALRUS_LISTENING_IPS` env
- *  var and the per-node `--ip` pin compute from one source. */
+/** Deterministic generated listening IP base for the upstream dry-run config
+ *  generator. These addresses are not used as Docker runtime addresses; peer
+ *  containers dial storage nodes through `computeCommitteeHostname()` aliases. */
 export const WALRUS_NODE_IP_BASE = 10;
 
 /** Compute the public hostname for one storage node — the
@@ -124,9 +127,17 @@ export const computePublicHostname = (app: string, stack: string, nodeIndex: num
 	return stack === 'main' ? base : `walrus-node-${nodeIndex}.${stack}.${app}.localhost`;
 };
 
+/** Docker-network hostname written into the on-chain Walrus committee.
+ *  The real Rust publisher/aggregator read these public_host values from
+ *  chain and dial storage nodes from inside the Walrus network. Do not use
+ *  `.localhost` here: many resolvers special-case that suffix to loopback
+ *  inside the client-service container. */
+export const computeCommitteeHostname = (nodeIndex: number): string => `dryrun-node-${nodeIndex}`;
+
 export const storageNodeConfigHash = (parts: {
 	readonly deployConfigHash: string;
 	readonly nodeIndex: number;
+	readonly committeeHostname: string;
 	readonly deploySourceHostPath: string;
 	readonly deployMountTarget: string;
 	readonly containerApiPort: number;
@@ -136,6 +147,7 @@ export const storageNodeConfigHash = (parts: {
 	[
 		parts.deployConfigHash,
 		`node=${parts.nodeIndex}`,
+		`committee-host=${parts.committeeHostname}`,
 		`mount=${parts.deploySourceHostPath}->${parts.deployMountTarget}`,
 		`api=${parts.containerApiPort}`,
 		`net=${parts.walrusNetworkName},${parts.suiNetworkName}`,
@@ -147,11 +159,11 @@ export const buildWalrusNetworkName = (app: string, stack: string, walrusName: s
 /** Per-node TCP ready-probe interval. */
 const NODE_READY_PROBE_INTERVAL_MS = 500;
 
-/** Walrus storage-node REST health endpoint (TLS disabled — plain HTTP
- *  behind the router; see images/walrus/deploy-walrus.sh which rebinds
- *  `rest_api_address` on 0.0.0.0 and sets `disable_tls: true`). The node
- *  serves `GET /v1/health` once its API listener binds; the JSON body's
- *  `nodeStatus` field reports the committee-sync state. */
+/** Walrus storage-node REST health endpoint. Local nodes keep Walrus'
+ *  self-signed TLS enabled because the Rust publisher/aggregator clients
+ *  authenticate storage nodes by their network public key and always dial
+ *  HTTPS. The router still exposes an HTTP localhost URL and proxies to
+ *  the HTTPS upstream for browser/dev convenience. */
 const NODE_HEALTH_PATH = '/v1/health';
 
 /** Recovery / not-yet-serving markers in a `/v1/health` body. A node that
@@ -196,32 +208,20 @@ const isWriteReadyHealthBody = (body: string): boolean => {
  *       outer teardown — collapses shutdown wall-time from `N×grace` to
  *       `~max(grace)` (distilled-doc invariant 21).
  *    3. For each `i ∈ [0..N)`:
- *         a. `ensureContainer` on the wrapper image with pinned IP,
- *            label tuple, primary network attach (walrus net), recreate
- *            on config-change.
- *         b. TCP ready probe against `<publicHostname>:<routerPort>`
- *            with bounded retries until the outer `readyTimeoutMs`.
+ *         a. `ensureContainer` on the wrapper image with label tuple,
+ *            primary network attach (walrus net) plus committee DNS alias,
+ *            recreate on config-change.
+ *         b. In-container `/v1/health` ready probe with bounded retries
+ *            until the outer `readyTimeoutMs`.
  *    4. Run [3] under `Effect.all({concurrency: 'unbounded'})` — boot
  *       parallelism collapses to ~max(perNode).
  *
  *  WHAT THE SUBSTRATE STILL OWES:
  *    - Secondary network attach (`Docker.networkConnect(suiNet)`).
- *      `EnsureContainerSpec.networkAttach` accepts an array, so passing
- *      `[walrusNet, suiNet]` would dual-home in one shot, but the
- *      runtime adapter currently treats the first entry as the primary
- *      and post-attaches the rest; the per-node pinned IP only attaches
- *      to the primary. The dual-home is documented inline below and
- *      relies on that adapter behavior. Storage nodes do not request
- *      faucet funds during boot; the secondary network is retained for
- *      future Sui-side in-network calls.
- *    - Per-node `networkAlias` (`walrus-node-<i>.localhost`). The
- *      contract doesn't expose alias plumbing yet; peer containers dial by
- *      container name, which docker DNS publishes. The architecture
- *      revision is tracked in `index.ts`.
- *    - Stop-grace duration propagation. The contract's `stop` takes a
- *      Duration but `ensureContainer` doesn't yet accept a default
- *      grace; the runtime adapter defaults to 10s. RocksDB needs 20s
- *      (distilled-doc invariant 22) — see opportunity below.
+ *      The runtime adapter treats [0] as primary and post-attaches the
+ *      rest; the primary Walrus attach carries the committee DNS alias.
+ *      Storage nodes do not request faucet funds during boot; the
+ *      secondary network is retained for future Sui-side in-network calls.
  */
 export const startStorageNodes = (
 	runtime: ContainerRuntime,
@@ -276,9 +276,8 @@ export const startStorageNodes = (
 
 		const bootOne = (i: number): Effect.Effect<WalrusStorageNode, WalrusPluginError, Scope.Scope> =>
 			Effect.gen(function* () {
-				const containerIp = `${spec.subnetPrefix}.${WALRUS_NODE_IP_BASE + i}`;
 				const containerName = `devstack-${spec.app}-${spec.stack}-walrus-${spec.walrusName}-node-${i}`;
-				const nodeHostname = `dryrun-node-${i}`;
+				const nodeHostname = computeCommitteeHostname(i);
 				const publicHostname = computePublicHostname(spec.app, spec.stack, i);
 
 				yield* setCurrentPluginPhase(`creating storage-node-${i} container ${containerName}`);
@@ -299,6 +298,7 @@ export const startStorageNodes = (
 							configHash: storageNodeConfigHash({
 								deployConfigHash: spec.deployConfigHash,
 								nodeIndex: i,
+								committeeHostname: nodeHostname,
 								deploySourceHostPath: deployMount.sourceHostPath,
 								deployMountTarget: deployMount.mountTarget,
 								containerApiPort: spec.containerApiPort,
@@ -310,10 +310,14 @@ export const startStorageNodes = (
 								DEPLOY_OUTPUT_DIR: deployMount.outputDirInContainer,
 							},
 							stopGraceSeconds,
-							// Primary network owns the pinned `--ip`; the
+							// Primary network registers the committee alias that
+							// is written into the Walrus committee record. The
 							// secondary attach gives docker DNS for the sui
 							// network. The adapter treats [0] as primary.
-							networkAttach: [spec.walrusNetworkName, spec.suiNetworkName],
+							networkAttach: [
+								{ name: spec.walrusNetworkName, aliases: [nodeHostname] },
+								spec.suiNetworkName,
+							],
 							// Storage nodes dial sui's host-bound RPC + faucet via
 							// `host.docker.internal`. See
 							// substrate/runtime/host-gateway.ts for the platform
@@ -335,7 +339,7 @@ export const startStorageNodes = (
 						mapError: (cause) =>
 							walrusPluginError(
 								'storage-node',
-								`walrus storage-node-${i} (ip=${containerIp}) ensureContainer failed: ${cause.reason}: ${cause.detail}`,
+								`walrus storage-node-${i} (host=${nodeHostname}) ensureContainer failed: ${cause.reason}: ${cause.detail}`,
 								{ cause },
 							),
 					});
@@ -379,10 +383,10 @@ export const startStorageNodes = (
 								'-c',
 								// Stage 1: TCP bind check (busybox-portable). Stage 2:
 								// fetch /v1/health and print the body to stdout so the
-								// result classifier can read `nodeStatus`. `curl -fs`
-								// fails (non-zero) until the REST server returns 2xx.
+								// result classifier can read `nodeStatus`. `curl -fks`
+								// fails (non-zero) until the TLS REST server returns 2xx.
 								`nc -z 127.0.0.1 ${spec.containerApiPort} || exit 1; ` +
-									`curl -fs http://127.0.0.1:${spec.containerApiPort}${NODE_HEALTH_PATH} || exit 1`,
+									`curl -fks https://127.0.0.1:${spec.containerApiPort}${NODE_HEALTH_PATH} || exit 1`,
 							])
 							.pipe(
 								Effect.map((result) => {
@@ -404,7 +408,7 @@ export const startStorageNodes = (
 							return walrusPluginError(
 								'storage-node',
 								`storage-node-${i} never became write-ready within ${Duration.toMillis(readyTimeout)}ms ` +
-									`(container=${containerName}, probe=127.0.0.1:${spec.containerApiPort}${NODE_HEALTH_PATH}, ` +
+									`(container=${containerName}, probe=https://127.0.0.1:${spec.containerApiPort}${NODE_HEALTH_PATH}, ` +
 									`publicUrl=http://${publicHostname}:${WALRUS_ROUTER_PORT}). ` +
 									`The container was created, but walrus-node did not bind its API port or did not ` +
 									`finish re-syncing its committee/epoch to a serving nodeStatus (a node recreated from ` +

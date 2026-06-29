@@ -24,6 +24,15 @@ describe('walrus makeSnapshotable', () => {
 		}
 	});
 
+	it('local mode includes enabled publisher and aggregator service containers', () => {
+		const snap = makeSnapshotable('local', 'app', 'main', 'walrus', 'sui:localnet', 2, [
+			'aggregator',
+			'publisher',
+		]);
+		const roles = (snap.managedContainers ?? []).map((c) => c.role);
+		expect(roles).toEqual(['storage-node-0', 'storage-node-1', 'aggregator', 'publisher']);
+	});
+
 	it('local mode subtree includes the deploy-output dir (rides the snapshot tar)', () => {
 		const snap = makeSnapshotable('local', 'app', 'main', 'mywalrus', 'sui:localnet');
 		// Distilled-doc invariant 7: `runtime/walrus/<name>/deploy/` MUST

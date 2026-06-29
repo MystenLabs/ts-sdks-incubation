@@ -20,10 +20,8 @@
 //   5. Exchange resolution — on-chain getObject + parse type.
 //                             Degrades to undefined on
 //                             OBJECT_NOT_FOUND.
-//   6. Proxy URL pick — nodes[0].rpcUrl is the representative
-//                        aggregator/publisher.
-//  7a. WAL faucet strategy register — opt-in when an exchange exists.
-//   8. Registries — package + endpoint + walrus-state.
+//   6. WAL faucet strategy register — opt-in when an exchange exists.
+//   7. Registries — package + endpoint + walrus-state.
 //
 // What this file owns: the dispatch shape + the typed options
 // surface + the synchronous factory-time validation.
@@ -42,7 +40,7 @@ import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import type { SuiProbeKey } from '../../sui/index.ts';
 import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
-import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
+import { expectPort, expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { walrusConfigError, walrusPluginError, type WalrusError } from '../errors.ts';
 import { WALRUS_MAX_NODE_COUNT } from '../routable.ts';
@@ -51,7 +49,7 @@ import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
 	DEFAULT_CONTAINER_API_PORT,
 	WALRUS_NODE_IP_BASE,
-	computePublicHostname,
+	computeCommitteeHostname,
 	startStorageNodes,
 } from '../storage-nodes.ts';
 import { deployWalrusContracts, type CachedDeployState } from '../deploy.ts';
@@ -60,6 +58,11 @@ import {
 	DEFAULT_WALRUS_REF,
 	resolveCargoImage,
 } from '../bootstrap-assets/cargo-image.ts';
+import {
+	DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+	startWalrusClientServices,
+	type WalrusClientServices,
+} from '../client-services.ts';
 import {
 	makeWalFaucetStrategy,
 	walPackageIdFromCoinType,
@@ -95,7 +98,22 @@ export interface WalrusLocalClusterOptions {
 	/** Per-node TCP ready-probe timeout (ms). Defaults to
 	 *  `DEFAULT_NODE_READY_TIMEOUT_MS`. */
 	readonly readyTimeoutMs?: number;
+	/** Local app-facing aggregator service. Defaults to enabled. Set
+	 *  `false` to expose only storage-node routes. */
+	readonly aggregator?: boolean | WalrusLocalServiceOptions;
+	/** Local app-facing publisher service. Defaults to enabled. Set
+	 *  `false` to run storage nodes without the simple publish API. */
+	readonly publisher?: boolean | WalrusLocalPublisherOptions;
 }
+
+export interface WalrusLocalServiceOptions {
+	/** In-container port passed to the release service's
+	 *  `--bind-address 0.0.0.0:<port>`. Defaults to the Walrus CLI's
+	 *  publisher/aggregator port. */
+	readonly port?: number;
+}
+
+export type WalrusLocalPublisherOptions = WalrusLocalServiceOptions;
 
 /** Resolved local-cluster boot artifacts. */
 export interface LocalClusterBootResult {
@@ -104,11 +122,9 @@ export interface LocalClusterBootResult {
 	readonly walrusPackageId: string;
 	readonly walPackageId: string;
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
-	readonly aggregatorUrl: string;
-	readonly publisherUrl: string;
-	readonly proxyUrl: string;
 	readonly exchangeObjectId: string | undefined;
 	readonly exchange: WalExchangeHandle | null;
+	readonly clientServices: WalrusClientServices;
 	/** WAL faucet strategy — present only when the local cluster has a
 	 *  non-empty exchange object. The barrel registers this onto the
 	 *  `coinType:<fullCoinType>` strategy contributor decl. `null`
@@ -127,7 +143,15 @@ export interface ResolvedLocalClusterOptions {
 	readonly containerApiPort: number;
 	readonly epochDuration: string;
 	readonly readyTimeoutMs: number;
+	readonly aggregator: ResolvedWalrusLocalServiceOptions | null;
+	readonly publisher: ResolvedWalrusLocalPublisherOptions | null;
 }
+
+export interface ResolvedWalrusLocalServiceOptions {
+	readonly port: number;
+}
+
+export type ResolvedWalrusLocalPublisherOptions = ResolvedWalrusLocalServiceOptions;
 
 /** Synchronous factory-time validation. Throws (NOT Effect-fail) so
  *  misconfiguration trips at the `defineDevstack` call site rather
@@ -179,6 +203,38 @@ export const resolveLocalClusterOptions = (
 		containerApiPort: opts.containerApiPort ?? DEFAULT_CONTAINER_API_PORT,
 		epochDuration: opts.epochDuration ?? '24h',
 		readyTimeoutMs: opts.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS,
+		...resolveLocalServicesOptions(opts),
+	};
+};
+
+const expectOptionalPort = (value: number | undefined, field: string): number | undefined =>
+	value === undefined
+		? undefined
+		: expectPort(value, {
+				field,
+				mkError: ({ field: f, message, hint }) =>
+					walrusConfigError(f, `walrusLocalCluster: ${f} ${message}`, hint),
+			});
+
+const resolveLocalServiceBase = (
+	value: boolean | WalrusLocalServiceOptions | undefined,
+	fieldPrefix: 'aggregator' | 'publisher',
+): ResolvedWalrusLocalServiceOptions | null => {
+	if (value === false) return null;
+	const authored = value === undefined || value === true ? {} : value;
+	return {
+		port:
+			expectOptionalPort(authored.port, `${fieldPrefix}.port`) ??
+			DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+	};
+};
+
+const resolveLocalServicesOptions = (
+	opts: WalrusLocalClusterOptions,
+): Pick<ResolvedLocalClusterOptions, 'aggregator' | 'publisher'> => {
+	return {
+		aggregator: resolveLocalServiceBase(opts.aggregator, 'aggregator'),
+		publisher: resolveLocalServiceBase(opts.publisher, 'publisher'),
 	};
 };
 
@@ -218,7 +274,6 @@ export interface LocalClusterDeps {
  *      the artifact publisher primitive; the produce body runs the walrus deploy
  *      one-shot.
  *    - Storage nodes — parallel boot via `startStorageNodes`.
- *    - Proxy URL pick — `nodes[0].rpcUrl`.
  *    - WAL faucet strategy — constructed if `state.exchangeObject`
  *      exists. Surfaced on the boot result; the barrel registers
  *      the contributor decl.
@@ -271,12 +326,13 @@ export const bootLocalCluster = (
 		// The deploy one-shot needs the walrus image + sui network so it
 		// can dial the per-stack sui RPC + faucet over docker DNS.
 		//
-		// Per-node IP CSV is derived from the subnet prefix; per-node
-		// hostnames likewise. Both must be in lockstep with the
-		// storage-node boot below — the deploy step writes per-node
-		// committee records on chain using these.
-		const publicHosts = Array.from({ length: opts.nodeCount }, (_, i) =>
-			computePublicHostname(deps.app, deps.stack, i),
+		// Per-node committee hostnames are Docker-network aliases, because the
+		// real Rust publisher/aggregator read these public_host values from chain
+		// and dial storage nodes from inside the Walrus network. Router-facing
+		// `.localhost` hostnames are still produced by `startStorageNodes` for
+		// devstack's public diagnostic URLs.
+		const committeeHosts = Array.from({ length: opts.nodeCount }, (_, i) =>
+			computeCommitteeHostname(i),
 		).join(',');
 		const listeningIps = Array.from(
 			{ length: opts.nodeCount },
@@ -290,7 +346,7 @@ export const bootLocalCluster = (
 			walrusName: opts.name,
 			chainId: deps.suiChainId,
 			contentHash: brandContentHash(
-				`walrus|${opts.version}|${opts.suiVersion}|${opts.nodeCount}|${opts.shards}|${opts.epochDuration}`,
+				`walrus|${opts.version}|${opts.suiVersion}|${opts.nodeCount}|${opts.shards}|${opts.epochDuration}|committee=${committeeHosts}|listen=${listeningIps}`,
 			),
 			outputDirHostPath: deps.deployHostMountPath,
 			stackRoot: deps.stackRoot,
@@ -300,7 +356,7 @@ export const bootLocalCluster = (
 			committeeSize: opts.nodeCount,
 			shards: opts.shards,
 			epochDuration: opts.epochDuration,
-			publicHostsCsv: publicHosts,
+			publicHostsCsv: committeeHosts,
 			listeningIpsCsv: listeningIps,
 			walrusImage,
 			suiNetworkName: deps.suiNetworkName,
@@ -327,6 +383,16 @@ export const bootLocalCluster = (
 		// carry a stale committee and would reject writes). The base `walrusImage`
 		// (shared) still backs the transient deploy one-shot (`--rm`, unsnapshotted).
 		const nodeImageScope = state.walrusPackageId.replace(/^0x/, '').slice(0, 12);
+		const resolveServiceImage = (role: 'aggregator' | 'publisher') =>
+			resolveCargoImage(
+				deps.runtime,
+				{
+					walrusRef: opts.version,
+					suiVersion: opts.suiVersion,
+					owner: { app: deps.app, stack: deps.stack },
+				},
+				`${walrusImage.tag}-${nodeImageScope}-${role}`,
+			);
 		const nodeImages = yield* Effect.forEach(
 			Array.from({ length: opts.nodeCount }, (_, i) => i),
 			(i) =>
@@ -340,6 +406,11 @@ export const bootLocalCluster = (
 					`${walrusImage.tag}-${nodeImageScope}-node-${i}`,
 				),
 		);
+		const clientServiceImages = yield* Effect.all({
+			aggregator:
+				opts.aggregator === null ? Effect.succeed(null) : resolveServiceImage('aggregator'),
+			publisher: opts.publisher === null ? Effect.succeed(null) : resolveServiceImage('publisher'),
+		});
 
 		// ---- storage nodes — parallel boot ----------------------
 		yield* setCurrentPluginPhase(
@@ -361,15 +432,33 @@ export const bootLocalCluster = (
 			readyTimeoutMs: opts.readyTimeoutMs,
 		});
 
-		// ---- proxy URL pick — nodes[0].rpcUrl -------------------
 		// `nodeCount >= 1` is enforced synchronously already; this is
 		// defense-in-depth.
 		if (nodes.length === 0) {
 			return yield* Effect.fail(
-				walrusPluginError('proxy', 'walrus: at least one storage node is required'),
+				walrusPluginError('storage-node', 'walrus: at least one storage node is required'),
 			);
 		}
-		const proxyUrl = nodes[0]!.rpcUrl;
+
+		// ---- app-facing Rust publisher / aggregator services ----
+		yield* setCurrentPluginPhase('starting Walrus client services');
+		const clientServices = yield* startWalrusClientServices(deps.runtime, {
+			app: deps.app,
+			stack: deps.stack,
+			walrusName: opts.name,
+			images: clientServiceImages,
+			options: {
+				aggregator: opts.aggregator,
+				publisher: opts.publisher,
+			},
+			walrusNetworkName: deps.walrusNetworkName,
+			suiNetworkName: deps.suiNetworkName,
+			deployHostMountPath: deps.deployHostMountPath,
+			stackRoot: deps.stackRoot,
+			deployConfigHash,
+			suiRpcUrlInNetwork: deps.suiRpcUrlInNetwork,
+			readyTimeoutMs: opts.readyTimeoutMs,
+		});
 
 		// ---- exchange resolution + WAL funding strategy ------
 		// Register a `coinType:<fullCoinType>` strategy that swaps the
@@ -397,11 +486,9 @@ export const bootLocalCluster = (
 			walrusPackageId: state.walrusPackageId,
 			walPackageId: resolvedWalPackageId,
 			nodes,
-			aggregatorUrl: proxyUrl,
-			publisherUrl: proxyUrl,
-			proxyUrl,
 			exchangeObjectId: state.exchangeObject,
 			exchange,
+			clientServices,
 			walFaucetStrategy,
 			walCoinType: resolvedWalCoinType,
 		};

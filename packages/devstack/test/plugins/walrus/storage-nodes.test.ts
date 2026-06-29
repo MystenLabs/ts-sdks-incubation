@@ -1,7 +1,7 @@
-// Unit tests for the walrus storage-node helpers. These functions
-// participate in both the on-chain Committee record (public_host /
-// public_port) AND the per-stack Traefik router config — drift here
-// is a load-bearing bug. Tests pin the shape.
+// Unit tests for the walrus storage-node helpers. Committee hostnames and
+// router hostnames intentionally differ: Rust Walrus services dial Docker DNS
+// aliases from inside the Walrus network, while devstack exposes diagnostic
+// routes through `.localhost` Host headers.
 
 import { describe, expect, it } from 'vitest';
 import { Effect } from 'effect';
@@ -20,6 +20,7 @@ import {
 	WALRUS_NODE_IP_BASE,
 	WALRUS_ROUTER_PORT,
 	buildWalrusNetworkName,
+	computeCommitteeHostname,
 	computePublicHostname,
 	startStorageNodes,
 	storageNodeConfigHash,
@@ -61,6 +62,14 @@ describe('computePublicHostname', () => {
 		const a = computePublicHostname('app', 'main', 0);
 		const b = computePublicHostname('app', 'main', 0);
 		expect(a).toBe(b);
+	});
+});
+
+describe('computeCommitteeHostname', () => {
+	it('uses Docker-network aliases without a .localhost suffix', () => {
+		expect(computeCommitteeHostname(0)).toBe('dryrun-node-0');
+		expect(computeCommitteeHostname(7)).toBe('dryrun-node-7');
+		expect(computeCommitteeHostname(0)).not.toContain('.localhost');
 	});
 });
 
@@ -123,7 +132,7 @@ describe('walrus storage-node constants', () => {
 		expect(WALRUS_ROUTER_PORT).toBe(9185);
 	});
 
-	it('WALRUS_NODE_IP_BASE is 10 (pinned IPs start at <prefix>.10)', () => {
+	it('WALRUS_NODE_IP_BASE is 10 for generated dry-run listening IPs', () => {
 		expect(WALRUS_NODE_IP_BASE).toBe(10);
 	});
 
@@ -162,6 +171,10 @@ describe('walrus storage-node constants', () => {
 		);
 
 		expect(specs.map((spec) => spec.stopGraceSeconds)).toEqual([37, 37]);
+		expect(specs.map((spec) => spec.networkAttach)).toEqual([
+			[{ name: 'walrus-net', aliases: ['dryrun-node-0'] }, 'sui-net'],
+			[{ name: 'walrus-net', aliases: ['dryrun-node-1'] }, 'sui-net'],
+		]);
 	});
 
 	it('defaults the storage-node Docker stop grace to the storage-node budget', async () => {
@@ -213,6 +226,7 @@ describe('walrus storage-node constants', () => {
 		const base = {
 			deployConfigHash: 'deploy-a',
 			nodeIndex: 0,
+			committeeHostname: 'dryrun-node-0',
 			deploySourceHostPath: '/runtime-a',
 			deployMountTarget: '/opt/walrus/runtime',
 			containerApiPort: 9185,
@@ -225,6 +239,9 @@ describe('walrus storage-node constants', () => {
 		);
 		expect(storageNodeConfigHash(base)).not.toBe(
 			storageNodeConfigHash({ ...base, suiNetworkName: 'other-sui-net' }),
+		);
+		expect(storageNodeConfigHash(base)).not.toBe(
+			storageNodeConfigHash({ ...base, committeeHostname: 'dryrun-node-1' }),
 		);
 	});
 });

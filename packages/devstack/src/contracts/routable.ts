@@ -7,10 +7,13 @@
 //
 // Two wire-protocol families participate:
 //
-//   - HTTP (`http`, `h2c`) — Host-header dispatch on a SHARED host
-//     port. One Traefik HTTP entrypoint can fan out to N backends in
-//     parallel stacks via `Host: <service>.<stack>.<app>.localhost`.
-//     CORS toggle is meaningful (browser-callable).
+//   - HTTP (`http`, `h2c`, `https`) — Host-header dispatch on a
+//     SHARED host port. One Traefik HTTP entrypoint can fan out to N
+//     backends in parallel stacks via
+//     `Host: <service>.<stack>.<app>.localhost`. CORS toggle is
+//     meaningful (browser-callable). `https` is an upstream protocol:
+//     the public entrypoint is still HTTP-family, but Traefik dials the
+//     backend over TLS.
 //
 //   - TCP (`tcp`) — non-HTTP protocols (postgres, redis, mongo, …).
 //     Traefik's TCP routers dispatch by entrypoint *port*, NOT by
@@ -66,7 +69,7 @@ interface RoutableBase {
 
 /** HTTP variant — Host-header dispatched, CORS-aware. */
 export interface RoutableHttpDecl extends RoutableBase {
-	readonly wireProtocol: 'http' | 'h2c';
+	readonly wireProtocol: 'http' | 'h2c' | 'https';
 	readonly cors: boolean;
 }
 
