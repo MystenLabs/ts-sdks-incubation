@@ -37,6 +37,10 @@ require_file() {
 	fi
 }
 
+escape_sed_replacement() {
+	printf '%s' "$1" | sed -e 's/[|&\\]/\\&/g'
+}
+
 require_file "$CLIENT_CONFIG_SOURCE" "Walrus client config"
 require_file "$CLIENT_WALLET_SOURCE" "Sui client wallet"
 require_file "$CLIENT_KEYSTORE_SOURCE" "Sui client keystore"
@@ -54,12 +58,19 @@ if ! grep -Fq "$CLIENT_KEYSTORE_TARGET" "$CLIENT_WALLET_TARGET"; then
 	echo "run-walrus-client-service: wallet config did not rewrite keystore path to ${CLIENT_KEYSTORE_TARGET}" >&2
 	exit 3
 fi
-sed -i \
-	"s|${CLIENT_WALLET_SOURCE}|${CLIENT_WALLET_TARGET}|g" \
-	"$CLIENT_CONFIG_TARGET"
+if grep -Fq "$CLIENT_WALLET_SOURCE" "$CLIENT_CONFIG_TARGET"; then
+	sed -i \
+		"s|${CLIENT_WALLET_SOURCE}|${CLIENT_WALLET_TARGET}|g" \
+		"$CLIENT_CONFIG_TARGET"
+	if ! grep -Fq "$CLIENT_WALLET_TARGET" "$CLIENT_CONFIG_TARGET"; then
+		echo "run-walrus-client-service: Walrus config did not rewrite wallet path to ${CLIENT_WALLET_TARGET}" >&2
+		exit 3
+	fi
+fi
 
 if [ -n "${SUI_RPC_URL:-}" ]; then
-	sed -i -E "s|^([[:space:]]*rpc:[[:space:]]*).*$|\\1${SUI_RPC_URL}|" \
+	escaped_sui_rpc_url=$(escape_sed_replacement "$SUI_RPC_URL")
+	sed -i -E "s|^([[:space:]]*rpc:[[:space:]]*).*$|\\1${escaped_sui_rpc_url}|" \
 		"$CLIENT_WALLET_TARGET"
 	if ! grep -Fq "rpc: ${SUI_RPC_URL}" "$CLIENT_WALLET_TARGET"; then
 		echo "run-walrus-client-service: wallet config did not rewrite rpc to ${SUI_RPC_URL}" >&2
