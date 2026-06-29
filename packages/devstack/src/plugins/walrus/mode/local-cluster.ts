@@ -20,8 +20,8 @@
 //   5. Exchange resolution — on-chain getObject + parse type.
 //                             Degrades to undefined on
 //                             OBJECT_NOT_FOUND.
-//   6. Proxy URL pick — nodes[0].rpcUrl is the representative
-//                        aggregator/publisher.
+//   6. Storage-node fallback URL pick — nodes[0].rpcUrl is kept as an
+//                                      implementation/debug handle only.
 //  7a. WAL faucet strategy register — opt-in when an exchange exists.
 //   8. Registries — package + endpoint + walrus-state.
 //
@@ -42,7 +42,7 @@ import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import type { SuiProbeKey } from '../../sui/index.ts';
 import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
-import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
+import { expectPort, expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { walrusConfigError, walrusPluginError, type WalrusError } from '../errors.ts';
 import { WALRUS_MAX_NODE_COUNT } from '../routable.ts';
@@ -95,6 +95,40 @@ export interface WalrusLocalClusterOptions {
 	/** Per-node TCP ready-probe timeout (ms). Defaults to
 	 *  `DEFAULT_NODE_READY_TIMEOUT_MS`. */
 	readonly readyTimeoutMs?: number;
+	/** Local app-facing aggregator service. Defaults to enabled. Set
+	 *  `false` to expose only storage-node routes. */
+	readonly aggregator?: boolean | WalrusLocalServiceOptions;
+	/** Local app-facing publisher service. Defaults to enabled. Set
+	 *  `false` to run storage nodes without the simple publish API. */
+	readonly publisher?: boolean | WalrusLocalPublisherOptions;
+}
+
+export interface WalrusLocalServiceOptions {
+	/** Preferred host-process port. The port broker forward-scans when
+	 *  this port is already held by another process. */
+	readonly port?: number;
+	/** NIC the host-process HTTP server binds. Defaults to `0.0.0.0`
+	 *  because the Docker-hosted router reaches host services through
+	 *  the host-gateway address. */
+	readonly bindAddress?: string;
+}
+
+export interface WalrusLocalPublisherOptions extends WalrusLocalServiceOptions {
+	/** Default retention epochs when `PUT /v1/blobs` omits `epochs`.
+	 *  Matches the upstream simple publisher example. */
+	readonly defaultEpochs?: number;
+	/** Default deletability when `PUT /v1/blobs` omits `deletable`. */
+	readonly defaultDeletable?: boolean;
+	/** Maximum accepted request body in bytes. */
+	readonly maxBlobBytes?: number;
+	/** SUI MIST requested from the local faucet whenever the publisher
+	 *  signer needs more gas/swap funds. The local faucet currently
+	 *  grants a fixed amount; this value is used as the requested floor
+	 *  and for diagnostics. */
+	readonly suiTopUpMist?: number | bigint;
+	/** SUI MIST spent at the local WAL exchange when topping up WAL.
+	 *  The write-specific storage cost can force a larger swap. */
+	readonly walTopUpMist?: number | bigint;
 }
 
 /** Resolved local-cluster boot artifacts. */
@@ -104,8 +138,9 @@ export interface LocalClusterBootResult {
 	readonly walrusPackageId: string;
 	readonly walPackageId: string;
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
-	readonly aggregatorUrl: string;
-	readonly publisherUrl: string;
+	readonly storageNodeProxyUrl: string;
+	readonly aggregatorUrl: string | null;
+	readonly publisherUrl: string | null;
 	readonly proxyUrl: string;
 	readonly exchangeObjectId: string | undefined;
 	readonly exchange: WalExchangeHandle | null;
@@ -127,7 +162,28 @@ export interface ResolvedLocalClusterOptions {
 	readonly containerApiPort: number;
 	readonly epochDuration: string;
 	readonly readyTimeoutMs: number;
+	readonly aggregator: ResolvedWalrusLocalServiceOptions | null;
+	readonly publisher: ResolvedWalrusLocalPublisherOptions | null;
 }
+
+export interface ResolvedWalrusLocalServiceOptions {
+	readonly port?: number;
+	readonly bindAddress: string;
+}
+
+export interface ResolvedWalrusLocalPublisherOptions extends ResolvedWalrusLocalServiceOptions {
+	readonly defaultEpochs: number;
+	readonly defaultDeletable: boolean;
+	readonly maxBlobBytes: number;
+	readonly suiTopUpMist: bigint;
+	readonly walTopUpMist: bigint;
+}
+
+const WALRUS_LOCAL_SERVICE_DEFAULT_BIND_ADDRESS = '0.0.0.0';
+const DEFAULT_PUBLISHER_EPOCHS = 3;
+const DEFAULT_PUBLISHER_MAX_BLOB_BYTES = 64 * 1024 * 1024;
+const DEFAULT_PUBLISHER_SUI_TOP_UP_MIST = 2_000_000_000n;
+const DEFAULT_PUBLISHER_WAL_TOP_UP_MIST = 1_000_000_000n;
 
 /** Synchronous factory-time validation. Throws (NOT Effect-fail) so
  *  misconfiguration trips at the `defineDevstack` call site rather
@@ -179,6 +235,96 @@ export const resolveLocalClusterOptions = (
 		containerApiPort: opts.containerApiPort ?? DEFAULT_CONTAINER_API_PORT,
 		epochDuration: opts.epochDuration ?? '24h',
 		readyTimeoutMs: opts.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS,
+		...resolveLocalServicesOptions(opts),
+	};
+};
+
+const configError = (field: string, message: string, hint?: string): never => {
+	throw walrusConfigError(field, message, hint);
+};
+
+const expectOptionalPort = (value: number | undefined, field: string): number | undefined =>
+	value === undefined
+		? undefined
+		: expectPort(value, {
+				field,
+				mkError: ({ field: f, message, hint }) =>
+					walrusConfigError(f, `walrusLocalCluster: ${f} ${message}`, hint),
+			});
+
+const expectPositiveBigInt = (
+	value: number | bigint | undefined,
+	fallback: bigint,
+	field: string,
+): bigint => {
+	if (value === undefined) return fallback;
+	if (typeof value === 'bigint' && value > 0n) return value;
+	if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) {
+		return BigInt(value);
+	}
+	return configError(
+		field,
+		`walrusLocalCluster: ${field} must be a positive safe integer or bigint`,
+	);
+};
+
+const resolveLocalServiceBase = (
+	value: boolean | WalrusLocalServiceOptions | undefined,
+	fieldPrefix: 'aggregator' | 'publisher',
+): ResolvedWalrusLocalServiceOptions | null => {
+	if (value === false) return null;
+	const authored = value === undefined || value === true ? {} : value;
+	const port = expectOptionalPort(authored.port, `${fieldPrefix}.port`);
+	return {
+		...(port === undefined ? {} : { port }),
+		bindAddress: authored.bindAddress ?? WALRUS_LOCAL_SERVICE_DEFAULT_BIND_ADDRESS,
+	};
+};
+
+const resolveLocalServicesOptions = (
+	opts: WalrusLocalClusterOptions,
+): Pick<ResolvedLocalClusterOptions, 'aggregator' | 'publisher'> => {
+	const aggregator = resolveLocalServiceBase(opts.aggregator, 'aggregator');
+	const publisherBase = resolveLocalServiceBase(opts.publisher, 'publisher');
+	if (publisherBase === null) {
+		return { aggregator, publisher: null };
+	}
+	const publisherOpts = opts.publisher;
+	const authored: WalrusLocalPublisherOptions =
+		publisherOpts === undefined || publisherOpts === true || publisherOpts === false
+			? {}
+			: publisherOpts;
+	const defaultEpochs = expectPositiveInteger(authored.defaultEpochs ?? DEFAULT_PUBLISHER_EPOCHS, {
+		field: 'publisher.defaultEpochs',
+		mkError: ({ field, message, hint }) =>
+			walrusConfigError(field, `walrusLocalCluster: ${field} ${message}`, hint),
+	});
+	const maxBlobBytes = expectPositiveInteger(
+		authored.maxBlobBytes ?? DEFAULT_PUBLISHER_MAX_BLOB_BYTES,
+		{
+			field: 'publisher.maxBlobBytes',
+			mkError: ({ field, message, hint }) =>
+				walrusConfigError(field, `walrusLocalCluster: ${field} ${message}`, hint),
+		},
+	);
+	return {
+		aggregator,
+		publisher: {
+			...publisherBase,
+			defaultEpochs,
+			defaultDeletable: authored.defaultDeletable ?? false,
+			maxBlobBytes,
+			suiTopUpMist: expectPositiveBigInt(
+				authored.suiTopUpMist,
+				DEFAULT_PUBLISHER_SUI_TOP_UP_MIST,
+				'publisher.suiTopUpMist',
+			),
+			walTopUpMist: expectPositiveBigInt(
+				authored.walTopUpMist,
+				DEFAULT_PUBLISHER_WAL_TOP_UP_MIST,
+				'publisher.walTopUpMist',
+			),
+		},
 	};
 };
 
@@ -218,7 +364,7 @@ export interface LocalClusterDeps {
  *      the artifact publisher primitive; the produce body runs the walrus deploy
  *      one-shot.
  *    - Storage nodes — parallel boot via `startStorageNodes`.
- *    - Proxy URL pick — `nodes[0].rpcUrl`.
+ *    - Storage-node fallback URL pick — `nodes[0].rpcUrl`.
  *    - WAL faucet strategy — constructed if `state.exchangeObject`
  *      exists. Surfaced on the boot result; the barrel registers
  *      the contributor decl.
@@ -361,7 +507,7 @@ export const bootLocalCluster = (
 			readyTimeoutMs: opts.readyTimeoutMs,
 		});
 
-		// ---- proxy URL pick — nodes[0].rpcUrl -------------------
+		// ---- storage-node fallback URL pick — nodes[0].rpcUrl ----
 		// `nodeCount >= 1` is enforced synchronously already; this is
 		// defense-in-depth.
 		if (nodes.length === 0) {
@@ -369,7 +515,7 @@ export const bootLocalCluster = (
 				walrusPluginError('proxy', 'walrus: at least one storage node is required'),
 			);
 		}
-		const proxyUrl = nodes[0]!.rpcUrl;
+		const storageNodeProxyUrl = nodes[0]!.rpcUrl;
 
 		// ---- exchange resolution + WAL funding strategy ------
 		// Register a `coinType:<fullCoinType>` strategy that swaps the
@@ -397,9 +543,10 @@ export const bootLocalCluster = (
 			walrusPackageId: state.walrusPackageId,
 			walPackageId: resolvedWalPackageId,
 			nodes,
-			aggregatorUrl: proxyUrl,
-			publisherUrl: proxyUrl,
-			proxyUrl,
+			storageNodeProxyUrl,
+			aggregatorUrl: null,
+			publisherUrl: null,
+			proxyUrl: storageNodeProxyUrl,
 			exchangeObjectId: state.exchangeObject,
 			exchange,
 			walFaucetStrategy,

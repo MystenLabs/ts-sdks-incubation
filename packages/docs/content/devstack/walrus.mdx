@@ -53,6 +53,47 @@ cluster via the consuming server's `after:` list so it boots before the app star
 [`examples/private-content/devstack.config.ts`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/private-content/devstack.config.ts)
 (`after: [localnet, vault, walrusCluster, sealKeyServer, devWallet]` on the `hostService`).
 
+## Local publisher and aggregator
+
+Local mode starts app-facing publisher and aggregator HTTP endpoints by default. These endpoints let
+an app publish and read blobs through one URL instead of talking directly to every storage node. The
+generated Walrus binding exposes them as `publisherUrl` and `aggregatorUrl`.
+
+```ts
+const publish = await fetch(`${w.publisherUrl}/v1/blobs?epochs=3&deletable=false`, {
+	method: 'PUT',
+	body: new TextEncoder().encode('hello walrus'),
+});
+const receipt = await publish.json();
+const blobId = receipt.newlyCreated.blob_id;
+
+const read = await fetch(`${w.aggregatorUrl}/v1/blobs/${blobId}`);
+const bytes = new Uint8Array(await read.arrayBuffer());
+```
+
+The local publisher owns its own persisted dev signer under the Walrus runtime directory, funds it
+from the local SUI faucet, swaps SUI for WAL through the local exchange, and pays storage costs for
+uploads. The signer is an implementation detail of the local endpoint; accounts that need to own the
+returned blob object can pass `send_object_to=<address>` on the publish URL and the endpoint will
+transfer the blob object after writing it.
+
+Tune or disable the services through `local.aggregator` and `local.publisher`:
+
+```ts title="devstack.config.ts"
+const localWalrus = walrus({
+	local: {
+		aggregator: { port: 40100 },
+		publisher: {
+			port: 40101,
+			defaultEpochs: 5,
+			maxBlobBytes: 128 * 1024 * 1024,
+		},
+	},
+});
+
+const storageNodesOnly = walrus({ local: { aggregator: false, publisher: false } });
+```
+
 ## Connect the SDK
 
 The config above runs the cluster; the [generated bindings](/devstack/codegen) carry its resolved

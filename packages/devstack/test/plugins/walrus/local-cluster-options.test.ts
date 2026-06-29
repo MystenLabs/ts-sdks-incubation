@@ -21,6 +21,15 @@ describe('resolveLocalClusterOptions', () => {
 		expect(r.version).toBe(DEFAULT_WALRUS_REF);
 		expect(r.suiVersion).toBe(DEFAULT_SUI_VERSION);
 		expect(r.epochDuration).toBe('24h');
+		expect(r.aggregator).toEqual({ bindAddress: '0.0.0.0' });
+		expect(r.publisher).toMatchObject({
+			bindAddress: '0.0.0.0',
+			defaultEpochs: 3,
+			defaultDeletable: false,
+			maxBlobBytes: 64 * 1024 * 1024,
+			suiTopUpMist: 2_000_000_000n,
+			walTopUpMist: 1_000_000_000n,
+		});
 	});
 
 	it('preserves user-supplied release versions for image resolution', () => {
@@ -45,14 +54,46 @@ describe('resolveLocalClusterOptions', () => {
 	it('keeps account funding out of the resolved local options', () => {
 		const r = resolveLocalClusterOptions({});
 		expect(Object.keys(r).sort()).toEqual([
+			'aggregator',
 			'containerApiPort',
 			'epochDuration',
 			'name',
 			'nodeCount',
+			'publisher',
 			'readyTimeoutMs',
 			'shards',
 			'suiVersion',
 			'version',
 		]);
+	});
+
+	it('supports disabling the local publisher/aggregator endpoints', () => {
+		const r = resolveLocalClusterOptions({ aggregator: false, publisher: false });
+		expect(r.aggregator).toBeNull();
+		expect(r.publisher).toBeNull();
+	});
+
+	it('preserves service preferred ports and publisher defaults', () => {
+		const r = resolveLocalClusterOptions({
+			aggregator: { port: 40100, bindAddress: '127.0.0.1' },
+			publisher: {
+				port: 40101,
+				defaultEpochs: 5,
+				defaultDeletable: true,
+				maxBlobBytes: 1024,
+				suiTopUpMist: 123n,
+				walTopUpMist: 456n,
+			},
+		});
+		expect(r.aggregator).toEqual({ port: 40100, bindAddress: '127.0.0.1' });
+		expect(r.publisher).toEqual({
+			port: 40101,
+			bindAddress: '0.0.0.0',
+			defaultEpochs: 5,
+			defaultDeletable: true,
+			maxBlobBytes: 1024,
+			suiTopUpMist: 123n,
+			walTopUpMist: 456n,
+		});
 	});
 });

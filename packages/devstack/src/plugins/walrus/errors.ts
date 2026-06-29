@@ -28,6 +28,8 @@ export type WalrusPhase =
 	| 'image-build'
 	| 'cluster-network'
 	| 'deploy'
+	| 'aggregator'
+	| 'publisher'
 	| 'exchange'
 	| 'storage-node'
 	| 'proxy'

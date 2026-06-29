@@ -8,11 +8,10 @@
 // For the local cluster:
 //   - N × `walrus-node-<i>` routes — one per storage node, with
 //     `cors: true` (walrus storage REST API lacks CORS headers).
-//   - 1 × `walrus-aggregator` alias — same backend as `walrus-node-0`,
-//     surfaces the conventional alias for SDK consumers.
-//   - 1 × `walrus-publisher` alias — collapsed onto the same backend
-//     (distilled-doc §"Endpoints" — "collapsed onto a single Traefik
-//     vhost").
+//   - 1 × `walrus-aggregator` route — host-process HTTP service
+//     exposing `GET /v1/blobs/:id` through a single app-facing URL.
+//   - 1 × `walrus-publisher` route — host-process HTTP service
+//     exposing `PUT /v1/blobs` through a single app-facing URL.
 //
 // Known-deployment publishes no routes — the aggregator/publisher
 // URLs land on the codegen-emitted `WalrusBindings.{aggregator,
@@ -53,6 +52,8 @@ export const makeLocalRoutables = (args: {
 	readonly serviceKey: string;
 	readonly nodeCount: number;
 	readonly containerApiPort?: number;
+	readonly aggregatorPort?: number | null;
+	readonly publisherPort?: number | null;
 }): ReadonlyArray<RoutableDecl> => {
 	const containerPort = args.containerApiPort ?? WALRUS_ROUTER_PORT;
 	const containerNameFor = (i: number): string =>
@@ -78,32 +79,33 @@ export const makeLocalRoutables = (args: {
 		}),
 	);
 
-	// Aggregator + publisher aliases — collapsed onto node-0 per the
-	// distilled doc. The aggregator and publisher are conventional
-	// endpoint names that downstream HTTP consumers look up via the
-	// substrate's endpoint registry.
-	const aggregator: RoutableDecl = {
-		kind: 'routable',
-		endpointName: WALRUS_AGGREGATOR_ENDPOINT_NAME,
-		dispatchId: {
-			serviceKey: args.serviceKey,
-			role: WALRUS_AGGREGATOR_ENDPOINT_NAME,
-		},
-		upstream: { type: 'container', containerName: containerNameFor(0), containerPort },
-		cors: true,
-		wireProtocol: 'http',
-	};
-	const publisher: RoutableDecl = {
-		kind: 'routable',
-		endpointName: WALRUS_PUBLISHER_ENDPOINT_NAME,
-		dispatchId: {
-			serviceKey: args.serviceKey,
-			role: WALRUS_PUBLISHER_ENDPOINT_NAME,
-		},
-		upstream: { type: 'container', containerName: containerNameFor(0), containerPort },
-		cors: true,
-		wireProtocol: 'http',
-	};
+	const serviceRoutes: RoutableDecl[] = [];
+	if (args.aggregatorPort !== undefined && args.aggregatorPort !== null) {
+		serviceRoutes.push({
+			kind: 'routable',
+			endpointName: WALRUS_AGGREGATOR_ENDPOINT_NAME,
+			dispatchId: {
+				serviceKey: args.serviceKey,
+				role: WALRUS_AGGREGATOR_ENDPOINT_NAME,
+			},
+			upstream: { type: 'host-loopback', port: args.aggregatorPort },
+			cors: true,
+			wireProtocol: 'http',
+		});
+	}
+	if (args.publisherPort !== undefined && args.publisherPort !== null) {
+		serviceRoutes.push({
+			kind: 'routable',
+			endpointName: WALRUS_PUBLISHER_ENDPOINT_NAME,
+			dispatchId: {
+				serviceKey: args.serviceKey,
+				role: WALRUS_PUBLISHER_ENDPOINT_NAME,
+			},
+			upstream: { type: 'host-loopback', port: args.publisherPort },
+			cors: true,
+			wireProtocol: 'http',
+		});
+	}
 
-	return [...perNodeRoutes, aggregator, publisher];
+	return [...perNodeRoutes, ...serviceRoutes];
 };
