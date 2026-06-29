@@ -1,7 +1,7 @@
 // Unit tests for the walrus local-cluster Routable contributions.
 //
 // Each storage node carries one Traefik route; the aggregator and
-// publisher are host-process HTTP services fronted through the same
+// publisher are release CLI service containers fronted through the same
 // Walrus router entrypoint. These tests pin the fan-out shape.
 
 import { describe, expect, it } from 'vitest';
@@ -15,8 +15,16 @@ const makeRoutes = (nodeCount: number, serviceKey = 'walrus:walrus') =>
 		walrusName: 'walrus',
 		serviceKey,
 		nodeCount,
-		aggregatorPort: 40100,
-		publisherPort: 40101,
+		aggregator: {
+			role: 'aggregator',
+			containerName: 'devstack-app-main-walrus-walrus-aggregator',
+			containerPort: 31415,
+		},
+		publisher: {
+			role: 'publisher',
+			containerName: 'devstack-app-main-walrus-walrus-publisher',
+			containerPort: 31415,
+		},
 	});
 
 describe('walrus makeLocalRoutables', () => {
@@ -33,14 +41,22 @@ describe('walrus makeLocalRoutables', () => {
 		]);
 	});
 
-	it('aggregator + publisher dispatch to host-loopback service ports', () => {
+	it('aggregator + publisher dispatch to service containers', () => {
 		const routes = makeRoutes(2);
 		const agg = routes.find((r) => r.endpointName === 'walrus-aggregator');
 		const pub = routes.find((r) => r.endpointName === 'walrus-publisher');
 		expect(agg).toBeDefined();
 		expect(pub).toBeDefined();
-		expect(agg!.upstream).toEqual({ type: 'host-loopback', port: 40100 });
-		expect(pub!.upstream).toEqual({ type: 'host-loopback', port: 40101 });
+		expect(agg!.upstream).toEqual({
+			type: 'container',
+			containerName: 'devstack-app-main-walrus-walrus-aggregator',
+			containerPort: 31415,
+		});
+		expect(pub!.upstream).toEqual({
+			type: 'container',
+			containerName: 'devstack-app-main-walrus-walrus-publisher',
+			containerPort: 31415,
+		});
 	});
 
 	it('omits app-facing routes when their service ports are absent', () => {

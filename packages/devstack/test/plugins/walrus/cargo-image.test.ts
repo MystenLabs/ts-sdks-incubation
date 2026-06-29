@@ -46,6 +46,9 @@ describe('walrus cargo image resolver', () => {
 		expect(dockerfile).toContain('EXPECTED_FILE_ARCH');
 		expect(dockerfile).toContain('is not native for TARGETARCH=');
 		expect(dockerfile).toContain('for bin in walrus walrus-node walrus-deploy');
+		expect(dockerfile).toContain('/opt/walrus/bin/walrus aggregator --help');
+		expect(dockerfile).toContain('/opt/walrus/bin/walrus publisher --help');
+		expect(dockerfile).toContain('run-walrus-client-service.sh');
 		expect(dockerfile).not.toContain('cargo build');
 		expect(dockerfile).not.toContain('rustup');
 	});

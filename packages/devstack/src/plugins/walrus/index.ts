@@ -49,6 +49,7 @@ import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { deriveSubnetPrefix, withSubnetAddressing } from '../../substrate/runtime/subnet-broker.ts';
+import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
@@ -70,10 +71,17 @@ import {
 	type WalrusKnownDeploymentOptions,
 } from './mode/known-deploy.ts';
 import { makeSnapshotable, type WalrusSnapshotMode } from './snapshot.ts';
-import { makeLocalRoutables } from './routable.ts';
+import {
+	WALRUS_AGGREGATOR_ENDPOINT_NAME,
+	WALRUS_PUBLISHER_ENDPOINT_NAME,
+	makeLocalRoutables,
+} from './routable.ts';
 import { WALRUS_STATE_REGISTRY_KEY, type WalrusStateEntry } from './registry-publish.ts';
-import { buildWalrusNetworkName, type WalrusStorageNode } from './storage-nodes.ts';
-import { startLocalWalrusHttpServices } from './http-services.ts';
+import {
+	WALRUS_ROUTER_PORT,
+	buildWalrusNetworkName,
+	type WalrusStorageNode,
+} from './storage-nodes.ts';
 
 // ---------------------------------------------------------------------------
 // Resource — the resolved value all consumers read
@@ -271,24 +279,31 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 								stakingPoolId: boot.deploy.stakingObject,
 								exchangeIds: [boot.exchangeObjectId],
 							};
-				const localHttpServices = yield* startLocalWalrusHttpServices({
-					identity,
-					packageConfig,
-					aggregator: resolved.aggregator,
-					publisher: resolved.publisher,
-					suiSdk: sui.sdk,
-					suiFundingFaucetUrl: sui.fundingFaucetUrl,
-					waitForFundsReady: sui.waitForTransactionsReady.wait,
-					exchange: boot.exchange,
-					walCoinType: boot.walCoinType,
-					publisherSignerPath: path.join(
-						stackPaths.stackRoot,
-						'walrus',
-						resolved.name,
-						'deploy',
-						'publisher-signer.v1.json',
-					),
-				});
+				const serviceUrl = (role: string) =>
+					routedHostname(identity, role).pipe(
+						Effect.map((hostname) =>
+							renderUrl({
+								protocol: 'http',
+								hostname,
+								port: WALRUS_ROUTER_PORT,
+							}),
+						),
+						Effect.mapError((cause) =>
+							walrusPluginError(
+								'proxy',
+								`walrus route URL assembly failed for ${role}: ${cause.detail}`,
+								{ cause },
+							),
+						),
+					);
+				const aggregatorUrl =
+					boot.clientServices.aggregator === null
+						? null
+						: yield* serviceUrl(WALRUS_AGGREGATOR_ENDPOINT_NAME);
+				const publisherUrl =
+					boot.clientServices.publisher === null
+						? null
+						: yield* serviceUrl(WALRUS_PUBLISHER_ENDPOINT_NAME);
 
 				const resolvedValue: WalrusResolved = {
 					mode: 'local',
@@ -297,9 +312,9 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 					walPackageId: boot.walPackageId,
 					packageConfig,
 					nodes: boot.nodes,
-					proxyUrl: localHttpServices.aggregator?.url ?? null,
-					aggregatorUrl: localHttpServices.aggregator?.url ?? null,
-					publisherUrl: localHttpServices.publisher?.url ?? null,
+					proxyUrl: aggregatorUrl,
+					aggregatorUrl,
+					publisherUrl,
 					walFaucetStrategy: boot.walFaucetStrategy,
 					walCoinType: boot.walCoinType,
 				};
@@ -317,6 +332,10 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 									resolvedValue.walCoinType,
 								),
 							];
+				const clientServiceRoles = [
+					...(boot.clientServices.aggregator === null ? [] : ['aggregator' as const]),
+					...(boot.clientServices.publisher === null ? [] : ['publisher' as const]),
+				];
 				emitContributions(ctx, [
 					makeSnapshotable(
 						'local' satisfies WalrusSnapshotMode,
@@ -325,6 +344,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						resolved.name,
 						resolvedValue.network,
 						resolved.nodeCount,
+						clientServiceRoles,
 					),
 					makeCodegenable({
 						mode: 'local',
@@ -359,8 +379,8 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						serviceKey: String(walrusKey),
 						nodeCount: resolved.nodeCount,
 						containerApiPort: resolved.containerApiPort,
-						aggregatorPort: localHttpServices.aggregator?.port ?? null,
-						publisherPort: localHttpServices.publisher?.port ?? null,
+						aggregator: boot.clientServices.aggregator,
+						publisher: boot.clientServices.publisher,
 					}) as readonly RoutableDecl[]),
 				]);
 				return resolvedValue;

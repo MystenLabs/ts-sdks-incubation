@@ -6,11 +6,10 @@
 //     It holds storage-node private keys + per-node configs that
 //     `walrus-deploy` wrote; without them, a cached "walrus is already
 //     deployed" artifact cannot be honored on resume.
-//   - Local cluster: N storage-node containers' writable layers
-//     hold RocksDB at `/var/walrus/storage` — managed-containers
-//     declaration; runtime adapter pauses then `docker commit`.
-//     Per-node label tuple `role: storage-node-${i}` so the snapshot
-//     orchestrator's label filter resolves each node distinctly.
+//   - Local cluster: N storage-node containers plus enabled release
+//     publisher/aggregator service containers are declared as managed
+//     containers; runtime adapter pauses then `docker commit`. Per-role
+//     labels keep every committed layer distinct on restore.
 //   - Known-deployment: no containers, no subtrees. The shape still
 //     exists so the identity guard fires on restore.
 //
@@ -44,6 +43,7 @@ export const makeSnapshotable = (
 	walrusName: string,
 	network: string,
 	nodeCount = 1,
+	clientServiceRoles: ReadonlyArray<'aggregator' | 'publisher'> = [],
 ): SnapshotableDecl => {
 	const labels = (role: string): ContainerLabelTuple => ({
 		app,
@@ -58,13 +58,14 @@ export const makeSnapshotable = (
 				{ length: nodeCount },
 				(_, i) => labels(`storage-node-${i}`),
 			);
+			const serviceContainers = clientServiceRoles.map(labels);
 			return {
 				kind: 'snapshotable',
 				// `runtime/walrus/<name>/deploy/` — the deploy one-shot's
 				// output dir. The substrate's runtime-dir root is
 				// resolved at acquire; the path here is relative to it.
 				subtrees: [`walrus/${walrusName}/deploy/`],
-				managedContainers: perNodeContainers,
+				managedContainers: [...perNodeContainers, ...serviceContainers],
 				missingTolerance: 'fine',
 				// Storage nodes need >10s to flush + checkpoint RocksDB
 				// on `docker stop`; the snapshot quiesce mirrors the

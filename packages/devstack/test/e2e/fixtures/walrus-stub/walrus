@@ -3,17 +3,15 @@
 #
 #   - `deploy ...`  → emit parseable deploy output + per-node config
 #                      files; exit 0.
-#   - (no args)     → bind HTTP on WALRUS_ROUTER_PORT (9185), answer
-#                      `/v1/health` with an Active nodeStatus, and stay
-#                      alive, so the storage-node write-ready probe
-#                      succeeds.
+#   - any other mode → bind HTTP on WALRUS_CONTAINER_PORT (default 9185),
+#                      answer `/v1/health` with an Active nodeStatus, and
+#                      stay alive. This models storage-node plus aggregator /
+#                      publisher readiness without implementing Walrus.
 #
 # The real `walrus` binary uses subcommands; the plugin's argv path
 # always starts with `deploy` for the one-shot. Anything else is
-# treated as "long-lived node" (the real binary's `walrus node` /
-# `walrus aggregator` invocations dispatched via the wrapper image's
-# run.sh; we don't model the wrapper here — the stub IS the wrapper-
-# image-equivalent, so the bare ENTRYPOINT runs the listener).
+# treated as a long-lived listener. The stub is the wrapper-image equivalent,
+# so aggregator / publisher service containers also land here.
 
 set -eu
 
@@ -87,7 +85,7 @@ EOF
 		exit 0
 		;;
 	*)
-		# Storage-node mode. Bind HTTP on 9185 and hold the listener.
+		# Long-lived service mode. Bind HTTP and hold the listener.
 		# The production ready-gate first checks TCP with `nc -z`, then
 		# fetches `/v1/health` and classifies `nodeStatus`. Serve a small
 		# Active health body so the stub models a write-ready node.

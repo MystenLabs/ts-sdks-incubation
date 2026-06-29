@@ -25,6 +25,11 @@
 #     Relocates per-node configs out of the read-only deploy mount,
 #     swaps SUI for WAL, and execs `walrus-node run`.
 #
+#   - /opt/walrus/scripts/run-walrus-client-service.sh — long-running
+#     release CLI entrypoint for `walrus aggregator` and `walrus publisher`.
+#     Relocates a deploy-generated wallet and execs the selected `walrus`
+#     subcommand.
+#
 # `ubuntu:24.04` because the walrus + sui binaries link against
 # glibc 2.38+; debian:bookworm (glibc 2.36) fails at runtime.
 
@@ -68,6 +73,8 @@ RUN set -eux; \
 	done; \
 	rm -rf /tmp/walrus.tgz /tmp/walrus-unpack; \
 	/opt/walrus/bin/walrus --version; \
+	/opt/walrus/bin/walrus aggregator --help >/dev/null; \
+	/opt/walrus/bin/walrus publisher --help >/dev/null; \
 	/opt/walrus/bin/walrus-node --help >/dev/null; \
 	/opt/walrus/bin/walrus-deploy --help >/dev/null
 
@@ -108,15 +115,19 @@ RUN mkdir -p /opt/walrus/scripts /opt/walrus/outputs /var/walrus/storage
 
 COPY deploy-walrus.sh /opt/walrus/scripts/deploy-walrus.sh
 COPY run-walrus.sh /opt/walrus/scripts/run-walrus.sh
+COPY run-walrus-client-service.sh /opt/walrus/scripts/run-walrus-client-service.sh
 RUN chmod +x /opt/walrus/scripts/*.sh
 
 ENV RUST_LOG=info,walrus=info
 
-# Storage-node REST port. Distilled-doc invariant 9.
+# Storage-node REST port. Distilled-doc invariant 9. Client services bind
+# their release CLI default unless overridden by env.
 EXPOSE 9185
+EXPOSE 31415
 
 # Default to storage-node entrypoint. The deploy one-shot overrides
-# via `runOneShot` argv: argv[0] == 'deploy' runs `deploy-walrus.sh`,
-# otherwise runs `run-walrus.sh`.
-ENTRYPOINT ["/bin/bash", "-c", "if [ \"${1:-}\" = deploy ]; then shift; exec /opt/walrus/scripts/deploy-walrus.sh \"$@\"; else exec /opt/walrus/scripts/run-walrus.sh; fi", "--"]
+# via `runOneShot` argv: argv[0] == 'deploy' runs `deploy-walrus.sh`.
+# `aggregator` and `publisher` run the release-provided client services;
+# any other command falls back to the storage-node entrypoint.
+ENTRYPOINT ["/bin/bash", "-c", "case \"${1:-}\" in deploy) shift; exec /opt/walrus/scripts/deploy-walrus.sh \"$@\" ;; aggregator|publisher) mode=\"$1\"; shift; exec /opt/walrus/scripts/run-walrus-client-service.sh \"$mode\" \"$@\" ;; *) exec /opt/walrus/scripts/run-walrus.sh ;; esac", "--"]
 CMD []

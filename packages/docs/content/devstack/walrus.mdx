@@ -71,11 +71,9 @@ const read = await fetch(`${w.aggregatorUrl}/v1/blobs/${blobId}`);
 const bytes = new Uint8Array(await read.arrayBuffer());
 ```
 
-The local publisher owns its own persisted dev signer under the Walrus runtime directory, funds it
-from the local SUI faucet, swaps SUI for WAL through the local exchange, and pays storage costs for
-uploads. The signer is an implementation detail of the local endpoint; accounts that need to own the
-returned blob object can pass `send_object_to=<address>` on the publish URL and the endpoint will
-transfer the blob object after writing it.
+Devstack runs the release-provided `walrus publisher` and `walrus aggregator` binaries in managed
+containers. The publisher uses the local deploy-generated wallet and native Walrus publisher
+behavior, including support for `send_object_to=<address>` on the publish URL.
 
 Tune or disable the services through `local.aggregator` and `local.publisher`:
 
@@ -83,11 +81,7 @@ Tune or disable the services through `local.aggregator` and `local.publisher`:
 const localWalrus = walrus({
 	local: {
 		aggregator: { port: 40100 },
-		publisher: {
-			port: 40101,
-			defaultEpochs: 5,
-			maxBlobBytes: 128 * 1024 * 1024,
-		},
+		publisher: { port: 40101 },
 	},
 });
 
