@@ -60,8 +60,10 @@ import {
 } from '../bootstrap-assets/cargo-image.ts';
 import {
 	DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+	DEFAULT_WALRUS_UPLOAD_RELAY_SERVICE_PORT,
 	startWalrusClientServices,
 	type WalrusClientServices,
+	type WalrusClientServiceRole,
 } from '../client-services.ts';
 import {
 	makeWalFaucetStrategy,
@@ -104,16 +106,20 @@ export interface WalrusLocalClusterOptions {
 	/** Local app-facing publisher service. Defaults to enabled. Set
 	 *  `false` to run storage nodes without the simple publish API. */
 	readonly publisher?: boolean | WalrusLocalPublisherOptions;
+	/** Local app-facing upload relay service. Defaults to enabled. Set
+	 *  `false` to run storage nodes without the SDK upload relay API. */
+	readonly uploadRelay?: boolean | WalrusLocalUploadRelayOptions;
 }
 
 export interface WalrusLocalServiceOptions {
 	/** In-container port passed to the release service's
-	 *  `--bind-address 0.0.0.0:<port>`. Defaults to the Walrus CLI's
-	 *  publisher/aggregator port. */
+	 *  bind-address flag. Defaults to the service-specific release
+	 *  port: publisher/aggregator 31415, upload relay 3000. */
 	readonly port?: number;
 }
 
 export type WalrusLocalPublisherOptions = WalrusLocalServiceOptions;
+export type WalrusLocalUploadRelayOptions = WalrusLocalServiceOptions;
 
 /** Resolved local-cluster boot artifacts. */
 export interface LocalClusterBootResult {
@@ -145,6 +151,7 @@ export interface ResolvedLocalClusterOptions {
 	readonly readyTimeoutMs: number;
 	readonly aggregator: ResolvedWalrusLocalServiceOptions | null;
 	readonly publisher: ResolvedWalrusLocalPublisherOptions | null;
+	readonly uploadRelay: ResolvedWalrusLocalUploadRelayOptions | null;
 }
 
 export interface ResolvedWalrusLocalServiceOptions {
@@ -152,6 +159,7 @@ export interface ResolvedWalrusLocalServiceOptions {
 }
 
 export type ResolvedWalrusLocalPublisherOptions = ResolvedWalrusLocalServiceOptions;
+export type ResolvedWalrusLocalUploadRelayOptions = ResolvedWalrusLocalServiceOptions;
 
 /** Synchronous factory-time validation. Throws (NOT Effect-fail) so
  *  misconfiguration trips at the `defineDevstack` call site rather
@@ -218,23 +226,35 @@ const expectOptionalPort = (value: number | undefined, field: string): number | 
 
 const resolveLocalServiceBase = (
 	value: boolean | WalrusLocalServiceOptions | undefined,
-	fieldPrefix: 'aggregator' | 'publisher',
+	fieldPrefix: 'aggregator' | 'publisher' | 'uploadRelay',
+	defaultPort: number,
 ): ResolvedWalrusLocalServiceOptions | null => {
 	if (value === false) return null;
 	const authored = value === undefined || value === true ? {} : value;
 	return {
-		port:
-			expectOptionalPort(authored.port, `${fieldPrefix}.port`) ??
-			DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+		port: expectOptionalPort(authored.port, `${fieldPrefix}.port`) ?? defaultPort,
 	};
 };
 
 const resolveLocalServicesOptions = (
 	opts: WalrusLocalClusterOptions,
-): Pick<ResolvedLocalClusterOptions, 'aggregator' | 'publisher'> => {
+): Pick<ResolvedLocalClusterOptions, 'aggregator' | 'publisher' | 'uploadRelay'> => {
 	return {
-		aggregator: resolveLocalServiceBase(opts.aggregator, 'aggregator'),
-		publisher: resolveLocalServiceBase(opts.publisher, 'publisher'),
+		aggregator: resolveLocalServiceBase(
+			opts.aggregator,
+			'aggregator',
+			DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+		),
+		publisher: resolveLocalServiceBase(
+			opts.publisher,
+			'publisher',
+			DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+		),
+		uploadRelay: resolveLocalServiceBase(
+			opts.uploadRelay,
+			'uploadRelay',
+			DEFAULT_WALRUS_UPLOAD_RELAY_SERVICE_PORT,
+		),
 	};
 };
 
@@ -383,7 +403,7 @@ export const bootLocalCluster = (
 		// carry a stale committee and would reject writes). The base `walrusImage`
 		// (shared) still backs the transient deploy one-shot (`--rm`, unsnapshotted).
 		const nodeImageScope = state.walrusPackageId.replace(/^0x/, '').slice(0, 12);
-		const resolveServiceImage = (role: 'aggregator' | 'publisher') =>
+		const resolveServiceImage = (role: WalrusClientServiceRole) =>
 			resolveCargoImage(
 				deps.runtime,
 				{
@@ -410,6 +430,8 @@ export const bootLocalCluster = (
 			aggregator:
 				opts.aggregator === null ? Effect.succeed(null) : resolveServiceImage('aggregator'),
 			publisher: opts.publisher === null ? Effect.succeed(null) : resolveServiceImage('publisher'),
+			uploadRelay:
+				opts.uploadRelay === null ? Effect.succeed(null) : resolveServiceImage('upload-relay'),
 		});
 
 		// ---- storage nodes — parallel boot ----------------------
@@ -440,7 +462,7 @@ export const bootLocalCluster = (
 			);
 		}
 
-		// ---- app-facing Rust publisher / aggregator services ----
+		// ---- app-facing Rust publisher / aggregator / upload-relay services ----
 		yield* setCurrentPluginPhase('starting Walrus client services');
 		const clientServices = yield* startWalrusClientServices(deps.runtime, {
 			app: deps.app,
@@ -450,6 +472,7 @@ export const bootLocalCluster = (
 			options: {
 				aggregator: opts.aggregator,
 				publisher: opts.publisher,
+				uploadRelay: opts.uploadRelay,
 			},
 			walrusNetworkName: deps.walrusNetworkName,
 			suiNetworkName: deps.suiNetworkName,

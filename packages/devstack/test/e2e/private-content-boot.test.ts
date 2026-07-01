@@ -28,7 +28,7 @@
 //      the first sentinel path if projection regresses.
 //   3. The walrus + seal resolved values are well-formed: walrus
 //      packageConfig.systemObjectId / stakingPoolId are real 0x-hex
-//      ids, proxy/aggregator/publisher URLs are http(s); seal
+//      ids, proxy/aggregator/publisher/upload-relay URLs are http(s); seal
 //      objectId is a real 0x-hex id, keyServerUrl matches the routed
 //      `seal-key-server` endpoint.
 //   4. The wallet accepts the example's Vite origin, matching the
@@ -209,6 +209,7 @@ interface WalrusBootValue {
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
 	readonly walCoinType: string | null;
 }
 
@@ -464,6 +465,7 @@ const assertPrivateContentBoot = (boot: PrivateContentBoot): void => {
 	expect(walrus.proxyUrl).toMatch(/^https?:\/\//);
 	expect(walrus.aggregatorUrl).toMatch(/^https?:\/\//);
 	expect(walrus.publisherUrl).toMatch(/^https?:\/\//);
+	expect(walrus.uploadRelayUrl).toMatch(/^https?:\/\//);
 
 	const seal = sealValue(result);
 	expect(seal.objectId).toMatch(/^0x[0-9a-f]+$/i);

@@ -323,6 +323,7 @@ describe('contracts/config-bindings — own-bucket static path is type-preservin
 					proxyUrl: null,
 					aggregatorUrl: 'https://aggregator.testnet.walrus.example',
 					publisherUrl: null,
+					uploadRelayUrl: 'https://upload-relay.testnet.walrus.example',
 					nodes: [],
 				},
 			}),

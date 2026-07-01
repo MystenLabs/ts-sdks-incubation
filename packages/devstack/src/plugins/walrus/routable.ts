@@ -16,10 +16,13 @@
 //   - 1 × `walrus-publisher` route — release `walrus publisher`
 //     service container
 //     exposing `PUT /v1/blobs` through a single app-facing URL.
+//   - 1 × `walrus-upload-relay` route — release `walrus-upload-relay`
+//     service container
+//     exposing the SDK upload relay API through a single app-facing URL.
 //
 // Known-deployment publishes no routes — the aggregator/publisher
-// URLs land on the codegen-emitted `WalrusBindings.{aggregator,
-// publisher}Url` instead.
+// / upload-relay URLs land on the codegen-emitted `WalrusBindings`
+// URL fields instead.
 
 import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 import { WALRUS_ROUTER_PORT } from './storage-nodes.ts';
@@ -28,6 +31,7 @@ import type { WalrusClientService } from './client-services.ts';
 export const WALRUS_NODE_ENDPOINT_PREFIX = 'walrus-node-' as const;
 export const WALRUS_AGGREGATOR_ENDPOINT_NAME = 'walrus-aggregator' as const;
 export const WALRUS_PUBLISHER_ENDPOINT_NAME = 'walrus-publisher' as const;
+export const WALRUS_UPLOAD_RELAY_ENDPOINT_NAME = 'walrus-upload-relay' as const;
 
 /** Upper bound on `nodeCount` — Traefik entrypoints are bound at boot,
  *  so the cluster's per-node routes need pre-declared entrypoint names.
@@ -45,6 +49,7 @@ export const WALRUS_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
 	),
 	{ name: WALRUS_AGGREGATOR_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },
 	{ name: WALRUS_PUBLISHER_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },
+	{ name: WALRUS_UPLOAD_RELAY_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },
 ];
 
 /** Build the Routable contributions for the local cluster. `nodeCount`
@@ -59,6 +64,7 @@ export const makeLocalRoutables = (args: {
 	readonly containerApiPort?: number;
 	readonly aggregator?: WalrusClientService | null;
 	readonly publisher?: WalrusClientService | null;
+	readonly uploadRelay?: WalrusClientService | null;
 }): ReadonlyArray<RoutableDecl> => {
 	const containerPort = args.containerApiPort ?? WALRUS_ROUTER_PORT;
 	const containerNameFor = (i: number): string =>
@@ -85,39 +91,31 @@ export const makeLocalRoutables = (args: {
 	);
 
 	const serviceRoutes: RoutableDecl[] = [];
-	if (args.aggregator !== undefined && args.aggregator !== null) {
+	const pushServiceRoute = (endpointName: string, service: WalrusClientService) => {
 		serviceRoutes.push({
 			kind: 'routable',
-			endpointName: WALRUS_AGGREGATOR_ENDPOINT_NAME,
+			endpointName,
 			dispatchId: {
 				serviceKey: args.serviceKey,
-				role: WALRUS_AGGREGATOR_ENDPOINT_NAME,
+				role: endpointName,
 			},
 			upstream: {
 				type: 'container',
-				containerName: args.aggregator.containerName,
-				containerPort: args.aggregator.containerPort,
+				containerName: service.containerName,
+				containerPort: service.containerPort,
 			},
 			cors: true,
 			wireProtocol: 'http',
 		});
+	};
+	if (args.aggregator !== undefined && args.aggregator !== null) {
+		pushServiceRoute(WALRUS_AGGREGATOR_ENDPOINT_NAME, args.aggregator);
 	}
 	if (args.publisher !== undefined && args.publisher !== null) {
-		serviceRoutes.push({
-			kind: 'routable',
-			endpointName: WALRUS_PUBLISHER_ENDPOINT_NAME,
-			dispatchId: {
-				serviceKey: args.serviceKey,
-				role: WALRUS_PUBLISHER_ENDPOINT_NAME,
-			},
-			upstream: {
-				type: 'container',
-				containerName: args.publisher.containerName,
-				containerPort: args.publisher.containerPort,
-			},
-			cors: true,
-			wireProtocol: 'http',
-		});
+		pushServiceRoute(WALRUS_PUBLISHER_ENDPOINT_NAME, args.publisher);
+	}
+	if (args.uploadRelay !== undefined && args.uploadRelay !== null) {
+		pushServiceRoute(WALRUS_UPLOAD_RELAY_ENDPOINT_NAME, args.uploadRelay);
 	}
 
 	return [...perNodeRoutes, ...serviceRoutes];

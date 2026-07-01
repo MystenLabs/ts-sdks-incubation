@@ -16,6 +16,7 @@ export const walrus = {
 			packageConfig: requireValue<{ readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> }>(dep, "walrus", "packageConfig"),
 			proxyUrl: requireValue<string | null>(dep, "walrus", "proxyUrl"),
 			publisherUrl: requireValue<string | null>(dep, "walrus", "publisherUrl"),
+			uploadRelayUrl: requireValue<string | null>(dep, "walrus", "uploadRelayUrl"),
 			walCoinType: requireValue<string | null>(dep, "walrus", "walCoinType"),
 			walPackageId: requireValue<string | null>(dep, "walrus", "walPackageId"),
 			walrusPackageId: requireValue<string | null>(dep, "walrus", "walrusPackageId"),

@@ -1,8 +1,8 @@
 // Unit tests for the walrus local-cluster Routable contributions.
 //
 // Each storage node carries one Traefik route; the aggregator and
-// publisher are release CLI service containers fronted through the same
-// Walrus router entrypoint. These tests pin the fan-out shape.
+// publisher and upload relay are release service containers fronted through
+// the same Walrus router entrypoint. These tests pin the fan-out shape.
 
 import { describe, expect, it } from 'vitest';
 
@@ -25,12 +25,17 @@ const makeRoutes = (nodeCount: number, serviceKey = 'walrus:walrus') =>
 			containerName: 'devstack-app-main-walrus-walrus-publisher',
 			containerPort: 31415,
 		},
+		uploadRelay: {
+			role: 'upload-relay',
+			containerName: 'devstack-app-main-walrus-walrus-upload-relay',
+			containerPort: 3000,
+		},
 	});
 
 describe('walrus makeLocalRoutables', () => {
-	it('emits N per-node routes + aggregator + publisher service routes', () => {
+	it('emits N per-node routes + aggregator + publisher + upload-relay service routes', () => {
 		const routes = makeRoutes(3);
-		expect(routes).toHaveLength(5); // 3 + aggregator + publisher
+		expect(routes).toHaveLength(6); // 3 + aggregator + publisher + upload relay
 		const names = routes.map((r) => r.endpointName);
 		expect(names).toEqual([
 			'walrus-node-0',
@@ -38,15 +43,18 @@ describe('walrus makeLocalRoutables', () => {
 			'walrus-node-2',
 			'walrus-aggregator',
 			'walrus-publisher',
+			'walrus-upload-relay',
 		]);
 	});
 
-	it('aggregator + publisher dispatch to service containers', () => {
+	it('aggregator + publisher + upload relay dispatch to service containers', () => {
 		const routes = makeRoutes(2);
 		const agg = routes.find((r) => r.endpointName === 'walrus-aggregator');
 		const pub = routes.find((r) => r.endpointName === 'walrus-publisher');
+		const relay = routes.find((r) => r.endpointName === 'walrus-upload-relay');
 		expect(agg).toBeDefined();
 		expect(pub).toBeDefined();
+		expect(relay).toBeDefined();
 		expect(agg!.upstream).toEqual({
 			type: 'container',
 			containerName: 'devstack-app-main-walrus-walrus-aggregator',
@@ -56,6 +64,11 @@ describe('walrus makeLocalRoutables', () => {
 			type: 'container',
 			containerName: 'devstack-app-main-walrus-walrus-publisher',
 			containerPort: 31415,
+		});
+		expect(relay!.upstream).toEqual({
+			type: 'container',
+			containerName: 'devstack-app-main-walrus-walrus-upload-relay',
+			containerPort: 3000,
 		});
 	});
 
@@ -84,6 +97,7 @@ describe('walrus makeLocalRoutables', () => {
 		).toEqual(['https', 'https', 'https', 'https']);
 		expect(routes.find((r) => r.endpointName === 'walrus-aggregator')?.wireProtocol).toBe('http');
 		expect(routes.find((r) => r.endpointName === 'walrus-publisher')?.wireProtocol).toBe('http');
+		expect(routes.find((r) => r.endpointName === 'walrus-upload-relay')?.wireProtocol).toBe('http');
 	});
 
 	it('per-node dispatchIds carry the service key + per-index role', () => {

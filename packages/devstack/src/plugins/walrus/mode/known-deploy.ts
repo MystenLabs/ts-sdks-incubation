@@ -7,7 +7,7 @@
 // resolved value whose tags are eager `Layer.succeed(...)` constants.
 //
 // Distilled-doc invariants honored:
-//   - 15: each of `proxyUrl / aggregatorUrl / publisherUrl` surfaces
+//   - 15: each of `proxyUrl / aggregatorUrl / publisherUrl / uploadRelayUrl` surfaces
 //         INDEPENDENTLY. Encoded as `string | null` in the resolved
 //         shape — a given field is null only when THAT specific URL
 //         is unresolved (registry default + explicit override both
@@ -50,6 +50,7 @@ export interface WalrusKnownDeploymentOptions {
 	readonly nodes?: ReadonlyArray<WalrusStorageNode>;
 	readonly aggregatorUrl?: string;
 	readonly publisherUrl?: string;
+	readonly uploadRelayUrl?: string;
 	readonly proxyUrl?: string;
 }
 
@@ -66,17 +67,18 @@ export interface KnownDeploymentBootResult {
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
 	/** Null only when the read/proxy URL itself is unresolved (no explicit
 	 *  `proxyUrl` override, registry proxy URL, or aggregator URL). Surfaces
-	 *  independently of `aggregatorUrl` / `publisherUrl` — distilled-doc
-	 *  invariant 15. */
+	 *  independently of `aggregatorUrl` / `publisherUrl` /
+	 *  `uploadRelayUrl` — distilled-doc invariant 15. */
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
 }
 
 /** Known-deployment registry — baked-in record per network. The
  *  on-chain ids default from the `@mysten/walrus` SDK package config
  *  (`{TESTNET,MAINNET}_WALRUS_PACKAGE_CONFIG`) so a caller only needs
- *  to supply `nodes`; the aggregator/publisher/proxy URLs are
+ *  to supply `nodes`; the aggregator/publisher/upload-relay/proxy URLs are
  *  devstack-owned (the SDK ships none). Devnet has no canonical SDK
  *  record today, so it keeps no id defaults. */
 const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
@@ -89,6 +91,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 			readonly exchangeIds?: ReadonlyArray<string>;
 			readonly aggregatorUrl?: string;
 			readonly publisherUrl?: string;
+			readonly uploadRelayUrl?: string;
 			readonly proxyUrl?: string;
 		}
 	>
@@ -103,6 +106,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 		exchangeIds: TESTNET_WALRUS_PACKAGE_CONFIG.exchangeIds,
 		aggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
 		publisherUrl: 'https://publisher.walrus-testnet.walrus.space',
+		uploadRelayUrl: 'https://upload-relay.testnet.walrus.space',
 		proxyUrl: 'https://aggregator.walrus-testnet.walrus.space',
 	},
 	mainnet: {
@@ -114,6 +118,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 		stakingPoolId: MAINNET_WALRUS_PACKAGE_CONFIG.stakingPoolId,
 		aggregatorUrl: 'https://aggregator.walrus.space',
 		publisherUrl: 'https://publisher.walrus.space',
+		uploadRelayUrl: 'https://upload-relay.mainnet.walrus.space',
 		proxyUrl: 'https://aggregator.walrus.space',
 	},
 	devnet: {
@@ -169,6 +174,7 @@ export const resolveKnownDeploymentOptions = (
 
 	const aggregatorUrl = opts.aggregatorUrl ?? reg?.aggregatorUrl ?? null;
 	const publisherUrl = opts.publisherUrl ?? reg?.publisherUrl ?? null;
+	const uploadRelayUrl = opts.uploadRelayUrl ?? reg?.uploadRelayUrl ?? null;
 	const proxyUrl = opts.proxyUrl ?? reg?.proxyUrl ?? aggregatorUrl ?? null;
 
 	// Invariant 15: surface null per individual URL when missing so the
@@ -185,6 +191,7 @@ export const resolveKnownDeploymentOptions = (
 		proxyUrl,
 		aggregatorUrl,
 		publisherUrl,
+		uploadRelayUrl,
 	};
 };
 

@@ -24,13 +24,20 @@ describe('walrus makeSnapshotable', () => {
 		}
 	});
 
-	it('local mode includes enabled publisher and aggregator service containers', () => {
+	it('local mode includes enabled publisher, aggregator, and upload-relay service containers', () => {
 		const snap = makeSnapshotable('local', 'app', 'main', 'walrus', 'sui:localnet', 2, [
 			'aggregator',
 			'publisher',
+			'upload-relay',
 		]);
 		const roles = (snap.managedContainers ?? []).map((c) => c.role);
-		expect(roles).toEqual(['storage-node-0', 'storage-node-1', 'aggregator', 'publisher']);
+		expect(roles).toEqual([
+			'storage-node-0',
+			'storage-node-1',
+			'aggregator',
+			'publisher',
+			'upload-relay',
+		]);
 	});
 
 	it('local mode subtree includes the deploy-output dir (rides the snapshot tar)', () => {

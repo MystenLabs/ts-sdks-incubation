@@ -48,6 +48,7 @@ export interface AppNetworkDeployment
 			"packageConfig": { readonly systemObjectId: string; readonly stakingPoolId: string; readonly exchangeIds?: ReadonlyArray<string> };
 			"proxyUrl": string | null;
 			"publisherUrl": string | null;
+			"uploadRelayUrl": string | null;
 			"walCoinType": string | null;
 			"walPackageId": string | null;
 			"walrusPackageId": string | null;

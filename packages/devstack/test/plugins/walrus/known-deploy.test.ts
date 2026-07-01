@@ -24,6 +24,7 @@ describe('walrus known deployment options', () => {
 
 		expect(resolved.publisherUrl).toBe('https://publisher.example');
 		expect(resolved.aggregatorUrl).toBeNull();
+		expect(resolved.uploadRelayUrl).toBeNull();
 		expect(resolved.proxyUrl).toBeNull();
 	});
 
@@ -37,5 +38,16 @@ describe('walrus known deployment options', () => {
 		expect(resolved.publisherUrl).toBe('https://publisher.example');
 		expect(resolved.aggregatorUrl).toBe('https://aggregator.example');
 		expect(resolved.proxyUrl).toBe('https://aggregator.example');
+	});
+
+	it('surfaces upload relay URL independently', () => {
+		const resolved = resolveKnownDeploymentOptions({
+			...REQUIRED,
+			uploadRelayUrl: 'https://upload-relay.example',
+		});
+
+		expect(resolved.uploadRelayUrl).toBe('https://upload-relay.example');
+		expect(resolved.aggregatorUrl).toBeNull();
+		expect(resolved.publisherUrl).toBeNull();
 	});
 });

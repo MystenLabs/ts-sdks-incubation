@@ -3,10 +3,10 @@
 //
 // Data sources & honesty:
 //   - Endpoint URLs come from `projection.endpoints` — the substrate registers
-//     `walrus-aggregator`, `walrus-publisher`, and per-node `walrus-node-<i>`
-//     entries. There is no separate registered `proxy` endpoint (the proxy URL
-//     is a codegen binding, not a projection endpoint), so "Proxy" renders an
-//     honest "not registered" state rather than a fabricated URL.
+//     `walrus-aggregator`, `walrus-publisher`, `walrus-upload-relay`, and per-node
+//     `walrus-node-<i>` entries. There is no separate registered `proxy` endpoint
+//     (the proxy URL is a codegen binding, not a projection endpoint), so "Proxy"
+//     renders an honest "not registered" state rather than a fabricated URL.
 //   - Storage epoch, cluster shard layout, and recent blobs are read directly
 //     from the node's Sui GraphQL endpoint (browser-direct, CORS-open) — no
 //     Walrus indexer is involved. `lib/walrus.ts` queries the on-chain Walrus

@@ -21,9 +21,9 @@
 //     1. `ctx.snapshotExtra`   — runtime/walrus/<name>/deploy/ subtree
 //                                 + storage-node managed containers.
 //     2. `ctx.codegen`         — `walrus-network` bindings.
-//     3. `ctx.endpoint` × (N+2) — per-node + aggregator + publisher.
+//     3. `ctx.endpoint` × (N+3) — per-node + aggregator + publisher + upload relay.
 //     4. `ctx.provides` walrus-state-registry          — local entry.
-//     5. `ctx.provides` endpoint-registry              — N+2 entries.
+//     5. `ctx.provides` endpoint-registry              — N+3 entries.
 //     6. `ctx.provides` package-registry               — `walrus.<name>`.
 //     7. `ctx.provides` coinType:<WAL fullCoinType>    — WAL faucet
 //                                                        strategy
@@ -74,6 +74,7 @@ import { makeSnapshotable, type WalrusSnapshotMode } from './snapshot.ts';
 import {
 	WALRUS_AGGREGATOR_ENDPOINT_NAME,
 	WALRUS_PUBLISHER_ENDPOINT_NAME,
+	WALRUS_UPLOAD_RELAY_ENDPOINT_NAME,
 	makeLocalRoutables,
 } from './routable.ts';
 import { WALRUS_STATE_REGISTRY_KEY, type WalrusStateEntry } from './registry-publish.ts';
@@ -105,6 +106,7 @@ export interface WalrusResolved {
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
 	readonly walFaucetStrategy: WalFaucetStrategy | null;
 	readonly walCoinType: string | null;
 }
@@ -304,6 +306,10 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 					boot.clientServices.publisher === null
 						? null
 						: yield* serviceUrl(WALRUS_PUBLISHER_ENDPOINT_NAME);
+				const uploadRelayUrl =
+					boot.clientServices.uploadRelay === null
+						? null
+						: yield* serviceUrl(WALRUS_UPLOAD_RELAY_ENDPOINT_NAME);
 
 				const resolvedValue: WalrusResolved = {
 					mode: 'local',
@@ -315,6 +321,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 					proxyUrl: aggregatorUrl,
 					aggregatorUrl,
 					publisherUrl,
+					uploadRelayUrl,
 					walFaucetStrategy: boot.walFaucetStrategy,
 					walCoinType: boot.walCoinType,
 				};
@@ -335,6 +342,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 				const clientServiceRoles = [
 					...(boot.clientServices.aggregator === null ? [] : ['aggregator' as const]),
 					...(boot.clientServices.publisher === null ? [] : ['publisher' as const]),
+					...(boot.clientServices.uploadRelay === null ? [] : ['upload-relay' as const]),
 				];
 				emitContributions(ctx, [
 					makeSnapshotable(
@@ -360,6 +368,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						proxyUrl: resolvedValue.proxyUrl,
 						aggregatorUrl: resolvedValue.aggregatorUrl,
 						publisherUrl: resolvedValue.publisherUrl,
+						uploadRelayUrl: resolvedValue.uploadRelayUrl,
 						nodes: resolvedValue.nodes,
 					}),
 					{
@@ -381,6 +390,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						containerApiPort: resolved.containerApiPort,
 						aggregator: boot.clientServices.aggregator,
 						publisher: boot.clientServices.publisher,
+						uploadRelay: boot.clientServices.uploadRelay,
 					}) as readonly RoutableDecl[]),
 				]);
 				return resolvedValue;
@@ -419,6 +429,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 					proxyUrl: resolved.proxyUrl,
 					aggregatorUrl: resolved.aggregatorUrl,
 					publisherUrl: resolved.publisherUrl,
+					uploadRelayUrl: resolved.uploadRelayUrl,
 					nodes: resolved.nodes,
 				},
 			}),
@@ -445,6 +456,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 					proxyUrl: resolved.proxyUrl,
 					aggregatorUrl: resolved.aggregatorUrl,
 					publisherUrl: resolved.publisherUrl,
+					uploadRelayUrl: resolved.uploadRelayUrl,
 					walFaucetStrategy: null,
 					walCoinType: null,
 				} satisfies WalrusResolved;
@@ -475,6 +487,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 						proxyUrl: resolvedValue.proxyUrl,
 						aggregatorUrl: resolvedValue.aggregatorUrl,
 						publisherUrl: resolvedValue.publisherUrl,
+						uploadRelayUrl: resolvedValue.uploadRelayUrl,
 						nodes: resolvedValue.nodes,
 					}),
 				);

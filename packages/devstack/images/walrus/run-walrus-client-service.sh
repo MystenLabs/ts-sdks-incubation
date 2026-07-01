@@ -10,7 +10,7 @@ fi
 shift
 
 case "$MODE" in
-	aggregator|publisher) ;;
+	aggregator|publisher|upload-relay) ;;
 	*)
 		echo "run-walrus-client-service: unsupported mode '$MODE'" >&2
 		exit 2
@@ -25,6 +25,7 @@ CLIENT_KEYSTORE_SOURCE="$WORKING_DIR/sui_client.keystore"
 CLIENT_CONFIG_TARGET="/root/.config/walrus/client_config.yaml"
 CLIENT_WALLET_TARGET="/root/.sui/sui_config/client.yaml"
 CLIENT_KEYSTORE_TARGET="/root/.sui/sui_config/sui.keystore"
+UPLOAD_RELAY_CONFIG_TARGET="/root/.config/walrus/walrus_upload_relay_config.yaml"
 
 mkdir -p /root/.sui/sui_config /root/.config/walrus /var/walrus
 
@@ -76,26 +77,57 @@ if [ -n "${SUI_RPC_URL:-}" ]; then
 		echo "run-walrus-client-service: wallet config did not rewrite rpc to ${SUI_RPC_URL}" >&2
 		exit 3
 	fi
+	if grep -Eq '^[[:space:]]*rpc_urls:[[:space:]]*\[\][[:space:]]*$' "$CLIENT_CONFIG_TARGET"; then
+		sed -i -E \
+			"s|^([[:space:]]*)rpc_urls:[[:space:]]*\[\][[:space:]]*$|\\1rpc_urls:\\
+\\1- ${escaped_sui_rpc_url}|" \
+			"$CLIENT_CONFIG_TARGET"
+	fi
+	if ! grep -Fq -- "- ${SUI_RPC_URL}" "$CLIENT_CONFIG_TARGET"; then
+		echo "run-walrus-client-service: Walrus config did not rewrite rpc_urls to ${SUI_RPC_URL}" >&2
+		exit 3
+	fi
 fi
-
-cmd=(
-	/opt/walrus/bin/walrus
-	"$MODE"
-	--bind-address "$BIND_ADDRESS"
-	--config "$CLIENT_CONFIG_TARGET"
-	--wallet "$CLIENT_WALLET_TARGET"
-)
 
 case "$MODE" in
 	aggregator)
+		cmd=(
+			/opt/walrus/bin/walrus
+			"$MODE"
+			--bind-address "$BIND_ADDRESS"
+			--config "$CLIENT_CONFIG_TARGET"
+			--wallet "$CLIENT_WALLET_TARGET"
+		)
 		if [ -n "${SUI_RPC_URL:-}" ]; then
 			cmd+=(--rpc-url "$SUI_RPC_URL")
 		fi
 		;;
 	publisher)
+		cmd=(
+			/opt/walrus/bin/walrus
+			"$MODE"
+			--bind-address "$BIND_ADDRESS"
+			--config "$CLIENT_CONFIG_TARGET"
+			--wallet "$CLIENT_WALLET_TARGET"
+		)
 		sub_wallets_dir="/var/walrus/${MODE}-sub-wallets"
 		mkdir -p "$sub_wallets_dir"
 		cmd+=(--sub-wallets-dir "$sub_wallets_dir")
+		;;
+	upload-relay)
+		cat > "$UPLOAD_RELAY_CONFIG_TARGET" <<-EOF
+		tip_config: !no_tip
+		tx_freshness_threshold_secs: 36000
+		tx_max_future_threshold:
+		  secs: 30
+		  nanos: 0
+		EOF
+		cmd=(
+			/opt/walrus/bin/walrus-upload-relay
+			--walrus-config "$CLIENT_CONFIG_TARGET"
+			--server-address "$BIND_ADDRESS"
+			--relay-config "$UPLOAD_RELAY_CONFIG_TARGET"
+		)
 		;;
 esac
 

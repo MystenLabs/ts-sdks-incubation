@@ -7,7 +7,7 @@
 //     `walrus-deploy` wrote; without them, a cached "walrus is already
 //     deployed" artifact cannot be honored on resume.
 //   - Local cluster: N storage-node containers plus enabled release
-//     publisher/aggregator service containers are declared as managed
+//     publisher/aggregator/upload-relay service containers are declared as managed
 //     containers; runtime adapter pauses then `docker commit`. Per-role
 //     labels keep every committed layer distinct on restore.
 //   - Known-deployment: no containers, no subtrees. The shape still
@@ -21,6 +21,7 @@
 import { Effect } from 'effect';
 
 import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snapshotable.ts';
+import type { WalrusClientServiceRole } from './client-services.ts';
 
 /** Discriminator passed to `makeSnapshotable` — narrower than the
  *  full mode union because the snapshot shape only cares about
@@ -43,7 +44,7 @@ export const makeSnapshotable = (
 	walrusName: string,
 	network: string,
 	nodeCount = 1,
-	clientServiceRoles: ReadonlyArray<'aggregator' | 'publisher'> = [],
+	clientServiceRoles: ReadonlyArray<WalrusClientServiceRole> = [],
 ): SnapshotableDecl => {
 	const labels = (role: string): ContainerLabelTuple => ({
 		app,
