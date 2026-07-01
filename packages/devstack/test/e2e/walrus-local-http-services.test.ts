@@ -1,15 +1,18 @@
-// Real local Walrus publisher/aggregator smoke.
+// Real local Walrus publisher/aggregator/upload-relay smoke.
 //
 // Unlike private-content-boot.test.ts this deliberately does NOT set
 // WALRUS_CARGO_IMAGE_OVERRIDE. The goal is to prove the release-provided
-// `walrus publisher` and `walrus aggregator` containers can publish/read through
-// their routed HTTP endpoints and reach the local storage-node committee.
+// `walrus publisher`, `walrus aggregator`, and `walrus-upload-relay` containers
+// can publish/read through their routed HTTP endpoints and reach the local
+// storage-node committee.
 
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { WalrusClient } from '@mysten/walrus';
 import { Effect } from 'effect';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { readStackEngine } from '../../src/api/define-devstack.ts';
-import { defineDevstack, sui, walrus } from '../../src/index.ts';
+import { account, defineDevstack, sui, walCoin, walrus } from '../../src/index.ts';
 import { WALRUS_ENTRYPOINTS } from '../../src/plugins/walrus/routable.ts';
 import {
 	dockerReachable,
@@ -17,6 +20,7 @@ import {
 	removeManagedContainersForAppStack,
 } from './docker-prune.ts';
 import { runBoot, type BootScopeContext } from './boot-config-impl.ts';
+import { fundAddress, suiClientOf } from './snapshot-matrix/clients.ts';
 
 const APP = 'walrus-http-smoke';
 const STACK = 'walrus-http-smoke';
@@ -24,8 +28,15 @@ const KEEP_CONTAINERS = process.env.WALRUS_HTTP_SMOKE_KEEP_CONTAINERS === '1';
 
 interface WalrusHttpResolved {
 	readonly mode: 'local' | 'known';
+	readonly packageConfig: {
+		readonly systemObjectId: string;
+		readonly stakingPoolId: string;
+		readonly exchangeIds?: ReadonlyArray<string>;
+	};
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
+	readonly walCoinType: string | null;
 }
 
 const ensureRealWalrusImage = (): void => {
@@ -70,7 +81,10 @@ const extractBlobId = (response: unknown): string => {
 	);
 };
 
-const singleContainer = async (ctx: BootScopeContext, role: 'aggregator' | 'publisher') => {
+const singleContainer = async (
+	ctx: BootScopeContext,
+	role: 'aggregator' | 'publisher' | 'upload-relay',
+) => {
 	const handles = await Effect.runPromise(
 		ctx.containerRuntime.inspectByLabels({
 			app: APP,
@@ -97,8 +111,12 @@ const requireEndpoint = (label: string, url: string | null): string => {
 	return url;
 };
 
-const waitForRoutedStatus = async (label: string, baseUrl: string): Promise<void> => {
-	const url = new URL('/status', baseUrl);
+const waitForRoutedStatus = async (
+	label: string,
+	baseUrl: string,
+	path = '/status',
+): Promise<void> => {
+	const url = new URL(path, baseUrl);
 	const deadline = Date.now() + 30_000;
 	let last = 'no attempts';
 	while (Date.now() < deadline) {
@@ -128,7 +146,47 @@ const readBlobThroughAggregator = async (baseUrl: string, blobId: string): Promi
 	throw new Error(`walrus-http-smoke: routed aggregator GET never succeeded: ${last}`);
 };
 
-describe('walrus local HTTP publisher/aggregator @e2e', () => {
+const writeBlobThroughUploadRelay = async (
+	ctx: BootScopeContext,
+	walrusResolved: WalrusHttpResolved,
+	uploadRelayUrl: string,
+	payload: string,
+): Promise<{ readonly blobId: string; readonly blobObjectId: string }> => {
+	const suiClient = suiClientOf(ctx);
+	const signer = Ed25519Keypair.generate();
+	await Effect.runPromise(
+		fundAddress(ctx, suiClient, signer.toSuiAddress(), {
+			suiAmount: 5_000_000_000n,
+			walAmount: 2_000_000_000n,
+		}),
+	);
+
+	const client = new WalrusClient({
+		suiClient,
+		packageConfig: {
+			systemObjectId: walrusResolved.packageConfig.systemObjectId,
+			stakingPoolId: walrusResolved.packageConfig.stakingPoolId,
+			...(walrusResolved.packageConfig.exchangeIds
+				? { exchangeIds: [...walrusResolved.packageConfig.exchangeIds] }
+				: {}),
+		},
+		storageNodeUrlScheme: 'https',
+		uploadRelay: {
+			host: uploadRelayUrl,
+		},
+	});
+
+	const written = await client.writeBlob({
+		blob: new TextEncoder().encode(payload),
+		deletable: true,
+		epochs: 3,
+		signer,
+	});
+
+	return { blobId: written.blobId, blobObjectId: written.blobObject.id };
+};
+
+describe('walrus local HTTP publisher/aggregator/upload-relay @e2e', () => {
 	afterAll(() => {
 		if (KEEP_CONTAINERS) return;
 		removeManagedContainersForAppStack(APP, STACK);
@@ -146,9 +204,17 @@ describe('walrus local HTTP publisher/aggregator @e2e', () => {
 
 		const localnet = sui();
 		const walrusCluster = walrus({ local: { nodeCount: 4 } });
+		const wal = walCoin(walrusCluster);
+		const bank = account('bank', {
+			kind: 'ephemeral',
+			funding: [
+				{ coin: 'sui', amount: 1_000_000_000_000n },
+				{ coin: wal, amount: 10_000_000_000n },
+			],
+		});
 		const engine = readStackEngine(
 			defineDevstack({
-				members: [localnet, walrusCluster],
+				members: [localnet, walrusCluster, wal, bank],
 				stackName: STACK,
 			}),
 		);
@@ -168,10 +234,15 @@ describe('walrus local HTTP publisher/aggregator @e2e', () => {
 						expect(walrusResolved.mode).toBe('local');
 						const publisherBaseUrl = requireEndpoint('publisher', walrusResolved.publisherUrl);
 						const aggregatorBaseUrl = requireEndpoint('aggregator', walrusResolved.aggregatorUrl);
+						const uploadRelayBaseUrl = requireEndpoint(
+							'upload relay',
+							walrusResolved.uploadRelayUrl,
+						);
 
 						const payload = `walrus-http-smoke ${Date.now()} ${'x'.repeat(64)}`;
 						const publisher = await singleContainer(ctx, 'publisher');
 						await singleContainer(ctx, 'aggregator');
+						await singleContainer(ctx, 'upload-relay');
 
 						const internalHealth = await Effect.runPromise(
 							ctx.containerRuntime.exec(publisher, [
@@ -188,6 +259,7 @@ describe('walrus local HTTP publisher/aggregator @e2e', () => {
 
 						await waitForRoutedStatus('publisher', publisherBaseUrl);
 						await waitForRoutedStatus('aggregator', aggregatorBaseUrl);
+						await waitForRoutedStatus('upload relay', uploadRelayBaseUrl, '/v1/tip-config');
 
 						const publisherUrl = new URL('/v1/blobs', publisherBaseUrl);
 						publisherUrl.searchParams.set('epochs', '3');
@@ -206,6 +278,18 @@ describe('walrus local HTTP publisher/aggregator @e2e', () => {
 						const blobId = extractBlobId(JSON.parse(publishBody) as unknown);
 
 						expect(await readBlobThroughAggregator(aggregatorBaseUrl, blobId)).toBe(payload);
+
+						const relayPayload = `walrus-http-smoke upload-relay ${Date.now()} ${'y'.repeat(64)}`;
+						const relayWrite = await writeBlobThroughUploadRelay(
+							ctx,
+							walrusResolved,
+							uploadRelayBaseUrl,
+							relayPayload,
+						);
+						expect(relayWrite.blobObjectId).toMatch(/^0x[0-9a-f]+$/i);
+						expect(await readBlobThroughAggregator(aggregatorBaseUrl, relayWrite.blobId)).toBe(
+							relayPayload,
+						);
 						exercisedHttpServices = true;
 					},
 					catch: (cause) => cause,

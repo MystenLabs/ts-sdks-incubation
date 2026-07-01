@@ -8,7 +8,7 @@
 #
 # Two binary sets baked in:
 #
-#   1. walrus / walrus-deploy / walrus-node — from the walrus release
+#   1. walrus / walrus-deploy / walrus-node / walrus-upload-relay — from the walrus release
 #      tarball at WALRUS_VERSION.
 #
 #   2. sui binary — from the sui release tarball at SUI_VERSION. The
@@ -26,9 +26,10 @@
 #     swaps SUI for WAL, and execs `walrus-node run`.
 #
 #   - /opt/walrus/scripts/run-walrus-client-service.sh — long-running
-#     release CLI entrypoint for `walrus aggregator` and `walrus publisher`.
-#     Relocates a deploy-generated wallet and execs the selected `walrus`
-#     subcommand.
+#     release CLI entrypoint for `walrus aggregator`, `walrus publisher`,
+#     and `walrus-upload-relay`.
+#     Relocates deploy-generated client config and execs the selected
+#     service command.
 #
 # `ubuntu:24.04` because the walrus + sui binaries link against
 # glibc 2.38+; debian:bookworm (glibc 2.36) fails at runtime.
@@ -59,7 +60,7 @@ RUN set -eux; \
 	tar -xzf /tmp/walrus.tgz -C /tmp/walrus-unpack; \
 	find /tmp/walrus-unpack -maxdepth 2 -type f -executable -exec mv {} /opt/walrus/bin/ \; ; \
 	chmod +x /opt/walrus/bin/*; \
-	for bin in walrus walrus-node walrus-deploy; do \
+	for bin in walrus walrus-node walrus-deploy walrus-upload-relay; do \
 		test -x "/opt/walrus/bin/${bin}" || { \
 			echo "walrus release ${WALRUS_VERSION} missing required binary ${bin}" >&2; \
 			ls -la /opt/walrus/bin >&2; \
@@ -75,6 +76,7 @@ RUN set -eux; \
 	/opt/walrus/bin/walrus --version; \
 	/opt/walrus/bin/walrus aggregator --help >/dev/null; \
 	/opt/walrus/bin/walrus publisher --help >/dev/null; \
+	/opt/walrus/bin/walrus-upload-relay --help >/dev/null; \
 	/opt/walrus/bin/walrus-node --help >/dev/null; \
 	/opt/walrus/bin/walrus-deploy --help >/dev/null
 
@@ -109,6 +111,7 @@ RUN set -eux; \
 RUN ln -sf /opt/walrus/bin/walrus /usr/local/bin/walrus \
 	&& ln -sf /opt/walrus/bin/walrus-node /usr/local/bin/walrus-node \
 	&& ln -sf /opt/walrus/bin/walrus-deploy /usr/local/bin/walrus-deploy \
+	&& ln -sf /opt/walrus/bin/walrus-upload-relay /usr/local/bin/walrus-upload-relay \
 	&& ln -sf /root/sui_bin/sui /usr/local/bin/sui
 
 RUN mkdir -p /opt/walrus/scripts /opt/walrus/outputs /var/walrus/storage
@@ -126,10 +129,11 @@ STOPSIGNAL SIGINT
 # their release CLI default unless overridden by env.
 EXPOSE 9185
 EXPOSE 31415
+EXPOSE 3000
 
 # Default to storage-node entrypoint. The deploy one-shot overrides
 # via `runOneShot` argv: argv[0] == 'deploy' runs `deploy-walrus.sh`.
-# `aggregator` and `publisher` run the release-provided client services;
+# `aggregator`, `publisher`, and `upload-relay` run release-provided client services;
 # any other command falls back to the storage-node entrypoint.
-ENTRYPOINT ["/bin/bash", "-c", "case \"${1:-}\" in deploy) shift; exec /opt/walrus/scripts/deploy-walrus.sh \"$@\" ;; aggregator|publisher) mode=\"$1\"; shift; exec /opt/walrus/scripts/run-walrus-client-service.sh \"$mode\" \"$@\" ;; *) exec /opt/walrus/scripts/run-walrus.sh ;; esac", "--"]
+ENTRYPOINT ["/bin/bash", "-c", "case \"${1:-}\" in deploy) shift; exec /opt/walrus/scripts/deploy-walrus.sh \"$@\" ;; aggregator|publisher|upload-relay) mode=\"$1\"; shift; exec /opt/walrus/scripts/run-walrus-client-service.sh \"$mode\" \"$@\" ;; *) exec /opt/walrus/scripts/run-walrus.sh ;; esac", "--"]
 CMD []

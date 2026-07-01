@@ -45,9 +45,10 @@ describe('walrus cargo image resolver', () => {
 		expect(dockerfile).toContain('amd64) WALRUS_PLATFORM=ubuntu-x86_64');
 		expect(dockerfile).toContain('EXPECTED_FILE_ARCH');
 		expect(dockerfile).toContain('is not native for TARGETARCH=');
-		expect(dockerfile).toContain('for bin in walrus walrus-node walrus-deploy');
+		expect(dockerfile).toContain('for bin in walrus walrus-node walrus-deploy walrus-upload-relay');
 		expect(dockerfile).toContain('/opt/walrus/bin/walrus aggregator --help');
 		expect(dockerfile).toContain('/opt/walrus/bin/walrus publisher --help');
+		expect(dockerfile).toContain('/opt/walrus/bin/walrus-upload-relay --help');
 		expect(dockerfile).toContain('run-walrus-client-service.sh');
 		expect(dockerfile).toContain('STOPSIGNAL SIGINT');
 		expect(dockerfile).not.toContain('cargo build');

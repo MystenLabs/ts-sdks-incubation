@@ -3,8 +3,8 @@
 //
 // Walrus's contribution is the SDK-ready `packageConfig` shape that the
 // `@mysten/walrus` SDK consumes — `{systemObjectId, stakingPoolId,
-// exchangeIds}` — plus the proxy / aggregator / publisher URLs for HTTP
-// consumers. Walrus is single-instance per stack, so it exports `walrus`
+// exchangeIds}` — plus the proxy / aggregator / publisher / upload-relay URLs
+// for HTTP consumers. Walrus is single-instance per stack, so it exports `walrus`
 // directly (a FLAT bucket, not name-keyed like coin/seal).
 //
 // ONE declaration, TWO derivations (see `contracts/config-bindings.ts`):
@@ -49,6 +49,7 @@ export interface WalrusBindings {
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
 	readonly nodes: ReadonlyArray<WalrusNodeBinding>;
 }
 
@@ -65,6 +66,7 @@ export interface MakeCodegenableInputs {
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
 	readonly nodes: ReadonlyArray<WalrusNodeBinding>;
 }
 
@@ -80,6 +82,7 @@ export interface WalrusKnownConfig {
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
 	readonly nodes: ReadonlyArray<WalrusNodeBinding>;
 }
 
@@ -120,7 +123,8 @@ const walrusConfigBindings = (
 			| 'walCoinType'
 			| 'proxyUrl'
 			| 'aggregatorUrl'
-			| 'publisherUrl',
+			| 'publisherUrl'
+			| 'uploadRelayUrl',
 		live: (i: MakeCodegenableInputs) => JsonValue,
 	): ConfigBinding<MakeCodegenableInputs> =>
 		known !== undefined
@@ -174,6 +178,7 @@ const walrusConfigBindings = (
 		field('proxyUrl', (i) => i.proxyUrl),
 		field('aggregatorUrl', (i) => i.aggregatorUrl),
 		field('publisherUrl', (i) => i.publisherUrl),
+		field('uploadRelayUrl', (i) => i.uploadRelayUrl),
 		nodesBinding,
 	];
 	return {

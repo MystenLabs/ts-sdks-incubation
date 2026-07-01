@@ -10,7 +10,10 @@ import {
 	DEFAULT_SUI_VERSION,
 	DEFAULT_WALRUS_REF,
 } from '../../../src/plugins/walrus/bootstrap-assets/cargo-image.ts';
-import { DEFAULT_WALRUS_CLIENT_SERVICE_PORT } from '../../../src/plugins/walrus/client-services.ts';
+import {
+	DEFAULT_WALRUS_CLIENT_SERVICE_PORT,
+	DEFAULT_WALRUS_UPLOAD_RELAY_SERVICE_PORT,
+} from '../../../src/plugins/walrus/client-services.ts';
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 
 describe('resolveLocalClusterOptions', () => {
@@ -24,6 +27,7 @@ describe('resolveLocalClusterOptions', () => {
 		expect(r.epochDuration).toBe('24h');
 		expect(r.aggregator).toEqual({ port: DEFAULT_WALRUS_CLIENT_SERVICE_PORT });
 		expect(r.publisher).toEqual({ port: DEFAULT_WALRUS_CLIENT_SERVICE_PORT });
+		expect(r.uploadRelay).toEqual({ port: DEFAULT_WALRUS_UPLOAD_RELAY_SERVICE_PORT });
 	});
 
 	it('preserves user-supplied release versions for image resolution', () => {
@@ -57,14 +61,20 @@ describe('resolveLocalClusterOptions', () => {
 			'readyTimeoutMs',
 			'shards',
 			'suiVersion',
+			'uploadRelay',
 			'version',
 		]);
 	});
 
-	it('supports disabling the local publisher/aggregator endpoints', () => {
-		const r = resolveLocalClusterOptions({ aggregator: false, publisher: false });
+	it('supports disabling the local publisher/aggregator/upload-relay endpoints', () => {
+		const r = resolveLocalClusterOptions({
+			aggregator: false,
+			publisher: false,
+			uploadRelay: false,
+		});
 		expect(r.aggregator).toBeNull();
 		expect(r.publisher).toBeNull();
+		expect(r.uploadRelay).toBeNull();
 	});
 
 	it('preserves service ports', () => {
@@ -73,8 +83,10 @@ describe('resolveLocalClusterOptions', () => {
 			publisher: {
 				port: 40101,
 			},
+			uploadRelay: { port: 40102 },
 		});
 		expect(r.aggregator).toEqual({ port: 40100 });
 		expect(r.publisher).toEqual({ port: 40101 });
+		expect(r.uploadRelay).toEqual({ port: 40102 });
 	});
 });

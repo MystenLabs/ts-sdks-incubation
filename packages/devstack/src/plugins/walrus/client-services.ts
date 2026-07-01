@@ -1,8 +1,9 @@
 // Walrus local client-service lifecycle.
 //
-// These are the release-provided `walrus aggregator` and `walrus publisher`
-// subcommands, wrapped only enough to feed them the local deploy outputs and
-// make them routable through devstack.
+// These are the release-provided `walrus aggregator` / `walrus publisher`
+// subcommands plus the standalone `walrus-upload-relay` binary, wrapped only
+// enough to feed them the local deploy outputs and make them routable through
+// devstack.
 
 import { Effect, Scope } from 'effect';
 
@@ -23,6 +24,7 @@ import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 
 export const DEFAULT_WALRUS_CLIENT_SERVICE_PORT = 31_415;
+export const DEFAULT_WALRUS_UPLOAD_RELAY_SERVICE_PORT = 3_000;
 export const DEFAULT_WALRUS_CLIENT_SERVICE_READY_TIMEOUT_MS = 60_000;
 export const DEFAULT_WALRUS_CLIENT_SERVICE_STOP_GRACE_SECONDS = 10;
 export const WALRUS_CLIENT_SERVICE_STOP_SIGNAL = 'SIGINT';
@@ -30,7 +32,7 @@ export const WALRUS_CLIENT_CONFIG_FILE = 'client_config.yaml';
 export const WALRUS_CLIENT_WALLET_FILE = 'sui_client.yaml';
 export const WALRUS_CLIENT_KEYSTORE_FILE = 'sui_client.keystore';
 
-export type WalrusClientServiceRole = 'aggregator' | 'publisher';
+export type WalrusClientServiceRole = 'aggregator' | 'publisher' | 'upload-relay';
 
 export interface WalrusClientServiceOptions {
 	readonly port: number;
@@ -45,6 +47,7 @@ export interface WalrusClientService {
 export interface WalrusClientServices {
 	readonly aggregator: WalrusClientService | null;
 	readonly publisher: WalrusClientService | null;
+	readonly uploadRelay: WalrusClientService | null;
 }
 
 export interface StartWalrusClientServicesSpec {
@@ -54,10 +57,12 @@ export interface StartWalrusClientServicesSpec {
 	readonly images: {
 		readonly aggregator: ImageRef | null;
 		readonly publisher: ImageRef | null;
+		readonly uploadRelay: ImageRef | null;
 	};
 	readonly options: {
 		readonly aggregator: WalrusClientServiceOptions | null;
 		readonly publisher: WalrusClientServiceOptions | null;
+		readonly uploadRelay: WalrusClientServiceOptions | null;
 	};
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
@@ -98,6 +103,9 @@ export const walrusClientServiceConfigHash = (parts: {
 	].join('|');
 
 const SERVICE_READY_PROBE_INTERVAL_MS = 500;
+
+const walrusClientServiceReadyPath = (role: WalrusClientServiceRole): string =>
+	role === 'upload-relay' ? '/v1/tip-config' : '/status';
 
 export const startWalrusClientServices = (
 	runtime: ContainerRuntime,
@@ -180,6 +188,7 @@ export const startWalrusClientServices = (
 				yield* setCurrentPluginPhase(
 					`waiting for Walrus ${role} HTTP status on 127.0.0.1:${options.port}`,
 				);
+				const readyPath = walrusClientServiceReadyPath(role);
 				yield* waitForProbe({
 					label: `walrus.${role}`,
 					timeoutMs: readyTimeout,
@@ -189,7 +198,7 @@ export const startWalrusClientServices = (
 							.exec(handle, [
 								'sh',
 								'-c',
-								`curl -fsS --max-time 2 http://127.0.0.1:${options.port}/status >/dev/null`,
+								`curl -fsS --max-time 2 http://127.0.0.1:${options.port}${readyPath} >/dev/null`,
 							])
 							.pipe(Effect.map(exitCodeProbeResult)),
 				}).pipe(
@@ -198,7 +207,7 @@ export const startWalrusClientServices = (
 							return walrusPluginError(
 								role,
 								`walrus ${role} never became ready within ${readyTimeout}ms ` +
-									`(container=${containerName}, probe=http://127.0.0.1:${options.port}/status).`,
+									`(container=${containerName}, probe=http://127.0.0.1:${options.port}${readyPath}).`,
 								{ cause: cause.lastError ?? cause.lastNotReady ?? cause },
 							);
 						}
@@ -213,7 +222,7 @@ export const startWalrusClientServices = (
 				return { role, containerName, containerPort: options.port };
 			});
 
-		const [aggregator, publisher] = yield* Effect.all(
+		const [aggregator, publisher, uploadRelay] = yield* Effect.all(
 			[
 				spec.options.aggregator === null || spec.images.aggregator === null
 					? Effect.succeed(null)
@@ -221,9 +230,12 @@ export const startWalrusClientServices = (
 				spec.options.publisher === null || spec.images.publisher === null
 					? Effect.succeed(null)
 					: startOne('publisher', spec.images.publisher, spec.options.publisher),
+				spec.options.uploadRelay === null || spec.images.uploadRelay === null
+					? Effect.succeed(null)
+					: startOne('upload-relay', spec.images.uploadRelay, spec.options.uploadRelay),
 			],
 			{ concurrency: 'unbounded' },
 		);
 
-		return { aggregator, publisher };
+		return { aggregator, publisher, uploadRelay };
 	});

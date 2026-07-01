@@ -30,6 +30,7 @@ export type WalrusPhase =
 	| 'deploy'
 	| 'aggregator'
 	| 'publisher'
+	| 'upload-relay'
 	| 'exchange'
 	| 'storage-node'
 	| 'proxy'

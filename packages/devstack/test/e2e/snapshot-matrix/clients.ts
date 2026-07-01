@@ -40,6 +40,7 @@ export interface WalrusResolvedLite {
 	readonly nodes: ReadonlyArray<{ readonly rpcUrl: string }>;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
+	readonly uploadRelayUrl: string | null;
 	readonly walCoinType: string | null;
 }
 

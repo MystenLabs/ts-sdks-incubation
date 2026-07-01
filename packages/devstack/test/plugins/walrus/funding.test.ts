@@ -26,6 +26,7 @@ const fakeWalrusResolved: WalrusResolved = {
 	proxyUrl: 'http://walrus.localhost',
 	aggregatorUrl: 'http://walrus.localhost',
 	publisherUrl: 'http://walrus.localhost',
+	uploadRelayUrl: 'http://walrus.localhost',
 	walFaucetStrategy: { usesAccountSigner: true, request: () => Effect.void },
 	walCoinType: '0xfeed::wal::WAL',
 };
