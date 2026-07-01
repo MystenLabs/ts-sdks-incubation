@@ -1,5 +1,11 @@
 # @mysten-incubation/devstack
 
+## 0.7.0
+
+### Minor Changes
+
+- 03f646f: Add Walrus upload relay support.
+
 ## 0.6.0
 
 ### Minor Changes
