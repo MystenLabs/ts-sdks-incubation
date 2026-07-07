@@ -192,18 +192,29 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 				},
 				resolveAccounts: () => Effect.succeed([fakeAccount]),
 				routerFrontedUrl: 'http://api.app.localhost:6173',
-				routedAppOrigin: null,
+				routedAppOrigin: 'http://dev.app.localhost:5175',
 			};
 
 			const value = await Effect.runPromise(
-				Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
-					Effect.provide(NodeFileSystem.layer),
-				),
+				Effect.scoped(
+					acquireWallet(
+						{
+							accounts: WALLET_ACCOUNTS_ALL,
+							allowedOrigins: ['http://localhost:5173'],
+						},
+						ctx,
+					),
+				).pipe(Effect.provide(NodeFileSystem.layer)),
 			);
 
 			expect(allocation).toEqual({ preferred: undefined, probeHost: '0.0.0.0' });
 			expect(value.server.url).toBe('http://0.0.0.0:0');
 			expect(value.url).toBe('http://api.app.localhost:6173');
+			expect(value.connection.allowedOrigins).toEqual([
+				'http://dev.app.localhost:5175',
+				'http://localhost:5173',
+				'http://*.app.localhost:5175',
+			]);
 		} finally {
 			rmSync(stateRoot, { recursive: true, force: true });
 		}

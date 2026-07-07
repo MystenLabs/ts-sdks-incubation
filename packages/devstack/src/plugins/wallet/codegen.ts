@@ -23,8 +23,8 @@
 //     the world-readable `deployment.json`). It stays in its `0o600`
 //     side-channel file (see `pairing.ts:tokenPath`); the Vite `load`
 //     hook runs in Node and reads it by path. Only the NON-secret
-//     connection fields (`walletUrl`, `network`, `protocolPaths`) ride
-//     `values`.
+//     connection fields (`walletUrl`, `network`, `allowedOrigins`,
+//     `protocolPaths`) ride `values`.
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
@@ -39,20 +39,24 @@ import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
  *  envelope's `values['dev-wallet']` channel — NEVER a generated file, and
  *  NEVER the secret token (that stays in the `0o600` side-channel).
  *
- *    - `walletUrl`     : the wallet HTTP server's URL (router-fronted
- *                        host form when available, direct-loopback
- *                        fallback otherwise).
- *    - `network`       : the network name the wallet's accounts are
- *                        scoped to (e.g. `localnet`). The dev wallet
- *                        derives the wallet-standard chain (`sui:<network>`)
- *                        from it at the wallet-standard boundary; devstack
- *                        itself never carries the `sui:`-prefixed form.
- *    - `protocolPaths` : path constants the adapter reads. Mirrored here
- *                        so the adapter doesn't depend on a separate import.
+ *    - `walletUrl`      : the wallet HTTP server's URL (router-fronted
+ *                         host form when available, direct-loopback
+ *                         fallback otherwise).
+ *    - `network`        : the network name the wallet's accounts are
+ *                         scoped to (e.g. `localnet`). The dev wallet
+ *                         derives the wallet-standard chain (`sui:<network>`)
+ *                         from it at the wallet-standard boundary; devstack
+ *                         itself never carries the `sui:`-prefixed form.
+ *    - `allowedOrigins` : stack-scoped browser origins the wallet server
+ *                         accepts. Non-secret; used only to explain a
+ *                         forbidden raw-loopback page load in the browser.
+ *    - `protocolPaths`  : path constants the adapter reads. Mirrored here
+ *                         so the adapter doesn't depend on a separate import.
  */
 export interface DevWalletConnection {
 	readonly walletUrl: string;
 	readonly network: string;
+	readonly allowedOrigins: ReadonlyArray<string>;
 	readonly protocolPaths: {
 		readonly health: string;
 		readonly accounts: string;
