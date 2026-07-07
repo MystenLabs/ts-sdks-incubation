@@ -90,7 +90,9 @@ export const ensureNoLiveSupervisor = (
 ): Effect.Effect<void, CliSupervisorLiveError> =>
 	Effect.gen(function* () {
 		const presence = yield* probeSupervisorPresence(identity.rosterFile).pipe(
-			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
+			Effect.catch(() =>
+				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
+			),
 		);
 		if (presence.live) {
 			return yield* Effect.fail(

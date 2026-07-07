@@ -197,10 +197,13 @@ const installLiveSupervisorRoster = (params: {
 	readonly stackRoot: string;
 	readonly app: string;
 	readonly stack: string;
+	readonly graphInputId: string;
 }): Effect.Effect<void, unknown, Scope.Scope> =>
 	Effect.gen(function* () {
 		const paths = rosterPathsFor(params.stackRoot);
-		const claimed = yield* claim(paths);
+		const claimed = yield* claim(paths, 'normal', undefined, {
+			graphInputId: params.graphInputId,
+		});
 		if (!claimed.soleHolder) {
 			yield* release(paths).pipe(Effect.catch(() => Effect.void));
 			return yield* Effect.fail(
@@ -384,10 +387,12 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 					stackRoot: stackPaths.stackRoot,
 					handle: h.supervisor,
 				});
+				const bootGraphInput = yield* computeGraphInput;
 				yield* installLiveSupervisorRoster({
 					stackRoot: stackPaths.stackRoot,
 					app: String(identityValue.app),
 					stack: String(identityValue.stack),
+					graphInputId: bootGraphInput.graphInputId,
 				});
 				const rendererEvents = yield* Queue.unbounded<EngineEvent>();
 				const renderer = makeTuiSurface({

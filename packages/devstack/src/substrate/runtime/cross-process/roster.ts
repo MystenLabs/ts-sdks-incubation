@@ -201,6 +201,7 @@ export const claim = (
 	paths: RosterPaths,
 	intent: 'normal' | 'snapshot' = 'normal',
 	policy: RosterSweepPolicy = DEFAULT_SWEEP_POLICY,
+	metadata: { readonly graphInputId?: string } = {},
 ): Effect.Effect<ClaimResult, RosterError | import('./stack-lock.ts').StackLockError> =>
 	withStackLock(
 		paths,
@@ -209,7 +210,7 @@ export const claim = (
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_ROSTER)),
 			);
 			const { swept, evicted } = yield* sweepStaleHolders(initial, policy);
-			const self: RosterHolder = { ...ownHolder(intent) };
+			const self: RosterHolder = { ...ownHolder(intent), ...metadata };
 			const next: RosterDocument = {
 				version: 1,
 				holders: [...swept.holders, self],

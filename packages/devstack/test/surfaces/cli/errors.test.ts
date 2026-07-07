@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	CliConfigNotFoundError,
 	CliInternalError,
+	CliLiveGraphMismatchError,
 	CliSnapshotAmbiguousError,
 	CliUsageError,
 	exitCodeFor,
@@ -32,6 +33,19 @@ describe('exitCodeFor', () => {
 
 	it('CliInternalError → SOFTWARE (70)', () => {
 		expect(exitCodeFor(new CliInternalError({ message: 'boom' }))).toBe(ExitCode.SOFTWARE);
+	});
+
+	it('CliLiveGraphMismatchError → SUPERVISOR_LIVE (40)', () => {
+		expect(
+			exitCodeFor(
+				new CliLiveGraphMismatchError({
+					app: 'app',
+					stack: 'main',
+					liveGraphInputId: 'old',
+					currentGraphInputId: 'new',
+				}),
+			),
+		).toBe(ExitCode.SUPERVISOR_LIVE);
 	});
 });
 
@@ -68,6 +82,19 @@ describe('hintFor', () => {
 
 	it('CliInternalError leaves the hint undefined (cause renders into the chain)', () => {
 		expect(hintFor(new CliInternalError({ message: 'boom' }))).toBeUndefined();
+	});
+
+	it('CliLiveGraphMismatchError forwards its restart hint', () => {
+		const hint = hintFor(
+			new CliLiveGraphMismatchError({
+				app: 'app',
+				stack: 'main',
+				liveGraphInputId: 'old',
+				currentGraphInputId: 'new',
+				hint: 'restart devstack up',
+			}),
+		);
+		expect(hint).toBe('restart devstack up');
 	});
 });
 

@@ -877,6 +877,7 @@ export {
 	CliConfirmDeclinedError,
 	CliConfirmRequiredError,
 	CliInternalError,
+	CliLiveGraphMismatchError,
 	CliSnapshotNotFoundError,
 	CliSupervisorLiveError,
 	CliUnavailableError,
