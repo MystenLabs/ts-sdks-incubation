@@ -67,6 +67,7 @@ import {
 	type ResolvedLocalPackage,
 } from './registry.ts';
 import { makeSnapshotable } from './snapshot.ts';
+import { normalizeMvrPlaceholder } from './dep-resolution.ts';
 
 // ---------------------------------------------------------------------------
 // Publisher account ref — explicit upstream
@@ -169,10 +170,10 @@ export interface LocalPackageOptions<
 	readonly excludeFromCodegen?: boolean;
 	/** Move datatypes (struct / enum) to expose as MVR `types` overrides.
 	 *  OPT-IN: each entry is a `'<module>::<Name>'` relative to THIS package
-	 *  (the `@local/<slug>` prefix is implied), e.g. `['game::Lobby',
+	 *  (the package MVR prefix is implied), e.g. `['game::Lobby',
 	 *  'game::Game']`. Each declared type emits one
-	 *  `mvrOverrides.types['@local/<slug>::<module>::<Name>']` entry whose value
-	 *  resolves per-network to `` `${requireId(dep, "@local/<slug>")}::<module>::<Name>` ``
+	 *  `mvrOverrides.types['<mvr>::<module>::<Name>']` entry whose value
+	 *  resolves per-network to `` `${requireId(dep, "<mvr>")}::<module>::<Name>` ``
 	 *  (the resolved package id, never baked). Absent / empty ⇒ `types: {}` — we
 	 *  do NOT auto-enumerate every package type (that balloons the config + every
 	 *  committed `deployments/<net>.ts`). */
@@ -280,6 +281,7 @@ const buildLocalPlugin = <
 	if (opts.sourcePath !== undefined && opts.git !== undefined) {
 		throw new Error(`localPackage('${name}'): 'sourcePath' and 'git' are mutually exclusive.`);
 	}
+	const mvrPlaceholder = normalizeMvrPlaceholder(name, opts.mvrPlaceholder);
 
 	// Resolve the on-disk path to build from: a local `sourcePath` is used
 	// verbatim; a `git` source is cloned into the host cache (idempotent —
@@ -346,7 +348,7 @@ const buildLocalPlugin = <
 		staticCodegen: makeLocalStaticCodegen({
 			name,
 			sourcePath: opts.sourcePath ?? null,
-			mvrPlaceholder: opts.mvrPlaceholder,
+			mvrPlaceholder,
 			excluded: opts.excludeFromCodegen ?? false,
 			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 			// Capture KEYS (config-known) so the committed stub carries
@@ -413,7 +415,7 @@ const buildLocalPlugin = <
 					sourcePath,
 					chainId: sui.chainId,
 					publisherAddress: publisherAccount.address,
-					mvrOverride: opts.mvrPlaceholder,
+					mvrOverride: mvrPlaceholder,
 					...(capture !== undefined ? { capture } : {}),
 					executor,
 				} satisfies PackageMode;
@@ -450,6 +452,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 	const packageRef = resource<PackageResourceId<Name>, KnownPackageResolved>(
 		packageResourceId(name),
 	);
+	const mvrPlaceholder = normalizeMvrPlaceholder(name, opts.mvrPlaceholder);
 	return definePlugin({
 		id: packageRef.id,
 		dependsOn: { sui: suiResource },
@@ -469,7 +472,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		staticCodegen: makeKnownStaticCodegen({
 			name,
 			packageId: opts.packageId,
-			mvrPlaceholder: opts.mvrPlaceholder,
+			mvrPlaceholder,
 			...(opts.upgradeCapId !== undefined ? { upgradeCapId: opts.upgradeCapId } : {}),
 			...(opts.mvrTypes !== undefined ? { mvrTypes: opts.mvrTypes } : {}),
 		}),
@@ -484,7 +487,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 					packageName: name,
 					packageId: opts.packageId,
 					upgradeCapId: opts.upgradeCapId,
-					mvrOverride: opts.mvrPlaceholder,
+					mvrOverride: mvrPlaceholder,
 				} satisfies PackageMode;
 				const { resolved } = yield* bootPackageService(publisher, probe, registry, mode);
 				// Emit the resolved package's contributions inline via the

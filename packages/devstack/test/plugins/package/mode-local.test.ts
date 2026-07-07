@@ -350,6 +350,34 @@ describe('local package mode — A5 capture asymmetry regression', () => {
 			expect(error.detail).toContain('capture callback threw');
 		}).pipe(Effect.provide(layerPackageRegistry)),
 	);
+
+	it.effect('cache HIT adopts the current mvrPlaceholder instead of cached stale metadata', () =>
+		Effect.gen(function* () {
+			const sourcePath = freshSourceDir();
+			const publisher = cacheHitPublisher(CACHED_ENTRY);
+			const registry = yield* PackageRegistryService;
+
+			const result = yield* Effect.scoped(
+				acquireLocal(publisher, okVerifyProbe, registry, {
+					packageName: 'cached_pkg',
+					sourcePath,
+					chainId: 'sui:test-mvr',
+					publisherAddress: '0xpublisheraddr',
+					mvrOverride: '@local-pkg/cached-pkg',
+					executor: unreachableExecutor,
+				}),
+			);
+
+			expect(CACHED_ENTRY.mvrPlaceholder).toBe('cached_pkg');
+			expect(result.resolved.mvrPlaceholder).toBe('@local-pkg/cached-pkg');
+
+			const registered = yield* registry.find('cached_pkg');
+			expect(registered?.kind).toBe('local');
+			if (registered?.kind === 'local') {
+				expect(registered.mvrPlaceholder).toBe('@local-pkg/cached-pkg');
+			}
+		}).pipe(Effect.provide(layerPackageRegistry)),
+	);
 });
 
 // ---------------------------------------------------------------------------

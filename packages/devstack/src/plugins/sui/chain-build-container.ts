@@ -35,7 +35,7 @@ import {
 	ensureManagedContainer,
 	PER_APP_SHARED_STACK,
 } from '../../substrate/runtime/managed-container.ts';
-import { containerInnerScript } from './move/index.ts';
+import { containerInnerScript, type MoveBuildEnv, type MoveBuildOptions } from './move/index.ts';
 import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } from './errors.ts';
 
 /** Default move-build lock timeout — five minutes, matching the
@@ -82,6 +82,7 @@ export interface ChainBuildContainer {
 	 *  host-wide move-build lock before invoking docker-exec. */
 	readonly runBuild: (
 		hostPackagePath: string,
+		options?: MoveBuildOptions,
 	) => Effect.Effect<
 		{ readonly exitCode: number; readonly stdout: string; readonly stderr: string },
 		SuiCliError,
@@ -92,6 +93,7 @@ export interface ChainBuildContainer {
 	 *  this via the cross-service seam. */
 	readonly runSummary: (
 		hostPackagePath: string,
+		options?: MoveBuildOptions,
 	) => Effect.Effect<
 		{ readonly exitCode: number; readonly stdout: string; readonly stderr: string },
 		SuiCliError,
@@ -108,6 +110,7 @@ export interface ChainBuildContainerSpec {
 	readonly appDir: string;
 	readonly moveHome: string;
 	readonly image: ImageRef;
+	readonly buildEnv?: MoveBuildEnv;
 }
 
 /**
@@ -172,6 +175,7 @@ export const acquireChainBuildContainer = (
 		const runInContainer = (
 			op: 'build' | 'summary',
 			hostPackagePath: string,
+			options?: MoveBuildOptions,
 		): Effect.Effect<
 			{ readonly exitCode: number; readonly stdout: string; readonly stderr: string },
 			SuiCliError,
@@ -195,7 +199,11 @@ export const acquireChainBuildContainer = (
 				// appDir source (`spec.appDir` at `/workspace`) is never
 				// rewritten by the build.
 				const pkgName = containerPath.replace(/^\/workspace\//, '').replace(/^\/+|\/+$/g, '');
-				const inner = containerInnerScript(pkgName);
+				const buildEnv = options?.buildEnv ?? spec.buildEnv;
+				const inner =
+					buildEnv === undefined
+						? containerInnerScript(pkgName)
+						: containerInnerScript(pkgName, { buildEnv });
 				const result = yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* acquireStackLock(moveBuildLockPath, MOVE_BUILD_LOCK_TIMEOUT_MS).pipe(
@@ -219,8 +227,10 @@ export const acquireChainBuildContainer = (
 				return result;
 			});
 
-		const runBuild = (hostPackagePath: string) => runInContainer('build', hostPackagePath);
-		const runSummary = (hostPackagePath: string) => runInContainer('summary', hostPackagePath);
+		const runBuild = (hostPackagePath: string, options?: MoveBuildOptions) =>
+			runInContainer('build', hostPackagePath, options);
+		const runSummary = (hostPackagePath: string, options?: MoveBuildOptions) =>
+			runInContainer('summary', hostPackagePath, options);
 
 		return { handle, toContainerPath, runBuild, runSummary };
 	}).pipe(

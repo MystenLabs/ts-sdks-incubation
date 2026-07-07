@@ -37,8 +37,13 @@ import {
 	mvrNamedForm,
 	mvrNamedFormFrom,
 	mvrSlugify,
+	normalizeMvrPlaceholder,
 } from '../../../src/plugins/package/dep-resolution.ts';
-import { makeLocalCodegenable } from '../../../src/plugins/package/codegen.ts';
+import {
+	makeLocalCodegenable,
+	makeLocalStaticCodegen,
+} from '../../../src/plugins/package/codegen.ts';
+import { knownPackage, localPackage } from '../../../src/plugins/package/index.ts';
 import type { ResolvedLocalPackage } from '../../../src/plugins/package/registry.ts';
 
 const NAMES = ['connect-four', 'counter', 'deepbook', 'My Cool Pkg', 'token_v2'];
@@ -247,7 +252,73 @@ describe('stale bare-slug mvrPlaceholder is corrected to the named form at the e
 		// `mvrNamedFormFrom` must NOT double-wrap an already-named string,
 		// which would corrupt a user-supplied `mvrPlaceholder` override.
 		expect(mvrNamedFormFrom('@local/custom-name')).toBe('@local/custom-name');
+		expect(mvrNamedFormFrom('@local-pkg/counter')).toBe('@local-pkg/counter');
+		expect(mvrNamedFormFrom('@demo/registry')).toBe('@demo/registry');
 		// A bare slug IS wrapped.
 		expect(mvrNamedFormFrom('vault')).toBe('@local/vault');
 	});
+});
+
+describe('explicit mvrPlaceholder overrides', () => {
+	it('preserve @mysten/codegen-style @local-pkg/<package> names verbatim', () => {
+		expect(normalizeMvrPlaceholder('counter', '@local-pkg/counter')).toBe('@local-pkg/counter');
+		expect(normalizeMvrPlaceholder('registry', '@demo/registry')).toBe('@demo/registry');
+	});
+
+	it('rejects incomplete or invalid override names instead of slug-normalizing them', () => {
+		expect(() => normalizeMvrPlaceholder('counter', '@local-pkg')).toThrow(
+			/not a valid MVR named package/,
+		);
+		expect(() => normalizeMvrPlaceholder('counter', 'local-pkg')).toThrow(
+			/not a valid MVR named package/,
+		);
+	});
+
+	it('rejects invalid explicit placeholders at the package factory boundary', () => {
+		const publisher = { id: 'account/alice' } as never;
+		expect(() =>
+			localPackage('counter', {
+				sourcePath: '/abs/counter',
+				publisher,
+				mvrPlaceholder: '@local-pkg',
+			}),
+		).toThrow(/not a valid MVR named package/);
+		expect(() =>
+			knownPackage('counter', {
+				packageId: '0xpkg',
+				mvrPlaceholder: 'local-pkg',
+			}),
+		).toThrow(/not a valid MVR named package/);
+	});
+
+	it.effect('static codegen preserves explicit @local-pkg/<package> placeholders', () =>
+		Effect.gen(function* () {
+			const decl = makeLocalStaticCodegen({
+				name: 'counter',
+				sourcePath: '/abs/counter',
+				mvrPlaceholder: '@local-pkg/counter',
+				excluded: false,
+			})()[0];
+			if (decl === undefined) throw new Error('expected static package decl');
+
+			const exported: Record<string, unknown> = {};
+			const ctx = {
+				exportConst: (name: string, value: unknown) => {
+					exported[name] = value;
+				},
+				done: () => undefined,
+			};
+			yield* decl.emit(ctx as never);
+
+			const bindings = exported['packageBindings'] as { mvrPlaceholder: string };
+			const projected = decl.aggregate!.project(exported) as {
+				packages: Record<string, { mvr: string }>;
+				mvrOverrides: { packages: Record<string, string> };
+			};
+
+			expect(bindings.mvrPlaceholder).toBe('@local-pkg/counter');
+			expect(projected.packages.counter!.mvr).toBe('@local-pkg/counter');
+			expect(Object.keys(projected.mvrOverrides.packages)).toEqual(['@local-pkg/counter']);
+		}),
+	);
 });

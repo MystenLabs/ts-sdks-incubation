@@ -33,7 +33,7 @@ import {
 } from '../../contracts/config-bindings.ts';
 import type { PackageBindings } from '../../orchestrators/codegen/bindings.ts';
 import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
-import { mvrNamedForm, mvrNamedFormFrom } from './dep-resolution.ts';
+import { mvrNamedFormFrom, normalizeMvrPlaceholder } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
 
 /** Codegenable shape — what each Package contributes to the codegen
@@ -86,9 +86,9 @@ interface PackageBindingInput {
 	 */
 	readonly objectKeys?: ReadonlyArray<string> | undefined;
 	/** OPT-IN Move datatypes to expose as MVR `types` overrides. Each entry is a
-	 *  `'<module>::<Name>'` suffix relative to this package (the `@local/<slug>`
+	 *  `'<module>::<Name>'` suffix relative to this package (the package MVR
 	 *  prefix is implied). Each emits one
-	 *  `mvrOverrides.types['@local/<slug>::<module>::<Name>']` whose static value
+	 *  `mvrOverrides.types['<mvr>::<module>::<Name>']` whose static value
 	 *  resolves per-network as `` `${requireId(dep, "<mvr>")}::<module>::<Name>` ``.
 	 *  Absent / empty ⇒ no `types` entries (the orchestrator emits `types: {}`).
 	 *  Identical on the live and static paths (config-known, resolution-
@@ -101,11 +101,11 @@ interface PackageBindingInput {
  *  `'<module>::<Name>'` relative to the package; we reject anything that does
  *  not parse as two `::`-joined Move identifiers so a typo fails at config time
  *  rather than emitting an `isValidNamedType`-rejected key into the override
- *  map. The `@local/<slug>::` prefix is implied (and stripped if the developer
+ *  map. The package MVR prefix is implied (and stripped if the developer
  *  redundantly included it). */
 const normalizeMvrTypeSuffix = (packageName: string, mvr: string, entry: string): string => {
-	// Tolerate a redundant `@local/<slug>::` prefix the developer may have
-	// pasted from a fully-qualified tag.
+	// Tolerate a redundant package prefix the developer may have pasted from a
+	// fully-qualified tag.
 	const suffix = entry.startsWith(`${mvr}::`) ? entry.slice(mvr.length + 2) : entry;
 	if (!/^[A-Za-z_][\w]*::[A-Za-z_][\w]*$/.test(suffix)) {
 		throw new Error(
@@ -345,7 +345,7 @@ export const makeLocalStaticCodegen = (config: {
 	/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
 	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }): StaticCodegenSource => {
-	const mvrPlaceholder = mvrNamedForm(config.mvrPlaceholder ?? config.name);
+	const mvrPlaceholder = normalizeMvrPlaceholder(config.name, config.mvrPlaceholder);
 	return () => {
 		// A LOCAL package has no pinned id — resolve the active id at app
 		// build/dev time, never embed it in the committed tree. A git source
@@ -384,7 +384,7 @@ export const makeKnownStaticCodegen = (config: {
 	/** OPT-IN MVR `types` to expose — `'<module>::<Name>'` suffixes. */
 	readonly mvrTypes?: ReadonlyArray<string> | undefined;
 }): StaticCodegenSource => {
-	const mvrPlaceholder = mvrNamedForm(config.mvrPlaceholder ?? config.name);
+	const mvrPlaceholder = normalizeMvrPlaceholder(config.name, config.mvrPlaceholder);
 	return () => {
 		const set = packageConfigBindings({
 			name: config.name,
