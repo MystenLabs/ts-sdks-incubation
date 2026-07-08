@@ -1,10 +1,10 @@
 // Wallet plugin — CORS / origin allowlist policy.
 //
 // The allowlist is built from two real, substrate-wired sources: the
-// router-fronted dev-server origin for this stack (`routedAppOrigin`)
-// and any caller-supplied `extraOrigins`. Both are stack-scoped or
-// explicit, so neither opens the cross-stack pairing risk described in
-// 15-wallet.md.
+// router-fronted dev-server origin for this stack (`routedAppOrigin`,
+// generalized to same-stack routed endpoint origins) and any
+// caller-supplied `extraOrigins`. Both are stack-scoped or explicit, so
+// neither opens the cross-stack pairing risk described in 15-wallet.md.
 //
 // No raw-loopback origin: with the `hostService(...)` plugin devstack
 // owns the dev server's bind port (the broker allocates it; Vite binds
@@ -29,6 +29,7 @@
 import { Effect } from 'effect';
 
 import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
+import { DEFAULT_STACK } from '../../substrate/runtime/routed-url.ts';
 
 // ----------------------------------------------------------------------
 // Policy shape
@@ -39,6 +40,8 @@ import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
  *  comparison. */
 export interface OriginPolicy {
 	readonly allowed: ReadonlySet<string>;
+	readonly routedAppOriginPattern: string | null;
+	readonly routedAppOriginScope: RoutedAppOriginScope | null;
 }
 
 /** Per-stack inputs the policy resolver needs. Supplied by the
@@ -50,6 +53,61 @@ export interface OriginPolicyInputs {
 	readonly routedAppOrigin: string | null;
 	readonly extraOrigins: ReadonlyArray<string>;
 }
+
+export interface RoutedAppOriginScope {
+	readonly protocol: string;
+	readonly port: string;
+	readonly app: string;
+	readonly stack: string;
+	readonly pattern: string;
+}
+
+const routedAppOriginScope = (inputs: OriginPolicyInputs): RoutedAppOriginScope | null => {
+	if (inputs.routedAppOrigin === null) return null;
+	try {
+		const url = new URL(inputs.routedAppOrigin);
+		const app = inputs.app.toLowerCase();
+		const stack = inputs.stack.toLowerCase();
+		const suffix = stack === DEFAULT_STACK ? `${app}.localhost` : `${stack}.${app}.localhost`;
+		return {
+			protocol: url.protocol,
+			port: url.port,
+			app,
+			stack,
+			pattern: `${url.protocol}//*.${suffix}${url.port.length > 0 ? `:${url.port}` : ''}`,
+		};
+	} catch {
+		return null;
+	}
+};
+
+const isSameStackRoutedOrigin = (scope: RoutedAppOriginScope, origin: string): boolean => {
+	let url: URL;
+	try {
+		url = new URL(origin);
+	} catch {
+		return false;
+	}
+	if (url.origin !== origin) return false;
+	if (url.protocol !== scope.protocol || url.port !== scope.port) return false;
+
+	const labels = url.hostname.toLowerCase().split('.');
+	if (scope.stack === DEFAULT_STACK) {
+		return (
+			labels.length === 3 &&
+			labels[0]!.length > 0 &&
+			labels[1] === scope.app &&
+			labels[2] === 'localhost'
+		);
+	}
+	return (
+		labels.length === 4 &&
+		labels[0]!.length > 0 &&
+		labels[1] === scope.stack &&
+		labels[2] === scope.app &&
+		labels[3] === 'localhost'
+	);
+};
 
 // ----------------------------------------------------------------------
 // Resolution
@@ -75,6 +133,7 @@ export interface OriginPolicyInputs {
 export const resolveOriginPolicy = (inputs: OriginPolicyInputs): Effect.Effect<OriginPolicy> =>
 	Effect.gen(function* () {
 		const allowed = new Set<string>();
+		const routedScope = routedAppOriginScope(inputs);
 
 		if (inputs.routedAppOrigin !== null) {
 			allowed.add(inputs.routedAppOrigin);
@@ -93,7 +152,11 @@ export const resolveOriginPolicy = (inputs: OriginPolicyInputs): Effect.Effect<O
 			);
 		}
 
-		return { allowed } satisfies OriginPolicy;
+		return {
+			allowed,
+			routedAppOriginPattern: routedScope?.pattern ?? null,
+			routedAppOriginScope: routedScope,
+		} satisfies OriginPolicy;
 	});
 
 // ----------------------------------------------------------------------
@@ -113,8 +176,20 @@ export const checkOrigin = (
 	headerValue: string | undefined,
 ): OriginCheckResult => {
 	if (headerValue === undefined || headerValue.length === 0) return 'missing';
-	return policy.allowed.has(headerValue) ? 'ok' : 'forbidden';
+	if (policy.allowed.has(headerValue)) return 'ok';
+	if (
+		policy.routedAppOriginScope !== null &&
+		isSameStackRoutedOrigin(policy.routedAppOriginScope, headerValue)
+	) {
+		return 'ok';
+	}
+	return 'forbidden';
 };
+
+export const describeAllowedOrigins = (policy: OriginPolicy): ReadonlyArray<string> => [
+	...policy.allowed,
+	...(policy.routedAppOriginPattern === null ? [] : [policy.routedAppOriginPattern]),
+];
 
 /** Compose CORS headers for a successful request. Single-allowed-origin
  *  echo (browsers don't honor wildcard with credentials, and we want

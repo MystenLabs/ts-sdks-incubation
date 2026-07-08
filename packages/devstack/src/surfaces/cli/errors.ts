@@ -90,6 +90,19 @@ export class CliNoSupervisorError extends Data.TaggedError('CliNoSupervisorError
 	readonly hint?: string;
 }> {}
 
+/** A live supervisor is running, but it was booted from a different
+ *  stack graph than the config the current verb just loaded. Commands
+ *  that only re-run post-acquire/codegen against the live supervisor
+ *  must refuse this, otherwise generated static bindings can diverge
+ *  from the live deployment values. */
+export class CliLiveGraphMismatchError extends Data.TaggedError('CliLiveGraphMismatchError')<{
+	readonly app: string;
+	readonly stack: string;
+	readonly liveGraphInputId: string | null;
+	readonly currentGraphInputId: string;
+	readonly hint?: string;
+}> {}
+
 /** Internal/unexpected failure. Wraps an arbitrary cause; the cascade
  *  formatter renders the inner. */
 export class CliInternalError extends Data.TaggedError('CliInternalError')<{
@@ -123,6 +136,7 @@ export type CliError =
 	| CliConfirmDeclinedError
 	| CliSupervisorLiveError
 	| CliNoSupervisorError
+	| CliLiveGraphMismatchError
 	| CliInternalError
 	| CliAlreadyReportedError;
 
@@ -140,6 +154,7 @@ export const isCliError = (value: unknown): value is CliError => {
 		case 'CliConfirmDeclinedError':
 		case 'CliSupervisorLiveError':
 		case 'CliNoSupervisorError':
+		case 'CliLiveGraphMismatchError':
 		case 'CliInternalError':
 		case 'CliAlreadyReportedError':
 			return true;
@@ -172,6 +187,8 @@ export const exitCodeFor = (error: CliError): ExitCode => {
 			return XC.SUPERVISOR_LIVE;
 		case 'CliNoSupervisorError':
 			return XC.UNAVAILABLE;
+		case 'CliLiveGraphMismatchError':
+			return XC.SUPERVISOR_LIVE;
 		case 'CliInternalError':
 			return XC.SOFTWARE;
 		case 'CliAlreadyReportedError':
@@ -208,6 +225,8 @@ export const summaryFor = (error: CliError): string => {
 			return `supervisor live for ${error.app}/${error.stack}`;
 		case 'CliNoSupervisorError':
 			return `no supervisor running for ${error.app}/${error.stack}`;
+		case 'CliLiveGraphMismatchError':
+			return `live supervisor graph is stale for ${error.app}/${error.stack}`;
 		case 'CliInternalError':
 			return error.message;
 		case 'CliAlreadyReportedError':
@@ -232,6 +251,7 @@ export const hintFor = (error: CliError): string | undefined => {
 		case 'CliConfirmDeclinedError':
 		case 'CliSupervisorLiveError':
 		case 'CliNoSupervisorError':
+		case 'CliLiveGraphMismatchError':
 			return error.hint;
 		case 'CliConfigNotFoundError':
 			// Operator-facing hint: the most common cause is running a

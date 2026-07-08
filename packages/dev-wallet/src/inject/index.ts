@@ -52,6 +52,10 @@ export interface DevstackNetworkInfo {
 export interface RegisterDevstackDevWalletConfig {
 	/** Wallet-app origin (the dev-wallet connection's `walletUrl`). */
 	readonly serverOrigin: string;
+	/** Browser page origins accepted by the devstack wallet server. When the
+	 *  current page is not in this list, the HTTP adapter will be CORS-blocked;
+	 *  this is non-secret metadata used only for a local diagnostic. */
+	readonly allowedOrigins?: ReadonlyArray<string>;
 	/** Bearer pairing token (read by the Vite dev server from the wallet's
 	 *  `0o600` side-channel token file), or null. */
 	readonly token?: string | null;
@@ -97,6 +101,56 @@ declare global {
 	var __devstackDevWalletPromise__: Promise<RegisterDevstackDevWalletResult> | undefined;
 }
 
+const currentPageOrigin = (): string | null => {
+	const location = (globalThis as { location?: { origin?: unknown } }).location;
+	return typeof location?.origin === 'string' && location.origin.length > 0
+		? location.origin
+		: null;
+};
+
+const originMatchesAllowed = (origin: string, allowed: string): boolean => {
+	if (!allowed.includes('*')) return origin === allowed;
+	let originUrl: URL;
+	let patternUrl: URL;
+	try {
+		originUrl = new URL(origin);
+		patternUrl = new URL(allowed.replace('*', 'devstack-origin-probe'));
+	} catch {
+		return false;
+	}
+	if (originUrl.origin !== origin) return false;
+	if (originUrl.protocol !== patternUrl.protocol || originUrl.port !== patternUrl.port) {
+		return false;
+	}
+	const originLabels = originUrl.hostname.toLowerCase().split('.');
+	const patternLabels = patternUrl.hostname.toLowerCase().split('.');
+	return (
+		originLabels.length === patternLabels.length &&
+		patternLabels[0] === 'devstack-origin-probe' &&
+		originLabels[0]!.length > 0 &&
+		originLabels.slice(1).join('.') === patternLabels.slice(1).join('.')
+	);
+};
+
+const assertPageOriginAllowed = (allowedOrigins: ReadonlyArray<string> | undefined): void => {
+	if (allowedOrigins === undefined || allowedOrigins.length === 0) return;
+	const origin = currentPageOrigin();
+	if (origin === null || origin === 'null') return;
+	if (allowedOrigins.some((allowed) => originMatchesAllowed(origin, allowed))) return;
+
+	const recommended = allowedOrigins.find((allowed) => !allowed.includes('*')) ?? allowedOrigins[0];
+	const allowedList = allowedOrigins.join(', ');
+	const guidance =
+		recommended === undefined
+			? ''
+			: ` Open ${recommended}, or add wallet({ allowedOrigins: ['${origin}'] }) if this origin is intentional.`;
+	const message =
+		`[devstack] dev wallet is not available from page origin ${origin}. ` +
+		`Allowed origins: ${allowedList}.${guidance}`;
+	console.error(message);
+	throw new Error(`devstack dev wallet page origin ${origin} is not allowlisted`);
+};
+
 /**
  * Construct + register the devstack dev wallet on the current page and wire
  * the Playwright `connectAs` slot. Idempotent: a second call is a no-op and
@@ -138,6 +192,7 @@ async function registerDevstackDevWalletImpl(
 ): Promise<RegisterDevstackDevWalletResult> {
 	const { mountUI = true, autoApprove = false } = config;
 	globalThis.__DEV_WALLET_INJECTED__ = true;
+	assertPageOriginAllowed(config.allowedOrigins);
 
 	// Resolve the FULL network set up front so it can be advertised both on
 	// the wallet (its `chains`) and on every devstack account (per-account

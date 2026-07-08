@@ -30,7 +30,11 @@ import {
 	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
 } from '../../orchestrators/snapshot/index.ts';
-import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
+import {
+	type CliError,
+	CliInternalError,
+	CliLiveGraphMismatchError,
+} from '../../surfaces/cli/errors.ts';
 import { type CommandResult, probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
@@ -63,13 +67,28 @@ type ApplyDispatch =
 const runApplyAgainstLiveSupervisor = (
 	identity: ResolvedIdentity,
 	identityValue: Identity,
+	currentGraphInputId: string,
 ): Effect.Effect<ApplyDispatch> =>
 	Effect.gen(function* () {
 		const stackRoot = stackRootFor(identity.runtimeRoot, String(identityValue.stack));
 		const presence = yield* probeSupervisorPresence(resolvePath(stackRoot, 'roster.json')).pipe(
-			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
+			Effect.catch(() =>
+				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
+			),
 		);
 		if (!presence.live) return { kind: 'direct' as const };
+		if (presence.graphInputId !== null && presence.graphInputId !== currentGraphInputId) {
+			return {
+				kind: 'live-failed' as const,
+				error: new CliLiveGraphMismatchError({
+					app: String(identityValue.app),
+					stack: String(identityValue.stack),
+					liveGraphInputId: presence.graphInputId,
+					currentGraphInputId,
+					hint: 'restart the running `devstack up` session so it loads the edited stack config, then re-run `devstack apply`.',
+				}),
+			};
+		}
 
 		const exit = yield* Effect.exit(
 			Effect.gen(function* () {
@@ -119,7 +138,23 @@ export const runApplyLive = (
 		// `apply` would probe/boot the wrong stack's supervisor.
 		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
-		const dispatch = yield* runApplyAgainstLiveSupervisor(effectiveIdentity, identityValue);
+		const currentGraphInput = yield* computeSnapshotGraphInputFromStack({
+			stack,
+			devstackVersion: readDevstackVersion({ fallback: '0.0.0' }),
+		}).pipe(
+			Effect.mapError(
+				(cause) =>
+					new CliInternalError({
+						message: 'failed to compute stack graph identity',
+						cause,
+					}),
+			),
+		);
+		const dispatch = yield* runApplyAgainstLiveSupervisor(
+			effectiveIdentity,
+			identityValue,
+			currentGraphInput.graphInputId,
+		);
 		if (dispatch.kind === 'live-failed') {
 			return yield* Effect.fail(dispatch.error);
 		}

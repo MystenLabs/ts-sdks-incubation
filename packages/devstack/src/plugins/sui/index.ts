@@ -655,8 +655,11 @@ export {
 	runMoveBuild,
 	scrubLocksHost,
 	withMoveBuildLock,
+	DEFAULT_MOVE_BUILD_ENV,
 	type BuildOutput,
+	type MoveBuildEnv,
 	type MoveBuildContainer,
 	type MoveBuildError,
+	type MoveBuildOptions,
 } from './move/index.ts';
 export { currentLedgerObjectRef } from './ledger/object-ref.ts';

@@ -86,7 +86,13 @@ const writeStackManifest = (stateRoot: string, stack: string, deploymentFile?: s
 /** Write a live deployment ENVELOPE file `{ defaultNetwork, networks }` for
  *  the given single network at `<tmp>/.devstack/stacks/<stack>/deployment.json`
  *  and return its path. */
-const writeLiveEnvelope = (tmp: string, stack: string, network: string, rpc: string): string => {
+const writeLiveEnvelope = (
+	tmp: string,
+	stack: string,
+	network: string,
+	rpc: string,
+	values?: Record<string, Record<string, unknown>>,
+): string => {
 	const file = join(tmp, '.devstack', 'stacks', stack, 'deployment.json');
 	mkdirSync(join(tmp, '.devstack', 'stacks', stack), { recursive: true });
 	writeFileSync(
@@ -94,7 +100,13 @@ const writeLiveEnvelope = (tmp: string, stack: string, network: string, rpc: str
 		JSON.stringify({
 			defaultNetwork: network,
 			networks: {
-				[network]: { network, rpc, packages: {}, mvrOverrides: { packages: {}, types: {} } },
+				[network]: {
+					network,
+					rpc,
+					packages: {},
+					mvrOverrides: { packages: {}, types: {} },
+					...(values === undefined ? {} : { values }),
+				},
 			},
 		}),
 	);
@@ -298,6 +310,39 @@ describe('devstackVitePlugin', () => {
 			// An 'add' of the deployment file reloads too (file created post-boot).
 			for (const l of onAdd) l(deploymentFile);
 			expect(sent).toEqual([{ type: 'full-reload' }, { type: 'full-reload' }]);
+		}));
+
+	it('passes dev-wallet allowed-origin diagnostics into the virtual inject module', () =>
+		withTempRootAsync('devstack-vite', async (tmp) => {
+			const connection = {
+				walletUrl: 'http://wallet.demo.localhost:39200',
+				network: 'localnet',
+				allowedOrigins: ['http://dev.demo.localhost:5175', 'http://*.demo.localhost:5175'],
+				protocolPaths: {
+					health: '/api/v1/devstack/health',
+					accounts: '/api/v1/devstack/accounts',
+					signTransaction: '/api/v1/devstack/sign-transaction',
+					signPersonalMessage: '/api/v1/devstack/sign-personal-message',
+				},
+			};
+			const deploymentFile = writeLiveEnvelope(tmp, 'e2e', 'localnet', 'http://x', {
+				'dev-wallet': { connection },
+			});
+			writeStackManifest(tmp, 'e2e', deploymentFile);
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'e2e', 'wallet'), { recursive: true });
+			writeFileSync(join(tmp, '.devstack', 'stacks', 'e2e', 'wallet', 'token'), 'a'.repeat(32));
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin();
+			await plugin.config({ root: tmp }, { command: 'serve' });
+			plugin.configResolved({ command: 'serve' });
+			const resolvedId = plugin.resolveId('virtual:devstack-dev-wallet');
+			expect(resolvedId).toBeDefined();
+
+			const source = plugin.load(resolvedId!);
+			expect(source).toContain('allowedOrigins: __devstackConnection.allowedOrigins ?? []');
+			expect(source).toContain('registerDevstackDevWallet');
 		}));
 
 	// --- multi-network MERGE layer ---------------------------------------

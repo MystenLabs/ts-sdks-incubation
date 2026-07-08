@@ -79,6 +79,25 @@ describe('roster.claim / release', () => {
 			),
 		ROSTER_TEST_TIMEOUT_MS,
 	);
+
+	it.effect(
+		'claim can record the live graph input id',
+		() =>
+			withTempRoot('roster-test', (root) =>
+				Effect.gen(function* () {
+					const paths = pathsFor(root);
+					const result = yield* claim(paths, 'normal', undefined, {
+						graphInputId: 'graph-fixture',
+					});
+					expect(result.self.graphInputId).toBe('graph-fixture');
+					const onDisk = JSON.parse(readFileSync(paths.rosterFile, 'utf8')) as {
+						readonly holders: ReadonlyArray<{ readonly graphInputId?: string }>;
+					};
+					expect(onDisk.holders[0]?.graphInputId).toBe('graph-fixture');
+				}),
+			),
+		ROSTER_TEST_TIMEOUT_MS,
+	);
 });
 
 // Regression for Phase B1: `isOwnEntry` now matches on

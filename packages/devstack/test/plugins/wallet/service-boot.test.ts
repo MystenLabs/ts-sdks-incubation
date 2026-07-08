@@ -36,6 +36,7 @@ const makeAccount = (name: string, address: string): AccountValue =>
 const makeCtx = (
 	stateRoot: string,
 	accounts: ReadonlyArray<AccountValue>,
+	routedAppOrigin: string | null = null,
 ): WalletAcquireContext => ({
 	app: 'app',
 	stack: 'main',
@@ -44,7 +45,7 @@ const makeCtx = (
 	allocatePort: () => Effect.succeed(0),
 	resolveAccounts: () => Effect.succeed(accounts),
 	routerFrontedUrl: null,
-	routedAppOrigin: null,
+	routedAppOrigin,
 });
 
 describe('acquireWallet — duplicate-address guard', () => {
@@ -98,6 +99,37 @@ describe('acquireWallet — duplicate-address guard', () => {
 			// router-fronted origin was supplied.
 			expect(value.url).toBe('http://127.0.0.1:0');
 			expect(value.localPort).toBe(0);
+		} finally {
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('publishes allowed origins in the non-secret browser connection metadata', async () => {
+		const stateRoot = mkdtempSync(join(tmpdir(), 'devstack-wallet-origins-'));
+		try {
+			const ctx = makeCtx(
+				stateRoot,
+				[makeAccount('alice', `0x${'a'.repeat(64)}`)],
+				'http://dev.app.localhost:5175',
+			);
+
+			const value = await Effect.runPromise(
+				Effect.scoped(
+					acquireWallet(
+						{
+							accounts: WALLET_ACCOUNTS_ALL,
+							allowedOrigins: ['http://custom.example'],
+						},
+						ctx,
+					),
+				).pipe(Effect.provide(NodeFileSystem.layer)),
+			);
+
+			expect(value.connection.allowedOrigins).toEqual([
+				'http://dev.app.localhost:5175',
+				'http://custom.example',
+				'http://*.app.localhost:5175',
+			]);
 		} finally {
 			rmSync(stateRoot, { recursive: true, force: true });
 		}

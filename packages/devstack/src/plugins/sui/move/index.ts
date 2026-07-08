@@ -67,8 +67,19 @@ const moveBuildError = (
 	});
 
 export interface MoveBuildContainer {
-	readonly runBuild: (hostPackagePath: string) => Effect.Effect<ExecResult, unknown, Scope.Scope>;
+	readonly runBuild: (
+		hostPackagePath: string,
+		options?: MoveBuildOptions,
+	) => Effect.Effect<ExecResult, unknown, Scope.Scope>;
 }
+
+export type MoveBuildEnv = string;
+
+export interface MoveBuildOptions {
+	readonly buildEnv?: MoveBuildEnv;
+}
+
+export const DEFAULT_MOVE_BUILD_ENV: MoveBuildEnv = 'testnet';
 
 export interface BuildInputs {
 	readonly sourcePath: string;
@@ -76,6 +87,7 @@ export interface BuildInputs {
 	readonly buildContainer?: MoveBuildContainer;
 	readonly runtime?: ContainerRuntime;
 	readonly buildImage?: ImageRef;
+	readonly buildEnv?: MoveBuildEnv;
 }
 
 export interface BuildOutput {
@@ -118,11 +130,19 @@ export const containerScrubShellScript = (workspaceRoot: string, moveHomeRoot: s
 		`find ${workspaceRoot} -type f -name Move.lock ` +
 		`-not -path '*/node_modules/*' -not -path '*/.git/*' ` +
 		`-exec gawk -i inplace -f /tmp/scrub-move-lock.awk {} ';'`;
+	const findPkgPublished =
+		`find ${workspaceRoot} -type f -name Published.toml ` +
+		`-not -path '*/node_modules/*' -not -path '*/.git/*' ` +
+		`-exec rm -f {} ';'`;
 	const findCache =
 		`[ -d ${moveHomeRoot}/git ] && find ${moveHomeRoot}/git -type f -name Move.lock ` +
 		`-not -path '*/.git/*' ` +
 		`-exec gawk -i inplace -f /tmp/scrub-move-lock.awk {} ';' || true`;
-	return [stage, findPkg, findCache].join('; ');
+	const findCachePublished =
+		`[ -d ${moveHomeRoot}/git ] && find ${moveHomeRoot}/git -type f -name Published.toml ` +
+		`-not -path '*/.git/*' ` +
+		`-exec rm -f {} ';' || true`;
+	return [stage, findPkg, findPkgPublished, findCache, findCachePublished].join('; ');
 };
 
 export const shellQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
@@ -135,7 +155,7 @@ export const extractTrailingJson = (text: string): string => {
 	return trimmed.slice(idx);
 };
 
-export const containerInnerScript = (pkgName: string): string => {
+export const containerInnerScript = (pkgName: string, options?: MoveBuildOptions): string => {
 	// Copy the WHOLE mounted tree into an in-container scratch dir and scrub +
 	// build the package THERE, never `/workspace/<pkg>` directly. `/workspace`
 	// is a bind mount of the developer's real source tree (the per-app build
@@ -165,6 +185,7 @@ export const containerInnerScript = (pkgName: string): string => {
 	// `$$` (the shell PID) scopes the scratch dir per exec so concurrent
 	// builds of the same package don't share a tree.
 	const quotedPkg = shellQuote(pkgName);
+	const buildEnv = shellQuote(options?.buildEnv ?? DEFAULT_MOVE_BUILD_ENV);
 	const scratchRoot = '/tmp/move-build-$$';
 	const scratchPkg = `${scratchRoot}/${quotedPkg}`;
 	const stage = `rm -rf ${scratchRoot} && mkdir -p ${scratchRoot} && cp -a /workspace/. ${scratchRoot}/`;
@@ -175,7 +196,7 @@ export const containerInnerScript = (pkgName: string): string => {
 	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
 	const build =
 		`sui move build --path ${scratchPkg} ` +
-		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
+		`--build-env ${buildEnv} --no-tree-shaking --dump-bytecode-as-base64 ` +
 		`--with-unpublished-dependencies`;
 	const cleanup = `rm -rf ${scratchRoot}`;
 	return [
@@ -437,7 +458,11 @@ const buildViaContainerExec = (
 	bc: MoveBuildContainer,
 ): Effect.Effect<BuildOutput, MoveBuildError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const result = yield* bc.runBuild(inputs.sourcePath).pipe(
+		const result = yield* (
+			inputs.buildEnv === undefined
+				? bc.runBuild(inputs.sourcePath)
+				: bc.runBuild(inputs.sourcePath, { buildEnv: inputs.buildEnv })
+		).pipe(
 			Effect.mapError(
 				(err): MoveBuildError =>
 					moveBuildError('build', {
@@ -528,7 +553,10 @@ const buildViaOneShot = (
 ): Effect.Effect<BuildOutput, MoveBuildError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const pkgName = basename(inputs.sourcePath);
-		const inner = containerInnerScript(pkgName);
+		const inner =
+			inputs.buildEnv === undefined
+				? containerInnerScript(pkgName)
+				: containerInnerScript(pkgName, { buildEnv: inputs.buildEnv });
 		const moveHome = join(homedir(), '.move');
 		yield* ensureMoveHomeMountSource(moveHome, inputs.sourcePath, inputs.packageName);
 

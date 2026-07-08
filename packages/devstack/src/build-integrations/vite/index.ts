@@ -776,6 +776,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 				`    serverOrigin: __devstackConnection.walletUrl,`,
 				`    token: __devstackToken,`,
 				`    accounts: __devstackAccounts,`,
+				`    allowedOrigins: __devstackConnection.allowedOrigins ?? [],`,
 				`    networks: __devstackNetworks,`,
 				`    defaultNetwork: __devstackConfig.defaultNetwork,`,
 				`    autoApprove: ${autoApprove ? 'true' : 'false'},`,

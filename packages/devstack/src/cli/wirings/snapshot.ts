@@ -71,7 +71,9 @@ export const runSnapshotCaptureAgainstLiveSupervisor = (
 ): Effect.Effect<{ readonly snapshotId: string; readonly name: string } | null, unknown> =>
 	Effect.gen(function* () {
 		const presence = yield* probeSupervisorPresence(identity.rosterFile).pipe(
-			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
+			Effect.catch(() =>
+				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
+			),
 		);
 		if (!presence.live) return null;
 

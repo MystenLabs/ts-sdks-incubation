@@ -1,7 +1,11 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { resolveOriginPolicy } from '../../../src/plugins/wallet/origin-policy.ts';
+import {
+	checkOrigin,
+	describeAllowedOrigins,
+	resolveOriginPolicy,
+} from '../../../src/plugins/wallet/origin-policy.ts';
 
 describe('plugins/wallet/origin-policy', () => {
 	it.effect('allows the routed app origin without caller supplied extras', () =>
@@ -14,13 +18,47 @@ describe('plugins/wallet/origin-policy', () => {
 			});
 
 			expect(policy.allowed.has('http://dev.wallet-demo.localhost:5175')).toBe(true);
-			// The allowlist is the ROUTED app origin only — the policy does NOT
-			// auto-add a bare-loopback `localhost:<port>` form. The dev-server's
-			// raw-loopback origin is reachable instead via the host-service's
-			// routed `value.url` (see host-service `index.ts`) or, for devs who
-			// insist on the raw Vite URL, via `allowedOrigins` (→ `extraOrigins`,
-			// covered below). See the `origin-policy.ts` history note.
-			expect(policy.allowed.has('http://localhost:5175')).toBe(false);
+			expect(checkOrigin(policy, 'http://dev.wallet-demo.localhost:5175')).toBe('ok');
+			expect(checkOrigin(policy, 'http://localhost:5175')).toBe('forbidden');
+		}),
+	);
+
+	it.effect('allows any same-stack routed endpoint origin without allowing raw loopback', () =>
+		Effect.gen(function* () {
+			const policy = yield* resolveOriginPolicy({
+				app: 'wallet-demo',
+				stack: 'main',
+				routedAppOrigin: 'http://dev.wallet-demo.localhost:5175',
+				extraOrigins: [],
+			});
+
+			expect(checkOrigin(policy, 'http://app.wallet-demo.localhost:5175')).toBe('ok');
+			expect(checkOrigin(policy, 'http://admin.wallet-demo.localhost:5175')).toBe('ok');
+			expect(checkOrigin(policy, 'http://127.0.0.1:5173')).toBe('forbidden');
+			expect(checkOrigin(policy, 'http://dev.other-app.localhost:5175')).toBe('forbidden');
+			expect(describeAllowedOrigins(policy)).toEqual([
+				'http://dev.wallet-demo.localhost:5175',
+				'http://*.wallet-demo.localhost:5175',
+			]);
+		}),
+	);
+
+	it.effect('scopes routed wildcard origins by named stack', () =>
+		Effect.gen(function* () {
+			const policy = yield* resolveOriginPolicy({
+				app: 'wallet-demo',
+				stack: 'preview',
+				routedAppOrigin: 'http://dev.preview.wallet-demo.localhost:5175',
+				extraOrigins: [],
+			});
+
+			expect(checkOrigin(policy, 'http://app.preview.wallet-demo.localhost:5175')).toBe('ok');
+			expect(checkOrigin(policy, 'http://app.other.wallet-demo.localhost:5175')).toBe('forbidden');
+			expect(checkOrigin(policy, 'http://app.wallet-demo.localhost:5175')).toBe('forbidden');
+			expect(describeAllowedOrigins(policy)).toEqual([
+				'http://dev.preview.wallet-demo.localhost:5175',
+				'http://*.preview.wallet-demo.localhost:5175',
+			]);
 		}),
 	);
 
@@ -43,9 +81,6 @@ describe('plugins/wallet/origin-policy', () => {
 
 	it.effect('resolves an empty allowlist when neither source is present', () =>
 		Effect.gen(function* () {
-			// Node-only / e2e stacks compose without any client UI. The
-			// wallet still boots, but the per-request gate refuses every
-			// Origin — the HTTP surface is effectively closed.
 			const policy = yield* resolveOriginPolicy({
 				app: 'app',
 				stack: 'main',
@@ -54,6 +89,7 @@ describe('plugins/wallet/origin-policy', () => {
 			});
 
 			expect(policy.allowed.size).toBe(0);
+			expect(describeAllowedOrigins(policy)).toEqual([]);
 		}),
 	);
 });

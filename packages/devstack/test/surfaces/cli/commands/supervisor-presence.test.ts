@@ -21,6 +21,7 @@ describe('probeSupervisorPresence', () => {
 				const presence = yield* probeSupervisorPresence(join(root, 'roster.json'));
 				expect(presence.live).toBe(false);
 				expect(presence.pid).toBeNull();
+				expect(presence.graphInputId).toBeNull();
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -51,6 +52,38 @@ describe('probeSupervisorPresence', () => {
 				const presence = yield* probeSupervisorPresence(rosterFile);
 				expect(presence.live).toBe(true);
 				expect(presence.pid).toBe(process.pid);
+				expect(presence.graphInputId).toBeNull();
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('returns the live holder graph input id when present', () =>
+		Effect.gen(function* () {
+			const root = fresh();
+			try {
+				const rosterFile = join(root, 'roster.json');
+				const realStartTime = processStartTime(process.pid) ?? 0;
+				const doc = {
+					version: 1 as const,
+					holders: [
+						{
+							pid: process.pid,
+							startTime: realStartTime,
+							hostname: nodeHostname(),
+							claimedAt: Date.now(),
+							heartbeatAt: Date.now(),
+							intent: 'normal' as const,
+							graphInputId: 'graph-fixture',
+						},
+					],
+				};
+				mkdirSync(root, { recursive: true });
+				writeFileSync(rosterFile, JSON.stringify(doc), 'utf8');
+				const presence = yield* probeSupervisorPresence(rosterFile);
+				expect(presence.live).toBe(true);
+				expect(presence.graphInputId).toBe('graph-fixture');
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

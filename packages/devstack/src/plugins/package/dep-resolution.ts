@@ -1,9 +1,11 @@
 // Move-dep helpers.
 //
 // `mvrSlugify` normalises a package name into the slug shape that
-// codegen emitters write into Move source as MVR placeholders.
+// devstack uses for its default local MVR placeholders.
 // Distilled doc Invariant 13: the result MUST satisfy `[a-z0-9-]+`
 // (downstream validators reject underscores).
+
+import { isValidNamedPackage } from '@mysten/sui/utils';
 
 /**
  * Slugify a package name into the bare slug shape (`[a-z0-9-]+`).
@@ -42,9 +44,28 @@ const MVR_LOCAL_ORG = '@local';
  */
 export const mvrNamedForm = (name: string): string => `${MVR_LOCAL_ORG}/${mvrSlugify(name)}`;
 
+/** Normalize the user-facing `mvrPlaceholder` option.
+ *
+ * Devstack's default remains `@local/<slug>`, derived from the package's
+ * symbolic name. An explicit override is different: it is already a full
+ * MVR named package (`@org/package`) and must be preserved verbatim so it
+ * matches `@mysten/codegen`'s documented `@local-pkg/counter` style.
+ */
+export const normalizeMvrPlaceholder = (
+	packageName: string,
+	placeholder: string | undefined,
+): string => {
+	if (placeholder === undefined) return mvrNamedForm(packageName);
+	if (isValidNamedPackage(placeholder)) return placeholder;
+	throw new Error(
+		`package '${packageName}' mvrPlaceholder '${placeholder}' is not a valid MVR named package; ` +
+			`use a full name like '@local/${mvrSlugify(packageName)}' or '@local-pkg/${mvrSlugify(packageName)}'.`,
+	);
+};
+
 /**
- * Coerce a (possibly STALE) persisted MVR placeholder into the current
- * `@local/<slug>` named form.
+ * Coerce a (possibly STALE) persisted MVR placeholder into a valid named
+ * package form.
  *
  * The package-publish cache (`projection.v4.json`'s `mvrPlaceholder`)
  * persists whatever placeholder shape was current at publish time. A
@@ -56,14 +77,11 @@ export const mvrNamedForm = (name: string): string => `${MVR_LOCAL_ORG}/${mvrSlu
  *
  * `mvrNamedForm` is not idempotent over an already-named string
  * (`mvrSlugify('@local/vault')` → `'local-vault'`), so we cannot blindly
- * re-wrap. Instead:
- *   - if the placeholder is ALREADY in `@<org>/...` named form, keep it
- *     verbatim (this preserves a user-supplied `mvrPlaceholder` override);
- *   - otherwise treat it as a bare slug/name and wrap it via
- *     `mvrNamedForm`.
+ * re-wrap. Instead, preserve anything the SDK accepts as a full MVR named
+ * package and wrap only legacy bare names.
  *
  * Pure + deterministic over its input, so recomputing at the emit seam is
  * always safe and always current regardless of cached projection state.
  */
 export const mvrNamedFormFrom = (placeholder: string): string =>
-	placeholder.startsWith(`${MVR_LOCAL_ORG}/`) ? placeholder : mvrNamedForm(placeholder);
+	isValidNamedPackage(placeholder) ? placeholder : mvrNamedForm(placeholder);

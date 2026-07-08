@@ -8,9 +8,13 @@ import { Effect, Fiber, Stream } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { degradedStatusFromContext, identityInputsFromArgv, runCli } from '../../src/cli/main.ts';
+import { readDevstackVersion } from '../../src/cli/wirings/read-devstack-version.ts';
+import { loadDevstackConfig } from '../../src/api/load-config.ts';
 import { readStackContext } from '../../src/build-integrations/runtime/read-stack-context.ts';
+import { ExitCode } from '../../src/surfaces/cli/sysexits.ts';
 import {
 	CACHE_DIR_NAME,
+	computeSnapshotGraphInputFromStack,
 	contributionPath,
 	DEPLOY_CACHE_NAMESPACES,
 	SNAPSHOT_CONTRIBUTION_VERSION,
@@ -214,7 +218,21 @@ const writeRestorableSnapshotArtifact = async (
 	);
 };
 
-const writeLiveRoster = (stackRoot: string): void => {
+const graphInputIdForConfig = async (configPath: string): Promise<string> => {
+	const loaded = await Effect.runPromise(loadDevstackConfig(configPath));
+	const graphInput = await Effect.runPromise(
+		computeSnapshotGraphInputFromStack({
+			stack: loaded.engine,
+			devstackVersion: readDevstackVersion({ fallback: '0.0.0' }),
+		}),
+	);
+	return graphInput.graphInputId;
+};
+
+const writeLiveRoster = (
+	stackRoot: string,
+	options: { readonly graphInputId?: string } = {},
+): void => {
 	mkdirSync(stackRoot, { recursive: true });
 	writeFileSync(
 		join(stackRoot, 'roster.json'),
@@ -228,6 +246,7 @@ const writeLiveRoster = (stackRoot: string): void => {
 					claimedAt: Date.now(),
 					heartbeatAt: Date.now(),
 					intent: 'normal',
+					...(options.graphInputId === undefined ? {} : { graphInputId: options.graphInputId }),
 				},
 			],
 		}),
@@ -359,7 +378,7 @@ describe('cli/main', () => {
 			DEVSTACK_CONFIG: process.env.DEVSTACK_CONFIG,
 		};
 
-		writeLiveRoster(stackRoot);
+		writeLiveRoster(stackRoot, { graphInputId: await graphInputIdForConfig(configPath) });
 		const subscriberFiber = Effect.runFork(
 			Effect.scoped(
 				Effect.gen(function* () {
@@ -416,6 +435,123 @@ describe('cli/main', () => {
 				}
 			}
 			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
+		}
+	}, 60_000);
+
+	it('apply allows a pre-upgrade live supervisor without graph metadata', async () => {
+		const appRoot = makeTempRoot('cli-live-apply-legacy-app');
+		const stateRoot = makeTempRoot('cli-live-apply-legacy-state');
+		const configPath = writeCodegenConfig(appRoot);
+		const stackRoot = join(stateRoot, 'stacks', 'main');
+		const observed: Array<{ readonly tag?: string }> = [];
+		const previousExitCode = process.exitCode;
+
+		writeLiveRoster(stackRoot);
+		const subscriberFiber = Effect.runFork(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const subscriber = yield* makeCommandChannelSubscriber(commandChannelPaths(stackRoot), {
+						fromOffset: 'start',
+						pollMillis: 20,
+					});
+					yield* subscriber.commands.pipe(
+						Stream.take(1),
+						Stream.runForEach((record) =>
+							Effect.gen(function* () {
+								yield* Effect.sync(() => {
+									observed.push(record.command as { readonly tag?: string });
+								});
+								yield* subscriber.publishReply(record.id, { kind: 'ack', detail: 'applied' });
+							}),
+						),
+					);
+				}),
+			),
+		);
+
+		try {
+			process.exitCode = undefined;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			await runCli([
+				'apply',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'cli-live-apply',
+				'--stack',
+				'main',
+				'--network',
+				'localnet',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(observed).toEqual([{ tag: 'apply.requested' }]);
+			expect(readCommandLog(stackRoot).map((record) => record.command.tag)).toEqual([
+				'apply.requested',
+			]);
+		} finally {
+			process.exitCode = previousExitCode;
+			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
+		}
+	}, 60_000);
+
+	it('apply refuses a live supervisor booted from a different graph', async () => {
+		const appRoot = makeTempRoot('cli-live-apply-stale-app');
+		const stateRoot = makeTempRoot('cli-live-apply-stale-state');
+		const configPath = writeCodegenConfig(appRoot);
+		const stackRoot = join(stateRoot, 'stacks', 'main');
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		writeLiveRoster(stackRoot, { graphInputId: 'stale-graph-input' });
+
+		try {
+			process.exitCode = undefined;
+
+			await runCli([
+				'apply',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'cli-live-apply',
+				'--stack',
+				'main',
+				'--network',
+				'localnet',
+				'--json',
+			]);
+
+			expect(process.exitCode).toBe(ExitCode.SUPERVISOR_LIVE);
+			expect(stderr.join('')).toBe('');
+			expect(existsSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
+			expect(existsSync(join(stackRoot, 'deployment.json'))).toBe(false);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: false;
+				readonly error: {
+					readonly code: string;
+					readonly summary: string;
+					readonly hint?: string;
+				};
+			};
+			expect(envelope.error.code).toBe('SUPERVISOR_LIVE');
+			expect(envelope.error.summary).toContain('live supervisor graph is stale');
+			expect(envelope.error.hint).toContain('restart the running `devstack up` session');
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
 		}
 	}, 60_000);
 

@@ -122,7 +122,7 @@ describe('chain build container move-build lock', () => {
 							);
 							// Host path → `/workspace/packages/demo` → pkgName
 							// `packages/demo` (the nested, slash-bearing trigger).
-							yield* buildContainer.runBuild(fixture.packagePath);
+							yield* buildContainer.runBuild(fixture.packagePath, { buildEnv: 'localnet' });
 						}),
 					);
 
@@ -150,6 +150,8 @@ describe('chain build container move-build lock', () => {
 					// scratch tree (proves the nested pkgName threaded through, not a
 					// flattened basename).
 					expect(inner).toContain("sui move build --path /tmp/move-build-$$/'packages/demo'");
+					expect(inner).toContain("--build-env 'localnet'");
+					expect(inner).toContain('find /tmp/move-build-$$ -type f -name Published.toml');
 				} finally {
 					rmSync(fixture.root, { recursive: true, force: true });
 				}

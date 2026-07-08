@@ -22,6 +22,7 @@ export interface SupervisorPresence {
 	readonly live: boolean;
 	readonly pid: number | null;
 	readonly hostname: string | null;
+	readonly graphInputId: string | null;
 }
 
 /**
@@ -50,8 +51,13 @@ export const probeSupervisorPresence = (
 				.probeHolderLiveness(holder)
 				.pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 			if (liveness === 'alive') {
-				return { live: true, pid: holder.pid, hostname: holder.hostname };
+				return {
+					live: true,
+					pid: holder.pid,
+					hostname: holder.hostname,
+					graphInputId: holder.graphInputId ?? null,
+				};
 			}
 		}
-		return { live: false, pid: null, hostname: null };
+		return { live: false, pid: null, hostname: null, graphInputId: null };
 	}).pipe(Effect.provide(layerLivenessProbeScope));

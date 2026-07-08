@@ -10,6 +10,7 @@ import { Effect } from 'effect';
 import type { ContainerRuntime, OneShotSpec } from '../../../../src/contracts/container-runtime.ts';
 import {
 	CONTAINER_SCRUB_AWK_SCRIPT,
+	DEFAULT_MOVE_BUILD_ENV,
 	containerInnerScript,
 	hashMoveSources,
 	parseBuildOutput,
@@ -85,12 +86,26 @@ describe('sui-move-build helpers', () => {
 		expect(script).not.toContain("cp -a /workspace/'demo'");
 		// The package is built by its path INSIDE the scratch tree.
 		expect(script).toContain("sui move build --path /tmp/move-build-$$/'demo'");
+		expect(script).toContain(`--build-env '${DEFAULT_MOVE_BUILD_ENV}'`);
 		// The scratch tree (root, so nested packages are covered) is scrubbed
 		// before and after the build.
 		const scratchFind = 'find /tmp/move-build-$$ -type f -name Move.lock';
 		expect(script.indexOf(scratchFind)).toBeLessThan(buildOffset);
 		expect(script.lastIndexOf(scratchFind)).toBeGreaterThan(buildOffset);
+		const publishedFind = 'find /tmp/move-build-$$ -type f -name Published.toml';
+		expect(script.indexOf(publishedFind)).toBeLessThan(buildOffset);
+		expect(script.lastIndexOf(publishedFind)).toBeGreaterThan(buildOffset);
+		expect(script).toContain(
+			'[ -d /root/.move/git ] && find /root/.move/git -type f -name Published.toml',
+		);
 		expect(CONTAINER_SCRUB_AWK_SCRIPT).toContain('^\\[env');
+	});
+
+	it('threads the requested Move build environment into the emitted build command', () => {
+		const script = containerInnerScript('demo', { buildEnv: 'localnet' });
+
+		expect(script).toContain("--build-env 'localnet'");
+		expect(script).not.toContain(`--build-env '${DEFAULT_MOVE_BUILD_ENV}'`);
 	});
 
 	it('stages a nested-path package and its sibling local dep without aborting under set -e', async () => {
@@ -284,9 +299,14 @@ describe('sui-move-build helpers', () => {
 					packageName: 'vault',
 					runtime,
 					buildImage: { digest: 'sha256:sui' },
+					buildEnv: 'localnet',
 				});
 
 				expect(result).toEqual({ modules: [], dependencies: [] });
+				expect(capturedSpecs[0]?.argv).toEqual([
+					'-c',
+					expect.stringContaining("--build-env 'localnet'"),
+				]);
 				expect(capturedSpecs[0]?.mounts).toContainEqual({
 					source: join(home, '.move'),
 					target: '/root/.move',

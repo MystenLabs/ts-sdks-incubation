@@ -190,4 +190,27 @@ describe('registerDevstackDevWallet — multi-network', () => {
 
 		dispose();
 	});
+
+	it('rejects early with a browser-visible diagnostic when the page origin is forbidden', async () => {
+		const origin = globalThis.location.origin;
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		await expect(
+			registerDevstackDevWallet({
+				serverOrigin: SERVER_ORIGIN,
+				token: null,
+				accounts: {},
+				allowedOrigins: ['http://dev.demo.localhost:5175', 'http://*.demo.localhost:5175'],
+				mountUI: false,
+			}),
+		).rejects.toThrow(`page origin ${origin} is not allowlisted`);
+
+		expect(consoleError).toHaveBeenCalledWith(
+			expect.stringContaining(`[devstack] dev wallet is not available from page origin ${origin}`),
+		);
+		expect(consoleError).toHaveBeenCalledWith(
+			expect.stringContaining('Allowed origins: http://dev.demo.localhost:5175'),
+		);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
 });

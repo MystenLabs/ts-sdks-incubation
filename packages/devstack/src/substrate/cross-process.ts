@@ -41,6 +41,10 @@ export interface RosterHolder {
 	readonly claimedAt: number;
 	readonly heartbeatAt: number;
 	readonly intent: HolderIntent;
+	/** Optional desired-graph identity for a live supervisor. CLI peers use
+	 *  this to refuse live apply/codegen refreshes against a supervisor booted
+	 *  from a different stack graph. */
+	readonly graphInputId?: string;
 }
 
 /** Roster document schema — versioned for schema validation. */
@@ -56,6 +60,7 @@ export const RosterHolderSchema = Schema.Struct({
 	claimedAt: Schema.Number,
 	heartbeatAt: Schema.Number,
 	intent: Schema.Literals(['normal', 'snapshot']),
+	graphInputId: Schema.optional(Schema.String),
 });
 
 export const RosterDocumentSchema = versionedDocSchema(1, {

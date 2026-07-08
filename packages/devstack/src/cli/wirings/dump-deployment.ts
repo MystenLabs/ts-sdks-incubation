@@ -201,7 +201,9 @@ export const runDumpDeployment = (
 		// live — it writes the deployment to `deploymentFile` and tears down — then
 		// read the file it produced.
 		const presence = yield* probeSupervisorPresence(effectiveIdentity.rosterFile).pipe(
-			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
+			Effect.catch(() =>
+				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
+			),
 		);
 		if (!presence.live) {
 			// `runApplyLive` re-probes (sees no live supervisor) and runs the

@@ -30,7 +30,7 @@ import type { FileSystem, Scope } from 'effect';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import type { DevWalletConnection } from './codegen.ts';
 import { walletBootError, type WalletBootError } from './errors.ts';
-import { resolveOriginPolicy } from './origin-policy.ts';
+import { describeAllowedOrigins, resolveOriginPolicy } from './origin-policy.ts';
 import { acquirePairingToken, composePairUrl, tokenPath, type PairingToken } from './pairing.ts';
 import { startHttpServer, type WalletServerConfig, type WalletServerHandle } from './server.ts';
 import { WalletHttpPath } from './protocol.ts';
@@ -255,6 +255,7 @@ export const acquireWallet = (
 		const connection: DevWalletConnection = {
 			walletUrl,
 			network: ctx.network,
+			allowedOrigins: describeAllowedOrigins(policy),
 			protocolPaths: {
 				health: WalletHttpPath.HEALTH,
 				accounts: WalletHttpPath.ACCOUNTS,
