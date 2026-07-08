@@ -77,7 +77,7 @@ const runApplyAgainstLiveSupervisor = (
 			),
 		);
 		if (!presence.live) return { kind: 'direct' as const };
-		if (presence.graphInputId !== currentGraphInputId) {
+		if (presence.graphInputId !== null && presence.graphInputId !== currentGraphInputId) {
 			return {
 				kind: 'live-failed' as const,
 				error: new CliLiveGraphMismatchError({

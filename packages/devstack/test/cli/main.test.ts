@@ -438,6 +438,66 @@ describe('cli/main', () => {
 		}
 	}, 60_000);
 
+	it('apply allows a pre-upgrade live supervisor without graph metadata', async () => {
+		const appRoot = makeTempRoot('cli-live-apply-legacy-app');
+		const stateRoot = makeTempRoot('cli-live-apply-legacy-state');
+		const configPath = writeCodegenConfig(appRoot);
+		const stackRoot = join(stateRoot, 'stacks', 'main');
+		const observed: Array<{ readonly tag?: string }> = [];
+		const previousExitCode = process.exitCode;
+
+		writeLiveRoster(stackRoot);
+		const subscriberFiber = Effect.runFork(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const subscriber = yield* makeCommandChannelSubscriber(commandChannelPaths(stackRoot), {
+						fromOffset: 'start',
+						pollMillis: 20,
+					});
+					yield* subscriber.commands.pipe(
+						Stream.take(1),
+						Stream.runForEach((record) =>
+							Effect.gen(function* () {
+								yield* Effect.sync(() => {
+									observed.push(record.command as { readonly tag?: string });
+								});
+								yield* subscriber.publishReply(record.id, { kind: 'ack', detail: 'applied' });
+							}),
+						),
+					);
+				}),
+			),
+		);
+
+		try {
+			process.exitCode = undefined;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			await runCli([
+				'apply',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'cli-live-apply',
+				'--stack',
+				'main',
+				'--network',
+				'localnet',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(observed).toEqual([{ tag: 'apply.requested' }]);
+			expect(readCommandLog(stackRoot).map((record) => record.command.tag)).toEqual([
+				'apply.requested',
+			]);
+		} finally {
+			process.exitCode = previousExitCode;
+			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
+		}
+	}, 60_000);
+
 	it('apply refuses a live supervisor booted from a different graph', async () => {
 		const appRoot = makeTempRoot('cli-live-apply-stale-app');
 		const stateRoot = makeTempRoot('cli-live-apply-stale-state');

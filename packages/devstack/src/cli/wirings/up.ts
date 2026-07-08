@@ -291,6 +291,7 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 				const snapshot = yield* SnapshotOrchestratorService;
 				const fs = yield* FileSystem.FileSystem;
 				const stackPaths = yield* StackPathsService;
+				const graphInput = yield* computeGraphInput;
 				// Resume any restore interrupted by a hard kill / power-loss
 				// between the atomic swap and the end of the image-promotion
 				// handoff (the interrupted-restore sentinel rode the swap into
@@ -311,15 +312,11 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 				yield* recoverInterruptedRestore({
 					liveRoot: stackPaths.stackRoot,
 					restoreSnapshot: (id) =>
-						computeGraphInput.pipe(
-							Effect.flatMap((currentGraphInput) =>
-								snapshot.restore({
-									id,
-									currentGraphInput,
-									graphInputMismatchPolicy: 'warn',
-								}),
-							),
-						),
+						snapshot.restore({
+							id,
+							currentGraphInput: graphInput,
+							graphInputMismatchPolicy: 'warn',
+						}),
 				});
 				if (snapshotCache !== undefined) {
 					if (snapshotCache.existingSnapshotId === undefined) {
@@ -327,7 +324,6 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 							`snapshot cache ${snapshotCache.name} was not found; boot will refresh it`,
 						);
 					} else {
-						const graphInput = yield* computeGraphInput;
 						const catalog = yield* provideFileSystem(fs, snapshot.list);
 						const entry = catalog.find(
 							(snapshotEntry) => snapshotEntry.id === snapshotCache.existingSnapshotId,
@@ -351,7 +347,6 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 						}
 					}
 				} else if (startFromSnapshot !== undefined) {
-					const graphInput = yield* computeGraphInput;
 					if (startFromSnapshot.stalePolicy === 'clean-start') {
 						const catalog = yield* provideFileSystem(fs, snapshot.list);
 						const entry = catalog.find(
@@ -387,12 +382,11 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 					stackRoot: stackPaths.stackRoot,
 					handle: h.supervisor,
 				});
-				const bootGraphInput = yield* computeGraphInput;
 				yield* installLiveSupervisorRoster({
 					stackRoot: stackPaths.stackRoot,
 					app: String(identityValue.app),
 					stack: String(identityValue.stack),
-					graphInputId: bootGraphInput.graphInputId,
+					graphInputId: graphInput.graphInputId,
 				});
 				const rendererEvents = yield* Queue.unbounded<EngineEvent>();
 				const renderer = makeTuiSurface({
