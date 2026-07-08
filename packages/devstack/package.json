@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/devstack",
-	"version": "0.7.0",
+	"version": "0.7.1",
 	"description": "Next-generation Sui devstack package.",
 	"keywords": [
 		"sui",
