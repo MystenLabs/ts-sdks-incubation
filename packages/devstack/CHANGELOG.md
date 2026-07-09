@@ -1,5 +1,18 @@
 # @mysten-incubation/devstack
 
+## 0.7.1
+
+### Patch Changes
+
+- 8119fac: Scrub Move `Published.toml` files from staged unpublished builds and make the Move build
+  environment configurable internally.
+- 8119fac: Expose dev-wallet allowed origins to the injected adapter, reject forbidden page origins
+  with a browser-visible diagnostic, and allow same-stack routed app endpoints without allowing raw
+  loopback origins.
+- 8119fac: Preserve valid explicit MVR placeholders, make cached local package publishes adopt the
+  current placeholder, and refuse live `apply` when the running supervisor was booted from a stale
+  stack graph.
+
 ## 0.7.0
 
 ### Minor Changes
