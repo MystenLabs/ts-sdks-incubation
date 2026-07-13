@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	SUI_FAUCET_ENDPOINT_NAME,
 	SUI_FAUCET_ENTRYPOINT_PORT,
+	SUI_ENTRYPOINTS,
 	SUI_GRAPHQL_ENDPOINT_NAME,
 	SUI_GRAPHQL_ENTRYPOINT_PORT,
 	SUI_RPC_ENDPOINT_NAME,
@@ -10,6 +11,14 @@ import {
 	makeSuiForkRoutables,
 	makeSuiLocalRoutables,
 } from '../../../src/plugins/sui/routable.ts';
+
+describe('SUI_ENTRYPOINTS', () => {
+	it('marks the RPC listener as h2c for router-fronted gRPC', () => {
+		expect(SUI_ENTRYPOINTS.find((entrypoint) => entrypoint.name === SUI_RPC_ENDPOINT_NAME)).toEqual(
+			{ name: SUI_RPC_ENDPOINT_NAME, port: SUI_RPC_ENTRYPOINT_PORT, protocol: 'h2c' },
+		);
+	});
+});
 
 describe('makeSuiLocalRoutables', () => {
 	it('routes local Sui RPC, faucet, and GraphQL through named entrypoints', () => {
@@ -23,6 +32,7 @@ describe('makeSuiLocalRoutables', () => {
 			SUI_FAUCET_ENDPOINT_NAME,
 			SUI_GRAPHQL_ENDPOINT_NAME,
 		]);
+		expect(routes.map((route) => route.wireProtocol)).toEqual(['h2c', 'http', 'http']);
 		expect(routes.map((route) => route.upstream)).toEqual([
 			{
 				type: 'container',
@@ -40,7 +50,6 @@ describe('makeSuiLocalRoutables', () => {
 				containerPort: SUI_GRAPHQL_ENTRYPOINT_PORT,
 			},
 		]);
-		expect(routes.every((route) => route.wireProtocol === 'http')).toBe(true);
 	});
 
 	it('can omit GraphQL for callers that have not enabled it', () => {
@@ -75,7 +84,7 @@ describe('makeSuiForkRoutables', () => {
 					containerName: 'devstack-arena-arena-sui-fork',
 					containerPort: SUI_RPC_ENTRYPOINT_PORT,
 				},
-				wireProtocol: 'http',
+				wireProtocol: 'h2c',
 				cors: true,
 			},
 		]);

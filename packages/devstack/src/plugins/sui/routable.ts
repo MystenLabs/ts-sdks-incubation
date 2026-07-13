@@ -9,7 +9,7 @@ export const SUI_FAUCET_ENTRYPOINT_PORT = 9123;
 export const SUI_GRAPHQL_ENTRYPOINT_PORT = 9125;
 
 export const SUI_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
-	{ name: SUI_RPC_ENDPOINT_NAME, port: SUI_RPC_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: SUI_RPC_ENDPOINT_NAME, port: SUI_RPC_ENTRYPOINT_PORT, protocol: 'h2c' },
 	{ name: SUI_FAUCET_ENDPOINT_NAME, port: SUI_FAUCET_ENTRYPOINT_PORT, protocol: 'http' },
 	{ name: SUI_GRAPHQL_ENDPOINT_NAME, port: SUI_GRAPHQL_ENTRYPOINT_PORT, protocol: 'http' },
 ];
@@ -31,7 +31,7 @@ export const makeSuiLocalRoutables = (parts: {
 			containerPort: SUI_RPC_ENTRYPOINT_PORT,
 		},
 		cors: true,
-		wireProtocol: 'http',
+		wireProtocol: 'h2c',
 	},
 	{
 		kind: 'routable',
@@ -85,6 +85,6 @@ export const makeSuiForkRoutables = (parts: {
 			containerPort: SUI_RPC_ENTRYPOINT_PORT,
 		},
 		cors: true,
-		wireProtocol: 'http',
+		wireProtocol: 'h2c',
 	},
 ];

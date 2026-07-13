@@ -44,6 +44,7 @@ const stubUpstreams: UpstreamResolver = {
 
 const registry = makeEntrypointRegistry([
 	{ name: 'wallet-app', port: 6173, protocol: 'http' },
+	{ name: 'sui-rpc', port: 9000, protocol: 'h2c' },
 	{ name: 'walrus-aggregator', port: 9185, protocol: 'http' },
 	{ name: 'postgres-tcp', port: 5432, protocol: 'tcp' },
 ]);
@@ -133,6 +134,31 @@ describe('resolveRoute', () => {
 			expect(r.wireProtocol).toBe('https');
 			expect(r.upstreamUrl).toBe('https://172.20.0.5:9185');
 			expect(r.hostname).toBe('walrus-node-0.my-app.localhost');
+		}),
+	);
+
+	it.effect('resolves an h2c Routable with an h2c upstream URL for Traefik', () =>
+		Effect.gen(function* () {
+			const r = yield* resolveRoute(
+				identity,
+				{
+					kind: 'routable',
+					endpointName: 'sui-rpc',
+					dispatchId: { serviceKey: 'sui.local', role: 'rpc' },
+					upstream: {
+						type: 'container',
+						containerName: 'sui-validator',
+						containerPort: 9000,
+					},
+					wireProtocol: 'h2c',
+					cors: true,
+				},
+				registry,
+				stubUpstreams,
+			);
+			expect(r.wireProtocol).toBe('h2c');
+			expect(r.upstreamUrl).toBe('h2c://172.20.0.5:9000');
+			expect(r.hostname).toBe('rpc.my-app.localhost');
 		}),
 	);
 
@@ -365,6 +391,35 @@ describe('renderRouteYaml', () => {
 			entrypointName: 'walrus-aggregator',
 			entrypointPort: 9185,
 			wireProtocol: 'https',
+		});
+	});
+
+	it('emits h2c upstream URLs for cleartext HTTP/2 routes', () => {
+		const h2c: ResolvedRoute = {
+			dispatchFileId: 'sui-my-app-main--rpc',
+			hostname: 'rpc.my-app.localhost',
+			entrypointName: 'sui-rpc',
+			entrypointPort: 9000,
+			upstreamUrl: 'h2c://172.20.0.5:9000',
+			cors: true,
+			wireProtocol: 'h2c',
+		};
+		const yaml = renderRouteYaml(h2c, lease);
+		expect(yaml).toContain('# wireProtocol: h2c');
+		expect(yaml).toContain('Header(`Content-Type`, `application/grpc`)');
+		expect(yaml).toContain(`service: "${h2c.dispatchFileId}-grpc-svc"`);
+		expect(yaml).toContain('priority: 20');
+		expect(yaml).toContain('priority: 10');
+		expect(yaml).toContain('h2c upstream');
+		expect(yaml).toContain('- url: "h2c://172.20.0.5:9000"');
+		expect(yaml).toContain('HTTP fallback');
+		expect(yaml).toContain('- url: "http://172.20.0.5:9000"');
+		expect(yaml.match(/passHostHeader: false/g)).toHaveLength(2);
+		expect(parseDispatchRouteMetadata(yaml)).toMatchObject({
+			dispatchFileId: h2c.dispatchFileId,
+			entrypointName: 'sui-rpc',
+			entrypointPort: 9000,
+			wireProtocol: 'h2c',
 		});
 	});
 });
