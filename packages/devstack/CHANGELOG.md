@@ -1,5 +1,12 @@
 # @mysten-incubation/devstack
 
+## 0.7.2
+
+### Patch Changes
+
+- e6ebe4a: Route native Sui gRPC traffic through the devstack router over h2c while keeping grpc-web
+  and JSON-RPC working on the same public RPC URL.
+
 ## 0.7.1
 
 ### Patch Changes
