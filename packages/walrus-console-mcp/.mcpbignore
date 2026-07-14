@@ -1,0 +1,26 @@
+# The .mcpb is self-contained: manifest.json + dist/console-mcp.js only.
+# dist/console-mcp.js is a fully-bundled single file (see tsup.mcpb.config.ts),
+# so node_modules and source are not needed at runtime.
+node_modules/
+src/
+bin/
+tests/
+*.ts
+!*.d.ts
+tsconfig.json
+biome.json
+*.config.ts
+.env
+.env.*
+*.mcpb
+.git/
+.gitignore
+.DS_Store
+coverage/
+pnpm-lock.yaml
+README.md
+
+# Local dev / client config (not for distribution)
+.claude/
+.mcp.json
+.env.example

@@ -1,0 +1,69 @@
+{
+  "name": "@mysten-incubation/walrus-console-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Walrus Console — ggdrive-style decentralized, Seal-encrypted storage on Walrus + Sui",
+  "type": "module",
+  "bin": {
+    "walrus-console-mcp": "./dist/console-mcp.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MystenLabs/walrus-console-mcp.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsx bin/console-mcp.ts",
+    "build": "tsup",
+    "prepublishOnly": "pnpm build",
+    "build:mcpb": "tsup --config tsup.mcpb.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "prepare": "effect-language-service patch || true",
+    "mcpb:validate": "mcpb validate manifest.json",
+    "mcpb:pack": "pnpm build:mcpb && mcpb pack . walrus-console-mcp.mcpb"
+  },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "walrus",
+    "console",
+    "sui",
+    "seal",
+    "decentralized-storage",
+    "effect"
+  ],
+  "license": "MIT",
+  "packageManager": "pnpm@10.33.2",
+  "dependencies": {
+    "@effect/platform": "^0.80.0",
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "@mysten/seal": "1.1.3",
+    "@mysten/sui": "2.17.0",
+    "effect": "3.13.7",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
+    "@biomejs/biome": "2.4.16",
+    "@effect/language-service": "^0.2.0",
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.25.4",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.3"
+  }
+}
