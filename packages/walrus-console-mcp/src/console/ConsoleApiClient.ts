@@ -405,7 +405,11 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         );
       }
 
-      const arrayBuffer = yield* Effect.tryPromise(() => response.arrayBuffer());
+      const arrayBuffer = yield* Effect.tryPromise({
+        try: () => response.arrayBuffer(),
+        catch: () =>
+          new ConsoleApiError({ message: "Failed to read download body", status: response.status }),
+      });
       return new Uint8Array(arrayBuffer);
     });
 

@@ -28,6 +28,7 @@ export class SealCryptoError extends Data.TaggedError("SealCryptoError")<{
   readonly cause?: unknown;
   readonly step:
     | "load_keypair"
+    | "parse"
     | "encrypt"
     | "decrypt"
     | "build_ptb"

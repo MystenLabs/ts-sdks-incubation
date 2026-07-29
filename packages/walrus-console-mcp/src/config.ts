@@ -1,4 +1,5 @@
 import { Config, Context, Layer, Redacted } from "effect";
+import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "./baseUrl.js";
 import { loadConfigFile } from "./configFile.js";
 
 /**
@@ -34,6 +35,19 @@ export const resolvedString = (envName: string, fileValue: string | undefined, f
     Config.map((s) => s.trim()),
   );
 
+/**
+ * Resolve `CONSOLE_API_BASE_URL` and enforce the base-URL allowlist. A
+ * disallowed value fails config construction (and thus every tool) rather than
+ * silently redirecting the Bearer API key to an arbitrary host.
+ */
+export const resolvedBaseUrl = (fileValue: string | undefined) =>
+  resolvedString("CONSOLE_API_BASE_URL", fileValue, DEFAULT_CONSOLE_API_BASE_URL).pipe(
+    Config.validate({
+      message: "CONSOLE_API_BASE_URL must be https to a walrus.xyz host, or http(s) to localhost",
+      validation: isAllowedBaseUrl,
+    }),
+  );
+
 export const ConsoleConfig = Config.all({
   apiKey: resolvedString("CONSOLE_API_KEY", fileConfig.apiKey, "").pipe(Config.map(Redacted.make)),
   servicePrivateKey: resolvedString(
@@ -49,11 +63,7 @@ export const ConsoleConfig = Config.all({
   adminServicePrivateKey: Config.redacted("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY").pipe(
     Config.withDefault(Redacted.make("")),
   ),
-  baseUrl: resolvedString(
-    "CONSOLE_API_BASE_URL",
-    fileConfig.baseUrl,
-    "https://api.testnet.harbor.walrus.xyz",
-  ),
+  baseUrl: resolvedBaseUrl(fileConfig.baseUrl),
 });
 
 export type ConsoleConfig = Config.Config.Success<typeof ConsoleConfig>;

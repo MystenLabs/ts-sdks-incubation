@@ -68,6 +68,30 @@ describe("loadConfigFile", () => {
       baseUrl: undefined,
     });
   });
+
+  it("ignores an off-policy baseUrl (defense in depth against a tampered file)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_x", baseUrl: "https://evil.com" }),
+      "utf-8",
+    );
+    const result = loadConfigFile();
+    expect(result.apiKey).toBe("hbr_x");
+    expect(result.baseUrl).toBeUndefined();
+  });
+
+  it("keeps an allowed baseUrl", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ baseUrl: "https://api.testnet.harbor.walrus.xyz" }),
+      "utf-8",
+    );
+    expect(loadConfigFile().baseUrl).toBe("https://api.testnet.harbor.walrus.xyz");
+  });
 });
 
 describe("saveConfigFile", () => {

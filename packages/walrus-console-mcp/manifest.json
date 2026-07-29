@@ -10,9 +10,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/benhaq/walrus-console-mcp"
+    "url": "https://github.com/MystenLabs/walrus-console-mcp"
   },
-  "homepage": "https://github.com/benhaq/walrus-console-mcp",
+  "homepage": "https://github.com/MystenLabs/walrus-console-mcp",
   "license": "MIT",
   "keywords": ["mcp", "walrus", "console", "sui", "seal", "decentralized-storage"],
   "server": {
@@ -70,7 +70,7 @@
   "compatibility": {
     "platforms": ["darwin", "win32", "linux"],
     "runtimes": {
-      "node": ">=20.0.0"
+      "node": ">=22.0.0"
     }
   },
   "tools": [
@@ -79,6 +79,10 @@
       "description": "Check whether required Console credentials are present."
     },
     { "name": "list_spaces", "description": "List your Personal and Team spaces." },
+    {
+      "name": "get_storage_usage",
+      "description": "Get aggregated storage usage for your active Console space."
+    },
     { "name": "list_buckets", "description": "List buckets in a space." },
     { "name": "create_bucket", "description": "Create a new Seal-encrypted bucket." },
     {

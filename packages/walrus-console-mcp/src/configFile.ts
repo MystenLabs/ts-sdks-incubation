@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isAllowedBaseUrl } from "./baseUrl.js";
 
 /**
  * Persistent config file for walrus-console-mcp.
@@ -58,7 +59,12 @@ export function loadConfigFile(): ConfigFileData {
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : undefined,
       servicePrivateKey:
         typeof parsed.servicePrivateKey === "string" ? parsed.servicePrivateKey : undefined,
-      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : undefined,
+      // Ignore an off-policy baseUrl from the file (defense in depth): a
+      // tampered config.json must not redirect the Bearer key to a foreign host.
+      baseUrl:
+        typeof parsed.baseUrl === "string" && isAllowedBaseUrl(parsed.baseUrl)
+          ? parsed.baseUrl
+          : undefined,
     };
   } catch {
     return {};
@@ -69,6 +75,14 @@ export function loadConfigFile(): ConfigFileData {
  * Save config to the persistent file.
  * Creates the directory (0o700) and file (0o600) with restrictive permissions
  * so credentials are not world-readable.
+ *
+ * Writes to a same-directory temp file created 0o600, then renames it over the
+ * target. This avoids the write-then-chmod window where the plaintext
+ * credentials briefly existed under a looser mode (writeFileSync's `mode` is
+ * ignored when overwriting an existing file), and makes the replacement atomic —
+ * a crash mid-write leaves the old file intact, never a half-written or
+ * loose-perm one. The rename also relaxes any legacy loose mode, since it
+ * replaces the inode.
  */
 export function saveConfigFile(data: ConfigFileData): void {
   const dir = getConfigDir();
@@ -77,8 +91,21 @@ export function saveConfigFile(data: ConfigFileData): void {
   const filePath = getConfigFilePath();
   const content = `${JSON.stringify(data, null, 2)}\n`;
 
-  fs.writeFileSync(filePath, content, { encoding: "utf-8", mode: 0o600 });
-  // writeFileSync's `mode` only applies when the file is *created*; an overwrite of a
-  // pre-existing (looser-perm) config.json keeps its old mode. chmod enforces 0600 either way.
-  fs.chmodSync(filePath, 0o600);
+  // "wx" fails if a stale temp somehow exists rather than silently reusing it;
+  // fchmod pins 0o600 even under a hostile umask that would loosen the open mode.
+  const tmpPath = path.join(dir, `.${CONFIG_FILENAME}.${process.pid}.tmp`);
+  const fd = fs.openSync(tmpPath, "wx", 0o600);
+  try {
+    fs.fchmodSync(fd, 0o600);
+    fs.writeFileSync(fd, content, "utf-8");
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw err;
+  }
 }

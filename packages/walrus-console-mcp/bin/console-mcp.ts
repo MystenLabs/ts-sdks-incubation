@@ -1,14 +1,27 @@
 #!/usr/bin/env node
 
 // Route `walrus-console-mcp install` to the interactive installer.
-// Must run before any Effect/MCP imports (they are heavy and unneeded for the CLI).
+// (This branch does NOT run before the imports below — ESM hoists all `import`
+// statements above it — but it does short-circuit before the server-path
+// redaction wiring, so we install redaction here too.)
 if (process.argv[2] === "install") {
+  // Wire secret redaction before running the installer: an error thrown mid-install
+  // (e.g. a failed validation fetch that embeds the Authorization header) must not
+  // print a credential. Register env + any already-saved file secrets; the installer
+  // registers the freshly-typed keys as they are entered.
+  registerSecretsFromEnv();
+  const saved = loadConfigFile();
+  registerSecret(saved.apiKey);
+  registerSecret(saved.servicePrivateKey);
+  installLogRedaction();
+
   const { runInstall } = await import("./install.js");
   try {
     await runInstall();
     process.exit(0);
   } catch (err) {
-    console.error(err);
+    // Print the message only (redacted), never the raw error object/stack.
+    console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
 }
@@ -36,7 +49,7 @@ import {
   registerSecret,
   registerSecretsFromEnv,
 } from "../src/redaction";
-import { AppRuntime, runPromise } from "../src/runtime";
+import { AppRuntime, runPromise, unwrapFiberFailure } from "../src/runtime";
 
 /**
  * Console MCP Server — stdio entrypoint.
@@ -119,29 +132,19 @@ function safeTool<Args, T>(toolName: string, handler: (args: Args) => Promise<T>
       const raw = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return { content: [{ type: "text" as const, text: redactString(raw) }] };
     } catch (error) {
-      // Tagged errors carry their data in fields, not `message` (e.g. KeyActivationError,
-      // FileStatusError, SpaceMismatchError all have an empty `.message`). Fall back to a
-      // JSON dump of the fields so timeouts/failures stay readable instead of blank.
-      let message: string;
-      if (error instanceof Error && error.message) {
-        message = error.message;
-      } else {
-        try {
-          message = JSON.stringify(error);
-        } catch {
-          message = String(error);
-        }
-      }
-      const stack = error instanceof Error && error.stack ? `\n\n${error.stack}` : "";
+      // runPromise wraps failures in a FiberFailure whose message is the generic
+      // "An error has occurred" — unwrap it so the typed error (and its fields,
+      // for tagged errors) reaches the log and the tool output.
+      const unwrapped = unwrapFiberFailure(error);
 
       console.error(`[console-mcp ERROR] Tool "${toolName}" failed:`);
-      console.error(error);
+      console.error(unwrapped);
 
       return {
         content: [
           {
             type: "text" as const,
-            text: formatToolError(toolName, error),
+            text: formatToolError(toolName, unwrapped),
           },
         ],
       };

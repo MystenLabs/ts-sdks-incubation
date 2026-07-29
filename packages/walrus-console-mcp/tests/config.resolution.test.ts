@@ -1,6 +1,7 @@
 import { ConfigProvider, Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { resolvedString } from "../src/config";
+import { DEFAULT_CONSOLE_API_BASE_URL } from "../src/baseUrl";
+import { resolvedBaseUrl, resolvedString } from "../src/config";
 
 // Drive resolvedString through a custom ConfigProvider so we control the "env" without
 // touching process.env. Mirrors process.env semantics: a missing map key = unset var,
@@ -38,5 +39,34 @@ describe("resolvedString — env → file → fallback priority", () => {
 
   it("trims surrounding whitespace on the resolved value", async () => {
     expect(await run({ CONSOLE_API_KEY: "  hbr_env  " }, undefined)).toBe("hbr_env");
+  });
+});
+
+describe("resolvedBaseUrl — allowlist enforcement", () => {
+  const runBaseUrl = (env: Record<string, string>, fileValue: string | undefined) =>
+    Effect.runPromise(
+      resolvedBaseUrl(fileValue).pipe(
+        Effect.withConfigProvider(ConfigProvider.fromMap(new Map(Object.entries(env)))),
+      ),
+    );
+
+  it("uses the default when nothing is set", async () => {
+    expect(await runBaseUrl({}, undefined)).toBe(DEFAULT_CONSOLE_API_BASE_URL);
+  });
+
+  it("accepts an allowed env override", async () => {
+    expect(await runBaseUrl({ CONSOLE_API_BASE_URL: "http://localhost:3000" }, undefined)).toBe(
+      "http://localhost:3000",
+    );
+  });
+
+  it("fails config construction for a disallowed env override", async () => {
+    await expect(
+      runBaseUrl({ CONSOLE_API_BASE_URL: "https://evil.com" }, undefined),
+    ).rejects.toThrow(/CONSOLE_API_BASE_URL/);
+  });
+
+  it("fails config construction for a disallowed file value", async () => {
+    await expect(runBaseUrl({}, "https://evil.com")).rejects.toThrow(/CONSOLE_API_BASE_URL/);
   });
 });

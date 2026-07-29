@@ -1,0 +1,34 @@
+/**
+ * Console API base-URL policy.
+ *
+ * The API key is attached as `Authorization: Bearer <key>` to every request, so
+ * an attacker who can set `CONSOLE_API_BASE_URL` (env) or write it into the
+ * config file could redirect the live key to a host they control. Confine the
+ * base URL to https on a walrus.xyz host, or http(s) to loopback for local dev.
+ *
+ * Dependency-free on purpose: the installer imports this without pulling in
+ * Effect. Keep `DEFAULT_CONSOLE_API_BASE_URL` in sync with the default in
+ * `manifest.json` (`user_config.base_url.default`), which cannot import it.
+ */
+
+export const DEFAULT_CONSOLE_API_BASE_URL = "https://api.testnet.harbor.walrus.xyz";
+
+/**
+ * True if `raw` is an allowed Console base URL: https to `walrus.xyz` /
+ * `*.walrus.xyz` (boundary-safe suffix), or http(s) to loopback
+ * (localhost / 127.0.0.1 / ::1). Anything unparseable or off-policy is rejected.
+ */
+export function isAllowedBaseUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  const loopback =
+    host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  if (url.protocol === "http:") return loopback;
+  if (url.protocol !== "https:") return false;
+  return loopback || host === "walrus.xyz" || host.endsWith(".walrus.xyz");
+}

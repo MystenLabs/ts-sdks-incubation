@@ -47,6 +47,22 @@ describe("saveConfigFile — file permissions (review #1)", () => {
     saveConfigFile({ apiKey: "hbr_new_key" });
     expect(fs.statSync(getConfigFilePath()).mode & 0o777).toBe(0o600);
   });
+
+  it("leaves no temp file behind after an atomic save", () => {
+    saveConfigFile({ apiKey: "hbr_new_key" });
+    const dir = path.dirname(getConfigFilePath());
+    const leftovers = fs.readdirSync(dir).filter((name) => name.includes(".tmp"));
+    expect(leftovers).toEqual([]);
+  });
+
+  it("round-trips content through the atomic overwrite path", () => {
+    saveConfigFile({ apiKey: "hbr_old" });
+    saveConfigFile({ apiKey: "hbr_new", servicePrivateKey: "suiprivkey1new" });
+    const loaded = loadConfigFile();
+    expect(loaded.apiKey).toBe("hbr_new");
+    expect(loaded.servicePrivateKey).toBe("suiprivkey1new");
+    expect(fs.statSync(getConfigFilePath()).mode & 0o777).toBe(0o600);
+  });
 });
 
 describe("config-file credentials are redactable (review #2)", () => {

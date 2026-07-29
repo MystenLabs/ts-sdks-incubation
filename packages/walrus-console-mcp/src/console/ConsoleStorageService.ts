@@ -55,6 +55,8 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         localPath: string,
         targetName?: string,
       ) {
+        // fs.readFile returns a Buffer, which IS a Uint8Array — pass it straight to
+        // seal.encrypt instead of copying the whole file into a second buffer.
         const fileBytes = yield* Effect.tryPromise({
           try: () => fs.readFile(localPath),
           catch: () =>
@@ -63,7 +65,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
               path: localPath,
               operation: "read",
             }),
-        }).pipe(Effect.map((b) => new Uint8Array(b)));
+        });
 
         const fileName = targetName ?? path.basename(localPath);
 

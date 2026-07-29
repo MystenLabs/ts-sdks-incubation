@@ -3,8 +3,10 @@ import * as fs from "node:fs";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { styleText } from "node:util";
+import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "../src/baseUrl.js";
 import { getClients, selectClients } from "../src/clients.js";
 import { type ConfigFileData, loadConfigFile, saveConfigFile } from "../src/configFile.js";
+import { registerSecret } from "../src/redaction.js";
 
 /** The npm package this installer registers. The server *name* used in agent
  * configs stays unversioned; only the npx package argument gets pinned. */
@@ -239,15 +241,15 @@ async function stepAuth(
   // testnet default. Power users override it with the CONSOLE_API_BASE_URL env
   // var (also honored by the server's config layer), no install-time question.
   let apiKey = "";
-  const defaultBaseUrl = "https://api.testnet.harbor.walrus.xyz";
-  const { CONSOLE_API_BASE_URL } = process.env;
-  const baseUrl = CONSOLE_API_BASE_URL || defaultBaseUrl;
+  const baseUrl = resolveInstallBaseUrl();
 
   while (true) {
     apiKey = await promptMasked(
       rl,
       `${PAD}${accent("CONSOLE_API_KEY")} ${styleText("dim", "(hbr_…)")}: `,
     );
+    // Register before validateApiKey — its fetch error can embed the Bearer header.
+    registerSecret(apiKey);
     if (!apiKey) {
       line(fail("API key is required."));
       continue;
@@ -271,6 +273,7 @@ async function stepAuth(
     rl,
     `${PAD}${styleText("yellow", "[optional]")} ${accent("CONSOLE_SERVICE_PRIVATE_KEY")} ${styleText("dim", "(suiprivkey1…) — Enter to skip")}: `,
   );
+  registerSecret(servicePrivateKey);
   if (servicePrivateKey) {
     if (isValidServiceKeyFormat(servicePrivateKey)) {
       line(ok("Service key format looks good"));
@@ -284,7 +287,7 @@ async function stepAuth(
   // Save to config file
   const configData: ConfigFileData = { apiKey };
   if (servicePrivateKey) configData.servicePrivateKey = servicePrivateKey;
-  if (baseUrl !== defaultBaseUrl) configData.baseUrl = baseUrl;
+  if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) configData.baseUrl = baseUrl;
   saveConfigFile(configData);
   line(ok("Credentials saved"));
   detail("~/.config/walrus-console-mcp/config.json");
@@ -341,8 +344,31 @@ async function stepRegister(spec: string): Promise<void> {
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the base URL from the env override (or the testnet default) and reject
+ * an off-policy value. Called at the very start of runInstall — before any
+ * readline/prompt machinery — so the rejection surfaces cleanly instead of being
+ * swallowed by readline's `close`→cancel handler, and before any key-bearing
+ * fetch could leak the API key to a disallowed host.
+ */
+export function resolveInstallBaseUrl(): string {
+  const { CONSOLE_API_BASE_URL } = process.env;
+  const baseUrl = CONSOLE_API_BASE_URL || DEFAULT_CONSOLE_API_BASE_URL;
+  if (!isAllowedBaseUrl(baseUrl)) {
+    throw new Error(
+      `CONSOLE_API_BASE_URL is not an allowed Console endpoint: ${baseUrl}. ` +
+        `It must be https to a walrus.xyz host, or http(s) to localhost.`,
+    );
+  }
+  return baseUrl;
+}
+
 export async function runInstall(): Promise<void> {
   printBanner();
+
+  // Fail fast on a bad base-URL override, before readline is created (see
+  // resolveInstallBaseUrl) so the error is not swallowed as a "cancel".
+  resolveInstallBaseUrl();
 
   // Check if already configured
   const existing = loadConfigFile();

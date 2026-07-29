@@ -1,5 +1,5 @@
 # The .mcpb is self-contained: manifest.json + dist/console-mcp.js only.
-# dist/console-mcp.js is a fully-bundled single file (see tsup.mcpb.config.ts),
+# dist/console-mcp.js is a fully-bundled single file (see tsdown.mcpb.config.ts),
 # so node_modules and source are not needed at runtime.
 node_modules/
 src/
@@ -8,7 +8,9 @@ tests/
 *.ts
 !*.d.ts
 tsconfig.json
-biome.json
+.oxlintrc.json
+prettier.config.js
+.prettierignore
 *.config.ts
 .env
 .env.*

@@ -86,13 +86,31 @@ export function redactValue(input: unknown): string {
 }
 
 /**
+ * Human-readable body for an error. Tagged errors (Data.TaggedError) carry
+ * their data in fields, not `message` (e.g. KeyActivationError, FileStatusError,
+ * SpaceMismatchError, MirrorGrantMissingError all have an empty `.message`), so
+ * fall back to a JSON dump of the fields — their `toJSON` yields fields + `_tag`
+ * without the stack.
+ */
+function describeError(error: unknown): string {
+  if (error instanceof Error && error.message.trim() !== "") return error.message;
+  if (typeof error === "object" && error !== null && "_tag" in error) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      // fall through to String(error)
+    }
+  }
+  return String(error);
+}
+
+/**
  * Build the user-facing text for a failed tool call, with secrets scrubbed.
  * Mirrors the previous inline formatting in `safeTool`, but redacted.
  */
 export function formatToolError(toolName: string, error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error && error.stack ? `\n\n${error.stack}` : "";
-  return redactString(`**Error in ${toolName}**\n\n${message}${stack}`);
+  return redactString(`**Error in ${toolName}**\n\n${describeError(error)}${stack}`);
 }
 
 /** Console methods we wrap. */

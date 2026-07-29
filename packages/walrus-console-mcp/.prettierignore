@@ -1,0 +1,9 @@
+dist/
+coverage/
+node_modules/
+pnpm-lock.yaml
+package.json
+CHANGELOG.md
+*.mcpb
+.remember/
+.claude/

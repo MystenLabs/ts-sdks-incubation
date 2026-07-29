@@ -8,7 +8,7 @@ Create buckets, upload files, retrieve documents, and manage data stored on Walr
 
 Using a coding agent like **Claude Code**, **Codex**, **Cursor**, or **Gemini CLI**? Copy the block below verbatim into the agent and it will install, configure, and verify `@mysten-incubation/walrus-console-mcp` for you. (Have your two Console keys ready — see [Get your Console credentials](#1-get-your-walrus-console-credentials).)
 
-````text
+```text
 Set up the @mysten-incubation/walrus-console-mcp MCP server for me by running these steps in order. Stop and ask me only if a step actually fails.
 
 1. Run the interactive installer: `npx -y @mysten-incubation/walrus-console-mcp install`. It will ask me for my CONSOLE_API_KEY (starts with `hbr_`) and CONSOLE_SERVICE_PRIVATE_KEY (starts with `suiprivkey1`), validate them, and save them to a user-only config file. Don't print my keys back to me.
@@ -19,7 +19,7 @@ Set up the @mysten-incubation/walrus-console-mcp MCP server for me by running th
 3. Then tell me: restart the agent (or run `/mcp`), approve walrus-console-mcp when prompted, and test with the `ping_console` tool.
 
 Never put my keys anywhere except where the installer saves them.
-````
+```
 
 That's it — once the agent finishes and you've approved the MCP server, you can manage files in Walrus Console using natural language. The rest of this README explains each step in detail if you'd rather do it manually.
 
@@ -31,7 +31,6 @@ That's it — once the agent finishes and you've approved the MCP server, you ca
 - Keep sensitive files private by default
 - Use Console as durable storage for apps, agents, and AI workflows
 
-
 ## Quick Start
 
 ### Install from npm (recommended)
@@ -41,6 +40,7 @@ npx -y @mysten-incubation/walrus-console-mcp install
 ```
 
 This interactive CLI will:
+
 1. Ask for your Walrus Console API key and (optional) service private key
 2. Validate your credentials against the Console API
 3. Auto-configure Claude Desktop (and print instructions for Claude Code, Codex, and other agents)
@@ -102,17 +102,22 @@ codex mcp add walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp
 
 ## Available Tools
 
-| Tool              | Description                              | Read/Write |
-|-------------------|------------------------------------------|------------|
-| `ping_console`     | Check that your keys are configured      | Read       |
-| `list_spaces`     | List your Personal + Team spaces         | Read       |
-| `list_buckets`    | List buckets in a space                  | Read       |
-| `list_files`      | List files in a bucket (with search)     | Read       |
-| `create_bucket`   | Create a new private encrypted bucket    | Write      |
-| `generate_api_key`| Mint a scoped child working key (Key-Admin) | Write   |
-| `upload_file`     | Encrypt + upload a local file            | Write      |
-| `download_file`   | Download + decrypt a file to disk        | Read       |
-| `get_file_status` | Check upload progress                    | Read       |
+| Tool                | Description                                 | Read/Write |
+| ------------------- | ------------------------------------------- | ---------- |
+| `ping_console`      | Check that your keys are configured         | Read       |
+| `list_spaces`       | List your Personal + Team spaces            | Read       |
+| `get_storage_usage` | Aggregated storage usage for your space     | Read       |
+| `list_buckets`      | List buckets in a space                     | Read       |
+| `create_bucket`     | Create a new private encrypted bucket       | Write      |
+| `generate_api_key`  | Mint a scoped child working key (Key-Admin) | Write      |
+| `upload_file`       | Encrypt + upload a local file               | Write      |
+| `download_file`     | Download + decrypt a file to disk           | Read       |
+| `list_files`        | List files in a bucket (with search)        | Read       |
+| `get_file_status`   | Check upload progress                       | Read       |
+| `get_bucket`        | Fetch a single bucket's metadata            | Read       |
+| `rename_bucket`     | Rename a bucket                             | Write      |
+| `delete_bucket`     | Permanently delete a bucket and its files   | Write      |
+| `delete_file`       | Permanently delete a single file            | Write      |
 
 ## Example Prompts for Claude
 
@@ -131,10 +136,10 @@ the minting, and the working keys it mints can never escalate or mint anything t
 
 ### Two credential types
 
-| Credential | Prefix | Can do |
-|---|---|---|
-| **Working key** | `hbr_` | Data plane: list/create buckets, upload/download files. **Cannot mint.** |
-| **Key-Admin** | `hbradm_` | Mint child `hbr_` keys + sign their access grants. **No data-plane access.** |
+| Credential      | Prefix    | Can do                                                                       |
+| --------------- | --------- | ---------------------------------------------------------------------------- |
+| **Working key** | `hbr_`    | Data plane: list/create buckets, upload/download files. **Cannot mint.**     |
+| **Key-Admin**   | `hbradm_` | Mint child `hbr_` keys + sign their access grants. **No data-plane access.** |
 
 The Key-Admin credential has two halves — the `hbradm_…` bearer (`CONSOLE_ADMIN_KEY`) and its
 on-chain signer seed `suiprivkey1…` (`CONSOLE_ADMIN_SERVICE_PRIVATE_KEY`). Mints are signed with the
@@ -175,7 +180,7 @@ Given a `permission` (`read_only` | `read_write`) and an optional `label`, the t
 4. polls until the key is **active**, then returns the child credential pair **once**:
 
 The **space is determined by the Key-Admin credential**, not by you — `spaceId` is a required
-input only so the tool can *verify* the minted key landed in the space you expected (it fails with a
+input only so the tool can _verify_ the minted key landed in the space you expected (it fails with a
 `SpaceMismatchError` if the admin credential covers a different space). This mint-time PTB back-fills
 access to the private buckets that **already exist** in the space. Private buckets created **later**
 are granted to the child key **automatically** by Console — its bucket-create flow grants every key
@@ -244,7 +249,9 @@ After registering, restart the agent (or reload the window if using it inside VS
 - `list_spaces`
 - `create_bucket` (with a space ID)
 
-**About file paths in `upload_file` / `download_file`:** relative paths (and `~`) are resolved against **your current workspace**, not the server's install location — so "upload `report.pdf`" and "download to `~/Downloads/x.pdf`" do what you'd expect from whatever project you're working in. Paths are still sandboxed to the filesystem roots your MCP client advertises (see [Security Model](#security-model)).
+**About file paths in `upload_file` / `download_file`:** relative paths (and `~`) are resolved against **your current workspace**, not the server's install location — so "upload `report.pdf`" and "download to `~/Downloads/x.pdf`" do what you'd expect from whatever project you're working in. Paths are sandboxed to your allowed roots (see [Security Model](#security-model)).
+
+> **Note for clients that don't advertise MCP roots** (e.g. Claude Desktop): file access now **fails closed**. `upload_file` / `download_file` return an error until you set `CONSOLE_MCP_ALLOWED_DIRS` to the directories the server may touch — a `PATH`-style list separated by `:` (`;` on Windows), with `~` expansion. Example: `CONSOLE_MCP_ALLOWED_DIRS="$HOME/Documents:$HOME/Downloads"`. Clients that advertise roots (your open workspace folders) need no extra configuration.
 
 ## Security Model
 
@@ -252,8 +259,9 @@ After registering, restart the agent (or reload the window if using it inside VS
 - Your `CONSOLE_SERVICE_PRIVATE_KEY` never leaves your machine
 - Encryption, decryption, and signing happen locally
 - The server only communicates with Console using your API key
-- File access is restricted to the directories exposed by your MCP client
-- Path sandboxing via MCP roots. upload_file (localPath) and download_file (destPath) are confined to the filesystem roots your MCP client advertises. Relative paths (and a leading ~) are resolved against your workspace root rather than the MCP server directory. Paths outside permitted roots are rejected when supported by the MCP client.
+- File access is restricted to your allowed roots
+- Path sandboxing **fails closed**. `upload_file` (localPath) and `download_file` (destPath) are confined to the allowed roots — the filesystem roots your MCP client advertises, or `CONSOLE_MCP_ALLOWED_DIRS` when the client advertises none. If neither is available the path is **rejected**, so a model-chosen path (e.g. from prompt injection) can't reach an arbitrary file. Relative paths (and a leading `~`) are resolved against the first allowed root rather than the MCP server directory.
+- Symlinks are resolved before the containment check: a symlink inside an allowed root that points outside it is rejected, not followed.
 
 ## MCPB bundle (one-file distribution)
 

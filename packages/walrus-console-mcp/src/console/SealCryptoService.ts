@@ -32,6 +32,21 @@ import { SealCryptoError } from "./errors";
  * Pattern: exact match to console/api Effect v3 services (CLAUDE.md).
  */
 
+/** A cached SessionKey together with the signer address it was created for. */
+interface CachedSessionKey {
+  readonly address: string;
+  readonly sessionKey: { isExpired(): boolean };
+}
+
+/**
+ * True when a cached Seal SessionKey may be reused for `address`: it exists, was
+ * created for the same signer, and has not expired (the SDK's `isExpired()`
+ * already applies a ~10s safety margin). Pure, so it is unit-tested directly.
+ */
+export function canReuseSessionKey(cached: CachedSessionKey | undefined, address: string): boolean {
+  return cached !== undefined && cached.address === address && !cached.sessionKey.isExpired();
+}
+
 export class SealCryptoService extends Effect.Service<SealCryptoService>()("SealCryptoService", {
   effect: Effect.gen(function* () {
     const config = yield* ConsoleConfigTag;
@@ -113,6 +128,40 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
       verifyKeyServers: false, // testnet convenience (matches quickstart)
     });
 
+    // SessionKey.create performs a network round-trip (a getObject RPC to assert
+    // the package version) plus a signature every call. It is valid for its full
+    // ttlMin window, so cache it per signer address and recreate only on expiry —
+    // downloading N files no longer means N redundant session registrations. A
+    // rare concurrent-decrypt race may create two keys; harmless (both valid).
+    let cachedSessionKey: { address: string; sessionKey: SessionKey } | undefined;
+
+    const getSessionKey = Effect.fn("SealCryptoService.getSessionKey")(function* (
+      keypair: Ed25519Keypair,
+    ) {
+      const address = keypair.toSuiAddress();
+      if (canReuseSessionKey(cachedSessionKey, address)) {
+        return (cachedSessionKey as { address: string; sessionKey: SessionKey }).sessionKey;
+      }
+      const sessionKey = yield* Effect.tryPromise({
+        try: () =>
+          SessionKey.create({
+            address,
+            packageId: CONSOLE_ORIGINAL_PACKAGE_ID,
+            ttlMin: 10,
+            suiClient,
+            signer: keypair,
+          }),
+        catch: (cause) =>
+          new SealCryptoError({
+            message: "Failed to create Seal SessionKey",
+            cause,
+            step: "session_key",
+          }),
+      });
+      cachedSessionKey = { address, sessionKey };
+      return sessionKey;
+    });
+
     // --- Public API ---
 
     /**
@@ -159,65 +208,67 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
     ) {
       const keypair = yield* getKeypair();
 
-      try {
-        const parsed = EncryptedObject.parse(ciphertext);
-        const idHex = parsed.id.startsWith("0x") ? parsed.id : `0x${parsed.id}`;
-        const idBytes = fromHex(idHex);
-
-        // Build the access-check transaction kind (never broadcast)
-        const tx = new Transaction();
-        tx.moveCall({
-          target: `${CONSOLE_LATEST_PACKAGE_ID}::bucket_policy::seal_approve`,
-          arguments: [tx.pure.vector("u8", Array.from(idBytes)), tx.object(sealPolicyId)],
-        });
-        const txBytes = yield* Effect.tryPromise({
-          try: () => tx.build({ client: suiClient, onlyTransactionKind: true }),
-          catch: (cause) =>
-            new SealCryptoError({
-              message: "Failed to build seal_approve PTB",
-              cause,
-              step: "build_ptb",
-            }),
-        });
-
-        // SessionKey lets Seal key servers verify the caller
-        const sessionKey = yield* Effect.tryPromise({
-          try: () =>
-            SessionKey.create({
-              address: keypair.toSuiAddress(),
-              packageId: CONSOLE_ORIGINAL_PACKAGE_ID,
-              ttlMin: 10,
-              suiClient,
-              signer: keypair,
-            }),
-          catch: (cause) =>
-            new SealCryptoError({
-              message: "Failed to create Seal SessionKey",
-              cause,
-              step: "session_key",
-            }),
-        });
-
-        const plaintext = yield* Effect.tryPromise({
-          try: () => sealClient.decrypt({ data: ciphertext, sessionKey, txBytes }),
-          catch: (cause) =>
-            new SealCryptoError({
-              message: "Seal decryption failed",
-              cause,
-              step: "decrypt",
-            }),
-        });
-
-        return plaintext;
-      } catch (cause) {
-        return yield* Effect.fail(
+      // Parse the ciphertext + derive the Seal identity. These are synchronous and
+      // can throw (malformed ciphertext / bad hex), so wrap them in a typed step —
+      // an outer try/catch would NOT catch a failing `yield*` (Effect unwinds past
+      // the generator) and mislabeled these as the decrypt step.
+      const idBytes = yield* Effect.try({
+        try: () => {
+          const parsed = EncryptedObject.parse(ciphertext);
+          const idHex = parsed.id.startsWith("0x") ? parsed.id : `0x${parsed.id}`;
+          return fromHex(idHex);
+        },
+        catch: (cause) =>
           new SealCryptoError({
-            message: "Decryption pipeline failed",
+            message: "Failed to parse Seal encrypted object",
+            cause,
+            step: "parse",
+          }),
+      });
+
+      // Build the access-check transaction kind (never broadcast). Construction is
+      // synchronous and can throw; the build itself is async.
+      const tx = yield* Effect.try({
+        try: () => {
+          const t = new Transaction();
+          t.moveCall({
+            target: `${CONSOLE_LATEST_PACKAGE_ID}::bucket_policy::seal_approve`,
+            arguments: [t.pure.vector("u8", Array.from(idBytes)), t.object(sealPolicyId)],
+          });
+          return t;
+        },
+        catch: (cause) =>
+          new SealCryptoError({
+            message: "Failed to build seal_approve PTB",
+            cause,
+            step: "build_ptb",
+          }),
+      });
+
+      const txBytes = yield* Effect.tryPromise({
+        try: () => tx.build({ client: suiClient, onlyTransactionKind: true }),
+        catch: (cause) =>
+          new SealCryptoError({
+            message: "Failed to build seal_approve PTB",
+            cause,
+            step: "build_ptb",
+          }),
+      });
+
+      // SessionKey lets Seal key servers verify the caller (cached per address).
+      const sessionKey = yield* getSessionKey(keypair);
+
+      const plaintext = yield* Effect.tryPromise({
+        try: () => sealClient.decrypt({ data: ciphertext, sessionKey, txBytes }),
+        catch: (cause) =>
+          new SealCryptoError({
+            message: "Seal decryption failed",
             cause,
             step: "decrypt",
           }),
-        );
-      }
+      });
+
+      return plaintext;
     });
 
     /**
