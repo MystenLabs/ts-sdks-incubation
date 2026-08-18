@@ -2,7 +2,13 @@ import { Effect } from "effect";
 import { ConsoleConfigLive, ConsoleConfigTag, hasAdminCredential } from "../config";
 import type { ApiKeyPermission } from "./ConsoleApiClient";
 import { ConsoleApiClient } from "./ConsoleApiClient";
-import { AdminCredentialMissingError, KeyActivationError, SpaceMismatchError } from "./errors";
+import {
+  AdminCredentialMissingError,
+  ConsoleApiError,
+  ConsoleAuthError,
+  KeyActivationError,
+  SpaceMismatchError,
+} from "./errors";
 import { SealCryptoService } from "./SealCryptoService";
 
 /**
@@ -27,6 +33,11 @@ const ADMIN_MISSING_MESSAGE =
 // Poll cadence for child-key activation: ~30s budget at a 2s interval.
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 15;
+
+const ADMIN_SIGNER_HINT =
+  "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY may not be the signer registered for CONSOLE_ADMIN_KEY.";
+
+const withHint = (message: string) => `${message} ${ADMIN_SIGNER_HINT}`;
 
 export interface GenerateApiKeyResult {
   readonly apiKey: string; // hbr_… — shown once
@@ -86,7 +97,34 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
           scope,
         });
         const signature = yield* seal.signTransactionBytes(sponsor.bytes, "admin");
-        yield* api.executeSponsored(sponsor.digest, signature);
+        // A wrong-but-valid admin seed signs the PTB fine — Ed25519 signing doesn't
+        // know whose key it "should" be — and only fails once Console checks the
+        // signature against the registered signer here at execute time. That
+        // failure is easy to misread as a generic API error, so append a hint.
+        // Only the two Console-domain error tags get it; anything else (e.g. a
+        // transport-level HttpClientError) passes through untouched — a DNS
+        // failure isn't a signer problem. ConsoleApiError/ConsoleAuthError carry
+        // no `cause` field to preserve, so "don't swallow the original" here means:
+        // keep the exact same error class (and every original field —
+        // status/code/endpoint), with the original message kept as a prefix
+        // rather than replaced.
+        yield* api.executeSponsored(sponsor.digest, signature).pipe(
+          Effect.catchTags({
+            ConsoleApiError: (error) =>
+              Effect.fail(
+                new ConsoleApiError({
+                  message: withHint(error.message),
+                  ...(error.code !== undefined ? { code: error.code } : {}),
+                  ...(error.status !== undefined ? { status: error.status } : {}),
+                  ...(error.endpoint !== undefined ? { endpoint: error.endpoint } : {}),
+                }),
+              ),
+            ConsoleAuthError: (error) =>
+              Effect.fail(
+                new ConsoleAuthError({ message: withHint(error.message), code: error.code }),
+              ),
+          }),
+        );
       }
 
       // 6. Poll until the key is active (skips quickly when grants already landed /

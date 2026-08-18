@@ -11,7 +11,13 @@
  * `manifest.json` (`user_config.base_url.default`), which cannot import it.
  */
 
-export const DEFAULT_CONSOLE_API_BASE_URL = "https://api.testnet.harbor.walrus.xyz";
+/**
+ * No trailing slash: callers append absolute paths (`${baseUrl}/api/v1/...` and
+ * `HttpClientRequest.prependUrl`), so one here would produce `//api/v1/...`.
+ * The deployed API tolerates the double slash, but the URLs it logs and reports
+ * would carry it.
+ */
+export const DEFAULT_CONSOLE_API_BASE_URL = "https://api.testnet.console.walrus.xyz";
 
 /**
  * True if `raw` is an allowed Console base URL: https to `walrus.xyz` /

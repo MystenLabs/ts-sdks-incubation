@@ -1,4 +1,5 @@
 import { format, inspect } from "node:util";
+import type { ConfigFileData } from "./configFile.js";
 
 /**
  * Credential safety guardrail.
@@ -33,9 +34,9 @@ export const SECRET_ENV_VARS = [
 ] as const;
 
 /**
- * Values shorter than this are ignored when registering. A short or empty
- * "secret" (e.g. an unset var defaulting to "") would otherwise match common
- * substrings and redact half the output. Real Console keys are far longer.
+ * Values whose trimmed length is below this are ignored when registering. A short
+ * or empty "secret" (e.g. an unset var defaulting to "") would otherwise match
+ * common substrings and redact half the output. Real Console keys are far longer.
  */
 const MIN_SECRET_LENGTH = 8;
 
@@ -43,11 +44,26 @@ export const REDACTION_PLACEHOLDER = "«redacted»";
 
 const secrets = new Set<string>();
 
-/** Register a single secret value. No-ops for empty/short/non-string input. */
+/**
+ * Register a single secret value. No-ops for empty/short/non-string input.
+ *
+ * The TRIMMED form is what gets registered, because it is what reaches the wire:
+ * `resolvedString` (src/config.ts) trims the resolved credential before it
+ * becomes an `Authorization: Bearer` header, while the env var and the config
+ * file are read untrimmed. Registering the padded form would therefore watch for
+ * a string that never appears while the real credential passed through unredacted.
+ * Registering only the trimmed form is enough — a padded value contains it, and
+ * `redactString` matches on substrings, so the secret body is caught either way.
+ *
+ * Measuring the length after trimming also keeps a whitespace-only value out of
+ * the set. Eight spaces would otherwise register as a "secret" and scrub that run
+ * of whitespace from every line of output.
+ */
 export function registerSecret(value: unknown): void {
-  if (typeof value === "string" && value.length >= MIN_SECRET_LENGTH) {
-    secrets.add(value);
-  }
+  if (typeof value !== "string") return;
+  const trimmed = value.trim();
+  if (trimmed.length < MIN_SECRET_LENGTH) return;
+  secrets.add(trimmed);
 }
 
 /** Register every known secret env var from the given environment (default: process.env). */
@@ -55,6 +71,21 @@ export function registerSecretsFromEnv(env: NodeJS.ProcessEnv = process.env): vo
   for (const name of SECRET_ENV_VARS) {
     registerSecret(env[name]);
   }
+}
+
+/**
+ * Register the secret-bearing fields of an installer-saved config file.
+ *
+ * Env-sourced credentials are covered by `registerSecretsFromEnv`; file-sourced
+ * ones are not, and an unregistered management key can leak into stderr or tool
+ * error output. `baseUrl` is deliberately excluded — it is not a secret, and
+ * registering it would scrub every URL from the logs.
+ */
+export function registerConfigFileSecrets(cfg: ConfigFileData): void {
+  registerSecret(cfg.apiKey);
+  registerSecret(cfg.servicePrivateKey);
+  registerSecret(cfg.adminKey);
+  registerSecret(cfg.adminServicePrivateKey);
 }
 
 /** Drop all registered secrets. Intended for tests; harmless in production. */
@@ -87,20 +118,36 @@ export function redactValue(input: unknown): string {
 
 /**
  * Human-readable body for an error. Tagged errors (Data.TaggedError) carry
- * their data in fields, not `message` (e.g. KeyActivationError, FileStatusError,
- * SpaceMismatchError, MirrorGrantMissingError all have an empty `.message`), so
- * fall back to a JSON dump of the fields — their `toJSON` yields fields + `_tag`
- * without the stack.
+ * their data in fields, and their `toJSON` yields those fields + `_tag` without
+ * the stack — so a tagged error is always serialized whole.
+ *
+ * **The `_tag` check must stay ahead of the `message` check.** `Data.TaggedError`
+ * extends `Error`, so a tagged error that declares a `message` field satisfies
+ * `error instanceof Error && message !== ""` and would exit through the plain
+ * branch, discarding `_tag` and every sibling field. That silently disarms any
+ * contract built on those fields: `UnsupportedFileTypeError` and
+ * `PayloadTooLargeError` (COMG-602) exist so an agent can tell a permanent
+ * rejection from a transient one, and they reached the tool boundary as the
+ * bare strings "This file type is not accepted." / "Payload too large." —
+ * indistinguishable from each other and from a 500. The older tagged errors
+ * only escaped this because they happen to leave `.message` empty.
+ *
+ * Nothing is lost by serializing first: `message` is itself a field, so it
+ * survives inside the JSON. Untagged errors (a plain `Error`, an `@effect/platform`
+ * transport error) still render as their message.
  */
 function describeError(error: unknown): string {
-  if (error instanceof Error && error.message.trim() !== "") return error.message;
   if (typeof error === "object" && error !== null && "_tag" in error) {
     try {
-      return JSON.stringify(error);
+      // `undefined` when a hand-rolled `toJSON` opts out; treat it as a miss
+      // rather than printing the string "undefined" at the tool boundary.
+      const json = JSON.stringify(error);
+      if (json !== undefined) return json;
     } catch {
-      // fall through to String(error)
+      // Unserializable (circular field) — fall through to the message/String path.
     }
   }
+  if (error instanceof Error && error.message.trim() !== "") return error.message;
   return String(error);
 }
 

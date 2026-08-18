@@ -2,7 +2,16 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as readline from "node:readline";
+import { styleText } from "node:util";
+import {
+  hintLine,
+  panelBottom,
+  panelRow,
+  panelTop,
+  panelWidth,
+  runSelector,
+  type SelectorOptions,
+} from "./tui.js";
 
 /** The MCP server name registered with every client. Stays unversioned. */
 export const SERVER_NAME = "walrus-console-mcp";
@@ -188,6 +197,9 @@ export interface ChecklistItem {
   detected: boolean;
 }
 
+/** Widest found/not-found tag, so the tags right-align into one column. */
+export const TAG_WIDTH = "not found".length;
+
 /**
  * Render the checklist as plain lines (no ANSI): a cursor marker, the checkbox
  * state, the label (padded for alignment), and a found/not-found tag. Pure so
@@ -196,26 +208,33 @@ export interface ChecklistItem {
 export function renderChecklistLines(items: ChecklistItem[], cursor: number): string[] {
   const width = Math.max(0, ...items.map((it) => it.label.length));
   return items.map((it, i) => {
-    const marker = i === cursor ? "›" : " ";
-    const box = it.checked ? "x" : " ";
+    // Checkbox glyphs, not the radio ◉/○ the credential chooser uses: this list
+    // takes any number of clients, and the marker should say so.
+    const marker = i === cursor ? "❯" : " ";
+    const box = it.checked ? "◼" : "◻";
     const tag = it.detected ? "found" : "not found";
-    return `${marker} [${box}] ${it.label.padEnd(width)}  ${tag}`;
+    return `${marker} ${box}  ${it.label.padEnd(width)}  ${tag.padStart(TAG_WIDTH)}`;
   });
 }
 
-/** A readable input that may be a raw-capable TTY (process.stdin or a mock). */
-type KeyInput = NodeJS.EventEmitter & {
-  isTTY?: boolean;
-  setRawMode?: (mode: boolean) => void;
-  resume?: () => void;
-  pause?: () => void;
-};
+/**
+ * Render the explicit confirm row under the checklist so confirming is an
+ * obvious step (not just "enter"). Pure so it can be unit-tested. The four
+ * spaces after the marker line the text up with the labels above it.
+ */
+export function renderConfirmLine(count: number, selected: boolean): string {
+  const marker = selected ? "❯" : " ";
+  const noun = count === 1 ? "agent" : "agents";
+  return `${marker}    [ Configure ${count} ${noun} ]`;
+}
 
-interface SelectClientsOptions {
-  input?: KeyInput;
-  output?: NodeJS.WritableStream;
-  /** Force interactive mode; defaults to output.isTTY. */
-  isTTY?: boolean;
+interface SelectClientsOptions extends SelectorOptions {
+  /** Panel title. Omitted renders bare rows with no frame. */
+  title?: string;
+  /** Step counter shown on the top rail, e.g. "3/3". */
+  step?: string;
+  /** Key hints drawn under the panel. */
+  hint?: string;
 }
 
 /**
@@ -231,7 +250,6 @@ export function selectClients(
   clients: Client[],
   opts: SelectClientsOptions = {},
 ): Promise<Client[] | null> {
-  const input: KeyInput = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
   const isTTY = opts.isTTY ?? (output as { isTTY?: boolean }).isTTY === true;
 
@@ -244,75 +262,87 @@ export function selectClients(
     return Promise.resolve(state.filter((s) => s.checked).map((s) => s.client));
   }
 
-  return new Promise((resolve) => {
-    let cursor = 0;
-    let rendered = 0;
+  const width = panelWidth(opts.columns ?? process.stdout.columns ?? 80);
+  const confirmIndex = state.length; // the confirm row sits after the client rows
+  const total = state.length + 1;
+  let cursor = 0;
 
-    const render = () => {
-      if (rendered > 0) output.write(`\x1b[${rendered}A`);
-      const lines = renderChecklistLines(
-        state.map((s) => ({ label: s.client.label, checked: s.checked, detected: s.detected })),
-        cursor,
-      );
-      for (const l of lines) output.write(`\x1b[2K${l}\n`);
-      rendered = lines.length;
-    };
+  const chosen = () => state.filter((s) => s.checked).map((s) => s.client);
 
-    const useRaw = input.isTTY === true && typeof input.setRawMode === "function";
-    readline.emitKeypressEvents(input as NodeJS.ReadableStream);
-    if (useRaw) input.setRawMode?.(true);
-    input.resume?.();
+  /** The checklist rows and confirm row, before any panel is wrapped around them. */
+  const body = (): string[] => {
+    const rows = renderChecklistLines(
+      state.map((s) => ({ label: s.client.label, checked: s.checked, detected: s.detected })),
+      cursor, // when cursor === confirmIndex this is out of range → no client marked
+    ).map((row, i) => {
+      // The found/not-found tag is always the last TAG_WIDTH columns, so it can
+      // be dimmed without the renderer having to hand back its position.
+      const head = row.slice(0, -TAG_WIDTH);
+      const tag = row.slice(-TAG_WIDTH);
+      return `${i === cursor ? styleText("cyan", head) : head}${styleText("dim", tag)}`;
+    });
+    const onConfirm = cursor === confirmIndex;
+    const confirmLine = renderConfirmLine(state.filter((s) => s.checked).length, onConfirm);
+    return [
+      ...rows,
+      "",
+      // Highlight the confirm row so it reads as an obvious action: reverse
+      // video when focused, accent color otherwise.
+      onConfirm ? styleText("inverse", confirmLine) : styleText("cyan", confirmLine),
+    ];
+  };
 
-    const cleanup = () => {
-      input.off("keypress", onKey);
-      if (useRaw) input.setRawMode?.(false);
-      input.pause?.();
-    };
+  const render = (): string[] => {
+    const lines = body();
+    if (!opts.title || width === null) return lines;
+    return [
+      panelTop(styleText("bold", opts.title), width, styleText("cyan", opts.step ?? "")),
+      panelRow("", width),
+      ...lines.map((l) => panelRow(l ? `  ${l}` : "", width)),
+      panelRow("", width),
+      panelBottom(width),
+      ...(opts.hint ? [hintLine(opts.hint)] : []),
+    ];
+  };
 
-    const onKey = (_str: string, key: readline.Key | undefined) => {
-      if (!key) return;
-      if (key.ctrl && key.name === "c") {
-        cleanup();
-        resolve(null);
-        return;
-      }
-      switch (key.name) {
-        case "escape":
-          cleanup();
-          resolve(null);
-          return;
-        case "up":
-        case "k":
-          cursor = (cursor - 1 + state.length) % state.length;
-          break;
-        case "down":
-        case "j":
-          cursor = (cursor + 1) % state.length;
-          break;
-        case "space": {
-          const cur = state[cursor];
-          if (cur) cur.checked = !cur.checked;
-          break;
+  return runSelector<Client[]>(
+    {
+      render,
+      onKey: (key) => {
+        switch (key.name) {
+          case "escape":
+            return { cancel: true };
+          case "up":
+          case "k":
+            cursor = (cursor - 1 + total) % total;
+            return { redraw: true };
+          case "down":
+          case "j":
+            cursor = (cursor + 1) % total;
+            return { redraw: true };
+          case "space":
+          case "return":
+          case "enter": {
+            // Enter/space act on the focused row: toggle a client, or confirm when
+            // on the confirm row. (No "Enter confirms from anywhere" — that
+            // surprised users who pressed Enter expecting to toggle a checkbox.)
+            if (cursor === confirmIndex) return { done: chosen() };
+            const cur = state[cursor];
+            if (cur) cur.checked = !cur.checked;
+            return { redraw: true };
+          }
+          case "a": {
+            const allOn = state.every((s) => s.checked);
+            for (const s of state) s.checked = !allOn;
+            return { redraw: true };
+          }
+          default:
+            return undefined;
         }
-        case "a": {
-          const allOn = state.every((s) => s.checked);
-          for (const s of state) s.checked = !allOn;
-          break;
-        }
-        case "return":
-        case "enter":
-          cleanup();
-          resolve(state.filter((s) => s.checked).map((s) => s.client));
-          return;
-        default:
-          return;
-      }
-      render();
-    };
-
-    input.on("keypress", onKey);
-    render();
-  });
+      },
+    },
+    opts,
+  );
 }
 
 /** True if `p` exists and is a directory. Used to detect file-based clients. */

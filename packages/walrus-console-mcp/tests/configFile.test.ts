@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type ConfigFileData,
   getConfigDir,
+  getConfigFilePath,
   loadConfigFile,
+  mergeConfigFile,
   saveConfigFile,
 } from "../src/configFile.js";
 
@@ -87,10 +89,10 @@ describe("loadConfigFile", () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, "config.json"),
-      JSON.stringify({ baseUrl: "https://api.testnet.harbor.walrus.xyz" }),
+      JSON.stringify({ baseUrl: "https://api.testnet.console.walrus.xyz" }),
       "utf-8",
     );
-    expect(loadConfigFile().baseUrl).toBe("https://api.testnet.harbor.walrus.xyz");
+    expect(loadConfigFile().baseUrl).toBe("https://api.testnet.console.walrus.xyz");
   });
 });
 
@@ -99,7 +101,7 @@ describe("saveConfigFile", () => {
     const data: ConfigFileData = {
       apiKey: "hbr_test123",
       servicePrivateKey: "suiprivkey1_abc",
-      baseUrl: "https://api.testnet.harbor.walrus.xyz",
+      baseUrl: "https://api.testnet.console.walrus.xyz",
     };
     saveConfigFile(data);
 
@@ -113,7 +115,7 @@ describe("saveConfigFile", () => {
     const parsed = JSON.parse(raw);
     expect(parsed.apiKey).toBe("hbr_test123");
     expect(parsed.servicePrivateKey).toBe("suiprivkey1_abc");
-    expect(parsed.baseUrl).toBe("https://api.testnet.harbor.walrus.xyz");
+    expect(parsed.baseUrl).toBe("https://api.testnet.console.walrus.xyz");
   });
 
   it("overwrites existing config file", () => {
@@ -137,5 +139,83 @@ describe("round-trip: save then load", () => {
     expect(loaded.apiKey).toBe("hbr_roundtrip");
     expect(loaded.servicePrivateKey).toBe("suiprivkey1_roundtrip");
     expect(loaded.baseUrl).toBeUndefined();
+  });
+});
+
+describe("management key fields", () => {
+  it("round-trips adminKey and adminServicePrivateKey", () => {
+    saveConfigFile({ adminKey: "hbradm_abc", adminServicePrivateKey: "suiprivkey1_admin" });
+    const loaded = loadConfigFile();
+    expect(loaded.adminKey).toBe("hbradm_abc");
+    expect(loaded.adminServicePrivateKey).toBe("suiprivkey1_admin");
+  });
+
+  it("ignores non-string admin fields", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ adminKey: 42, adminServicePrivateKey: { nested: true } }),
+      "utf-8",
+    );
+    const loaded = loadConfigFile();
+    expect(loaded.adminKey).toBeUndefined();
+    expect(loaded.adminServicePrivateKey).toBeUndefined();
+  });
+});
+
+describe("mergeConfigFile", () => {
+  it("adds admin fields without clobbering the working key", () => {
+    saveConfigFile({
+      apiKey: "hbr_keep",
+      servicePrivateKey: "suiprivkey1_keep",
+      // Must be allowlisted: the merge reloads through loadConfigFile, which
+      // drops an off-policy baseUrl (see the case below).
+      baseUrl: "https://api.mainnet.console.walrus.xyz",
+    });
+    const merged = mergeConfigFile({
+      adminKey: "hbradm_new",
+      adminServicePrivateKey: "suiprivkey1_new",
+    });
+
+    expect(merged.apiKey).toBe("hbr_keep");
+    expect(merged.servicePrivateKey).toBe("suiprivkey1_keep");
+    expect(merged.baseUrl).toBe("https://api.mainnet.console.walrus.xyz");
+    expect(merged.adminKey).toBe("hbradm_new");
+
+    const reloaded = loadConfigFile();
+    expect(reloaded.apiKey).toBe("hbr_keep");
+    expect(reloaded.adminKey).toBe("hbradm_new");
+  });
+
+  // The merge reloads the file first, so a baseUrl written before the allowlist
+  // existed (or edited in by hand) is dropped rather than carried forward.
+  it("drops an off-policy baseUrl already on disk instead of preserving it", () => {
+    saveConfigFile({ apiKey: "hbr_keep" });
+    fs.writeFileSync(
+      getConfigFilePath(),
+      JSON.stringify({ apiKey: "hbr_keep", baseUrl: "https://evil.com" }),
+      "utf-8",
+    );
+
+    const merged = mergeConfigFile({ adminKey: "hbradm_new" });
+
+    expect(merged.apiKey).toBe("hbr_keep");
+    expect(merged.adminKey).toBe("hbradm_new");
+    expect(merged.baseUrl).toBeUndefined();
+  });
+
+  it("overwrites only the fields it is given", () => {
+    saveConfigFile({ apiKey: "hbr_old", adminKey: "hbradm_old" });
+    mergeConfigFile({ apiKey: "hbr_new" });
+    const loaded = loadConfigFile();
+    expect(loaded.apiKey).toBe("hbr_new");
+    expect(loaded.adminKey).toBe("hbradm_old");
+  });
+
+  it("works when no config file exists yet", () => {
+    const merged = mergeConfigFile({ adminKey: "hbradm_first" });
+    expect(merged.adminKey).toBe("hbradm_first");
+    expect(loadConfigFile().adminKey).toBe("hbradm_first");
   });
 });

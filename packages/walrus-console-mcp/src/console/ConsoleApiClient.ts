@@ -1,10 +1,16 @@
 import { HttpBody, HttpClient, HttpClientRequest, type HttpClientResponse } from "@effect/platform";
 import { Effect } from "effect";
 import { ConsoleConfigTag, getRawAdminKey, getRawApiKey } from "../config";
-import { ConsoleApiError, ConsoleAuthError } from "./errors";
+import {
+  ConsoleApiError,
+  ConsoleAuthError,
+  PayloadTooLargeError,
+  UnsupportedFileTypeError,
+} from "./errors";
 import type {
   Bucket,
   BucketId,
+  BucketMetadata,
   FileId,
   FileSummary,
   SpaceId,
@@ -136,6 +142,73 @@ interface ConsoleErrorBody {
 }
 
 /**
+ * Pull `{ code, message }` out of a decoded Console error body.
+ *
+ * Shapes verified against the Console API source, not assumed. Its global
+ * `errorHandler` serializes every 4xx domain error as
+ * `{ error: message, ...(code ? { code } : {}) }` and the OpenAPI
+ * `ErrorResponse` schema types `error` as a plain string, so production emits:
+ *
+ *   `{ error: "msg", code: "…" }`  the common 4xx (incl. mirror_missing_grant)
+ *   `{ error: "msg" }`             errors carrying no code (e.g. NotFoundError)
+ *   `{ code: "…", limit, … }`      PlanLimitExceeded (422) — no `error` key
+ *
+ * The nested `{ error: { code, message } }` branch is defensive: no Console
+ * route emits it today, but a gateway could, and without it `String(message)`
+ * on an object would yield "[object Object]" while the code vanished.
+ *
+ * Pure and exported so the raw-`fetch` paths (multipart upload / download) can
+ * reuse the exact parsing the HttpClient paths get, and so it is unit-testable.
+ */
+export function parseConsoleErrorBody(body: unknown): {
+  code: string | undefined;
+  message: string | undefined;
+} {
+  if (typeof body !== "object" || body === null) return { code: undefined, message: undefined };
+  const { code, message, error } = body as ConsoleErrorBody;
+  return {
+    code: code ?? (error && typeof error === "object" ? error.code : undefined),
+    message: (typeof error === "string" ? error : error?.message) ?? message,
+  };
+}
+
+/**
+ * Fail with a `ConsoleApiError` built from a non-OK raw-`fetch` response,
+ * preserving the Console error `code`.
+ *
+ * Always a `ConsoleApiError`, never a `ConsoleAuthError` — even on 403. Console
+ * returns `mirror_missing_grant` (an ACL grant that has not propagated on-chain
+ * yet) as a **403**, and `ConsoleStorageService`'s upload retry matches on
+ * `ConsoleApiError.code`. Routing these through `handleError` instead would map
+ * every 401/403 to a `ConsoleAuthError`, whose closed `code` union collapses
+ * anything unmodeled to "invalid_api_key" — silently disabling that retry.
+ */
+function failFromFetchResponse(
+  response: Response,
+  action: string,
+): Effect.Effect<never, ConsoleApiError> {
+  return Effect.gen(function* () {
+    const text = yield* Effect.tryPromise(() => response.text()).pipe(
+      Effect.catchAll(() => Effect.succeed("")),
+    );
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(text) as unknown;
+    } catch {
+      decoded = undefined; // non-JSON body (proxy HTML, empty) — fall back to raw text
+    }
+    const { code, message } = parseConsoleErrorBody(decoded);
+    return yield* Effect.fail(
+      new ConsoleApiError({
+        message: `${action} failed with status ${response.status}: ${message ?? text}`,
+        ...(code !== undefined ? { code } : {}),
+        status: response.status,
+      }),
+    );
+  });
+}
+
+/**
  * Typed Console REST API client as an Effect v3 Service.
  * Uses @effect/platform HttpClient (with bearer auth pre-processor).
  * Matches console/api service conventions (Effect.fn, annotate, TaggedError).
@@ -174,15 +247,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
           Effect.catchAll(() => Effect.succeed({})),
           Effect.map((b) => b as ConsoleErrorBody),
         );
-        // Console error bodies come as either `{ error: "msg" }` or `{ error: { code, message } }`,
-        // so pull the string out of both shapes — otherwise String(message) yields "[object Object]".
-        const errBody = body.error;
-        const code =
-          body.code ?? (errBody && typeof errBody === "object" ? errBody.code : undefined);
-        const message =
-          (typeof errBody === "string" ? errBody : errBody?.message) ??
-          body.message ??
-          `HTTP ${res.status}`;
+        const parsed = parseConsoleErrorBody(body);
+        const code = parsed.code;
+        const message = parsed.message ?? `HTTP ${res.status}`;
         if (res.status === 401 || res.status === 403) {
           return yield* Effect.fail(
             new ConsoleAuthError({
@@ -203,6 +270,61 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
             message: String(message),
             ...(code !== undefined ? { code } : {}),
             status: res.status,
+          }),
+        );
+      });
+
+    // Multipart upload uses raw `fetch` (not the platform HttpClient) so it has
+    // its own error mapping. Splits Console's 415 (deny list, COMG-590) and 413
+    // (size cap) into dedicated tags so agents can branch on
+    // "never going to work" vs "retry later".
+    const handleUploadError = (response: Response, fileName: string, bytes: number) =>
+      Effect.gen(function* () {
+        const rawText = yield* Effect.tryPromise(() => response.text()).pipe(
+          Effect.catchAll(() => Effect.succeed("")),
+        );
+        let code: string | undefined;
+        let message: string | undefined;
+        if (rawText.length > 0) {
+          try {
+            const body = JSON.parse(rawText) as ConsoleErrorBody;
+            const errBody = body.error;
+            code = body.code ?? (errBody && typeof errBody === "object" ? errBody.code : undefined);
+            message = (typeof errBody === "string" ? errBody : errBody?.message) ?? body.message;
+          } catch {
+            // Non-JSON body (proxy/gateway HTML page). Fall through: status alone
+            // is enough to classify deny vs size; body text goes on ConsoleApiError.
+          }
+        }
+        if (response.status === 415 || code === "unsupported_file_type") {
+          return yield* Effect.fail(
+            new UnsupportedFileTypeError({
+              message: message ?? "This file type is not accepted.",
+              fileName,
+              // Console emits the same code for both enforcement layers; without
+              // an explicit hint we can't tell them apart, so record "server".
+              layer: "server",
+              ...(code !== undefined ? { code } : {}),
+            }),
+          );
+        }
+        if (response.status === 413 || code === "payload_too_large") {
+          return yield* Effect.fail(
+            new PayloadTooLargeError({
+              message: message ?? "Payload too large.",
+              fileName,
+              bytes,
+              ...(code !== undefined ? { code } : {}),
+            }),
+          );
+        }
+        return yield* Effect.fail(
+          new ConsoleApiError({
+            message: `Upload failed with status ${response.status}${
+              rawText.length > 0 ? `: ${rawText}` : ""
+            }`,
+            ...(code !== undefined ? { code } : {}),
+            status: response.status,
           }),
         );
       });
@@ -320,9 +442,18 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
 
     const uploadBucketFile = Effect.fn("ConsoleApiClient.uploadBucketFile")(function* (
       bucketId: BucketId,
-      fileBytes: Uint8Array,
+      // `Uint8Array<ArrayBuffer>`, not a bare `Uint8Array`: @types/node widens the
+      // latter to `Uint8Array<ArrayBufferLike>`, which BlobPart rejects because the
+      // buffer could be a SharedArrayBuffer. Stating the requirement on the
+      // parameter puts it where it is already satisfied — Seal's encrypt() returns
+      // exactly this type — instead of erasing it here by copying every encrypted
+      // file. A caller handing over `fs.readFile` output now fails to compile,
+      // which is the honest answer: Buffer's `.slice()` is `subarray()` and would
+      // not have produced the unshared buffer the old comment claimed anyway.
+      fileBytes: Uint8Array<ArrayBuffer>,
       fileName: string,
       metadata?: Record<string, unknown>,
+      contentSize?: number,
     ) {
       // Pragmatic multipart using native fetch (reliable for MCP use case)
       const form = new FormData();
@@ -330,6 +461,12 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       form.append("file", blob, fileName);
       if (metadata) {
         form.append("metadata", JSON.stringify(metadata));
+      }
+      // Private uploads carry ciphertext, so the server cannot infer the plaintext
+      // length. Declare it or the file reports its encrypted size forever — there
+      // is no backfill (COMG-264).
+      if (contentSize !== undefined) {
+        form.append("contentSize", String(contentSize));
       }
 
       const url = `${config.baseUrl}/api/v1/buckets/${bucketId}/files`;
@@ -346,15 +483,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       });
 
       if (response.status !== 202) {
-        const text = yield* Effect.tryPromise(() => response.text()).pipe(
-          Effect.catchAll(() => Effect.succeed("")),
-        );
-        return yield* Effect.fail(
-          new ConsoleApiError({
-            message: `Upload failed with status ${response.status}: ${text}`,
-            status: response.status,
-          }),
-        );
+        return yield* handleUploadError(response, fileName, fileBytes.byteLength);
       }
 
       const json = yield* Effect.tryPromise({
@@ -393,17 +522,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         catch: () => new ConsoleApiError({ message: "Download failed" }),
       });
 
-      if (response.status !== 200) {
-        const text = yield* Effect.tryPromise(() => response.text()).pipe(
-          Effect.catchAll(() => Effect.succeed("")),
-        );
-        return yield* Effect.fail(
-          new ConsoleApiError({
-            message: `Download failed: ${response.status} ${text}`,
-            status: response.status,
-          }),
-        );
-      }
+      // Same parsing as upload: a private download can also 403 with
+      // mirror_missing_grant, and callers need the code to say so usefully.
+      if (response.status !== 200) return yield* failFromFetchResponse(response, "Download");
 
       const arrayBuffer = yield* Effect.tryPromise({
         try: () => response.arrayBuffer(),
@@ -423,6 +544,50 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         return yield* handleError(res);
       }
       return { id: fileId, deleted: true };
+    });
+
+    /**
+     * PATCH /api/v1/files/:id — rename and/or edit description and tags
+     * (COMG-475). `null` on a metadata field clears it; a field left out is
+     * untouched. Console rejects a body with none of the three, so callers
+     * build it with `buildFilePatch`, which returns undefined for an empty
+     * patch rather than sending one.
+     */
+    const updateFile = Effect.fn("ConsoleApiClient.updateFile")(function* (
+      fileId: FileId,
+      patch: Record<string, unknown>,
+    ) {
+      const res = yield* authed.patch(`/api/v1/files/${fileId}`, {
+        body: HttpBody.text(JSON.stringify(patch), "application/json"),
+      });
+      if (res.status !== 200) return yield* handleError(res);
+      return (yield* res.json) as { data: FileSummary };
+    });
+
+    /** GET /api/v1/buckets/:id/metadata — folder description + tags (COMG-489). */
+    const getBucketMetadata = Effect.fn("ConsoleApiClient.getBucketMetadata")(function* (
+      bucketId: BucketId,
+    ) {
+      const res = yield* authed.get(`/api/v1/buckets/${bucketId}/metadata`);
+      if (res.status !== 200) return yield* handleError(res);
+      return (yield* res.json) as { data: BucketMetadata };
+    });
+
+    /**
+     * PATCH /api/v1/buckets/:id/metadata.
+     *
+     * Unlike the file patch above, the Console schema here is `.optional()`
+     * without `.nullable()` — sending `null` is a 400, not a clear.
+     */
+    const updateBucketMetadata = Effect.fn("ConsoleApiClient.updateBucketMetadata")(function* (
+      bucketId: BucketId,
+      patch: Record<string, unknown>,
+    ) {
+      const res = yield* authed.patch(`/api/v1/buckets/${bucketId}/metadata`, {
+        body: HttpBody.text(JSON.stringify(patch), "application/json"),
+      });
+      if (res.status !== 200) return yield* handleError(res);
+      return (yield* res.json) as { data: BucketMetadata };
     });
 
     const listBucketFiles = Effect.fn("ConsoleApiClient.listBucketFiles")(function* (
@@ -517,6 +682,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       getFileUploadStatus,
       downloadBucketFile,
       listBucketFiles,
+      updateFile,
+      getBucketMetadata,
+      updateBucketMetadata,
       deleteBucketFile,
       getBucketById,
       updateBucket,

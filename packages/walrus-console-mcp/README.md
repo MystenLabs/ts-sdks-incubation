@@ -1,6 +1,6 @@
 # @mysten-incubation/walrus-console-mcp
 
-Manage [Walrus Console](https://testnet.harbor.walrus.xyz/) files directly from Claude.
+Manage [Walrus Console](https://testnet.console.walrus.xyz/) files directly from Claude.
 
 Create buckets, upload files, retrieve documents, and manage data stored on Walrus using natural language. Files remain encrypted client-side and under your control.
 
@@ -57,9 +57,9 @@ Then start a new Codex session, run `/mcp`, approve `walrus-console-mcp` if prom
 
 ### 1. Get your Walrus Console credentials
 
-1. Go to https://testnet.harbor.walrus.xyz/
+1. Go to https://testnet.console.walrus.xyz/
 2. Sign in with Google
-3. Go to **Settings → API Keys → New API key**
+3. Go to **Integrations → New API key**
 4. Choose **read_write** and tick **"Create"**
 5. Copy both values shown **once**:
    - `hbr_...` → `CONSOLE_API_KEY`
@@ -147,24 +147,25 @@ on-chain signer seed `suiprivkey1…` (`CONSOLE_ADMIN_SERVICE_PRIVATE_KEY`). Min
 
 ### Split-credential config
 
-Keep the working key on **every** host, and the Key-Admin credential on the **provisioning host
-only**:
+Keep the working key on **every** host, and the management key on the **provisioning host only**.
+Both are configured with the CLI and land in the same 0600 file:
 
-```jsonc
-// Worker / everyday host — working key only, cannot mint
-{
-  "CONSOLE_API_KEY":             "hbr_9f…",      // working bearer
-  "CONSOLE_SERVICE_PRIVATE_KEY": "suiprivkey1…"  // working signer
-}
+```bash
+# Worker / everyday host — working key only, cannot mint
+npx -y @mysten-incubation/walrus-console-mcp install          # choose "API key"
 
-// Provisioning host — additionally loads the Key-Admin credential
-{
-  "CONSOLE_API_KEY":                   "hbr_9f…",
-  "CONSOLE_SERVICE_PRIVATE_KEY":       "suiprivkey1…",
-  "CONSOLE_ADMIN_KEY":                 "hbradm_2c…",  // minter, this host only
-  "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY": "suiprivkey1…" // admin signer, this host only
-}
+# Provisioning host — additionally loads the management key
+npx -y @mysten-incubation/walrus-console-mcp config           # choose "Management key"
 ```
+
+Scripted / CI equivalents:
+
+```bash
+npx -y @mysten-incubation/walrus-console-mcp config --admin-key hbradm_2c… --admin-signer suiprivkey1…
+CONSOLE_ADMIN_KEY=… CONSOLE_ADMIN_SERVICE_PRIVATE_KEY=… npx -y @mysten-incubation/walrus-console-mcp config --silent
+```
+
+Environment variables still work and still win over the saved file.
 
 Call `ping_console` to confirm what's loaded — it reports `has_admin_key` and `has_admin_signer`
 (booleans only; the secret values are never echoed).
@@ -206,10 +207,13 @@ network call:
 
 > `generate_api_key requires a Key-Admin credential. Set CONSOLE_ADMIN_KEY (hbradm_…) and CONSOLE_ADMIN_SERVICE_PRIVATE_KEY. A working key cannot mint.`
 
-> **Security:** The Key-Admin credential is read-capable on-chain (a grant implies read). Keep it on
-> the provisioning host only and **store it like a GitHub App private key** (vault / OS keychain) —
-> never alongside worker keys. A leaked working key can never mint or escalate; a leaked Key-Admin
-> can, so it is separately revocable with a contained blast radius.
+Configure it with `npx -y @mysten-incubation/walrus-console-mcp config` (choose **Management key**), or export both env vars.
+
+> **Security:** The management credential is read-capable on-chain (a grant implies read). Keep it on
+> the provisioning host only — it is stored in `~/.config/walrus-console-mcp/config.json` with
+> user-only (0600) permissions, so do **not** copy that file to worker hosts. A leaked working key can
+> never mint or escalate; a leaked management key can, so it is separately revocable with a contained
+> blast radius.
 
 ## Adding to an agent (npm)
 
@@ -309,4 +313,4 @@ MIT
 
 ## Acknowledgments
 
-Built on [Walrus Console](https://github.com/MystenLabs/harbor), powered by [Walrus](https://github.com/MystenLabs/walrus) and [Seal](https://github.com/MystenLabs/seal).
+Built on [Walrus Console](https://github.com/MystenLabs/console), powered by [Walrus](https://github.com/MystenLabs/walrus) and [Seal](https://github.com/MystenLabs/seal).

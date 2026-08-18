@@ -199,6 +199,18 @@ describe("resolvePathWithinRoots (real filesystem: symlinks + env fallback)", ()
     // A symlink INSIDE the allowed root that escapes it.
     symlinkSync(join(outside, "secret.txt"), join(allowed, "link-to-secret"), "file");
     symlinkSync(outside, join(allowed, "link-to-outside"), "dir");
+    // DANGLING links: the target does not exist yet, so realpathSync() fails on
+    // these exactly as it does on a plain nonexistent path. One escapes, one
+    // does not; the sandbox must tell them apart.
+    symlinkSync(join(outside, "not-created-yet.txt"), join(allowed, "dangling-out"), "file");
+    symlinkSync(join(allowed, "not-created-yet.txt"), join(allowed, "dangling-in"), "file");
+    // A symlink cycle — no canonical path exists at all.
+    symlinkSync(join(allowed, "loop-b"), join(allowed, "loop-a"), "file");
+    symlinkSync(join(allowed, "loop-a"), join(allowed, "loop-b"), "file");
+    // A LIVE symlink pointing inside the root. Guards the boundary of the
+    // dangling-link rejection: only BROKEN links are refused.
+    writeFileSync(join(allowed, "target.txt"), "inside");
+    symlinkSync(join(allowed, "target.txt"), join(allowed, "live-in"), "file");
   });
 
   afterAll(() => {
@@ -226,6 +238,79 @@ describe("resolvePathWithinRoots (real filesystem: symlinks + env fallback)", ()
         NO_ENV,
       ),
     ).rejects.toThrow(/outside the/);
+  });
+
+  // Regression: realpathSync() throws for BOTH "no such path" and "dangling
+  // symlink". Treating them alike re-appended the link's own name to its real
+  // parent, so `allowed/dangling-out` canonicalized to `allowed/dangling-out`,
+  // passed containment, and writeFile then followed the link into `outside`.
+  //
+  // Asserts only that it rejects, deliberately NOT the wording: what matters is
+  // that no approved path is handed back, and a message-coupled assertion turns
+  // any rephrasing into a spurious failure that reads like a security break.
+  it("rejects a dangling symlink whose target is outside the root", async () => {
+    await expect(
+      resolvePathWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "dangling-out"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow();
+  });
+
+  // A DELIBERATE trade, not an oversight. This link points somewhere legitimate
+  // — inside the root — and an earlier implementation resolved it and allowed
+  // the write. Resolving needs recursion (links can chain), recursion needs a
+  // depth cap to survive cycles, and the cap needs a `depth` parameter that
+  // `paths.map(toRealPath)` would silently fill with the array index. Rejecting
+  // buys all of that back for one narrow case: a pre-existing broken link whose
+  // target's parent directory already exists, used as a download destination.
+  // Ordinary destinations are plain paths with no symlink and never reach here
+  // (see "allows a not-yet-existing destination under the real root" below).
+  it("rejects a dangling symlink even when its target is inside the root", async () => {
+    await expect(
+      resolvePathWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "dangling-in"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/broken symlink/);
+  });
+
+  // The rejection is scoped to BROKEN links only. Widening it to "reject every
+  // symlink" would be a plausible-looking simplification and would break macOS
+  // outright — /tmp -> /private/tmp, /var, and symlinked home directories are
+  // all live links that must still resolve. This test fails if anyone tries it.
+  it("still follows a live symlink that stays inside the root", async () => {
+    const out = await resolvePathWithinRoots(
+      fakeServer([allowed]),
+      join(allowed, "live-in"),
+      "Source",
+      NO_ENV,
+    );
+    expect(out).toBe(join(allowed, "target.txt"));
+  });
+
+  // Names the target so the user can act on it, rather than only saying "no".
+  it("names the broken link's target in the rejection", async () => {
+    await expect(
+      resolvePathWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "dangling-in"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/not-created-yet\.txt/);
+  });
+
+  // Every link in a cycle is dangling, so the first hop is rejected — no depth
+  // counter needed, and no hang.
+  it("rejects a symlink cycle instead of hanging", async () => {
+    await expect(
+      resolvePathWithinRoots(fakeServer([allowed]), join(allowed, "loop-a"), "Destination", NO_ENV),
+    ).rejects.toThrow(/broken symlink/);
   });
 
   it("allows a not-yet-existing destination under the real root", async () => {

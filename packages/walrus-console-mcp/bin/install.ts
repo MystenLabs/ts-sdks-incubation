@@ -4,13 +4,62 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { styleText } from "node:util";
 import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "../src/baseUrl.js";
+import { parseArgs } from "../src/cliArgs.js";
 import { getClients, selectClients } from "../src/clients.js";
-import { type ConfigFileData, loadConfigFile, saveConfigFile } from "../src/configFile.js";
+import { loadConfigFile, mergeConfigFile } from "../src/configFile.js";
+import {
+  type CredentialChoice,
+  collectCredentials,
+  probeKey,
+  validateSilent,
+} from "../src/credentials.js";
 import { registerSecret } from "../src/redaction.js";
+import {
+  clampVisible,
+  panelBottom,
+  panelRow,
+  panelTop,
+  panelWidth,
+  selectOne,
+  visibleWidth,
+  wrapVisible,
+} from "../src/tui.js";
 
-/** The npm package this installer registers. The server *name* used in agent
- * configs stays unversioned; only the npx package argument gets pinned. */
-const PACKAGE_NAME = "walrus-console-mcp";
+/**
+ * The npm package this installer registers. MUST stay identical to the `name`
+ * in package.json — a config pointing at any other spec cannot resolve, and an
+ * unclaimed name is a dependency-confusion target: whatever `npx` fetches is
+ * launched with access to the credentials in ~/.config/walrus-console-mcp.
+ * `tests/install.test.ts` pins the two together.
+ *
+ * Distinct from `SERVER_NAME` (src/clients.ts), the unscoped key this server is
+ * registered under in agent configs. Only the npx argument carries the scope
+ * and the version pin.
+ */
+export const PACKAGE_NAME = "@mysten-incubation/walrus-console-mcp";
+
+/**
+ * Resolve the base URL from the env override (or the testnet default) and reject
+ * an off-policy value. Not prompted for — power users override it with the
+ * CONSOLE_API_BASE_URL env var (also honored by the server's config layer).
+ *
+ * Called at the very start of runInstall — before any readline/prompt machinery —
+ * so the rejection surfaces cleanly instead of being swallowed by readline's
+ * `close`→cancel handler, and before any key-bearing fetch could leak the API key
+ * to a disallowed host. Shared by the interactive and silent paths so a
+ * non-default value is validated and persisted identically in either branch.
+ */
+export function resolveInstallBaseUrl(): string {
+  const { CONSOLE_API_BASE_URL } = process.env;
+  const baseUrl = CONSOLE_API_BASE_URL || DEFAULT_CONSOLE_API_BASE_URL;
+  if (!isAllowedBaseUrl(baseUrl)) {
+    throw new Error(
+      `CONSOLE_API_BASE_URL is not an allowed Console endpoint: ${baseUrl}. ` +
+        `It must be https to a walrus.xyz host, or http(s) to localhost.`,
+    );
+  }
+  return baseUrl;
+}
 
 /**
  * Read this installer's own version from package.json (shipped at the package
@@ -32,7 +81,8 @@ export function getPackageVersion(): string | null {
 
 /**
  * The npm spec written into every generated config/command, pinned to the
- * running installer's version (`walrus-console-mcp@1.2.3`). Pinning stops a
+ * running installer's version (`@mysten-incubation/walrus-console-mcp@1.2.3`).
+ * Pinning stops a
  * bad `latest` release from silently breaking every already-installed user —
  * upgrades become an explicit re-install instead of an automatic `npx` float.
  */
@@ -41,13 +91,18 @@ export function packageSpec(version = getPackageVersion()): string {
 }
 
 /**
- * Interactive 2-step installer for walrus-console-mcp.
+ * Interactive 3-step installer for walrus-console-mcp.
  *
- * Step 1 — Auth:   Prompt for API key + service key, validate against the live API.
- * Step 2 — Register: Detect installed agents and register the pinned launcher
- *                    with the ones the user ticks (see src/clients.ts).
+ * Step 1 — Choose:    Pick which credential to configure (API key, management
+ *                     key, or both — see src/credentials.ts).
+ * Step 2 — Auth:      Prompt for the chosen key(s), validate against the live API.
+ * Step 3 — Register:  Detect installed agents and register the pinned launcher
+ *                     with the ones the user ticks (see src/clients.ts).
  *
- * Runs in the terminal via: npx walrus-console-mcp install
+ * Also supports a non-interactive path (`--api-key`/`--admin-key`/`--silent`
+ * flags or CONSOLE_* env vars — see src/cliArgs.ts) for scripted installs.
+ *
+ * Runs in the terminal via: npx -y @mysten-incubation/walrus-console-mcp install
  * Uses only Node.js built-ins (readline, fs, fetch) — zero extra dependencies.
  */
 
@@ -64,13 +119,72 @@ type MaskableInterface = readline.Interface & {
   _writeToOutput?: (stringToWrite: string) => void;
 };
 
+// visibleWidth and clampVisible moved to src/tui.ts, where the panel primitives
+// need them for border math. visibleWidth is re-exported here so
+// tests/install.test.ts keeps its import; fold this away once #13 lands and the
+// two CLI entry points are deduplicated.
+export { visibleWidth };
+
+/** Columns held back for bullets, so a wide prompt can't starve the feedback. */
+const MIN_MASK = 4;
+
 /**
  * Build the redraw for a masked line: clear the row, jump to column 0, then
  * re-render the (colored) prompt followed by one bullet per typed character.
- * Pure so it can be unit-tested; the escape codes are the only I/O concern.
+ *
+ * The whole line — prompt included — is kept inside the terminal width. The
+ * single-line clear (`\x1b[2K`) only erases the row the cursor is on, so
+ * anything that wraps leaves its earlier rows untouched and every keystroke
+ * stacks another copy. Clamping the bullets alone isn't enough: on a terminal
+ * narrower than the prompt itself the prompt wraps on its own, which is why it
+ * gets truncated too, holding back `MIN_MASK` columns so there is still
+ * feedback that a keystroke registered. Pure so it can be unit-tested; the
+ * escape codes are the only I/O concern.
  */
-export function maskedLine(question: string, length: number): string {
-  return `\x1b[2K\x1b[0G${question}${"•".repeat(length)}`;
+export function maskedLine(
+  question: string,
+  length: number,
+  columns: number = process.stdout.columns || 80,
+): string {
+  const budget = Math.max(0, columns - 1); // leave the last cell; writing it wraps
+  const prompt = clampVisible(question, Math.max(0, budget - MIN_MASK));
+  const maxBullets = Math.max(0, budget - visibleWidth(prompt));
+  const bullets = "•".repeat(Math.min(length, maxBullets));
+  return `\x1b[2K\x1b[0G${prompt}${bullets}`;
+}
+
+/**
+ * The same redraw, but inside a closed panel: pad out to the right border, draw
+ * it, then walk the cursor back so it sits after the last bullet rather than
+ * outside the box.
+ *
+ * This is only possible because every prompt is masked. A masked prompt already
+ * repaints its entire line on each keystroke, so there is a moment where we own
+ * the whole row and can put a border at the end of it. An echoing prompt has
+ * the terminal appending characters at the cursor, with nowhere to hang a
+ * trailing border — which is why `collectCredentials` asks for masked input
+ * everywhere (see src/credentials.ts).
+ */
+export const MASK_WIDTH = 16;
+
+export function maskedPanelLine(
+  question: string,
+  length: number,
+  width: number,
+  border = (s: string) => styleText("dim", s),
+): string {
+  const used = visibleWidth(question); // question already carries the left border
+  // -2 leaves a column of margin, so the field reads as "•••• │" rather than
+  // crowding the border. Every other row has that margin from padding.
+  const room = Math.max(0, width - used - 2);
+  // A fixed-width field, not one bullet per character. Bullet counts otherwise
+  // leak the secret's length to anyone reading the screen — and these lengths
+  // identify the credential (hbr_ 36, hbradm_ 39, suiprivkey1 70). Empty still
+  // renders empty, so there's feedback that the first keystroke registered.
+  const bullets = "•".repeat(length === 0 ? 0 : Math.min(MASK_WIDTH, room));
+  const pad = Math.max(0, width - used - bullets.length - 1);
+  const back = pad + 1; // step back over the padding and the border itself
+  return `\x1b[2K\x1b[0G${question}${bullets}${" ".repeat(pad)}${border("│")}\x1b[${back}D`;
 }
 
 /**
@@ -80,7 +194,15 @@ export function maskedLine(question: string, length: number): string {
  * Falls back to a plain prompt when stdout is not a TTY (pipes, CI, tests):
  * there is no terminal echo to hide, and the escape codes would pollute output.
  */
-export function promptMasked(rl: readline.Interface, question: string): Promise<string> {
+/**
+ * `panelWidth` closes the row with a right border; omit it (non-panel callers,
+ * narrow terminals) and the line is drawn flat against the terminal width.
+ */
+export function promptMasked(
+  rl: readline.Interface,
+  question: string,
+  panelWidth?: number,
+): Promise<string> {
   if (!process.stdout.isTTY) return prompt(rl, question);
 
   const rli = rl as MaskableInterface;
@@ -97,7 +219,11 @@ export function promptMasked(rl: readline.Interface, question: string): Promise<
         output.write(stringToWrite);
         return;
       }
-      output.write(maskedLine(question, rli.line.length));
+      output.write(
+        panelWidth === undefined
+          ? maskedLine(question, rli.line.length)
+          : maskedPanelLine(question, rli.line.length, panelWidth),
+      );
     };
 
     rl.question(question, (answer) => {
@@ -125,19 +251,85 @@ const fail = (msg: string) => `${styleText("red", "✖")} ${msg}`;
 const warn = (msg: string) => `${styleText("yellow", "!")} ${msg}`;
 const info = (msg: string) => styleText("dim", `· ${msg}`);
 
-/** Section header: cyan `n/total` + bold label. */
-function printStep(n: number, total: number, label: string) {
-  print(`${accent(`${n}/${total}`)}  ${styleText("bold", label)}`);
-}
-
-/** A content line indented under the current step. */
+/** A content line indented under the current step (flat fallback). */
 function line(msg: string) {
   print(`${PAD}${msg}`);
+}
+
+/**
+ * Vertical gap between steps. One blank line reads as "these belong together",
+ * which is wrong — each panel is a separate screen the user is done with.
+ */
+function gap() {
+  print("");
+  print("");
 }
 
 /** A dim secondary line (e.g. a path) nested one level deeper. */
 function detail(msg: string) {
   print(`${PAD}   ${styleText("dim", `→ ${msg}`)}`);
+}
+
+/**
+ * Writer for a step whose content streams — prompt, spinner, result, prompt
+ * again — drawn as a fully closed panel.
+ *
+ * Streaming does not require an open right side: the height is only needed for
+ * the *bottom* border, which is printed at the end anyway, and each row can be
+ * padded to the border as it arrives. The one genuinely hard row is the live
+ * prompt, and `maskedPanelLine` handles that (see the note there).
+ *
+ * `width === null` means the terminal is too narrow to frame anything, so every
+ * method degrades to the flat indented style.
+ */
+function streamPanel(label: string, step: string) {
+  const width = panelWidth();
+  if (width === null) {
+    print(`${accent(step)}  ${styleText("bold", label)}`);
+    return {
+      line,
+      blank: () => print(""),
+      close: () => {},
+      prefix: PAD,
+      width: undefined,
+    };
+  }
+  print(panelTop(styleText("bold", label), width, accent(step)));
+  return {
+    // Wrapped rather than clamped: some validator messages are longer than any
+    // sane panel width, and truncating one mid-sentence loses the point of it.
+    // Wrapping is safe here because this panel is never redrawn — only a
+    // redrawing panel needs its row count to match the terminal's.
+    // Continuations indent two further so they read as one message.
+    // -7 not -5: continuations indent four, and panelRow keeps a column of
+    // margin before the border. Wrapping to the first line's budget lets the
+    // deeper-indented continuations overflow and get clamped instead.
+    line: (msg: string) => {
+      const [first, ...rest] = wrapVisible(msg, width - 7);
+      print(panelRow(`  ${first ?? ""}`, width));
+      for (const l of rest) print(panelRow(`    ${l}`, width));
+    },
+    blank: () => print(panelRow("", width)),
+    close: () => print(panelBottom(width)),
+    /** Prefix the spinner prints after, so it lands inside the border. */
+    prefix: `${styleText("dim", "│")}  `,
+    /** Panel width, for the masked prompt and the spinner's right border. */
+    width,
+  };
+}
+
+/** A closed summary panel — fixed content, so it can be framed on both sides. */
+function printSummaryPanel(label: string, rows: string[]) {
+  const width = panelWidth();
+  if (width === null) {
+    for (const r of rows) line(r);
+    return;
+  }
+  print(panelTop(styleText("bold", label), width));
+  print(panelRow("", width));
+  for (const r of rows) print(panelRow(`  ${r}`, width));
+  print(panelRow("", width));
+  print(panelBottom(width));
 }
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -147,7 +339,12 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
  * Clears its line when done so the caller can print the result. Falls back to a
  * static line when stdout is not a TTY (piped output, CI, tests).
  */
-async function withSpinner<T>(label: string, task: () => Promise<T>): Promise<T> {
+async function withSpinner<T>(
+  label: string,
+  task: () => Promise<T>,
+  prefix: string = PAD,
+  width?: number,
+): Promise<T> {
   if (!process.stdout.isTTY) {
     line(info(`${label}…`));
     return task();
@@ -155,7 +352,14 @@ async function withSpinner<T>(label: string, task: () => Promise<T>): Promise<T>
   let i = 0;
   const render = () => {
     const frame = styleText("cyan", SPINNER_FRAMES[i] ?? "");
-    process.stdout.write(`\r${PAD}${frame} ${styleText("dim", `${label}…`)}`);
+    const body = `${prefix}${frame} ${styleText("dim", `${label}…`)}`;
+    // Close the row when we're inside a panel, so the border doesn't blink out
+    // for as long as validation takes.
+    const tail =
+      width === undefined
+        ? ""
+        : `${" ".repeat(Math.max(0, width - visibleWidth(body) - 1))}${styleText("dim", "│")}`;
+    process.stdout.write(`\r${body}${tail}`);
     i = (i + 1) % SPINNER_FRAMES.length;
   };
   render();
@@ -200,103 +404,79 @@ function printBanner() {
   print("");
 }
 
-// ─── Step 1: Auth ───────────────────────────────────────────────────────────
+// ─── Step 1: Choose ─────────────────────────────────────────────────────────
+
+const CHOICES: { choice: CredentialChoice; label: string; hint: string }[] = [
+  { choice: "api", label: "API key", hint: "everyday key — buckets, upload, download" },
+  { choice: "admin", label: "Management key", hint: "mints API keys via generate_api_key" },
+  { choice: "both", label: "Both", hint: "" },
+];
 
 /**
- * Validate an API key by calling GET /api/v1/spaces.
- * Returns true if the server responds with 200.
+ * Ask which credential the user is configuring. The chooser is a statement of
+ * intent: the auth step then only accepts a key of that type (see
+ * `mismatchMessage`). Returns null if the user cancels.
  */
-export async function validateApiKey(apiKey: string, baseUrl: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${baseUrl}/api/v1/spaces`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-      },
-    });
-    return res.status === 200;
-  } catch {
-    return false;
-  }
+export async function chooseCredentials(notice?: string): Promise<CredentialChoice | null> {
+  const index = await selectOne(
+    CHOICES.map(({ label, hint }) => ({ label, hint })),
+    {
+      title: "CHOOSE CREDENTIALS",
+      step: "1/3",
+      notice,
+      hint: "↑/↓ move   enter select   esc cancel",
+    },
+  );
+  if (index === null) return null;
+  gap();
+  return CHOICES[index]?.choice ?? "api";
 }
 
-/**
- * Basic format check for a Sui private key.
- * We cannot validate it against the API (it never leaves the machine).
- */
-export function isValidServiceKeyFormat(key: string): boolean {
-  return key.startsWith("suiprivkey1") && key.length > 20;
-}
+// ─── Step 2: Auth ───────────────────────────────────────────────────────────
 
-async function stepAuth(
-  rl: readline.Interface,
-): Promise<{ apiKey: string; servicePrivateKey: string; baseUrl: string }> {
-  printStep(1, 2, "AUTHENTICATE");
-  print("");
-  line(`Get credentials at ${accent("https://testnet.harbor.walrus.xyz/")} → Settings → API Keys`);
-  print("");
+// Re-exported for tests/install.test.ts; the real implementation now lives in
+// src/credentials.ts alongside the other format checks.
+export { isValidServiceKeyFormat } from "../src/credentials.js";
 
-  // API Key (required). The base URL is not prompted — almost everyone uses the
-  // testnet default. Power users override it with the CONSOLE_API_BASE_URL env
-  // var (also honored by the server's config layer), no install-time question.
-  let apiKey = "";
+async function stepAuth(rl: readline.Interface, choice: CredentialChoice): Promise<void> {
+  const rail = streamPanel("AUTHENTICATE", "2/3");
+  const gutter = rail.prefix;
+  rail.blank();
+  rail.line(`Get your key at ${accent("testnet.console.walrus.xyz")} → Integrations`);
+  rail.blank();
+
   const baseUrl = resolveInstallBaseUrl();
 
-  while (true) {
-    apiKey = await promptMasked(
-      rl,
-      `${PAD}${accent("CONSOLE_API_KEY")} ${styleText("dim", "(hbr_…)")}: `,
-    );
-    // Register before validateApiKey — its fetch error can embed the Bearer header.
-    registerSecret(apiKey);
-    if (!apiKey) {
-      line(fail("API key is required."));
-      continue;
-    }
-    if (!apiKey.startsWith("hbr_")) {
-      line(fail("API key should start with 'hbr_'."));
-      continue;
-    }
+  const updates = await collectCredentials(choice, {
+    // Register each secret the moment it is typed, before collectCredentials
+    // probes it: a probe's fetch error can embed the Bearer header, and the
+    // redaction layer can only scrub values it already knows about.
+    ask: async (question, opts) => {
+      const value =
+        opts?.masked === false
+          ? await prompt(rl, `${gutter}${accent(question)}`)
+          : await promptMasked(rl, `${gutter}${accent(question)}`, rail.width);
+      registerSecret(value);
+      return value;
+    },
+    ok: (msg) => rail.line(ok(msg)),
+    fail: (msg) => rail.line(fail(msg)),
+    warn: (msg) => rail.line(warn(msg)),
+    info: (msg) => rail.line(info(msg)),
+    probe: (kind, key) =>
+      withSpinner("validating", () => probeKey(kind, key, baseUrl), gutter, rail.width),
+  });
 
-    const valid = await withSpinner("validating", () => validateApiKey(apiKey, baseUrl));
-    if (valid) {
-      line(ok("API key verified"));
-      break;
-    }
-    line(fail("Validation failed — check the key or your connection."));
-  }
-  print("");
-
-  // Service Private Key (optional)
-  const servicePrivateKey = await promptMasked(
-    rl,
-    `${PAD}${styleText("yellow", "[optional]")} ${accent("CONSOLE_SERVICE_PRIVATE_KEY")} ${styleText("dim", "(suiprivkey1…) — Enter to skip")}: `,
-  );
-  registerSecret(servicePrivateKey);
-  if (servicePrivateKey) {
-    if (isValidServiceKeyFormat(servicePrivateKey)) {
-      line(ok("Service key format looks good"));
-    } else {
-      line(warn("Service key format unexpected — saved anyway; check it if tools fail"));
-    }
-  } else {
-    line(info("Service key skipped — add it later to enable upload/download"));
-  }
-
-  // Save to config file
-  const configData: ConfigFileData = { apiKey };
-  if (servicePrivateKey) configData.servicePrivateKey = servicePrivateKey;
-  if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) configData.baseUrl = baseUrl;
-  saveConfigFile(configData);
-  line(ok("Credentials saved"));
-  detail("~/.config/walrus-console-mcp/config.json");
-  print("");
-
-  return { apiKey, servicePrivateKey, baseUrl };
+  if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) updates.baseUrl = baseUrl;
+  mergeConfigFile(updates);
+  rail.blank();
+  rail.line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+  rail.blank();
+  rail.close();
+  gap();
 }
 
-// ─── Step 2: Register ───────────────────────────────────────────────────────
+// ─── Step 3: Register ───────────────────────────────────────────────────────
 
 /**
  * Register the pinned launcher with the agents the user ticks. Detects every
@@ -305,78 +485,108 @@ async function stepAuth(
  * CLI or merging its JSON config, per the client. A per-client failure is
  * caught and shown with a manual-command fallback so the rest still proceed.
  */
-async function stepRegister(spec: string): Promise<void> {
-  printStep(2, 2, "REGISTER");
-  print("");
-  line(
-    styleText(
-      "dim",
-      "Select clients to configure  (↑/↓ move · space toggle · a all · enter confirm)",
-    ),
-  );
-  print("");
-
-  const selected = await selectClients(getClients());
+async function stepRegister(spec: string): Promise<number> {
+  const selected = await selectClients(getClients(), {
+    title: "REGISTER",
+    step: "3/3",
+    hint: "↑/↓ move   space toggle   a all   enter confirm",
+  });
 
   if (selected === null) {
     print("");
     line(info("Registration cancelled — your saved credentials are untouched."));
-    return;
+    return 0;
   }
   if (selected.length === 0) {
     print("");
     line(info("No clients selected — nothing registered."));
-    return;
+    return 0;
   }
 
   print("");
+  let configured = 0;
   for (const client of selected) {
     try {
       client.register(spec);
       line(ok(`${client.label} configured`));
+      configured++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       line(warn(`${client.label} not configured — ${msg}`));
       detail(`run manually: ${client.manualHint(spec)}`);
     }
   }
+  gap();
+  return configured;
+}
+
+/** Silent mode does not run the interactive checklist; point at the manual path. */
+function stepRegisterSilentNote(): void {
+  print(info("Skipped agent registration — run `walrus-console-mcp install` to configure agents."));
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-/**
- * Resolve the base URL from the env override (or the testnet default) and reject
- * an off-policy value. Called at the very start of runInstall — before any
- * readline/prompt machinery — so the rejection surfaces cleanly instead of being
- * swallowed by readline's `close`→cancel handler, and before any key-bearing
- * fetch could leak the API key to a disallowed host.
- */
-export function resolveInstallBaseUrl(): string {
-  const { CONSOLE_API_BASE_URL } = process.env;
-  const baseUrl = CONSOLE_API_BASE_URL || DEFAULT_CONSOLE_API_BASE_URL;
-  if (!isAllowedBaseUrl(baseUrl)) {
-    throw new Error(
-      `CONSOLE_API_BASE_URL is not an allowed Console endpoint: ${baseUrl}. ` +
-        `It must be https to a walrus.xyz host, or http(s) to localhost.`,
-    );
+export async function runInstall(argv: string[] = []): Promise<void> {
+  const args = parseArgs(argv, process.env);
+  if (args.errors.length > 0) {
+    for (const err of args.errors) print(fail(err));
+    process.exit(1);
   }
-  return baseUrl;
-}
 
-export async function runInstall(): Promise<void> {
+  // Silent: no banner, no chooser, no prompts. Validate, save, exit.
+  if (args.silent) {
+    const baseUrl = resolveInstallBaseUrl();
+    // Flag- and env-supplied secrets never pass through the interactive `ask`
+    // wrapper, so register them here — before validateSilent probes them and a
+    // fetch error can embed the Bearer header.
+    for (const value of Object.values(args.values)) {
+      if (value) registerSecret(value);
+    }
+    const { updates, errors } = await validateSilent(args.values, (kind, key) =>
+      probeKey(kind, key, baseUrl),
+    );
+    if (errors.length > 0) {
+      for (const err of errors) print(fail(err));
+      process.exit(1);
+    }
+    // Persist a non-default base URL exactly as the interactive path does, so the
+    // saved config points at the same API the key was just validated against.
+    if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) updates.baseUrl = baseUrl;
+    mergeConfigFile(updates);
+    print(ok("Credentials saved"));
+    if (args.register) stepRegisterSilentNote();
+    process.exit(0);
+  }
+
+  // util.styleText strips ANSI unless it detects a color-capable stream; some
+  // terminals under-report, leaving the whole TUI monochrome while the raw-code
+  // banner still shows. Force color when we're interactive (respecting NO_COLOR).
+  const { NO_COLOR, FORCE_COLOR } = process.env;
+  if (process.stdout.isTTY && !NO_COLOR && !FORCE_COLOR) {
+    Object.assign(process.env, { FORCE_COLOR: "3" });
+  }
+
   printBanner();
 
   // Fail fast on a bad base-URL override, before readline is created (see
   // resolveInstallBaseUrl) so the error is not swallowed as a "cancel".
   resolveInstallBaseUrl();
 
-  // Check if already configured
+  // Shown inside step 1's panel rather than above it, where it's competing with
+  // the banner for attention. The key preview is gone: it never told the user
+  // anything step 2 doesn't, and it doesn't fit the panel width.
   const existing = loadConfigFile();
-  if (existing.apiKey) {
-    print(
-      warn(`Existing config found (${existing.apiKey.slice(0, 12)}…) — re-running overwrites it.`),
-    );
+  const notice = existing.apiKey ? "overwriting existing config" : undefined;
+
+  // The chooser needs raw keypresses, the prompts need readline — so the
+  // readline interface is created only after the chooser has resolved and
+  // released stdin.
+  const choice = await chooseCredentials(notice);
+  if (choice === null) {
     print("");
+    print(info("Installation cancelled."));
+    return;
   }
 
   const rl = readline.createInterface({
@@ -402,18 +612,27 @@ export async function runInstall(): Promise<void> {
     if (phase === "auth") cancel();
   });
 
+  let configured = 0;
   try {
-    await stepAuth(rl);
+    await stepAuth(rl, choice);
     // Free stdin from readline so the tickbox can take raw keypresses.
     phase = "register";
     rl.close();
-    await stepRegister(packageSpec());
+    if (args.register) configured = await stepRegister(packageSpec());
     phase = "done";
   } finally {
     rl.close();
   }
 
-  print("");
-  print(ok(`Done. Restart your agent, then run ${accent("ping_console")}.`));
-  print("");
+  printSummaryPanel("DONE", [
+    ok("Credentials saved"),
+    ...(args.register
+      ? [ok(`${configured} ${configured === 1 ? "agent" : "agents"} configured`)]
+      : []),
+    "",
+    `Restart your agent, then run ${accent("ping_console")}`,
+    `Change a key later:  ${accent("walrus-console-mcp config")}`,
+  ]);
+  // Trailing gap so the shell prompt doesn't come back flush against the panel.
+  gap();
 }

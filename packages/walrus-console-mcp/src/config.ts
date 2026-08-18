@@ -55,14 +55,20 @@ export const ConsoleConfig = Config.all({
     fileConfig.servicePrivateKey,
     "",
   ).pipe(Config.map(Redacted.make)),
-  // Key-Admin credential (hbradm_) + its on-chain signer seed. Env-only, loaded only on
-  // the provisioning host; both default to "" so absence never fails runtime startup, and
-  // hasAdminCredential() guards the empty case. A working key cannot mint — generate_api_key
-  // requires both of these.
-  adminKey: Config.redacted("CONSOLE_ADMIN_KEY").pipe(Config.withDefault(Redacted.make(""))),
-  adminServicePrivateKey: Config.redacted("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY").pipe(
-    Config.withDefault(Redacted.make("")),
+  // Key-Admin (management) credential: `hbradm_` bearer + its on-chain signer seed.
+  // Resolved env → installer-saved file → "" so a provisioning host can be configured
+  // by `walrus-console-mcp config` instead of exported env vars. Both default to ""
+  // so absence never fails startup; hasAdminCredential() guards the empty case.
+  adminKey: resolvedString("CONSOLE_ADMIN_KEY", fileConfig.adminKey, "").pipe(
+    Config.map(Redacted.make),
   ),
+  adminServicePrivateKey: resolvedString(
+    "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY",
+    fileConfig.adminServicePrivateKey,
+    "",
+  ).pipe(Config.map(Redacted.make)),
+  // main's allowlist-enforcing resolver, not the plain string one this branch
+  // had: a config-file baseUrl must not redirect the Bearer key to a foreign host.
   baseUrl: resolvedBaseUrl(fileConfig.baseUrl),
 });
 

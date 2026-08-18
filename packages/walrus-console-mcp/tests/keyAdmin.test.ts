@@ -2,6 +2,7 @@ import { Effect, Layer, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 import { type ConsoleConfig, ConsoleConfigTag, hasAdminCredential } from "../src/config";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
+import { ConsoleAuthError } from "../src/console/errors";
 import { KeyAdminService } from "../src/console/KeyAdminService";
 import { SealCryptoService } from "../src/console/SealCryptoService";
 
@@ -14,7 +15,7 @@ function makeConfig(
     servicePrivateKey: Redacted.make("suiprivkey1working"),
     adminKey: Redacted.make(over.adminKey ?? ""),
     adminServicePrivateKey: Redacted.make(over.adminServicePrivateKey ?? ""),
-    baseUrl: "https://api.testnet.harbor.walrus.xyz",
+    baseUrl: "https://api.testnet.console.walrus.xyz",
   } satisfies ConsoleConfig;
 }
 
@@ -83,5 +84,73 @@ describe("KeyAdminService.generateApiKey — missing-credential guard", () => {
     expect(error._tag).toBe("AdminCredentialMissingError");
     expect((error as { message: string }).message).toContain("A working key cannot mint");
     expect(apiCalls).toEqual([]);
+  });
+});
+
+describe("KeyAdminService.generateApiKey — admin-signer hint on execute failure", () => {
+  it("wraps an execute-time rejection with a hint that the admin signer may be wrong", async () => {
+    // A wrong-but-valid admin seed signs the sponsored PTB fine — the failure only
+    // surfaces once Console checks the signature against the registered signer at
+    // /execute. Simulate that by having executeSponsored fail like Console would.
+    const stubApi = {
+      createApiKey: () =>
+        Effect.succeed({
+          id: "key_1",
+          name: null,
+          key: "hbr_minted",
+          space_id: "sp_1",
+          permissions: "read_write" as const,
+          service_signer_address: "0xchild",
+          status: "active" as const,
+          expected_permission: null,
+          private_buckets: [{ bucket_id: "b1", group_id: "g1" }],
+          created_at: "2024-01-01T00:00:00Z",
+        }),
+      sponsorGrantBucketAccess: () => Effect.succeed({ bytes: "AAAA", digest: "0xdigest" }),
+      executeSponsored: () =>
+        Effect.fail(
+          new ConsoleAuthError({
+            message: "Signature verification failed",
+            code: "invalid_api_key",
+          }),
+        ),
+      getApiKeyStatus: () =>
+        Effect.die("getApiKeyStatus must not run — executeSponsored already failed"),
+    } as unknown as ConsoleApiClient;
+
+    const stubSeal = {
+      generateChildKeypair: () =>
+        Effect.succeed({ address: "0xchild", privateKey: "suiprivkey1child" }),
+      signTransactionBytes: () => Effect.succeed("c2lnbmF0dXJl"),
+    } as unknown as SealCryptoService;
+
+    const layer = KeyAdminService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, stubApi),
+          Layer.succeed(SealCryptoService, stubSeal),
+          Layer.succeed(
+            ConsoleConfigTag,
+            makeConfig({ adminKey: "hbradm_x", adminServicePrivateKey: "suiprivkey1a" }),
+          ),
+        ),
+      ),
+    );
+
+    const error = await Effect.runPromise(
+      KeyAdminService.pipe(
+        Effect.flatMap((svc) => svc.generateApiKey({ spaceId: "sp_1", permission: "read_write" })),
+        Effect.flip,
+        Effect.provide(layer),
+      ),
+    );
+
+    // Type is preserved (still a ConsoleAuthError, not swallowed into something else)...
+    expect(error._tag).toBe("ConsoleAuthError");
+    const message = (error as { message: string }).message;
+    // ...and the original message survives alongside the new hint.
+    expect(message).toContain("Signature verification failed");
+    expect(message).toContain("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY");
+    expect(message).toContain("CONSOLE_ADMIN_KEY");
   });
 });

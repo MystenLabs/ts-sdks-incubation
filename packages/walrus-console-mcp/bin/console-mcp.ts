@@ -10,17 +10,37 @@ if (process.argv[2] === "install") {
   // print a credential. Register env + any already-saved file secrets; the installer
   // registers the freshly-typed keys as they are entered.
   registerSecretsFromEnv();
-  const saved = loadConfigFile();
-  registerSecret(saved.apiKey);
-  registerSecret(saved.servicePrivateKey);
+  // registerConfigFileSecrets, not two registerSecret calls: it also covers the
+  // management pair (adminKey / adminServicePrivateKey), which this path can now
+  // read back out of the config file.
+  registerConfigFileSecrets(loadConfigFile());
   installLogRedaction();
 
   const { runInstall } = await import("./install.js");
   try {
-    await runInstall();
+    await runInstall(process.argv.slice(3));
     process.exit(0);
   } catch (err) {
     // Print the message only (redacted), never the raw error object/stack.
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
+
+// Route `walrus-console-mcp config` to the credential-change CLI. Same reasoning
+// as `install` above: must run before the heavy Effect/MCP imports below.
+if (process.argv[2] === "config") {
+  // Same redaction wiring as `install` above — this path handles the very same
+  // credentials, so a mid-run throw must not print one either.
+  registerSecretsFromEnv();
+  registerConfigFileSecrets(loadConfigFile());
+  installLogRedaction();
+
+  const { runConfigure } = await import("./configure.js");
+  try {
+    process.exit(await runConfigure(process.argv.slice(3)));
+  } catch (err) {
+    // Message only (redacted), never the raw error object/stack — matching `install`.
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
@@ -40,13 +60,21 @@ import { loadConfigFile } from "../src/configFile";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
 import { ConsoleStorageService } from "../src/console/ConsoleStorageService";
 import { KeyAdminService } from "../src/console/KeyAdminService";
-import { BucketId, FileId, SpaceId } from "../src/console/types";
+import {
+  bucketDescriptionSchema,
+  bucketTagsSchema,
+  buildBucketMetadataPatch,
+  buildFilePatch,
+  fileDescriptionSchema,
+  fileTagsSchema,
+} from "../src/console/fileMetadata";
+import { BucketId, FileId, SpaceId, withDisplaySize } from "../src/console/types";
 import { resolvePathWithinRoots } from "../src/pathSandbox";
 import {
   formatToolError,
   installLogRedaction,
   redactString,
-  registerSecret,
+  registerConfigFileSecrets,
   registerSecretsFromEnv,
 } from "../src/redaction";
 import { AppRuntime, runPromise, unwrapFiberFailure } from "../src/runtime";
@@ -63,8 +91,7 @@ registerSecretsFromEnv();
 // Credentials can also come from the installer-saved config file (not env). Register those
 // too, or a file-backed key could leak unredacted into stderr / tool error output.
 const savedConfig = loadConfigFile();
-registerSecret(savedConfig.apiKey);
-registerSecret(savedConfig.servicePrivateKey);
+registerConfigFileSecrets(savedConfig);
 installLogRedaction();
 
 const server = new McpServer(
@@ -293,12 +320,19 @@ server.registerTool(
   "upload_file",
   {
     title: "Upload & Encrypt File",
-    description: "Reads a local file, encrypts it with Seal, and uploads it.",
+    description:
+      "Reads a local file, encrypts it with Seal, and uploads it. " +
+      "Optionally attaches a description and tags, which are searchable in Console.",
     inputSchema: {
       bucketId: z.string(),
       sealPolicyId: z.string(),
       localPath: z.string(),
       name: z.string().optional(),
+      // Limits mirror the Console API (src/console/fileMetadata.ts) so an
+      // over-limit value is refused here with a field-level message instead of
+      // costing an upload round-trip to learn it (COMG-662).
+      description: fileDescriptionSchema.optional(),
+      tags: fileTagsSchema.optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: true },
   },
@@ -309,11 +343,15 @@ server.registerTool(
       sealPolicyId,
       localPath,
       name,
+      description,
+      tags,
     }: {
       bucketId: string;
       sealPolicyId: string;
       localPath: string;
       name?: string | undefined;
+      description?: string | undefined;
+      tags?: string[] | undefined;
     }) => {
       const resolvedPath = await resolvePathWithinRoots(server.server, localPath, "Source");
       return await runPromise(
@@ -324,6 +362,7 @@ server.registerTool(
             sealPolicyId,
             resolvedPath,
             name,
+            { description, tags },
           );
         }),
       );
@@ -399,7 +438,11 @@ server.registerTool(
       return await runPromise(
         Effect.gen(function* () {
           const api = yield* ConsoleApiClient;
-          return yield* api.listBucketFiles(BucketId.make(bucketId), limit, undefined, q);
+          const res = yield* api.listBucketFiles(BucketId.make(bucketId), limit, undefined, q);
+          // Resolve the size a caller should show — plaintext for private files,
+          // stored length for anything without a declared one. `size` and
+          // `content_size` stay on each item untouched (COMG-603).
+          return { ...res, data: res.data.map(withDisplaySize) };
         }),
       );
     },
@@ -457,7 +500,7 @@ server.registerTool(
     title: "Rename Bucket",
     description:
       "Renames a bucket. Preserves the bucket's visibility and Seal policy. " +
-      "Does NOT rename files (Console has no file-rename API).",
+      "Does NOT rename the files inside it — rename a file individually instead.",
     inputSchema: {
       bucketId: z.string(),
       name: z.string().min(1).max(100),
@@ -517,6 +560,111 @@ server.registerTool(
       }),
     );
   }),
+);
+
+server.registerTool(
+  "update_file",
+  {
+    title: "Rename File or Edit Its Description & Tags",
+    description:
+      "Renames a file and/or edits its description and tags. Supply only the fields you " +
+      "want to change — anything omitted is left alone. Pass null to clear a description " +
+      "or tags. At least one field is required.",
+    inputSchema: {
+      fileId: z.string(),
+      name: z.string().min(1).optional(),
+      description: fileDescriptionSchema.nullable().optional(),
+      tags: fileTagsSchema.nullable().optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  safeTool(
+    "update_file",
+    async ({
+      fileId,
+      name,
+      description,
+      tags,
+    }: {
+      fileId: string;
+      name?: string | undefined;
+      description?: string | null | undefined;
+      tags?: string[] | null | undefined;
+    }) => {
+      const patch = buildFilePatch({ name, description, tags });
+      if (!patch) {
+        // Refused here rather than spending a round-trip to be told the same
+        // thing — Console rejects a body with none of the three fields.
+        throw new Error("Provide at least one of: name, description, tags.");
+      }
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          return yield* api.updateFile(FileId.make(fileId), patch);
+        }),
+      );
+    },
+  ),
+);
+
+server.registerTool(
+  "get_bucket_metadata",
+  {
+    title: "Read Bucket Description & Tags",
+    description:
+      "Reads a bucket's description and tags. These live on a separate endpoint from " +
+      "get_bucket, so a bucket read does not include them.",
+    inputSchema: { bucketId: z.string() },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
+  safeTool("get_bucket_metadata", async ({ bucketId }: { bucketId: string }) => {
+    return await runPromise(
+      Effect.gen(function* () {
+        const api = yield* ConsoleApiClient;
+        return yield* api.getBucketMetadata(BucketId.make(bucketId));
+      }),
+    );
+  }),
+);
+
+server.registerTool(
+  "update_bucket_metadata",
+  {
+    title: "Edit Bucket Description & Tags",
+    description:
+      "Edits a bucket's description and tags. Supply only what you want to change. " +
+      "Unlike update_file, null is not accepted here — send an empty string or an " +
+      "empty array to clear. Tags are capped shorter than file tags (24 characters).",
+    inputSchema: {
+      bucketId: z.string(),
+      description: bucketDescriptionSchema.optional(),
+      tags: bucketTagsSchema.optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  safeTool(
+    "update_bucket_metadata",
+    async ({
+      bucketId,
+      description,
+      tags,
+    }: {
+      bucketId: string;
+      description?: string | undefined;
+      tags?: string[] | undefined;
+    }) => {
+      const patch = buildBucketMetadataPatch({ description, tags });
+      if (!patch) {
+        throw new Error("Provide a description and/or tags.");
+      }
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          return yield* api.updateBucketMetadata(BucketId.make(bucketId), patch);
+        }),
+      );
+    },
+  ),
 );
 
 const transport = new StdioServerTransport();

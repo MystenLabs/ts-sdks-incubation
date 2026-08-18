@@ -42,6 +42,31 @@ describe("resolvedString — env → file → fallback priority", () => {
   });
 });
 
+describe("resolvedString — management key resolution", () => {
+  const runAdmin = (env: Record<string, string>, fileValue: string | undefined) =>
+    Effect.runPromise(
+      resolvedString("CONSOLE_ADMIN_KEY", fileValue, "").pipe(
+        Effect.withConfigProvider(ConfigProvider.fromMap(new Map(Object.entries(env)))),
+      ),
+    );
+
+  it("uses the saved file value when the env var is unset", async () => {
+    expect(await runAdmin({}, "hbradm_file")).toBe("hbradm_file");
+  });
+
+  it("an exported-but-empty CONSOLE_ADMIN_KEY does not shadow the file value", async () => {
+    expect(await runAdmin({ CONSOLE_ADMIN_KEY: "" }, "hbradm_file")).toBe("hbradm_file");
+  });
+
+  it("a set env var still wins over the file", async () => {
+    expect(await runAdmin({ CONSOLE_ADMIN_KEY: "hbradm_env" }, "hbradm_file")).toBe("hbradm_env");
+  });
+
+  it("absent everywhere resolves to the empty string", async () => {
+    expect(await runAdmin({}, undefined)).toBe("");
+  });
+});
+
 describe("resolvedBaseUrl — allowlist enforcement", () => {
   const runBaseUrl = (env: Record<string, string>, fileValue: string | undefined) =>
     Effect.runPromise(

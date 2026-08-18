@@ -1,10 +1,19 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Effect } from "effect";
-import type { FileStatusResponse, FileUploadResponse } from "./ConsoleApiClient";
+import type { FileUploadResponse } from "./ConsoleApiClient";
 import { ConsoleApiClient } from "./ConsoleApiClient";
-import { ConsoleApiError, FileStatusError, LocalFsError, MirrorGrantMissingError } from "./errors";
+import {
+  ConsoleApiError,
+  FileStatusError,
+  LocalFsError,
+  MirrorGrantMissingError,
+  PayloadTooLargeError,
+  UnsupportedFileTypeError,
+} from "./errors";
+import { buildUploadMetadata, type FileUserMetadata } from "./fileMetadata";
 import { SealCryptoService } from "./SealCryptoService";
+import { describeUploadResult, pollUntilTerminal } from "./uploadPolling";
 import type { BucketId, FileId, SpaceId } from "./types";
 
 /**
@@ -54,6 +63,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         sealPolicyId: string,
         localPath: string,
         targetName?: string,
+        userMetadata?: FileUserMetadata,
       ) {
         // fs.readFile returns a Buffer, which IS a Uint8Array — pass it straight to
         // seal.encrypt instead of copying the whole file into a second buffer.
@@ -69,15 +79,23 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
 
         const fileName = targetName ?? path.basename(localPath);
 
+        // Undefined when the caller supplied neither field, so the multipart form
+        // omits `metadata` rather than sending `{}` (COMG-662).
+        const metadata = buildUploadMetadata(userMetadata ?? {});
+
         // Encrypt
         const encrypted = yield* seal.encrypt(fileBytes, sealPolicyId);
 
-        // Upload with simple retry loop on mirror_missing_grant (pragmatic & type-safe)
+        // Upload with simple retry loop on mirror_missing_grant (pragmatic & type-safe).
+        // uploadBucketFile now surfaces deny-list (415) and size-cap (413) as
+        // dedicated tagged errors — those fall straight through the
+        // `mirror_missing_grant` gate and abort the loop instead of retrying a
+        // rejection that will never change.
         let uploadResult: FileUploadResponse | undefined;
-        let lastErr: ConsoleApiError | undefined;
+        let lastErr: ConsoleApiError | UnsupportedFileTypeError | PayloadTooLargeError | undefined;
         for (let attempt = 0; attempt < 12; attempt++) {
           const res = yield* api
-            .uploadBucketFile(bucketId, encrypted, fileName)
+            .uploadBucketFile(bucketId, encrypted, fileName, metadata, fileBytes.length)
             .pipe(Effect.either);
 
           if (res._tag === "Right") {
@@ -99,39 +117,23 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
 
         const fileId = uploadResult.data.id;
 
-        // Poll until completed or failed (simple loop)
-        let finalStatus: FileStatusResponse | undefined;
-        let lastState = "queued";
-        for (let i = 0; i < 40; i++) {
-          const status = yield* api.getFileUploadStatus(bucketId, fileId);
-          lastState = status.data.state;
-          if (status.data.state === "completed") {
-            finalStatus = status;
-            break;
-          }
-          if (status.data.state === "failed") {
-            return yield* Effect.fail(
-              new FileStatusError({
-                fileId,
-                state: status.data.state,
-                error: status.data.error ?? { code: "unknown", message: "Upload failed" },
-              }),
-            );
-          }
-          yield* Effect.sleep("2 seconds");
-        }
+        // Wait for the async worker. Only a server-reported `failed` is an
+        // error here: running out of polling budget means the upload landed and
+        // is still being processed, and reporting that as a failure made agents
+        // re-upload a file that already existed (COMG-662 verification).
+        const outcome = yield* pollUntilTerminal(() => api.getFileUploadStatus(bucketId, fileId));
 
-        if (!finalStatus) {
+        if (outcome.kind === "failed") {
           return yield* Effect.fail(
             new FileStatusError({
               fileId,
-              state: lastState,
-              error: { code: "timeout", message: "Upload did not complete in time" },
+              state: outcome.status.data.state,
+              error: outcome.status.data.error ?? { code: "unknown", message: "Upload failed" },
             }),
           );
         }
 
-        return { fileId, name: fileName };
+        return describeUploadResult(outcome, fileId, fileName);
       });
 
       /**

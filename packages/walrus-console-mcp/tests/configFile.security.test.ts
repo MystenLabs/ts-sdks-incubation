@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getConfigFilePath, loadConfigFile, saveConfigFile } from "../src/configFile";
+import {
+  getConfigFilePath,
+  loadConfigFile,
+  mergeConfigFile,
+  saveConfigFile,
+} from "../src/configFile";
 import {
   clearSecrets,
   REDACTION_PLACEHOLDER,
@@ -46,6 +51,17 @@ describe("saveConfigFile — file permissions (review #1)", () => {
   it("creates a brand-new config file as 0600", () => {
     saveConfigFile({ apiKey: "hbr_new_key" });
     expect(fs.statSync(getConfigFilePath()).mode & 0o777).toBe(0o600);
+  });
+
+  it("keeps 0600 when merging admin fields into a pre-existing loose-permission file", () => {
+    saveConfigFile({ apiKey: "hbr_x" });
+    const filePath = getConfigFilePath();
+    fs.chmodSync(filePath, 0o644);
+
+    mergeConfigFile({ adminKey: "hbradm_y", adminServicePrivateKey: "suiprivkey1_z" });
+
+    const mode = fs.statSync(filePath).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 
   it("leaves no temp file behind after an atomic save", () => {

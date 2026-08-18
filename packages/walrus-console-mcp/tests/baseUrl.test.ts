@@ -8,7 +8,7 @@ describe("isAllowedBaseUrl", () => {
 
   it("allows https to walrus.xyz and its subdomains", () => {
     expect(isAllowedBaseUrl("https://walrus.xyz")).toBe(true);
-    expect(isAllowedBaseUrl("https://api.mainnet.harbor.walrus.xyz")).toBe(true);
+    expect(isAllowedBaseUrl("https://api.mainnet.console.walrus.xyz")).toBe(true);
   });
 
   it("allows http and https to loopback for local dev", () => {
@@ -19,7 +19,7 @@ describe("isAllowedBaseUrl", () => {
   });
 
   it("rejects non-loopback http (would send the Bearer key in the clear)", () => {
-    expect(isAllowedBaseUrl("http://api.testnet.harbor.walrus.xyz")).toBe(false);
+    expect(isAllowedBaseUrl("http://api.testnet.console.walrus.xyz")).toBe(false);
   });
 
   it("rejects https to a non-walrus.xyz host", () => {
@@ -27,7 +27,7 @@ describe("isAllowedBaseUrl", () => {
   });
 
   it("rejects a look-alike host that only shares a prefix (boundary-safe)", () => {
-    expect(isAllowedBaseUrl("https://api.harbor.walrus.xyz-evil.com")).toBe(false);
+    expect(isAllowedBaseUrl("https://api.console.walrus.xyz-evil.com")).toBe(false);
     expect(isAllowedBaseUrl("https://xwalrus.xyz")).toBe(false);
     expect(isAllowedBaseUrl("https://walrus.xyz.evil.com")).toBe(false);
   });

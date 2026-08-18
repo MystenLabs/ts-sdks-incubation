@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,9 +18,16 @@ import { fileURLToPath } from "node:url";
  * the model (e.g. via prompt injection) must never reach `fs`.
  *
  * Containment is checked on **canonical, symlink-resolved** paths (see
- * `toRealPath`): a symlink inside an allowed root that points outside it cannot
- * smuggle a read/write past the boundary. The canonical path is returned so the
- * caller's `fs` call operates on the vetted target.
+ * `toRealPath`): a *live* symlink inside an allowed root that points outside it
+ * cannot smuggle a read/write past the boundary, because it is resolved to its
+ * real target before the check. The canonical path is returned so the caller's
+ * `fs` call operates on the vetted target.
+ *
+ * A **dangling** symlink — one whose target does not exist yet — is rejected
+ * outright rather than resolved. See `toRealPath` for why that trade is worth
+ * making. Note this is specifically about *broken* links: ordinary live symlinks
+ * are still followed and checked, and must be, or macOS breaks immediately
+ * (`/tmp` -> `/private/tmp`, `/var`, symlinked home directories).
  *
  * Residual note: this does not close the check-to-use TOCTOU window — a parent
  * directory swapped for a symlink between this check and the caller's
@@ -100,10 +107,59 @@ export function allowedDirsFromEnv(env: NodeJS.ProcessEnv = process.env): string
 }
 
 /**
+ * The target of `p` if it is a symlink, else undefined.
+ *
+ * `lstatSync` inspects the link itself rather than following it, so it succeeds
+ * exactly where `realpathSync` throws. That is what lets a genuinely nonexistent
+ * path be told apart from a DANGLING symlink — the two are indistinguishable
+ * from `realpathSync`'s error alone. The target is read only to name it in the
+ * rejection message; nothing resolves through it.
+ *
+ * Note the `catch` carries two meanings, not one — see the comment on it before
+ * reading the caller's walk-up as exhaustively safe.
+ */
+function readLinkTarget(p: string): string | undefined {
+  try {
+    if (!lstatSync(p).isSymbolicLink()) return undefined;
+    return readlinkSync(p);
+  } catch {
+    // Two different states, deliberately given the same answer: the path does
+    // not exist at all, or it cannot be stat'ed (EACCES). Both report "not a
+    // symlink" and the caller walks up, re-appending the segment lexically —
+    // structurally the same shape as the dangling-link bug this file guards.
+    //
+    // Sound for EACCES because of what lstat needs: search permission on the
+    // PARENT, not on the path itself. If that is denied here, the eventual
+    // writeFile through the same parent is denied too. So the walk-up can hand
+    // back a lexical path that passes containment, but nothing can ever be
+    // written through it — the failure is closed rather than an escape.
+    // Confirmed against a fixture: an out-of-sandbox symlink inside a 000
+    // directory is approved by the check and then refused EACCES by the write.
+    return undefined;
+  }
+}
+
+/**
  * Canonical (symlink-free) absolute form of `p`. When the full path does not
  * exist yet — the common case for a download destination — the deepest EXISTING
  * ancestor is realpath-resolved and the not-yet-created suffix re-appended, so a
  * symlinked parent directory cannot redirect the write outside the sandbox.
+ *
+ * Throws on a **dangling** symlink anywhere along the path. `realpathSync` fails
+ * identically for "no such path" and "dangling link", and treating them alike is
+ * the bug this guards: the link's own name gets re-appended to its real parent,
+ * producing a path that sits inside the root while the eventual `writeFile`
+ * follows the link out of it.
+ *
+ * Rejecting rather than resolving the target is a deliberate trade. Resolving
+ * needs recursion (a link may point at another link), which needs a depth cap to
+ * terminate cycles, which needs a `depth` parameter — and that parameter is a
+ * quiet hazard, since `paths.map(toRealPath)` would feed the array index into it
+ * and TypeScript accepts it silently. Rejecting costs one narrow case: a
+ * pre-existing broken link, whose target's parent directory already exists, used
+ * as a download destination. Ordinary destinations are plain paths that hold no
+ * symlink at all and never reach this branch. Cycles fall out for free — every
+ * link in a cycle is dangling, so the first hop is rejected with no counter.
  *
  * Plain `realpathSync` (not `.native`) is used so results stay free of Windows
  * `\\?\` prefixes that would break the separator-boundary check in
@@ -118,6 +174,13 @@ export function toRealPath(p: string): string {
       const real = realpathSync(existing);
       return suffix.length === 0 ? real : join(real, ...suffix);
     } catch {
+      const target = readLinkTarget(existing);
+      if (target !== undefined) {
+        throw new Error(
+          `"${existing}" is a broken symlink (it points at "${target}", which does not exist). ` +
+            `Point it at an existing location, or remove the link and use a real path.`,
+        );
+      }
       const parent = dirname(existing);
       if (parent === existing) return resolved; // reached the fs root; nothing exists (defensive)
       suffix.unshift(basename(existing));
@@ -181,8 +244,26 @@ export async function resolvePathWithinRoots(
   // Anchor relative paths to the first allowed root, not the server's cwd.
   const resolved = isAbsolute(expanded) ? resolve(expanded) : resolve(firstRoot, expanded);
 
-  const realCandidate = toRealPath(resolved);
-  const realRoots = rootDirs.map(toRealPath);
+  // The candidate is held to a stricter standard than the roots. If it cannot be
+  // canonicalized the whole call fails — it is the thing being vetted, so there
+  // is nothing to fall back to. A ROOT that cannot be canonicalized is merely
+  // dropped: `isWithinRoots` is an OR across roots, so a shorter list can only
+  // ever accept fewer paths, and an empty list rejects everything.
+  let realCandidate: string;
+  try {
+    realCandidate = toRealPath(resolved);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} path "${candidatePath}" cannot be used: ${message}`);
+  }
+  const realRoots: string[] = [];
+  for (const dir of rootDirs) {
+    try {
+      realRoots.push(toRealPath(dir));
+    } catch {
+      console.error(`[console-mcp] Ignoring unresolvable sandbox root "${dir}"`);
+    }
+  }
   if (!isWithinRoots(realCandidate, realRoots)) {
     throw new Error(
       `${label} path "${candidatePath}" resolves to "${realCandidate}", which is outside the ` +

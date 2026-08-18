@@ -13,6 +13,7 @@ import {
   getClients,
   jsonFileClient,
   renderChecklistLines,
+  renderConfirmLine,
   SERVER_NAME,
   selectClients,
   upsertMcpServer,
@@ -63,11 +64,17 @@ describe("commandExists", () => {
 });
 
 describe("upsertMcpServer", () => {
+  // The config *key* stays unscoped (SERVER_NAME); only the npx spec carries the
+  // scope. These use the real pair so a regression can't collapse them into one.
   it("adds our pinned stdio entry under mcpServers", () => {
-    const result = upsertMcpServer({}, "walrus-console-mcp", "walrus-console-mcp@1.2.3");
+    const result = upsertMcpServer(
+      {},
+      "walrus-console-mcp",
+      "@mysten-incubation/walrus-console-mcp@1.2.3",
+    );
     expect(result.mcpServers["walrus-console-mcp"]).toEqual({
       command: "npx",
-      args: ["-y", "walrus-console-mcp@1.2.3"],
+      args: ["-y", "@mysten-incubation/walrus-console-mcp@1.2.3"],
     });
   });
 
@@ -75,7 +82,11 @@ describe("upsertMcpServer", () => {
     const existing = {
       mcpServers: { "other-server": { command: "other", args: [] } },
     };
-    const result = upsertMcpServer(existing, "walrus-console-mcp", "walrus-console-mcp@1.2.3");
+    const result = upsertMcpServer(
+      existing,
+      "walrus-console-mcp",
+      "@mysten-incubation/walrus-console-mcp@1.2.3",
+    );
     expect(result.mcpServers["other-server"]).toEqual({ command: "other", args: [] });
     expect(result.mcpServers["walrus-console-mcp"]).toBeDefined();
   });
@@ -83,13 +94,20 @@ describe("upsertMcpServer", () => {
   it("overwrites a stale entry for the same server name", () => {
     const existing = {
       mcpServers: {
-        "walrus-console-mcp": { command: "npx", args: ["-y", "walrus-console-mcp@0.0.1"] },
+        "walrus-console-mcp": {
+          command: "npx",
+          args: ["-y", "@mysten-incubation/walrus-console-mcp@0.0.1"],
+        },
       },
     };
-    const result = upsertMcpServer(existing, "walrus-console-mcp", "walrus-console-mcp@2.0.0");
+    const result = upsertMcpServer(
+      existing,
+      "walrus-console-mcp",
+      "@mysten-incubation/walrus-console-mcp@2.0.0",
+    );
     expect(result.mcpServers["walrus-console-mcp"]?.args).toEqual([
       "-y",
-      "walrus-console-mcp@2.0.0",
+      "@mysten-incubation/walrus-console-mcp@2.0.0",
     ]);
   });
 
@@ -332,14 +350,39 @@ describe("renderChecklistLines", () => {
 
   it("marks the cursor row, the checkbox state, and detection tag", () => {
     const lines = renderChecklistLines(items, 0);
-    expect(lines[0]).toBe("› [x] Claude Code  found");
-    expect(lines[1]).toBe("  [ ] Codex        not found");
+    expect(lines[0]).toBe("❯ ◼  Claude Code      found");
+    expect(lines[1]).toBe("  ◻  Codex        not found");
   });
 
   it("moves the cursor marker to the selected row", () => {
     const lines = renderChecklistLines(items, 1);
     expect(lines[0]?.startsWith("  ")).toBe(true);
-    expect(lines[1]?.startsWith("› ")).toBe(true);
+    expect(lines[1]?.startsWith("❯ ")).toBe(true);
+  });
+
+  it("right-aligns found/not-found into a single column", () => {
+    const lines = renderChecklistLines(items, 0);
+    expect(lines[0]?.length).toBe(lines[1]?.length);
+    expect(lines[0]?.endsWith("    found")).toBe(true);
+    expect(lines[1]?.endsWith("not found")).toBe(true);
+  });
+});
+
+describe("renderConfirmLine", () => {
+  it("shows the count and pluralizes", () => {
+    expect(renderConfirmLine(3, false)).toBe("     [ Configure 3 agents ]");
+    expect(renderConfirmLine(1, false)).toBe("     [ Configure 1 agent ]");
+  });
+
+  it("marks the row when selected", () => {
+    expect(renderConfirmLine(2, true)).toBe("❯    [ Configure 2 agents ]");
+  });
+
+  it("lines the confirm text up with the client labels above it", () => {
+    const label = renderChecklistLines([{ label: "X", checked: false, detected: true }], -1);
+    const confirm = renderConfirmLine(1, false);
+    // Both start their text at the same column: marker + glyph + gap.
+    expect(label[0]?.indexOf("X")).toBe(confirm.indexOf("["));
   });
 });
 
@@ -351,20 +394,33 @@ describe("selectClients", () => {
     expect(chosen?.map((c) => c.id)).toEqual(["a"]);
   });
 
-  it("interactive: space toggles, arrows move, enter confirms", async () => {
+  it("interactive: space/enter toggle the focused row; the Confirm row finishes", async () => {
     const input = new PassThrough();
     const output = new PassThrough();
     // alpha starts checked (detected); beta starts unchecked.
     const clients = [stubClient("alpha", true), stubClient("beta", false)];
     const pending = selectClients(clients, { input, output, isTTY: true });
 
-    input.write(" "); // toggle alpha OFF (cursor at 0)
-    input.write("\x1b[B"); // move down to beta
-    input.write(" "); // toggle beta ON
-    input.write("\r"); // confirm
-
+    input.write(" "); // space toggles alpha OFF (cursor 0)
+    input.write("\x1b[B"); // -> beta (cursor 1)
+    input.write("\r"); // enter toggles beta ON (does NOT confirm)
+    input.write("\x1b[B"); // -> Confirm row (cursor 2)
+    input.write("\r"); // enter on the Confirm row confirms
     const chosen = await pending;
     expect(chosen?.map((c) => c.id)).toEqual(["beta"]);
+  });
+
+  it("interactive: navigating to the Confirm row and pressing space confirms", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const clients = [stubClient("alpha", true), stubClient("beta", false)];
+    const pending = selectClients(clients, { input, output, isTTY: true });
+
+    input.write("\x1b[B"); // cursor 0 (alpha) -> 1 (beta)
+    input.write("\x1b[B"); // -> 2 (Confirm row)
+    input.write(" "); // space on the Confirm row confirms
+    const chosen = await pending;
+    expect(chosen?.map((c) => c.id)).toEqual(["alpha"]); // alpha stayed ticked, beta not
   });
 
   it("interactive: Ctrl-C cancels and returns null", async () => {

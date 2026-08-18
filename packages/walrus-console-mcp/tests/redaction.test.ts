@@ -6,6 +6,7 @@ import {
   REDACTION_PLACEHOLDER,
   redactString,
   redactValue,
+  registerConfigFileSecrets,
   registerSecret,
   registerSecretsFromEnv,
 } from "../src/redaction.js";
@@ -43,6 +44,24 @@ describe("registerSecret", () => {
   it("leaves text without any secret untouched", () => {
     registerSecret(API_KEY);
     expect(redactString("nothing secret here")).toBe("nothing secret here");
+  });
+
+  // Regression: config.ts trims the credential before it becomes a Bearer header,
+  // but the env var and the config file are read untrimmed. Registering the padded
+  // form would watch for a string that never appears on the wire.
+  it("registers the trimmed form, which is what reaches the wire", () => {
+    registerSecret(`  ${API_KEY}\n`);
+    expect(redactString(`token=${API_KEY} done`)).toBe(`token=${REDACTION_PLACEHOLDER} done`);
+  });
+
+  // Regression: the length check runs after trimming, so a run of spaces cannot
+  // register and scrub whitespace out of every line of output. The indented line
+  // below is the giveaway — an unset var defaulting to blank padding would turn
+  // every aligned log line into a placeholder.
+  it("ignores a whitespace-only value even when it is long enough untrimmed", () => {
+    registerSecret(" ".repeat(12));
+    const aligned = `key:${" ".repeat(12)}value`;
+    expect(redactString(aligned)).toBe(aligned);
   });
 });
 
@@ -125,5 +144,34 @@ describe("installLogRedaction", () => {
     fake.log(`plain ${API_KEY}`);
 
     expect(written).toEqual([`plain ${REDACTION_PLACEHOLDER}`]);
+  });
+});
+
+describe("registerConfigFileSecrets", () => {
+  const ADMIN_KEY = "hbradm_test_0123456789abcdef0123456789";
+  const ADMIN_SIGNER = "suiprivkey1a" + "q".repeat(40);
+
+  it("registers every secret field from a loaded config file", () => {
+    registerConfigFileSecrets({
+      apiKey: API_KEY,
+      servicePrivateKey: SERVICE_KEY,
+      adminKey: ADMIN_KEY,
+      adminServicePrivateKey: ADMIN_SIGNER,
+      baseUrl: "https://api.testnet.console.walrus.xyz",
+    });
+
+    for (const secret of [API_KEY, SERVICE_KEY, ADMIN_KEY, ADMIN_SIGNER]) {
+      expect(redactString(`value=${secret}`)).toBe(`value=${REDACTION_PLACEHOLDER}`);
+    }
+  });
+
+  it("leaves the non-secret baseUrl alone", () => {
+    const baseUrl = "https://api.testnet.console.walrus.xyz";
+    registerConfigFileSecrets({ adminKey: ADMIN_KEY, baseUrl });
+    expect(redactString(`url=${baseUrl}`)).toBe(`url=${baseUrl}`);
+  });
+
+  it("tolerates an empty config object", () => {
+    expect(() => registerConfigFileSecrets({})).not.toThrow();
   });
 });
