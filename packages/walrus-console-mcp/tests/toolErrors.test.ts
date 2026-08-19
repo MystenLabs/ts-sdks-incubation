@@ -2,9 +2,9 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ConsoleApiError,
-  KeyActivationError,
+  FileStatusError,
+  MirrorGrantMissingError,
   PayloadTooLargeError,
-  SpaceMismatchError,
   UnsupportedFileTypeError,
 } from "../src/console/errors";
 import { clearSecrets, formatToolError, registerSecret } from "../src/redaction";
@@ -28,7 +28,7 @@ async function rejectionOf(effect: Effect.Effect<never, unknown>): Promise<unkno
 
 describe("unwrapFiberFailure", () => {
   it("recovers the original tagged error from a runPromise rejection", async () => {
-    const original = new KeyActivationError({ keyId: "key-1", status: "pending" });
+    const original = new FileStatusError({ fileId: "file-1", state: "failed" });
     const caught = await rejectionOf(Effect.fail(original));
 
     // Sanity: the raw rejection hides the useful data behind a generic message.
@@ -53,21 +53,21 @@ describe("unwrapFiberFailure", () => {
 
 describe("formatToolError with tagged errors", () => {
   it("surfaces the fields of a message-less tagged error", () => {
-    const error = new KeyActivationError({
-      keyId: "key-1",
-      status: "pending",
-      progress: { granted: 2, total: 5 },
+    const error = new MirrorGrantMissingError({
+      bucketId: "bucket-1",
+      fileId: "file-1",
+      attempt: 12,
     });
     const text = formatToolError("get_file_status", error);
 
-    expect(text).toContain("KeyActivationError");
-    expect(text).toContain("key-1");
-    expect(text).toContain("pending");
+    expect(text).toContain("MirrorGrantMissingError");
+    expect(text).toContain("bucket-1");
+    expect(text).toContain("12");
     expect(text).not.toContain("An error has occurred");
   });
 
   it("renders the full runPromise round-trip readably", async () => {
-    const original = new SpaceMismatchError({ requested: "space-a", minted: "space-b" });
+    const original = new MirrorGrantMissingError({ bucketId: "space-a", attempt: 3 });
     const caught = await (async () => {
       try {
         await testRuntime.runPromise(Effect.fail(original));
@@ -78,16 +78,16 @@ describe("formatToolError with tagged errors", () => {
     })();
 
     const text = formatToolError("upload_file", unwrapFiberFailure(caught));
-    expect(text).toContain("SpaceMismatchError");
+    expect(text).toContain("MirrorGrantMissingError");
     expect(text).toContain("space-a");
-    expect(text).toContain("space-b");
+    expect(text).toContain("3");
   });
 
   it("still redacts secrets that appear in tagged-error fields", () => {
     registerSecret("hbr_super_secret_key_value");
-    const error = new KeyActivationError({
-      keyId: "hbr_super_secret_key_value",
-      status: "pending",
+    const error = new FileStatusError({
+      fileId: "hbr_super_secret_key_value",
+      state: "failed",
     });
     const text = formatToolError("get_file_status", error);
     expect(text).not.toContain("hbr_super_secret_key_value");

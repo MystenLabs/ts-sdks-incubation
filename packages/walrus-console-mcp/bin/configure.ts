@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import * as readline from "node:readline";
 import { styleText } from "node:util";
-import { DEFAULT_CONSOLE_API_BASE_URL } from "../src/baseUrl.js";
 import { parseArgs } from "../src/cliArgs.js";
-import { mergeConfigFile } from "../src/configFile.js";
+import { loadConfigFile, mergeConfigFile } from "../src/configFile.js";
 import {
   type CredentialChoice,
   collectCredentials,
@@ -12,7 +11,7 @@ import {
 } from "../src/credentials.js";
 import { registerSecret } from "../src/redaction.js";
 import { panelBottom, panelRow, panelTop, panelWidth, selectOne, wrapVisible } from "../src/tui.js";
-import { promptMasked, resolveInstallBaseUrl } from "./install.js";
+import { applyResolvedBaseUrl, promptMasked, resolveInstallBaseUrl } from "./install.js";
 
 /**
  * `walrus-console-mcp config` — configure credentials on a machine that is
@@ -69,16 +68,17 @@ export async function runConfigure(argv: string[] = []): Promise<number> {
     for (const value of Object.values(args.values)) {
       if (value) registerSecret(value);
     }
-    const { updates, errors } = await validateSilent(args.values, (kind, key) =>
-      probeKey(kind, key, baseUrl),
+    const { updates, clear, errors } = await validateSilent(
+      args.values,
+      (kind, key) => probeKey(kind, key, baseUrl),
+      loadConfigFile(),
     );
     if (errors.length > 0) {
       for (const err of errors) print(fail(err));
       return 1;
     }
-    // Persist a non-default base URL, matching the interactive path (see Task 8).
-    if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) updates.baseUrl = baseUrl;
-    mergeConfigFile(updates);
+    // Persist the resolved base URL, matching the interactive path below.
+    mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
     print(ok("Credentials saved"));
     return 0;
   }
@@ -156,31 +156,40 @@ export async function runConfigure(argv: string[] = []): Promise<number> {
 
   try {
     const outcome = await Promise.race([
-      collectCredentials(choice, {
-        // Register each secret as it is typed, before it is probed (see the
-        // matching comment in bin/install.ts stepAuth).
-        ask: async (question) => {
-          const value = await promptMasked(rl, `${gutter}${accent(question)}`, width ?? undefined);
-          registerSecret(value);
-          return value;
+      collectCredentials(
+        choice,
+        {
+          // Register each secret as it is typed, before it is probed (see the
+          // matching comment in bin/install.ts stepAuth).
+          ask: async (question) => {
+            const value = await promptMasked(
+              rl,
+              `${gutter}${accent(question)}`,
+              width ?? undefined,
+            );
+            registerSecret(value);
+            return value;
+          },
+          ok: (msg) => railed(ok(msg)),
+          fail: (msg) => railed(fail(msg)),
+          warn: (msg) => railed(warn(msg)),
+          info: (msg) => railed(info(msg)),
+          probe: (kind, key) => probeKey(kind, key, baseUrl),
         },
-        ok: (msg) => railed(ok(msg)),
-        fail: (msg) => railed(fail(msg)),
-        warn: (msg) => railed(warn(msg)),
-        info: (msg) => railed(info(msg)),
-        probe: (kind, key) => probeKey(kind, key, baseUrl),
-      }).then((updates) => ({ cancelled: false as const, updates })),
-      cancelled.then(() => ({ cancelled: true as const, updates: undefined })),
+        // Read fresh: this CLI exists to change credentials, so the saved signer it
+        // must reason about is whatever is on disk right now.
+        loadConfigFile(),
+      ).then((write) => ({ cancelled: false as const, write })),
+      cancelled.then(() => ({ cancelled: true as const, write: undefined })),
     ]);
 
     if (outcome.cancelled) return 0;
     phase = "done";
 
-    // Persist a non-default base URL alongside the credentials, so the saved config
+    // Persist the resolved base URL alongside the credentials, so the saved config
     // points at the same API the key was just validated against.
-    const updates = outcome.updates;
-    if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) updates.baseUrl = baseUrl;
-    mergeConfigFile(updates);
+    const { updates, clear } = outcome.write;
+    mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
     railed("");
     if (width === null) {
       line(ok("Credentials saved"));

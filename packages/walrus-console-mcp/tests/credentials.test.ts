@@ -190,7 +190,7 @@ const scriptedDeps = (answers: string[]) => {
 describe("collectCredentials", () => {
   it("api: collects the key and the optional signer", async () => {
     const { deps } = scriptedDeps(["hbr_working_key_value", VALID_SIGNER]);
-    const updates = await collectCredentials("api", deps);
+    const { updates } = await collectCredentials("api", deps);
     expect(updates).toEqual({
       apiKey: "hbr_working_key_value",
       servicePrivateKey: VALID_SIGNER,
@@ -199,7 +199,7 @@ describe("collectCredentials", () => {
 
   it("api: an empty signer is skipped, not saved", async () => {
     const { deps } = scriptedDeps(["hbr_working_key_value", ""]);
-    const updates = await collectCredentials("api", deps);
+    const { updates } = await collectCredentials("api", deps);
     expect(updates).toEqual({ apiKey: "hbr_working_key_value" });
   });
 
@@ -209,7 +209,7 @@ describe("collectCredentials", () => {
       GARBLED_SIGNER,
       VALID_SIGNER,
     ]);
-    const updates = await collectCredentials("api", deps);
+    const { updates } = await collectCredentials("api", deps);
     expect(updates).toEqual({
       apiKey: "hbr_working_key_value",
       servicePrivateKey: VALID_SIGNER,
@@ -225,7 +225,7 @@ describe("collectCredentials", () => {
       "", // empty signer -> re-prompt
       VALID_SIGNER,
     ]);
-    const updates = await collectCredentials("admin", deps);
+    const { updates } = await collectCredentials("admin", deps);
     expect(updates).toEqual({
       adminKey: "hbradm_management_key",
       adminServicePrivateKey: VALID_SIGNER,
@@ -239,14 +239,14 @@ describe("collectCredentials", () => {
       GARBLED_SIGNER,
       VALID_SIGNER,
     ]);
-    const updates = await collectCredentials("admin", deps);
+    const { updates } = await collectCredentials("admin", deps);
     expect(updates.adminServicePrivateKey).toBe(VALID_SIGNER);
     expect(messages.some((m) => m.startsWith("fail:") && m.includes("decode"))).toBe(true);
   });
 
   it("rejects a management key pasted into the api step and re-prompts", async () => {
     const { deps, messages } = scriptedDeps(["hbradm_wrong_slot", "hbr_working_key_value", ""]);
-    const updates = await collectCredentials("api", deps);
+    const { updates } = await collectCredentials("api", deps);
     expect(updates.apiKey).toBe("hbr_working_key_value");
     expect(messages.some((m) => m.startsWith("fail:") && m.includes("management key"))).toBe(true);
   });
@@ -257,7 +257,7 @@ describe("collectCredentials", () => {
       "hbradm_management_key",
       VALID_SIGNER,
     ]);
-    const updates = await collectCredentials("admin", deps);
+    const { updates } = await collectCredentials("admin", deps);
     expect(updates.adminKey).toBe("hbradm_management_key");
     expect(messages.some((m) => m.startsWith("fail:") && m.includes("everyday API key"))).toBe(
       true,
@@ -268,7 +268,7 @@ describe("collectCredentials", () => {
     const answers = ["hbr_rejected_key", "hbr_working_key_value", ""];
     const asked: string[] = [];
     let call = 0;
-    const updates = await collectCredentials("api", {
+    const { updates } = await collectCredentials("api", {
       ask: async (q: string) => {
         asked.push(q);
         return answers.shift() ?? "";
@@ -289,7 +289,7 @@ describe("collectCredentials", () => {
       "hbradm_management_key",
       VALID_SIGNER_2,
     ]);
-    const updates = await collectCredentials("both", deps);
+    const { updates } = await collectCredentials("both", deps);
     expect(updates).toEqual({
       apiKey: "hbr_working_key_value",
       servicePrivateKey: VALID_SIGNER,
@@ -381,5 +381,95 @@ describe("validateSilent", () => {
     expect(updates).toEqual({});
     expect(errors[0]).toContain("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY");
     expect(errors.join(" ")).not.toContain(GARBLED_SIGNER);
+  });
+});
+
+describe("replacing an API key does not keep the previous key's signer", () => {
+  // An API key and its service signer are a matched pair: the signer is the
+  // on-chain address registered for that key. Carrying a signer across a key
+  // change leaves uploads/downloads configured with two halves of two different
+  // credentials, which fails at Seal time with a message that points nowhere near
+  // the actual cause.
+  const SAVED = { apiKey: "hbr_old_key_value", servicePrivateKey: VALID_SIGNER };
+  const acceptingProbe = async () => "ok" as const;
+
+  it("clears the saved signer when the user skips it for a new key", async () => {
+    const { deps } = scriptedDeps(["hbr_new_key_value", "", "n"]);
+
+    const { updates, clear } = await collectCredentials("api", deps, SAVED);
+
+    expect(updates).toEqual({ apiKey: "hbr_new_key_value" });
+    expect(clear).toEqual(["servicePrivateKey"]);
+  });
+
+  it("keeps the saved signer when the user explicitly says so", async () => {
+    // The re-enter-the-key-to-fix-a-typo flow: the signer really is still valid,
+    // so silently discarding it would be its own bug.
+    const { deps } = scriptedDeps(["hbr_new_key_value", "", "y"]);
+
+    const { updates, clear } = await collectCredentials("api", deps, SAVED);
+
+    expect(updates).toEqual({ apiKey: "hbr_new_key_value" });
+    expect(clear).toEqual([]);
+  });
+
+  it("defaults to clearing when the confirm is answered with a bare Enter", async () => {
+    const { deps } = scriptedDeps(["hbr_new_key_value", "", ""]);
+
+    const { clear } = await collectCredentials("api", deps, SAVED);
+
+    expect(clear).toEqual(["servicePrivateKey"]);
+  });
+
+  it("does not ask at all when a new signer was supplied", async () => {
+    const { deps, asked } = scriptedDeps(["hbr_new_key_value", VALID_SIGNER_2]);
+
+    const { updates, clear } = await collectCredentials("api", deps, SAVED);
+
+    expect(updates.servicePrivateKey).toBe(VALID_SIGNER_2);
+    expect(clear).toEqual([]);
+    expect(asked.some((q) => /keep/i.test(q))).toBe(false);
+  });
+
+  it("does not ask when there was no saved signer to lose", async () => {
+    const { deps, asked } = scriptedDeps(["hbr_new_key_value", ""]);
+
+    const { clear } = await collectCredentials("api", deps, { apiKey: "hbr_old_key_value" });
+
+    expect(clear).toEqual([]);
+    expect(asked.some((q) => /keep/i.test(q))).toBe(false);
+  });
+
+  it("leaves the working signer alone when only the management pair is set", async () => {
+    const { deps } = scriptedDeps(["hbradm_management_key", VALID_SIGNER_2]);
+
+    const { clear } = await collectCredentials("admin", deps, SAVED);
+
+    expect(clear).toEqual([]);
+  });
+
+  it("silent mode clears the stale signer without prompting", async () => {
+    // --silent has no channel to ask on, and retaining a mismatched pair is the
+    // worse of the two failure modes: it fails later, at Seal, not here.
+    const { updates, clear, errors } = await validateSilent(
+      { apiKey: "hbr_new_key_value" },
+      acceptingProbe,
+      SAVED,
+    );
+
+    expect(errors).toEqual([]);
+    expect(updates).toEqual({ apiKey: "hbr_new_key_value" });
+    expect(clear).toEqual(["servicePrivateKey"]);
+  });
+
+  it("silent mode keeps the signer when it is supplied alongside the key", async () => {
+    const { updates, clear } = await validateSilent(
+      { apiKey: "hbr_new_key_value", serviceKey: VALID_SIGNER_2 },
+      acceptingProbe,
+      SAVED,
+    );
+
+    expect(updates.servicePrivateKey).toBe(VALID_SIGNER_2);
+    expect(clear).toEqual([]);
   });
 });

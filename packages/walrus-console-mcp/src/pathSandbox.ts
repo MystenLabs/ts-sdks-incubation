@@ -1,7 +1,17 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { MAX_TRANSFER_BYTES_ENV } from "./transferLimits.js";
 
 /**
  * MCP "roots" path sandboxing.
@@ -200,6 +210,66 @@ async function listRootDirs(server: RootsCapableServer, label: string): Promise<
       `[console-mcp] Failed to list MCP roots (${message}) — falling back to ${ALLOWED_DIRS_ENV} for ${label}`,
     );
     return [];
+  }
+}
+
+/**
+ * Read a file that `resolvePathWithinRoots` has already vetted, re-checking
+ * containment at the moment of the open.
+ *
+ * Path validation and path-based I/O are two separate walks of the same path, and
+ * anything that swaps the final component in between is read instead of the file
+ * that was checked. `O_NOFOLLOW` closes that: if the target is a symlink at open
+ * time — planted after validation, or racing it — the open fails with ELOOP
+ * rather than reading through it.
+ *
+ * The size limit is enforced from the OPEN DESCRIPTOR's `fstat`, not a separate
+ * `stat()` on the path, for the same reason: a stat-then-read pair can be raced,
+ * and it would also be measuring a file we are not necessarily about to read.
+ * Reading via `readFileSync(fd)` after the check means the bytes and the size
+ * come from one descriptor.
+ *
+ * NOTE on scope: this closes swaps of the FINAL component. A swap of an ancestor
+ * directory between validation and open is not closed here — that needs
+ * `openat2(RESOLVE_NO_SYMLINKS)` or descriptor-relative traversal, which Node
+ * exposes on no platform. Exploiting it requires a process already able to write
+ * inside the sandbox roots and win a race, which is a strictly weaker position
+ * than simply reading the credential file directly.
+ */
+export function readFileWithinRoot(
+  realPath: string,
+  opts: { maxBytes: number; label: string },
+): Buffer {
+  let fd: number;
+  try {
+    fd = openSync(realPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") {
+      throw new Error(
+        `${opts.label} path "${realPath}" is a symbolic link now but was not when it was ` +
+          `validated. Refusing to read it.`,
+      );
+    }
+    throw new Error(`${opts.label} path "${realPath}" could not be opened: ${String(error)}`);
+  }
+
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new Error(`${opts.label} path "${realPath}" is not a regular file.`);
+    }
+    if (stat.size > opts.maxBytes) {
+      throw new Error(
+        `${opts.label} file is ${stat.size} bytes, over the ${opts.maxBytes}-byte limit. ` +
+          `The server holds the plaintext and its ciphertext in memory at once, so an ` +
+          `oversized transfer can take down the whole MCP process. Split or compress it, ` +
+          `or raise ${MAX_TRANSFER_BYTES_ENV}.`,
+      );
+    }
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
   }
 }
 

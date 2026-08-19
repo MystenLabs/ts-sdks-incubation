@@ -18,12 +18,23 @@ export interface BucketGroupPackageConfig {
   readonly originalPackageId: string;
   /** Shared BucketRegistry the version gate reads. Required by `seal_approve`. */
   readonly bucketRegistryId: string;
+  /**
+   * The `permissioned_group` framework package that `bucket_policy` builds on.
+   *
+   * Not used to build anything locally — it is here because the sponsored
+   * create-bucket PTB calls into it (`permissioned_group::grant_permission`), and
+   * `txValidation` has to know which packages that flow is allowed to touch
+   * before signing it. Captured from a live testnet reserve; see
+   * scripts/capture-tx-fixtures.mts.
+   */
+  readonly permissionedGroupPackageId: string;
 }
 
 export const TESTNET_PACKAGE_CONFIG: BucketGroupPackageConfig = {
   packageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
   originalPackageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
   bucketRegistryId: "0x314fc86db4449e75f542015fd952513393b4671f6cf1dea01fd1f94697d97ab6",
+  permissionedGroupPackageId: "0xba8a26d42bc8b5e5caf4dac2a0f7544128d5dd9b4614af88eec1311ade11de79",
 };
 
 /**
@@ -35,6 +46,11 @@ export const MAINNET_PACKAGE_CONFIG: BucketGroupPackageConfig = {
   packageId: "0x42e9f3b7d4ba898053835cbe8ff77bcd3580a1dc06820ae4e641fee11a455e9c",
   originalPackageId: "0x42e9f3b7d4ba898053835cbe8ff77bcd3580a1dc06820ae4e641fee11a455e9c",
   bucketRegistryId: "0x8fcff989d2f404b19e4a36c09add2166a76e7b1e73de3d3fb9afda003991270b",
+  // Placeholder like the rest of this block. Note the consequence for
+  // `txValidation`: a wrong id here does not weaken the check, it makes every
+  // mainnet create-bucket signature refuse. That is the correct direction to fail
+  // in, and it is another reason mainnet stays unverified until COMG-584 closes.
+  permissionedGroupPackageId: "0x0000000000000000000000000000000000000000000000000000000000000000",
 };
 
 const PACKAGE_CONFIGS: Record<SuiNetwork, BucketGroupPackageConfig> = {

@@ -38,7 +38,7 @@ export function clampVisible(s: string, max: number): string {
   let out = "";
   let count = 0;
   let styled = false;
-  for (let i = 0; i < s.length;) {
+  for (let i = 0; i < s.length; ) {
     if (s[i] === ESC) {
       const match = new RegExp(`^${ESC}\\[[0-9;]*m`).exec(s.slice(i));
       if (match?.[0]) {

@@ -71,13 +71,21 @@ import {
 import { BucketId, FileId, SpaceId, withDisplaySize } from "../src/console/types";
 import { resolvePathWithinRoots } from "../src/pathSandbox";
 import {
-  formatToolError,
   installLogRedaction,
-  redactString,
   registerConfigFileSecrets,
   registerSecretsFromEnv,
 } from "../src/redaction";
-import { AppRuntime, runPromise, unwrapFiberFailure } from "../src/runtime";
+import { AppRuntime, runPromise } from "../src/runtime";
+import { safeTool } from "../src/toolWrapper";
+
+/**
+ * The slice of the MCP SDK's per-request context these handlers need.
+ *
+ * Every handler takes it and every runPromise forwards its signal, so cancelling
+ * a tool call actually interrupts the work — uploads, decryption, polling and
+ * file writes all stop — instead of only disconnecting the caller.
+ */
+type ToolExtra = { signal: AbortSignal };
 
 /**
  * Console MCP Server — stdio entrypoint.
@@ -117,8 +125,8 @@ server.registerTool(
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
-  async () => {
-    const result = await runPromise(
+  safeTool("ping_console", async (_args: unknown, extra: ToolExtra) => {
+    return await runPromise(
       Effect.gen(function* () {
         const cfg = yield* ConsoleConfigTag;
         const apiKeyVal = Redacted.value(cfg.apiKey);
@@ -139,45 +147,10 @@ server.registerTool(
             : "Set CONSOLE_API_KEY (and optionally CONSOLE_SERVICE_PRIVATE_KEY) in your environment or ~/.config/walrus-console-mcp/config.json",
         };
       }),
+      extra.signal,
     );
-
-    return {
-      content: [{ type: "text", text: redactString(JSON.stringify(result, null, 2)) }],
-    };
-  },
+  }),
 );
-
-/**
- * Safe wrapper for all tool handlers.
- * This ensures that any error (including Effect failures, missing keys, API errors, etc.)
- * is turned into a readable message instead of a silent "Result" in Claude Desktop.
- */
-function safeTool<Args, T>(toolName: string, handler: (args: Args) => Promise<T>) {
-  return async (args: Args) => {
-    try {
-      const result = await handler(args);
-      const raw = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-      return { content: [{ type: "text" as const, text: redactString(raw) }] };
-    } catch (error) {
-      // runPromise wraps failures in a FiberFailure whose message is the generic
-      // "An error has occurred" — unwrap it so the typed error (and its fields,
-      // for tagged errors) reaches the log and the tool output.
-      const unwrapped = unwrapFiberFailure(error);
-
-      console.error(`[console-mcp ERROR] Tool "${toolName}" failed:`);
-      console.error(unwrapped);
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: formatToolError(toolName, unwrapped),
-          },
-        ],
-      };
-    }
-  };
-}
 
 // ======================
 // Core ggdrive-style tools
@@ -191,14 +164,18 @@ server.registerTool(
     inputSchema: { type: z.enum(["personal", "team"]).optional() },
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
-  safeTool("list_spaces", async ({ type }: { type?: "personal" | "team" | undefined }) => {
-    return await runPromise(
-      Effect.gen(function* () {
-        const api = yield* ConsoleApiClient;
-        return yield* api.listSpaces({ type });
-      }),
-    );
-  }),
+  safeTool(
+    "list_spaces",
+    async ({ type }: { type?: "personal" | "team" | undefined }, extra: ToolExtra) => {
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          return yield* api.listSpaces({ type });
+        }),
+        extra.signal,
+      );
+    },
+  ),
 );
 
 server.registerTool(
@@ -210,12 +187,13 @@ server.registerTool(
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
-  safeTool("get_storage_usage", async () => {
+  safeTool("get_storage_usage", async (_args: unknown, extra: ToolExtra) => {
     return await runPromise(
       Effect.gen(function* () {
         const api = yield* ConsoleApiClient;
         return yield* api.getStorageUsage();
       }),
+      extra.signal,
     );
   }),
 );
@@ -234,20 +212,24 @@ server.registerTool(
   },
   safeTool(
     "list_buckets",
-    async ({
-      spaceId,
-      limit,
-      q,
-    }: {
-      spaceId: string;
-      limit?: number | undefined;
-      q?: string | undefined;
-    }) => {
+    async (
+      {
+        spaceId,
+        limit,
+        q,
+      }: {
+        spaceId: string;
+        limit?: number | undefined;
+        q?: string | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
       return await runPromise(
         Effect.gen(function* () {
           const api = yield* ConsoleApiClient;
           return yield* api.listBuckets({ spaceId: SpaceId.make(spaceId), limit, q });
         }),
+        extra.signal,
       );
     },
   ),
@@ -264,14 +246,18 @@ server.registerTool(
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
-  safeTool("create_bucket", async ({ spaceId, name }: { spaceId: string; name: string }) => {
-    return await runPromise(
-      Effect.gen(function* () {
-        const storage = yield* ConsoleStorageService;
-        return yield* storage.createBucket(SpaceId.make(spaceId), name);
-      }),
-    );
-  }),
+  safeTool(
+    "create_bucket",
+    async ({ spaceId, name }: { spaceId: string; name: string }, extra: ToolExtra) => {
+      return await runPromise(
+        Effect.gen(function* () {
+          const storage = yield* ConsoleStorageService;
+          return yield* storage.createBucket(SpaceId.make(spaceId), name);
+        }),
+        extra.signal,
+      );
+    },
+  ),
 );
 
 server.registerTool(
@@ -281,11 +267,17 @@ server.registerTool(
     description:
       "Mint a new Console working API key headlessly using the isolated Key-Admin credential. " +
       "Generates a fresh child keypair locally, mints a scoped hbr_ key, grants it access to the " +
-      "space's private buckets, and polls until active. Returns the child apiKey (hbr_…) and " +
-      "privateKey (suiprivkey1…) — both shown ONCE; store them securely and never echo them back. " +
+      "space's private buckets, and polls until active. " +
       "Requires CONSOLE_ADMIN_KEY + CONSOLE_ADMIN_SERVICE_PRIVATE_KEY; a working key cannot mint. " +
-      "The space is fixed by the Key-Admin credential; spaceId is validated against it (mismatch " +
-      "fails) rather than selecting the space.",
+      "The space is fixed by the Key-Admin credential; spaceId is checked against it, but only " +
+      "AFTER the mint — the Key-Admin credential has no data-plane access, so the space cannot be " +
+      "read beforehand. " +
+      "Returns { ok, credential } where credential holds apiKey (hbr_…) and privateKey " +
+      "(suiprivkey1…) — both shown ONCE; store them securely and never echo them back. " +
+      "IMPORTANT: ok:false still carries a real, live credential. The mint had already succeeded " +
+      "and a later step failed, so `stage` says which and `recovery` says what to do. Do NOT call " +
+      "this tool again to retry an ok:false result — the key already exists, and retrying mints a " +
+      "second one while orphaning the first.",
     inputSchema: {
       spaceId: z
         .string()
@@ -297,20 +289,24 @@ server.registerTool(
   },
   safeTool(
     "generate_api_key",
-    async ({
-      spaceId,
-      permission,
-      label,
-    }: {
-      spaceId: string;
-      permission: "read_only" | "read_write";
-      label?: string | undefined;
-    }) => {
+    async (
+      {
+        spaceId,
+        permission,
+        label,
+      }: {
+        spaceId: string;
+        permission: "read_only" | "read_write";
+        label?: string | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
       return await runPromise(
         Effect.gen(function* () {
           const keyAdmin = yield* KeyAdminService;
           return yield* keyAdmin.generateApiKey({ spaceId, permission, label });
         }),
+        extra.signal,
       );
     },
   ),
@@ -338,21 +334,24 @@ server.registerTool(
   },
   safeTool(
     "upload_file",
-    async ({
-      bucketId,
-      sealPolicyId,
-      localPath,
-      name,
-      description,
-      tags,
-    }: {
-      bucketId: string;
-      sealPolicyId: string;
-      localPath: string;
-      name?: string | undefined;
-      description?: string | undefined;
-      tags?: string[] | undefined;
-    }) => {
+    async (
+      {
+        bucketId,
+        sealPolicyId,
+        localPath,
+        name,
+        description,
+        tags,
+      }: {
+        bucketId: string;
+        sealPolicyId: string;
+        localPath: string;
+        name?: string | undefined;
+        description?: string | undefined;
+        tags?: string[] | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
       const resolvedPath = await resolvePathWithinRoots(server.server, localPath, "Source");
       return await runPromise(
         Effect.gen(function* () {
@@ -365,6 +364,7 @@ server.registerTool(
             { description, tags },
           );
         }),
+        extra.signal,
       );
     },
   ),
@@ -385,17 +385,20 @@ server.registerTool(
   },
   safeTool(
     "download_file",
-    async ({
-      bucketId,
-      fileId,
-      sealPolicyId,
-      destPath,
-    }: {
-      bucketId: string;
-      fileId: string;
-      sealPolicyId: string;
-      destPath: string;
-    }) => {
+    async (
+      {
+        bucketId,
+        fileId,
+        sealPolicyId,
+        destPath,
+      }: {
+        bucketId: string;
+        fileId: string;
+        sealPolicyId: string;
+        destPath: string;
+      },
+      extra: ToolExtra,
+    ) => {
       const resolvedPath = await resolvePathWithinRoots(server.server, destPath, "Destination");
       return await runPromise(
         Effect.gen(function* () {
@@ -407,6 +410,7 @@ server.registerTool(
             resolvedPath,
           );
         }),
+        extra.signal,
       );
     },
   ),
@@ -426,15 +430,18 @@ server.registerTool(
   },
   safeTool(
     "list_files",
-    async ({
-      bucketId,
-      limit,
-      q,
-    }: {
-      bucketId: string;
-      limit?: number | undefined;
-      q?: string | undefined;
-    }) => {
+    async (
+      {
+        bucketId,
+        limit,
+        q,
+      }: {
+        bucketId: string;
+        limit?: number | undefined;
+        q?: string | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
       return await runPromise(
         Effect.gen(function* () {
           const api = yield* ConsoleApiClient;
@@ -444,6 +451,7 @@ server.registerTool(
           // `content_size` stay on each item untouched (COMG-603).
           return { ...res, data: res.data.map(withDisplaySize) };
         }),
+        extra.signal,
       );
     },
   ),
@@ -463,12 +471,13 @@ server.registerTool(
   },
   safeTool(
     "get_file_status",
-    async ({ bucketId, fileId }: { bucketId: string; fileId: string }) => {
+    async ({ bucketId, fileId }: { bucketId: string; fileId: string }, extra: ToolExtra) => {
       return await runPromise(
         Effect.gen(function* () {
           const api = yield* ConsoleApiClient;
           return yield* api.getFileUploadStatus(BucketId.make(bucketId), FileId.make(fileId));
         }),
+        extra.signal,
       );
     },
   ),
@@ -484,12 +493,13 @@ server.registerTool(
     },
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
-  safeTool("get_bucket", async ({ bucketId }: { bucketId: string }) => {
+  safeTool("get_bucket", async ({ bucketId }: { bucketId: string }, extra: ToolExtra) => {
     return await runPromise(
       Effect.gen(function* () {
         const api = yield* ConsoleApiClient;
         return yield* api.getBucketById(BucketId.make(bucketId));
       }),
+      extra.signal,
     );
   }),
 );
@@ -507,14 +517,18 @@ server.registerTool(
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
-  safeTool("rename_bucket", async ({ bucketId, name }: { bucketId: string; name: string }) => {
-    return await runPromise(
-      Effect.gen(function* () {
-        const api = yield* ConsoleApiClient;
-        return yield* api.renameBucket(BucketId.make(bucketId), name);
-      }),
-    );
-  }),
+  safeTool(
+    "rename_bucket",
+    async ({ bucketId, name }: { bucketId: string; name: string }, extra: ToolExtra) => {
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          return yield* api.renameBucket(BucketId.make(bucketId), name);
+        }),
+        extra.signal,
+      );
+    },
+  ),
 );
 
 server.registerTool(
@@ -529,12 +543,13 @@ server.registerTool(
     },
     annotations: { readOnlyHint: false, destructiveHint: true },
   },
-  safeTool("delete_bucket", async ({ bucketId }: { bucketId: string }) => {
+  safeTool("delete_bucket", async ({ bucketId }: { bucketId: string }, extra: ToolExtra) => {
     return await runPromise(
       Effect.gen(function* () {
         const api = yield* ConsoleApiClient;
         return yield* api.deleteBucket(BucketId.make(bucketId));
       }),
+      extra.signal,
     );
   }),
 );
@@ -552,14 +567,18 @@ server.registerTool(
     },
     annotations: { readOnlyHint: false, destructiveHint: true },
   },
-  safeTool("delete_file", async ({ bucketId, fileId }: { bucketId: string; fileId: string }) => {
-    return await runPromise(
-      Effect.gen(function* () {
-        const api = yield* ConsoleApiClient;
-        return yield* api.deleteBucketFile(BucketId.make(bucketId), FileId.make(fileId));
-      }),
-    );
-  }),
+  safeTool(
+    "delete_file",
+    async ({ bucketId, fileId }: { bucketId: string; fileId: string }, extra: ToolExtra) => {
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          return yield* api.deleteBucketFile(BucketId.make(bucketId), FileId.make(fileId));
+        }),
+        extra.signal,
+      );
+    },
+  ),
 );
 
 server.registerTool(
@@ -580,17 +599,20 @@ server.registerTool(
   },
   safeTool(
     "update_file",
-    async ({
-      fileId,
-      name,
-      description,
-      tags,
-    }: {
-      fileId: string;
-      name?: string | undefined;
-      description?: string | null | undefined;
-      tags?: string[] | null | undefined;
-    }) => {
+    async (
+      {
+        fileId,
+        name,
+        description,
+        tags,
+      }: {
+        fileId: string;
+        name?: string | undefined;
+        description?: string | null | undefined;
+        tags?: string[] | null | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
       const patch = buildFilePatch({ name, description, tags });
       if (!patch) {
         // Refused here rather than spending a round-trip to be told the same
@@ -602,6 +624,7 @@ server.registerTool(
           const api = yield* ConsoleApiClient;
           return yield* api.updateFile(FileId.make(fileId), patch);
         }),
+        extra.signal,
       );
     },
   ),
@@ -617,12 +640,13 @@ server.registerTool(
     inputSchema: { bucketId: z.string() },
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
-  safeTool("get_bucket_metadata", async ({ bucketId }: { bucketId: string }) => {
+  safeTool("get_bucket_metadata", async ({ bucketId }: { bucketId: string }, extra: ToolExtra) => {
     return await runPromise(
       Effect.gen(function* () {
         const api = yield* ConsoleApiClient;
         return yield* api.getBucketMetadata(BucketId.make(bucketId));
       }),
+      extra.signal,
     );
   }),
 );
@@ -644,15 +668,18 @@ server.registerTool(
   },
   safeTool(
     "update_bucket_metadata",
-    async ({
-      bucketId,
-      description,
-      tags,
-    }: {
-      bucketId: string;
-      description?: string | undefined;
-      tags?: string[] | undefined;
-    }) => {
+    async (
+      {
+        bucketId,
+        description,
+        tags,
+      }: {
+        bucketId: string;
+        description?: string | undefined;
+        tags?: string[] | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
       const patch = buildBucketMetadataPatch({ description, tags });
       if (!patch) {
         throw new Error("Provide a description and/or tags.");
@@ -662,6 +689,7 @@ server.registerTool(
           const api = yield* ConsoleApiClient;
           return yield* api.updateBucketMetadata(BucketId.make(bucketId), patch);
         }),
+        extra.signal,
       );
     },
   ),

@@ -19,6 +19,18 @@ import {
   upsertMcpServer,
 } from "../src/clients.js";
 
+/**
+ * What the installer now records: the absolute path of the launcher it installed
+ * into its own directory, resolved once at install time rather than at every
+ * launch. See src/installDir.ts.
+ */
+const INSTALLED_BIN = path.join(
+  "/home/u/.local/share/walrus-console-mcp",
+  "node_modules",
+  ".bin",
+  "walrus-console-mcp",
+);
+
 const stubClient = (id: string, detected: boolean) => ({
   id,
   label: id,
@@ -64,34 +76,38 @@ describe("commandExists", () => {
 });
 
 describe("upsertMcpServer", () => {
-  // The config *key* stays unscoped (SERVER_NAME); only the npx spec carries the
-  // scope. These use the real pair so a regression can't collapse them into one.
-  it("adds our pinned stdio entry under mcpServers", () => {
-    const result = upsertMcpServer(
-      {},
-      "walrus-console-mcp",
-      "@mysten-incubation/walrus-console-mcp@1.2.3",
-    );
+  // The entry records the ABSOLUTE launcher path resolved at install time. It must
+  // never go back to `npx -y <spec>`: that resolves the package name against the
+  // directory the agent was started in, so any project shipping a package of the
+  // same name gets launched holding this server's Console credentials.
+  it("adds our stdio entry pointing at the absolute launcher", () => {
+    const result = upsertMcpServer({}, "walrus-console-mcp", INSTALLED_BIN);
     expect(result.mcpServers["walrus-console-mcp"]).toEqual({
-      command: "npx",
-      args: ["-y", "@mysten-incubation/walrus-console-mcp@1.2.3"],
+      command: INSTALLED_BIN,
+      args: [],
     });
+  });
+
+  it("never emits a resolution-time launcher", () => {
+    const entry = upsertMcpServer({}, "walrus-console-mcp", INSTALLED_BIN).mcpServers[
+      "walrus-console-mcp"
+    ];
+    expect(entry?.command).not.toBe("npx");
+    expect(entry?.args).not.toContain("-y");
+    expect(path.isAbsolute(entry?.command ?? "")).toBe(true);
   });
 
   it("preserves other existing servers", () => {
     const existing = {
       mcpServers: { "other-server": { command: "other", args: [] } },
     };
-    const result = upsertMcpServer(
-      existing,
-      "walrus-console-mcp",
-      "@mysten-incubation/walrus-console-mcp@1.2.3",
-    );
+    const result = upsertMcpServer(existing, "walrus-console-mcp", INSTALLED_BIN);
     expect(result.mcpServers["other-server"]).toEqual({ command: "other", args: [] });
     expect(result.mcpServers["walrus-console-mcp"]).toBeDefined();
   });
 
   it("overwrites a stale entry for the same server name", () => {
+    // Including one left behind by an older, npx-based install.
     const existing = {
       mcpServers: {
         "walrus-console-mcp": {
@@ -100,27 +116,23 @@ describe("upsertMcpServer", () => {
         },
       },
     };
-    const result = upsertMcpServer(
-      existing,
-      "walrus-console-mcp",
-      "@mysten-incubation/walrus-console-mcp@2.0.0",
-    );
-    expect(result.mcpServers["walrus-console-mcp"]?.args).toEqual([
-      "-y",
-      "@mysten-incubation/walrus-console-mcp@2.0.0",
-    ]);
+    const result = upsertMcpServer(existing, "walrus-console-mcp", INSTALLED_BIN);
+    expect(result.mcpServers["walrus-console-mcp"]).toEqual({
+      command: INSTALLED_BIN,
+      args: [],
+    });
   });
 
   it("preserves unrelated top-level keys in the config", () => {
     const existing = { theme: "dark", mcpServers: {} };
-    const result = upsertMcpServer(existing, "walrus-console-mcp", "walrus-console-mcp@1.0.0");
+    const result = upsertMcpServer(existing, "walrus-console-mcp", INSTALLED_BIN);
     expect((result as { theme?: string }).theme).toBe("dark");
   });
 });
 
 describe("CLI client arg builders", () => {
   const name = "walrus-console-mcp";
-  const spec = "walrus-console-mcp@1.2.3";
+  const command = INSTALLED_BIN;
   const byId = (id: string) => {
     const c = CLI_CLIENT_SPECS.find((s: (typeof CLI_CLIENT_SPECS)[number]) => s.id === id);
     if (!c) throw new Error(`no CLI client spec: ${id}`);
@@ -128,16 +140,14 @@ describe("CLI client arg builders", () => {
   };
 
   it("claude-code: add uses --scope user and the -- separator", () => {
-    expect(byId("claude-code").addArgs(name, spec)).toEqual([
+    expect(byId("claude-code").addArgs(name, command)).toEqual([
       "mcp",
       "add",
       "--scope",
       "user",
       "walrus-console-mcp",
       "--",
-      "npx",
-      "-y",
-      "walrus-console-mcp@1.2.3",
+      INSTALLED_BIN,
     ]);
   });
 
@@ -152,14 +162,12 @@ describe("CLI client arg builders", () => {
   });
 
   it("codex: add uses the -- separator and no scope flag", () => {
-    expect(byId("codex").addArgs(name, spec)).toEqual([
+    expect(byId("codex").addArgs(name, command)).toEqual([
       "mcp",
       "add",
       "walrus-console-mcp",
       "--",
-      "npx",
-      "-y",
-      "walrus-console-mcp@1.2.3",
+      INSTALLED_BIN,
     ]);
   });
 
@@ -168,15 +176,13 @@ describe("CLI client arg builders", () => {
   });
 
   it("gemini: add uses --scope user but NO -- separator", () => {
-    expect(byId("gemini").addArgs(name, spec)).toEqual([
+    expect(byId("gemini").addArgs(name, command)).toEqual([
       "mcp",
       "add",
       "--scope",
       "user",
       "walrus-console-mcp",
-      "npx",
-      "-y",
-      "walrus-console-mcp@1.2.3",
+      INSTALLED_BIN,
     ]);
   });
 
@@ -194,7 +200,7 @@ describe("CLI client arg builders", () => {
 describe("cliClient", () => {
   const spec = CLI_CLIENT_SPECS[0]; // claude-code
   if (!spec) throw new Error("expected a CLI client spec");
-  const pkgSpec = "walrus-console-mcp@1.2.3";
+  const pkgSpec = INSTALLED_BIN;
 
   it("registers by running remove (idempotency) THEN add, in order", () => {
     const calls: Array<{ bin: string; args: string[] }> = [];
@@ -243,7 +249,7 @@ describe("cliClient", () => {
 });
 
 describe("jsonFileClient", () => {
-  const pkgSpec = "walrus-console-mcp@1.2.3";
+  const pkgSpec = INSTALLED_BIN;
 
   it("writes our merged entry to the resolved config path", () => {
     const configPath = path.join(tmpDir, "cursor", "mcp.json");
@@ -258,8 +264,8 @@ describe("jsonFileClient", () => {
 
     const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     expect(config.mcpServers[SERVER_NAME]).toEqual({
-      command: "npx",
-      args: ["-y", pkgSpec],
+      command: pkgSpec,
+      args: [],
     });
   });
 
@@ -429,5 +435,99 @@ describe("selectClients", () => {
     const pending = selectClients([stubClient("alpha", true)], { input, output, isTTY: true });
     input.write("\x03"); // Ctrl-C
     expect(await pending).toBeNull();
+  });
+});
+
+describe("jsonFileClient — preserving an existing config", () => {
+  const pkgSpec = INSTALLED_BIN;
+
+  const clientFor = (configPath: string) =>
+    jsonFileClient({
+      id: "cursor",
+      label: "Cursor",
+      configPath: () => configPath,
+      detect: () => true,
+    });
+
+  it("refuses to register rather than replacing a config it cannot parse", () => {
+    // Treating a parse error as "empty config" turns one bad byte into a wipe of
+    // every setting the user has — MCP servers, and whatever else the client keeps
+    // in the same file. Refusing leaves the file untouched and tells them why.
+    const configPath = path.join(tmpDir, "cursor", "mcp.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, '{ "mcpServers": { broken');
+
+    expect(() => clientFor(configPath).register(pkgSpec)).toThrow(/could not be parsed/i);
+    expect(fs.readFileSync(configPath, "utf-8")).toBe('{ "mcpServers": { broken');
+  });
+
+  it("refuses to register rather than replacing a config it cannot read", () => {
+    const configPath = path.join(tmpDir, "cursor", "unreadable.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, "{}");
+    fs.chmodSync(configPath, 0o000);
+
+    try {
+      expect(() => clientFor(configPath).register(pkgSpec)).toThrow();
+    } finally {
+      fs.chmodSync(configPath, 0o600);
+    }
+  });
+
+  it("still treats a missing config as empty and creates it", () => {
+    const configPath = path.join(tmpDir, "cursor", "fresh.json");
+
+    clientFor(configPath).register(pkgSpec);
+
+    expect(JSON.parse(fs.readFileSync(configPath, "utf-8")).mcpServers[SERVER_NAME]).toBeDefined();
+  });
+
+  it("keeps a JSON null config from being treated as an object", () => {
+    const configPath = path.join(tmpDir, "cursor", "null.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, "null");
+
+    clientFor(configPath).register(pkgSpec);
+
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    expect(config.mcpServers[SERVER_NAME]).toBeDefined();
+  });
+
+  it("preserves unrelated top-level keys and other servers", () => {
+    const configPath = path.join(tmpDir, "cursor", "rich.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        theme: "dark",
+        mcpServers: { other: { command: "other-bin", args: [] } },
+      }),
+    );
+
+    clientFor(configPath).register(pkgSpec);
+
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    expect(config.theme).toBe("dark");
+    expect(config.mcpServers.other).toEqual({ command: "other-bin", args: [] });
+    expect(config.mcpServers[SERVER_NAME]).toBeDefined();
+  });
+
+  it("does not change the mode of a config file it did not create", () => {
+    const configPath = path.join(tmpDir, "cursor", "moded.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, "{}");
+    fs.chmodSync(configPath, 0o644);
+
+    clientFor(configPath).register(pkgSpec);
+
+    expect(fs.statSync(configPath).mode & 0o777).toBe(0o644);
+  });
+
+  it("leaves no temp file beside the config", () => {
+    const configPath = path.join(tmpDir, "cursor", "tidy.json");
+
+    clientFor(configPath).register(pkgSpec);
+
+    expect(fs.readdirSync(path.dirname(configPath))).toEqual(["tidy.json"]);
   });
 });

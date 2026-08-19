@@ -149,6 +149,8 @@ const PROMPTS = {
   serviceKey: "CONSOLE_SERVICE_PRIVATE_KEY (suiprivkey1…): ",
   adminKey: "CONSOLE_ADMIN_KEY (hbradm_…): ",
   adminSigner: "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY (suiprivkey1…): ",
+  keepSigner:
+    "Keep the signer saved for the previous API key? It is only valid if this is the same key [y/N]: ",
 } as const;
 
 const ADMIN_WARNING =
@@ -228,21 +230,58 @@ async function askForSigner(kind: KeyKind, deps: CollectDeps): Promise<string> {
 }
 
 /**
- * Run the prompt sequence for the chosen credential type and return only the
- * fields to persist. Re-prompts on every recoverable problem, so it either
- * returns a complete, valid set or never returns (the caller's Ctrl-C handler
- * exits).
+ * What to persist after a credential prompt: the fields to write, plus the
+ * fields to REMOVE.
+ *
+ * The removals matter because omitting a field from `updates` means "preserve"
+ * (see `mergeConfigFile`), so without this a skipped signer silently keeps the
+ * previous key's one.
+ */
+export interface CredentialWrite {
+  updates: Partial<ConfigFileData>;
+  clear: (keyof ConfigFileData)[];
+}
+
+/**
+ * Run the prompt sequence for the chosen credential type and return the fields
+ * to persist and to remove. Re-prompts on every recoverable problem, so it
+ * either returns a complete, valid set or never returns (the caller's Ctrl-C
+ * handler exits).
+ *
+ * `existing` is the currently-saved config, needed only to notice that replacing
+ * the API key would strand the signer registered for the OLD key.
  */
 export async function collectCredentials(
   choice: CredentialChoice,
   deps: CollectDeps,
-): Promise<Partial<ConfigFileData>> {
+  existing: ConfigFileData = {},
+): Promise<CredentialWrite> {
   const updates: Partial<ConfigFileData> = {};
+  const clear: (keyof ConfigFileData)[] = [];
 
   if (choice === "api" || choice === "both") {
     updates.apiKey = await askForKey("api", deps);
     const signer = await askForSigner("api", deps);
-    if (signer) updates.servicePrivateKey = signer;
+    if (signer) {
+      updates.servicePrivateKey = signer;
+    } else if (existing.servicePrivateKey) {
+      // The API key and its signer are a matched pair — the signer is the address
+      // registered for that key. Keeping the old one across a key change produces
+      // two halves of two credentials, and that only fails much later, inside
+      // Seal, with a message that points nowhere near the real cause.
+      //
+      // Still worth asking rather than always clearing: re-entering the same key
+      // to fix a typo is a normal flow, and there the saved signer is fine.
+      // Default (bare Enter) is to clear, since the mismatched pair is the more
+      // confusing failure.
+      const answer = (await deps.ask(PROMPTS.keepSigner, { masked: false })).trim().toLowerCase();
+      if (answer === "y" || answer === "yes") {
+        deps.info("Keeping the saved signer.");
+      } else {
+        clear.push("servicePrivateKey");
+        deps.info("Saved signer removed — add one later to enable upload/download.");
+      }
+    }
   }
 
   if (choice === "admin" || choice === "both") {
@@ -251,7 +290,7 @@ export async function collectCredentials(
     updates.adminServicePrivateKey = await askForSigner("admin", deps);
   }
 
-  return updates;
+  return { updates, clear };
 }
 
 /**
@@ -261,13 +300,16 @@ export async function collectCredentials(
 export async function validateSilent(
   values: CredentialValues,
   probe: (kind: KeyKind, key: string) => Promise<ProbeVerdict>,
-): Promise<{ updates: Partial<ConfigFileData>; errors: string[] }> {
+  existing: ConfigFileData = {},
+): Promise<CredentialWrite & { errors: string[] }> {
   const updates: Partial<ConfigFileData> = {};
+  const clear: (keyof ConfigFileData)[] = [];
   const errors: string[] = [];
 
   if (!values.apiKey && !values.serviceKey && !values.adminKey && !values.adminSigner) {
     return {
       updates,
+      clear,
       errors: [
         "No credentials given. Pass --api-key/--admin-key, or set CONSOLE_* and use --silent.",
       ],
@@ -289,6 +331,12 @@ export async function validateSilent(
     if (!isValidServiceKeyFormat(values.serviceKey))
       errors.push(`--service-key does not decode as a valid ${SERVICE_KEY_PREFIX}… key.`);
     else updates.servicePrivateKey = values.serviceKey;
+  } else if (values.apiKey && existing.servicePrivateKey) {
+    // Same matched-pair reasoning as the interactive path, minus the question:
+    // --silent has no channel to ask on. Clearing is the right default of the
+    // two, because a retained mismatched signer does not fail here — it fails
+    // later inside Seal, far from anything that names the cause.
+    clear.push("servicePrivateKey");
   }
 
   if (values.adminKey || values.adminSigner) {
@@ -325,5 +373,5 @@ export async function validateSilent(
     }
   }
 
-  return errors.length > 0 ? { updates: {}, errors } : { updates, errors };
+  return errors.length > 0 ? { updates: {}, clear: [], errors } : { updates, clear, errors };
 }

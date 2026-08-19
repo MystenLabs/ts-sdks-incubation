@@ -14,8 +14,11 @@ import {
   maskedPanelLine,
   packageSpec,
   promptMasked,
+  resolveInstallBaseUrl,
   visibleWidth,
 } from "../bin/install.js";
+import { DEFAULT_CONSOLE_API_BASE_URL } from "../src/baseUrl.js";
+import { saveConfigFile } from "../src/configFile.js";
 import { panelWidth } from "../src/tui.js";
 
 /** A real, decodable signer — `isValidServiceKeyFormat` now actually decodes the value. */
@@ -286,3 +289,59 @@ describe("getPackageVersion", () => {
 
 // Client detection + registration (Claude Desktop, Cursor, Claude Code, Codex,
 // Gemini) lives in src/clients.ts and is covered by tests/clients.test.ts.
+
+describe("resolveInstallBaseUrl", () => {
+  // The installer probes a credential against this URL and then persists it, so
+  // the order here must match the SERVER's order (src/config.ts `resolvedBaseUrl`:
+  // env → saved file → default). Any divergence validates a key against one
+  // deployment and then runs against another.
+  let envBackup: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    envBackup = { ...process.env };
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    delete process.env["CONSOLE_API_BASE_URL"];
+  });
+
+  afterEach(() => {
+    process.env = envBackup;
+  });
+
+  it("falls back to the testnet default when nothing is set", () => {
+    expect(resolveInstallBaseUrl()).toBe(DEFAULT_CONSOLE_API_BASE_URL);
+  });
+
+  it("prefers the env override over everything", () => {
+    saveConfigFile({ baseUrl: "http://localhost:3000" });
+    process.env["CONSOLE_API_BASE_URL"] = "https://api.staging.walrus.xyz";
+
+    expect(resolveInstallBaseUrl()).toBe("https://api.staging.walrus.xyz");
+  });
+
+  it("uses the saved deployment when no env override is set", () => {
+    // Rotating a key for a saved local/staging deployment must probe THAT
+    // deployment. Probing testnet instead either rejects a valid credential or
+    // validates it against a service it will never talk to.
+    saveConfigFile({ baseUrl: "http://localhost:3000" });
+
+    expect(resolveInstallBaseUrl()).toBe("http://localhost:3000");
+  });
+
+  it("ignores an off-policy saved value rather than trusting the file", () => {
+    // loadConfigFile already drops an off-policy baseUrl; assert the installer
+    // ends up on the default rather than inheriting an attacker-written host.
+    fs.mkdirSync(path.join(tmpDir, "walrus-console-mcp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "walrus-console-mcp", "config.json"),
+      JSON.stringify({ baseUrl: "https://evil.example.com" }),
+    );
+
+    expect(resolveInstallBaseUrl()).toBe(DEFAULT_CONSOLE_API_BASE_URL);
+  });
+
+  it("still rejects an off-policy env override", () => {
+    process.env["CONSOLE_API_BASE_URL"] = "https://evil.example.com";
+
+    expect(() => resolveInstallBaseUrl()).toThrow(/not an allowed Console endpoint/);
+  });
+});

@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ALLOWED_DIRS_ENV,
   allowedDirsFromEnv,
@@ -10,6 +10,7 @@ import {
   type RootsCapableServer,
   resolvePathWithinRoots,
   rootsToDirs,
+  readFileWithinRoot,
   toRealPath,
 } from "../src/pathSandbox";
 
@@ -358,5 +359,72 @@ describe("resolvePathWithinRoots (real filesystem: symlinks + env fallback)", ()
       env,
     );
     expect(out).toBe(join(allowed, "ok.txt"));
+  });
+});
+
+describe("readFileWithinRoot — reading the file that was validated", () => {
+  // resolvePathWithinRoots validates a PATH and returns a string; every read that
+  // follows re-walks that path, so anything that swaps the final component in
+  // between is read instead. O_NOFOLLOW closes that: the open fails rather than
+  // following a symlink planted after the check.
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "walrus-sandbox-read-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reads a regular file", () => {
+    const target = join(dir, "data.bin");
+    writeFileSync(target, "payload");
+
+    expect(readFileWithinRoot(target, { maxBytes: 1024, label: "Source" })).toEqual(
+      Buffer.from("payload"),
+    );
+  });
+
+  it("refuses to read through a symlink swapped in after validation", () => {
+    const secret = join(dir, "secret.txt");
+    writeFileSync(secret, "PRIVATE KEY");
+    const target = join(dir, "data.bin");
+    writeFileSync(target, "payload");
+
+    // The post-validation swap.
+    unlinkSync(target);
+    symlinkSync(secret, target);
+
+    expect(() => readFileWithinRoot(target, { maxBytes: 1024, label: "Source" })).toThrow();
+  });
+
+  it("rejects a file larger than the cap without buffering it", () => {
+    // The size has to come from the OPEN descriptor, not a separate stat() —
+    // otherwise the file can grow between the check and the read.
+    const target = join(dir, "big.bin");
+    writeFileSync(target, Buffer.alloc(4096));
+
+    expect(() => readFileWithinRoot(target, { maxBytes: 1024, label: "Source" })).toThrow(
+      /over the 1024-byte limit/,
+    );
+  });
+
+  it("accepts a file exactly at the cap", () => {
+    const target = join(dir, "exact.bin");
+    writeFileSync(target, Buffer.alloc(1024));
+
+    expect(readFileWithinRoot(target, { maxBytes: 1024, label: "Source" })).toHaveLength(1024);
+  });
+
+  it("names the label and the limit in the size error, so the message is actionable", () => {
+    const target = join(dir, "big.bin");
+    writeFileSync(target, Buffer.alloc(4096));
+
+    expect(() => readFileWithinRoot(target, { maxBytes: 1024, label: "Source" })).toThrow(/1024/);
+  });
+
+  it("refuses a directory", () => {
+    expect(() => readFileWithinRoot(dir, { maxBytes: 1024, label: "Source" })).toThrow();
   });
 });

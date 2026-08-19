@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { styleText } from "node:util";
+import { writeFileAtomic } from "./atomicWrite.js";
 import {
   hintLine,
   panelBottom,
@@ -18,16 +19,19 @@ export const SERVER_NAME = "walrus-console-mcp";
 
 /**
  * A registerable agent. `detect()` reports whether it's installed;
- * `register(spec)` wires up the pinned launcher (throwing on failure);
- * `manualHint(spec)` is the copy-pasteable fallback shown if it fails or is
+ * `register(command)` wires up the launcher (throwing on failure);
+ * `manualHint(command)` is the copy-pasteable fallback shown if it fails or is
  * force-selected while undetected.
+ *
+ * `command` is the ABSOLUTE path of the installed server launcher, not a package
+ * spec — see `upsertMcpServer`.
  */
 export interface Client {
   id: string;
   label: string;
   detect: () => boolean;
-  register: (spec: string) => void;
-  manualHint: (spec: string) => string;
+  register: (command: string) => void;
+  manualHint: (command: string) => string;
 }
 
 /** Runs a subprocess, throwing on non-zero exit. Injectable for tests. */
@@ -62,19 +66,26 @@ export interface McpConfig extends Record<string, unknown> {
 }
 
 /**
- * Return a copy of `config` with our pinned stdio launcher upserted under
+ * Return a copy of `config` with our stdio launcher upserted under
  * `mcpServers[name]`. Existing servers and unrelated top-level keys are
  * preserved; a stale entry for the same name is overwritten.
+ *
+ * `command` is the ABSOLUTE path of the installed launcher, with no arguments.
+ * It used to be `npx -y <spec>`, which resolves the package name against
+ * whatever directory the agent was started in — so a project shipping a package
+ * of the same name got launched under this server's identity, with access to the
+ * saved Console credentials. Resolving once at install time and recording the
+ * result leaves nothing to shadow. See src/installDir.ts.
  */
 export function upsertMcpServer(
   config: Record<string, unknown>,
   name: string,
-  spec: string,
+  command: string,
 ): McpConfig {
   const existing = (config as { mcpServers?: Record<string, McpServerEntry> }).mcpServers ?? {};
   const mcpServers: Record<string, McpServerEntry> = {
     ...existing,
-    [name]: { command: "npx", args: ["-y", spec] },
+    [name]: { command, args: [] },
   };
   return { ...config, mcpServers };
 }
@@ -91,25 +102,24 @@ export interface CliClientSpec {
   label: string;
   /** Executable name looked up on PATH. */
   bin: string;
-  addArgs: (name: string, spec: string) => string[];
+  /** `command` is the absolute launcher path — never a package spec. */
+  addArgs: (name: string, command: string) => string[];
   removeArgs: (name: string) => string[];
 }
-
-const NPX = ["npx", "-y"];
 
 export const CLI_CLIENT_SPECS: CliClientSpec[] = [
   {
     id: "claude-code",
     label: "Claude Code",
     bin: "claude",
-    addArgs: (name, spec) => ["mcp", "add", "--scope", "user", name, "--", ...NPX, spec],
+    addArgs: (name, command) => ["mcp", "add", "--scope", "user", name, "--", command],
     removeArgs: (name) => ["mcp", "remove", "--scope", "user", name],
   },
   {
     id: "codex",
     label: "Codex",
     bin: "codex",
-    addArgs: (name, spec) => ["mcp", "add", name, "--", ...NPX, spec],
+    addArgs: (name, command) => ["mcp", "add", name, "--", command],
     removeArgs: (name) => ["mcp", "remove", name],
   },
   {
@@ -117,7 +127,7 @@ export const CLI_CLIENT_SPECS: CliClientSpec[] = [
     label: "Gemini",
     bin: "gemini",
     // Gemini's `mcp add` takes the command + args directly, with NO `--` separator.
-    addArgs: (name, spec) => ["mcp", "add", "--scope", "user", name, ...NPX, spec],
+    addArgs: (name, command) => ["mcp", "add", "--scope", "user", name, command],
     removeArgs: (name) => ["mcp", "remove", "--scope", "user", name],
   },
 ];
@@ -137,16 +147,16 @@ export function cliClient(
     id: spec.id,
     label: spec.label,
     detect: opts.detect ?? (() => commandExists(spec.bin)),
-    register(pkgSpec) {
+    register(command) {
       try {
         run(spec.bin, spec.removeArgs(SERVER_NAME));
       } catch {
         // not registered yet — nothing to remove
       }
-      run(spec.bin, spec.addArgs(SERVER_NAME, pkgSpec));
+      run(spec.bin, spec.addArgs(SERVER_NAME, command));
     },
-    manualHint(pkgSpec) {
-      return `${spec.bin} ${spec.addArgs(SERVER_NAME, pkgSpec).join(" ")}`;
+    manualHint(command) {
+      return `${spec.bin} ${spec.addArgs(SERVER_NAME, command).join(" ")}`;
     },
   };
 }
@@ -163,25 +173,65 @@ export function jsonFileClient(opts: {
   configPath: () => string | null;
   detect: () => boolean;
 }): Client {
+  /**
+   * Read the client's existing config, or `{}` if there is genuinely nothing
+   * there.
+   *
+   * ONLY a missing file counts as empty. A catch-all here is a data-loss bug:
+   * registering writes the whole file back, so one unparseable byte — or a
+   * permissions problem, or a file being written concurrently — would turn into a
+   * silent wipe of every setting the client keeps, ours and theirs alike.
+   * Refusing leaves the file untouched and says why.
+   */
   const readConfig = (p: string): Record<string, unknown> => {
+    let raw: string;
     try {
-      return JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
-    } catch {
-      return {};
+      raw = fs.readFileSync(p, "utf-8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw new Error(
+        `${opts.label}'s config at ${p} could not be read (${(err as Error).message}). ` +
+          `Fix the file's permissions and re-run, or add the entry manually.`,
+      );
     }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(
+        `${opts.label}'s config at ${p} could not be parsed as JSON (${(err as Error).message}). ` +
+          `Refusing to overwrite it — repair the file and re-run, or add the entry manually.`,
+      );
+    }
+    // `null` and arrays are valid JSON but not config objects; spreading either
+    // would produce nonsense rather than preserving anything.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
   };
   return {
     id: opts.id,
     label: opts.label,
     detect: opts.detect,
-    register(pkgSpec) {
+    register(command) {
       const configPath = opts.configPath();
       if (!configPath) {
         throw new Error(`${opts.label} is not supported on this platform`);
       }
-      const merged = upsertMcpServer(readConfig(configPath), SERVER_NAME, pkgSpec);
-      fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
+      const merged = upsertMcpServer(readConfig(configPath), SERVER_NAME, command);
+      // Atomic replacement: a direct write can truncate the target and then fail
+      // (full disk, SIGTERM, competing writer), leaving the user with an empty or
+      // half-written config for an application that is not ours.
+      //
+      // Deliberately NOT lock-protected. A lock only helps if every writer takes
+      // it, and the other writer here is a third-party client that has never heard
+      // of ours — so a lockfile would clutter someone else's config directory
+      // while closing nothing. The atomic rename is the part that actually holds.
+      writeFileAtomic(configPath, `${JSON.stringify(merged, null, 2)}\n`, {
+        mode: 0o600,
+        mkdirMode: 0o700,
+        // Their file, their mode.
+        preserveExistingMode: true,
+      });
     },
     manualHint() {
       const configPath = opts.configPath();

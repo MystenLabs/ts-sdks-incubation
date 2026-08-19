@@ -6,7 +6,8 @@ import { styleText } from "node:util";
 import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "../src/baseUrl.js";
 import { parseArgs } from "../src/cliArgs.js";
 import { getClients, selectClients } from "../src/clients.js";
-import { loadConfigFile, mergeConfigFile } from "../src/configFile.js";
+import { installServer } from "../src/installDir.js";
+import { type ConfigFileData, loadConfigFile, mergeConfigFile } from "../src/configFile.js";
 import {
   type CredentialChoice,
   collectCredentials,
@@ -26,32 +27,45 @@ import {
 } from "../src/tui.js";
 
 /**
- * The npm package this installer registers. MUST stay identical to the `name`
- * in package.json — a config pointing at any other spec cannot resolve, and an
- * unclaimed name is a dependency-confusion target: whatever `npx` fetches is
- * launched with access to the credentials in ~/.config/walrus-console-mcp.
+ * The npm package this installer installs. MUST stay identical to the `name` in
+ * package.json — a spec pointing anywhere else cannot resolve, and an unclaimed
+ * name is a dependency-confusion target: whatever npm fetches is launched with
+ * access to the credentials in ~/.config/walrus-console-mcp.
  * `tests/install.test.ts` pins the two together.
  *
  * Distinct from `SERVER_NAME` (src/clients.ts), the unscoped key this server is
- * registered under in agent configs. Only the npx argument carries the scope
- * and the version pin.
+ * registered under in agent configs. Only this spec carries the scope and the
+ * version pin — and it is consumed by `installServer` at install time, never
+ * written into a config. What goes into a config is the resulting absolute
+ * launcher path; see src/installDir.ts.
  */
 export const PACKAGE_NAME = "@mysten-incubation/walrus-console-mcp";
 
 /**
- * Resolve the base URL from the env override (or the testnet default) and reject
- * an off-policy value. Not prompted for — power users override it with the
- * CONSOLE_API_BASE_URL env var (also honored by the server's config layer).
+ * Resolve the base URL as env override → saved config → testnet default, and
+ * reject an off-policy value. Not prompted for — power users override it with the
+ * CONSOLE_API_BASE_URL env var.
+ *
+ * The order deliberately MIRRORS the server's own resolution (`resolvedBaseUrl`
+ * in src/config.ts). It has to: this function picks the host the credential is
+ * probed against and then persisted alongside, so an installer that skipped the
+ * saved value would validate a rotated key against testnet while the config kept
+ * pointing at a local or staging deployment — either rejecting a perfectly good
+ * credential, or blessing one against a service it will never talk to.
+ *
+ * `loadConfigFile` already drops an off-policy saved `baseUrl`, so a hostile
+ * config file falls through to the default rather than being adopted here; the
+ * check below is what rejects an off-policy *env* value.
  *
  * Called at the very start of runInstall — before any readline/prompt machinery —
  * so the rejection surfaces cleanly instead of being swallowed by readline's
  * `close`→cancel handler, and before any key-bearing fetch could leak the API key
- * to a disallowed host. Shared by the interactive and silent paths so a
- * non-default value is validated and persisted identically in either branch.
+ * to a disallowed host. Shared by the interactive and silent paths so the value is
+ * validated and persisted identically in either branch.
  */
 export function resolveInstallBaseUrl(): string {
   const { CONSOLE_API_BASE_URL } = process.env;
-  const baseUrl = CONSOLE_API_BASE_URL || DEFAULT_CONSOLE_API_BASE_URL;
+  const baseUrl = CONSOLE_API_BASE_URL || loadConfigFile().baseUrl || DEFAULT_CONSOLE_API_BASE_URL;
   if (!isAllowedBaseUrl(baseUrl)) {
     throw new Error(
       `CONSOLE_API_BASE_URL is not an allowed Console endpoint: ${baseUrl}. ` +
@@ -59,6 +73,28 @@ export function resolveInstallBaseUrl(): string {
     );
   }
   return baseUrl;
+}
+
+/**
+ * Record which deployment the credential was just validated against.
+ *
+ * Writes the resolved URL when it is non-default, and CLEARS any saved value
+ * when it is the default. The clear is the half that matters: persisting only
+ * non-default values (the previous behaviour) left a stale staging/local URL in
+ * the config whenever the resolved URL was the default, so the key was probed
+ * against testnet and then used against the stale host.
+ *
+ * Keeping the default implicit rather than pinning it is deliberate — a config
+ * that hardcodes today's default would not follow `DEFAULT_CONSOLE_API_BASE_URL`
+ * if it ever moves.
+ */
+export function applyResolvedBaseUrl(
+  updates: Partial<ConfigFileData>,
+  baseUrl: string,
+): (keyof ConfigFileData)[] {
+  if (baseUrl === DEFAULT_CONSOLE_API_BASE_URL) return ["baseUrl"];
+  updates.baseUrl = baseUrl;
+  return [];
 }
 
 /**
@@ -80,11 +116,14 @@ export function getPackageVersion(): string | null {
 }
 
 /**
- * The npm spec written into every generated config/command, pinned to the
- * running installer's version (`@mysten-incubation/walrus-console-mcp@1.2.3`).
- * Pinning stops a
- * bad `latest` release from silently breaking every already-installed user —
- * upgrades become an explicit re-install instead of an automatic `npx` float.
+ * The npm spec handed to `installServer`, pinned to the running installer's
+ * version (`@mysten-incubation/walrus-console-mcp@1.2.3`).
+ *
+ * Pinning stops a bad `latest` release from silently breaking every
+ * already-installed user: upgrades are an explicit re-install, never a float.
+ * That was already true when the spec was written into configs and launched
+ * through npx; now the pin is resolved once, at install time, and what the
+ * config records is where it landed.
  */
 export function packageSpec(version = getPackageVersion()): string {
   return version ? `${PACKAGE_NAME}@${version}` : PACKAGE_NAME;
@@ -447,28 +486,33 @@ async function stepAuth(rl: readline.Interface, choice: CredentialChoice): Promi
 
   const baseUrl = resolveInstallBaseUrl();
 
-  const updates = await collectCredentials(choice, {
-    // Register each secret the moment it is typed, before collectCredentials
-    // probes it: a probe's fetch error can embed the Bearer header, and the
-    // redaction layer can only scrub values it already knows about.
-    ask: async (question, opts) => {
-      const value =
-        opts?.masked === false
-          ? await prompt(rl, `${gutter}${accent(question)}`)
-          : await promptMasked(rl, `${gutter}${accent(question)}`, rail.width);
-      registerSecret(value);
-      return value;
+  const { updates, clear } = await collectCredentials(
+    choice,
+    {
+      // Register each secret the moment it is typed, before collectCredentials
+      // probes it: a probe's fetch error can embed the Bearer header, and the
+      // redaction layer can only scrub values it already knows about.
+      ask: async (question, opts) => {
+        const value =
+          opts?.masked === false
+            ? await prompt(rl, `${gutter}${accent(question)}`)
+            : await promptMasked(rl, `${gutter}${accent(question)}`, rail.width);
+        registerSecret(value);
+        return value;
+      },
+      ok: (msg) => rail.line(ok(msg)),
+      fail: (msg) => rail.line(fail(msg)),
+      warn: (msg) => rail.line(warn(msg)),
+      info: (msg) => rail.line(info(msg)),
+      probe: (kind, key) =>
+        withSpinner("validating", () => probeKey(kind, key, baseUrl), gutter, rail.width),
     },
-    ok: (msg) => rail.line(ok(msg)),
-    fail: (msg) => rail.line(fail(msg)),
-    warn: (msg) => rail.line(warn(msg)),
-    info: (msg) => rail.line(info(msg)),
-    probe: (kind, key) =>
-      withSpinner("validating", () => probeKey(kind, key, baseUrl), gutter, rail.width),
-  });
+    // Read fresh rather than reusing an earlier snapshot: `config` may have been
+    // run in between, and a stale view would clear a signer that is no longer stale.
+    loadConfigFile(),
+  );
 
-  if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) updates.baseUrl = baseUrl;
-  mergeConfigFile(updates);
+  mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
   rail.blank();
   rail.line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
   rail.blank();
@@ -479,11 +523,17 @@ async function stepAuth(rl: readline.Interface, choice: CredentialChoice): Promi
 // ─── Step 3: Register ───────────────────────────────────────────────────────
 
 /**
- * Register the pinned launcher with the agents the user ticks. Detects every
- * supported client, presents an interactive checklist (detected ones
- * pre-ticked), then registers each selection — shelling out to its `mcp add`
- * CLI or merging its JSON config, per the client. A per-client failure is
- * caught and shown with a manual-command fallback so the rest still proceed.
+ * Register the launcher with the agents the user ticks. Detects every supported
+ * client, presents an interactive checklist (detected ones pre-ticked), then
+ * registers each selection — shelling out to its `mcp add` CLI or merging its
+ * JSON config, per the client. A per-client failure is caught and shown with a
+ * manual-command fallback so the rest still proceed.
+ *
+ * The install happens FIRST, once, before any client is touched. Two reasons:
+ * the absolute launcher path is what gets registered (see src/installDir.ts, and
+ * why `npx` is not usable here), and if the install fails there is nothing worth
+ * writing — a config naming a launcher that does not exist fails at every future
+ * startup, inside the agent, far from anything that can fix it.
  */
 async function stepRegister(spec: string): Promise<number> {
   const selected = await selectClients(getClients(), {
@@ -504,16 +554,32 @@ async function stepRegister(spec: string): Promise<number> {
   }
 
   print("");
+  let command: string;
+  try {
+    line(info(`Installing ${spec}…`));
+    command = installServer(spec);
+    line(ok(`Installed → ${command}`));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    line(fail(`Could not install the server — ${msg}`));
+    // Deliberately no npx fallback. Falling back would re-introduce exactly the
+    // workspace-shadowing problem the private install exists to remove, and would
+    // do it silently, on the path where something already went wrong.
+    detail("Nothing was registered. Fix the install error above and re-run.");
+    gap();
+    return 0;
+  }
+
   let configured = 0;
   for (const client of selected) {
     try {
-      client.register(spec);
+      client.register(command);
       line(ok(`${client.label} configured`));
       configured++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       line(warn(`${client.label} not configured — ${msg}`));
-      detail(`run manually: ${client.manualHint(spec)}`);
+      detail(`run manually: ${client.manualHint(command)}`);
     }
   }
   gap();
@@ -543,17 +609,18 @@ export async function runInstall(argv: string[] = []): Promise<void> {
     for (const value of Object.values(args.values)) {
       if (value) registerSecret(value);
     }
-    const { updates, errors } = await validateSilent(args.values, (kind, key) =>
-      probeKey(kind, key, baseUrl),
+    const { updates, clear, errors } = await validateSilent(
+      args.values,
+      (kind, key) => probeKey(kind, key, baseUrl),
+      loadConfigFile(),
     );
     if (errors.length > 0) {
       for (const err of errors) print(fail(err));
       process.exit(1);
     }
-    // Persist a non-default base URL exactly as the interactive path does, so the
+    // Persist the resolved base URL exactly as the interactive path does, so the
     // saved config points at the same API the key was just validated against.
-    if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) updates.baseUrl = baseUrl;
-    mergeConfigFile(updates);
+    mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
     print(ok("Credentials saved"));
     if (args.register) stepRegisterSilentNote();
     process.exit(0);

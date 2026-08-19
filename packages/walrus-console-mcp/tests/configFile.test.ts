@@ -219,3 +219,56 @@ describe("mergeConfigFile", () => {
     expect(loadConfigFile().adminKey).toBe("hbradm_first");
   });
 });
+
+describe("mergeConfigFile — clearing fields", () => {
+  // Removing a saved field cannot be expressed through `updates`: the type is
+  // exactOptionalPropertyTypes, so `{ baseUrl: undefined }` does not typecheck,
+  // and omitting the key means "preserve" by design. Clearing therefore has to be
+  // its own explicit argument — used when rotating an API key away from its old
+  // signer, and when a resolved base URL falls back to the default.
+  it("removes a listed key that was previously saved", () => {
+    saveConfigFile({ apiKey: "hbr_key", baseUrl: "http://localhost:3000" });
+
+    const merged = mergeConfigFile({}, ["baseUrl"]);
+
+    expect(merged.baseUrl).toBeUndefined();
+    expect(loadConfigFile().baseUrl).toBeUndefined();
+    // Clearing one field must not disturb the others.
+    expect(loadConfigFile().apiKey).toBe("hbr_key");
+  });
+
+  it("is a no-op when the listed key was never set", () => {
+    saveConfigFile({ apiKey: "hbr_key" });
+
+    expect(() => mergeConfigFile({}, ["baseUrl"])).not.toThrow();
+    expect(loadConfigFile().apiKey).toBe("hbr_key");
+  });
+
+  it("clears a stale field while writing a new value for another", () => {
+    saveConfigFile({ apiKey: "hbr_old", servicePrivateKey: "suiprivkey1old" });
+
+    mergeConfigFile({ apiKey: "hbr_new" }, ["servicePrivateKey"]);
+
+    expect(loadConfigFile().apiKey).toBe("hbr_new");
+    expect(loadConfigFile().servicePrivateKey).toBeUndefined();
+  });
+
+  it("applies the clear after the update, so a key in both ends up cleared", () => {
+    saveConfigFile({ baseUrl: "http://localhost:3000" });
+
+    mergeConfigFile({ baseUrl: "https://api.staging.walrus.xyz" }, ["baseUrl"]);
+
+    expect(loadConfigFile().baseUrl).toBeUndefined();
+  });
+
+  it("preserves every field when nothing is listed", () => {
+    saveConfigFile({ apiKey: "hbr_key", baseUrl: "http://localhost:3000" });
+
+    mergeConfigFile({ adminKey: "hbradm_key" });
+
+    const after = loadConfigFile();
+    expect(after.apiKey).toBe("hbr_key");
+    expect(after.baseUrl).toBe("http://localhost:3000");
+    expect(after.adminKey).toBe("hbradm_key");
+  });
+});

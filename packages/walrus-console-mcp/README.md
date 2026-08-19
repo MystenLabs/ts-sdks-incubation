@@ -12,10 +12,7 @@ Using a coding agent like **Claude Code**, **Codex**, **Cursor**, or **Gemini CL
 Set up the @mysten-incubation/walrus-console-mcp MCP server for me by running these steps in order. Stop and ask me only if a step actually fails.
 
 1. Run the interactive installer: `npx -y @mysten-incubation/walrus-console-mcp install`. It will ask me for my CONSOLE_API_KEY (starts with `hbr_`) and CONSOLE_SERVICE_PRIVATE_KEY (starts with `suiprivkey1`), validate them, and save them to a user-only config file. Don't print my keys back to me.
-2. Register the server with my agent (pick the one I'm using):
-   - **Claude Code**: `claude mcp add --scope user walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp`. (`--scope user` makes it available in every project.)
-   - **Codex**: `codex mcp add walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp`.
-   - **Cursor / Gemini CLI / Claude Desktop**: add a stdio MCP server named `walrus-console-mcp` whose `command` is `npx` with args `["-y", "@mysten-incubation/walrus-console-mcp"]` in that tool's MCP config.
+2. Let the same installer register the server — it offers a checklist of the agents it detects. That step installs the package into its own directory and writes the **absolute** path of the launcher into each config. Prefer it over registering by hand.
 3. Then tell me: restart the agent (or run `/mcp`), approve walrus-console-mcp when prompted, and test with the `ping_console` tool.
 
 Never put my keys anywhere except where the installer saves them.
@@ -43,17 +40,15 @@ This interactive CLI will:
 
 1. Ask for your Walrus Console API key and (optional) service private key
 2. Validate your credentials against the Console API
-3. Auto-configure Claude Desktop (and print instructions for Claude Code, Codex, and other agents)
+3. Install the server into its own directory and register it with the agents you tick
+   (Claude Desktop, Claude Code, Cursor, Codex, Gemini CLI)
 
 After setup, restart your agent and try the `ping_console` tool.
 
-For Codex, register the published package as a stdio MCP server:
-
-```bash
-codex mcp add walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp
-```
-
-Then start a new Codex session, run `/mcp`, approve `walrus-console-mcp` if prompted, and test with `ping_console`.
+If you would rather register by hand, see
+[Adding to an agent (npm)](#adding-to-an-agent-npm) — and note that the launch
+command is an absolute path, not `npx`, for
+[a reason that matters](#why-the-launcher-is-an-absolute-path).
 
 ### 1. Get your Walrus Console credentials
 
@@ -75,30 +70,22 @@ The installer saves credentials to `~/.config/walrus-console-mcp/config.json` (`
 
 ### 3. Run with Claude Desktop / Claude Code / Codex
 
-Claude Desktop is configured automatically by the installer. The generated server entry looks like this:
+Claude Desktop, Claude Code, Cursor, Codex, and Gemini CLI are all configured by
+the installer's Register step. The generated server entry looks like this:
 
 ```json
 {
   "mcpServers": {
     "walrus-console-mcp": {
-      "command": "npx",
-      "args": ["-y", "@mysten-incubation/walrus-console-mcp"]
+      "command": "~/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp",
+      "args": []
     }
   }
 }
 ```
 
-Claude Code:
-
-```bash
-claude mcp add --scope user walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp
-```
-
-Codex:
-
-```bash
-codex mcp add walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp
-```
+The command is an absolute path, not `npx`. See
+[Why the launcher is an absolute path](#why-the-launcher-is-an-absolute-path).
 
 ## Available Tools
 
@@ -181,26 +168,64 @@ Given a `permission` (`read_only` | `read_write`) and an optional `label`, the t
 4. polls until the key is **active**, then returns the child credential pair **once**:
 
 The **space is determined by the Key-Admin credential**, not by you — `spaceId` is a required
-input only so the tool can _verify_ the minted key landed in the space you expected (it fails with a
-`SpaceMismatchError` if the admin credential covers a different space). This mint-time PTB back-fills
-access to the private buckets that **already exist** in the space. Private buckets created **later**
-are granted to the child key **automatically** by Console — its bucket-create flow grants every key
-that is active in the space at creation time — so you do **not** need to re-mint for future buckets,
-as long as the child key stays active (a revoked key is skipped).
+input only so the tool can _verify_ the minted key landed in the space you expected. That check
+necessarily runs **after** the mint: the Key-Admin credential has no data-plane access
+(`GET /api/v1/spaces` answers `403 key_admin has no data-plane access`), so the space cannot be
+read beforehand. This mint-time PTB back-fills access to the private buckets that **already
+exist** in the space. Private buckets created **later** are granted to the child key
+**automatically** by Console — its bucket-create flow grants every key that is active in the space
+at creation time — so you do **not** need to re-mint for future buckets, as long as the child key
+stays active (a revoked key is skipped).
 
 ```json
 {
-  "apiKey": "hbr_…",
-  "privateKey": "suiprivkey1…",
-  "permission": "read_write",
-  "spaceId": "…",
-  "keyId": "…",
-  "privateBuckets": [{ "bucketId": "…", "groupId": "0x…" }]
+  "ok": true,
+  "credential": {
+    "apiKey": "hbr_…",
+    "privateKey": "suiprivkey1…",
+    "permission": "read_write",
+    "spaceId": "…",
+    "keyId": "…",
+    "privateBuckets": [{ "bucketId": "…", "groupId": "0x…" }]
+  }
 }
 ```
 
-Hand `apiKey` + `privateKey` to the new worker as its `CONSOLE_API_KEY` + `CONSOLE_SERVICE_PRIVATE_KEY`.
-Both are shown only once — Console never stores them.
+Hand `credential.apiKey` + `credential.privateKey` to the new worker as its `CONSOLE_API_KEY` +
+`CONSOLE_SERVICE_PRIVATE_KEY`. Both are shown only once — Console never stores them.
+
+### When a step after the mint fails
+
+The mint is the point of no return: once Console accepts it the key exists, and its `hbr_` value
+has been shown for the only time it ever will be. The space check, the bucket grant and the
+activation poll all run after that, so each can fail with a **live key already created**.
+
+Those failures come back as `ok: false` **carrying the credential**, not as an error:
+
+```json
+{
+  "ok": false,
+  "stage": "grant",
+  "reason": "…the original error message…",
+  "detail": { "tag": "ConsoleApiError", "code": "insufficient_scope", "status": 403 },
+  "credential": { "apiKey": "hbr_…", "privateKey": "suiprivkey1…", "…": "…" },
+  "recovery": "…what to do, and what not to…"
+}
+```
+
+Read `ok` before using the result — **`ok: false` still contains a real, usable credential.**
+`stage` is one of `space-check`, `grant`, `activation`; `detail` carries the machine-readable form
+of the failure so you can tell a permanent problem (a `403 insufficient_scope` will never succeed)
+from a transient one.
+
+**Do not call the tool again to "retry" an `ok: false` result.** The mint already succeeded, so a
+second call mints a _second_ key and orphans the first. This matters more than it sounds: Console
+has no API to list or revoke keys — `/api/v1/api-keys` requires a browser session — so an orphaned
+key can only be cleaned up by hand in the Console UI.
+
+If the tool call is **cancelled** while polling, the credential cannot be delivered at all. The
+server writes the orphaned key's id to stderr so it can still be found and removed; the secrets are
+deliberately not logged.
 
 If no Key-Admin credential is configured, the tool returns an actionable error and performs **no**
 network call:
@@ -217,12 +242,36 @@ Configure it with `npx -y @mysten-incubation/walrus-console-mcp config` (choose 
 
 ## Adding to an agent (npm)
 
-Register a stdio MCP server named `walrus-console-mcp` that launches the published package via `npx`. The server name is just a local label; the package it runs is `@mysten-incubation/walrus-console-mcp`.
+The installer's Register step does all of this for you, and is the recommended
+route. Register by hand only if it could not detect your agent.
+
+### Why the launcher is an absolute path
+
+Every command below points at an absolute path rather than `npx`. That is a
+security property, not a style choice.
+
+`npx -y <package>` resolves the package name against the **current working
+directory** first. An agent started inside a project that happens to ship a
+package of the same name would launch _that_ package instead — under this
+server's identity, with read access to the Console credentials in
+`~/.config/walrus-console-mcp`. It does not take a hostile project to trigger:
+this was first noticed when a local checkout shadowed the published package.
+
+So the installer resolves the package once, into a directory it owns, and
+records where it landed. Nothing is resolved at launch time, so there is nothing
+left to shadow. Upgrading means re-running the installer — which was already true,
+since the registered spec was version-pinned.
+
+Get the path with:
+
+```bash
+echo "${XDG_DATA_HOME:-$HOME/.local/share}/walrus-console-mcp/node_modules/.bin/walrus-console-mcp"
+```
 
 **Claude Code:**
 
 ```bash
-claude mcp add --scope user walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp
+claude mcp add --scope user walrus-console-mcp -- ~/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp
 ```
 
 `--scope user` makes it available in every project. Use `--scope local` to scope it to the current project only.
@@ -230,17 +279,19 @@ claude mcp add --scope user walrus-console-mcp -- npx -y @mysten-incubation/walr
 **Codex:**
 
 ```bash
-codex mcp add walrus-console-mcp -- npx -y @mysten-incubation/walrus-console-mcp
+codex mcp add walrus-console-mcp -- ~/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp
 ```
 
-**Cursor, Gemini CLI, Claude Desktop, or any hand-written config:** add the server with `npx` as the command. For example, in a Claude config file (usually `~/.claude.json`, `~/.claude/config.json`, or `~/.config/claude/config.json`):
+**Cursor, Gemini CLI, Claude Desktop, or any hand-written config:** point
+`command` at the same absolute path, with no arguments. For example, in a Claude
+config file (usually `~/.claude.json`, `~/.claude/config.json`, or `~/.config/claude/config.json`):
 
 ```json
 {
   "mcpServers": {
     "walrus-console-mcp": {
-      "command": "npx",
-      "args": ["-y", "@mysten-incubation/walrus-console-mcp"],
+      "command": "~/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp",
+      "args": [],
       "description": "Walrus Console decentralized storage"
     }
   }

@@ -27,10 +27,21 @@ export type AppServices = Layer.Layer.Success<typeof AppLayer>;
 
 export const AppRuntime = ManagedRuntime.make(AppLayer);
 
-// Helper for MCP tools. The effect's requirements must be satisfied by
-// AppServices — no `any` cast, so a missing layer is a compile error.
-export const runPromise = <A, E>(effect: Effect.Effect<A, E, AppServices>): Promise<A> =>
-  AppRuntime.runPromise(effect);
+/**
+ * Helper for MCP tools. The effect's requirements must be satisfied by
+ * AppServices — no `any` cast, so a missing layer is a compile error.
+ *
+ * `signal` is the MCP request's AbortSignal. Forwarding it interrupts the fiber,
+ * and Effect propagates interruption for us: `Effect.sleep` in the upload polling
+ * loop stops, and `Effect.tryPromise` hands its own signal to the fetches below.
+ * Without it, cancelling a tool call only disconnects the caller while the
+ * transfer keeps running.
+ */
+export const runPromise = <A, E>(
+  effect: Effect.Effect<A, E, AppServices>,
+  signal?: AbortSignal,
+): Promise<A> =>
+  signal ? AppRuntime.runPromise(effect, { signal }) : AppRuntime.runPromise(effect);
 
 /**
  * Recover the typed domain error (or defect) that `runPromise` wrapped in a

@@ -1,6 +1,7 @@
 import { HttpBody, HttpClient, HttpClientRequest, type HttpClientResponse } from "@effect/platform";
 import { Effect } from "effect";
 import { ConsoleConfigTag, getRawAdminKey, getRawApiKey } from "../config";
+import { MAX_TRANSFER_BYTES_ENV, maxTransferBytes } from "../transferLimits";
 import {
   ConsoleApiError,
   ConsoleAuthError,
@@ -215,6 +216,71 @@ function failFromFetchResponse(
  *
  * Only the curated external surface (Bearer-only) is implemented.
  */
+
+/** Internal marker so `readBounded`'s cap breach is distinguishable from an I/O error. */
+class TransferTooLargeError extends Error {
+  constructor(readonly bytesRead: number) {
+    super(`download exceeded ${bytesRead} bytes`);
+  }
+}
+
+const oversizedDownload = (fileId: FileId, bytes: number, limit: number) =>
+  new PayloadTooLargeError({
+    message:
+      `Download is ${bytes} bytes, over the ${limit}-byte transfer limit. The server buffers ` +
+      `the ciphertext and its decrypted plaintext at once, so an unbounded download can end ` +
+      `the MCP session. Raise ${MAX_TRANSFER_BYTES_ENV} if this file really is meant to be ` +
+      `this large.`,
+    fileName: fileId,
+    bytes,
+  });
+
+/**
+ * Read a response body into one buffer, aborting as soon as the running total
+ * passes `limit`.
+ *
+ * `arrayBuffer()` cannot be used here: it resolves only once the entire body is
+ * already in memory, which is precisely the allocation being guarded against.
+ */
+async function readBounded(
+  response: Response,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array(await response.arrayBuffer());
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      // Checked per chunk, not just at the fetch: by this point the response has
+      // started and the body could still be many chunks long.
+      if (signal?.aborted) {
+        await reader.cancel();
+        throw new Error("download aborted");
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) {
+        await reader.cancel();
+        throw new TransferTooLargeError(total);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
 
 export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("ConsoleApiClient", {
   effect: Effect.gen(function* () {
@@ -470,14 +536,18 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       }
 
       const url = `${config.baseUrl}/api/v1/buckets/${bucketId}/files`;
+      // `Effect.tryPromise` hands its callback the RUNNING FIBER's AbortSignal, so
+      // threading it into fetch is all it takes for a cancelled MCP request to
+      // actually stop the transfer rather than just disconnect the caller.
       const response = yield* Effect.tryPromise({
-        try: () =>
+        try: (signal) =>
           fetch(url, {
             method: "POST",
             headers: {
               Authorization: `Bearer ${getRawApiKey(config)}`,
             },
             body: form,
+            signal,
           }),
         catch: () => new ConsoleApiError({ message: "Multipart upload failed" }),
       });
@@ -511,13 +581,16 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       fileId: FileId,
     ) {
       const url = `${config.baseUrl}/api/v1/buckets/${bucketId}/files/${fileId}/download`;
+      // Same as the upload above: the fiber's signal reaches fetch, so an aborted
+      // request tears the connection down instead of streaming a file nobody wants.
       const response = yield* Effect.tryPromise({
-        try: () =>
+        try: (signal) =>
           fetch(url, {
             method: "GET",
             headers: {
               Authorization: `Bearer ${getRawApiKey(config)}`,
             },
+            signal,
           }),
         catch: () => new ConsoleApiError({ message: "Download failed" }),
       });
@@ -526,12 +599,34 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       // mirror_missing_grant, and callers need the code to say so usefully.
       if (response.status !== 200) return yield* failFromFetchResponse(response, "Download");
 
-      const arrayBuffer = yield* Effect.tryPromise({
-        try: () => response.arrayBuffer(),
-        catch: () =>
-          new ConsoleApiError({ message: "Failed to read download body", status: response.status }),
+      // The response body is buffered whole, and Seal then allocates the decrypted
+      // plaintext beside it — so an unbounded download is two unbounded
+      // allocations in a process that is meant to outlive the transfer.
+      const limit = maxTransferBytes();
+
+      // Trust `Content-Length` FIRST, because it is the only check that can reject
+      // before anything is buffered. Cancel the body on the way out: an abandoned
+      // stream holds the socket open and, in a long-lived process, leaks it.
+      const declared = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > limit) {
+        yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve());
+        return yield* Effect.fail(oversizedDownload(fileId, declared, limit));
+      }
+
+      // Then enforce it again while reading. The header is a claim by the server,
+      // not a guarantee — it can be absent, or wrong — so the running byte count is
+      // what actually bounds memory.
+      const body = yield* Effect.tryPromise({
+        try: (signal) => readBounded(response, limit, signal),
+        catch: (cause) =>
+          cause instanceof TransferTooLargeError
+            ? oversizedDownload(fileId, cause.bytesRead, limit)
+            : new ConsoleApiError({
+                message: "Failed to read download body",
+                status: response.status,
+              }),
       });
-      return new Uint8Array(arrayBuffer);
+      return body;
     });
 
     const deleteBucketFile = Effect.fn("ConsoleApiClient.deleteBucketFile")(function* (

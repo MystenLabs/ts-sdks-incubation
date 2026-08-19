@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { writeFileAtomic } from "./atomicWrite.js";
 import { isAllowedBaseUrl } from "./baseUrl.js";
 
 /**
@@ -95,29 +96,10 @@ export function loadConfigFile(): ConfigFileData {
  * replaces the inode.
  */
 export function saveConfigFile(data: ConfigFileData): void {
-  const dir = getConfigDir();
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-
-  const filePath = getConfigFilePath();
-  const content = `${JSON.stringify(data, null, 2)}\n`;
-
-  // "wx" fails if a stale temp somehow exists rather than silently reusing it;
-  // fchmod pins 0o600 even under a hostile umask that would loosen the open mode.
-  const tmpPath = path.join(dir, `.${CONFIG_FILENAME}.${process.pid}.tmp`);
-  const fd = fs.openSync(tmpPath, "wx", 0o600);
-  try {
-    fs.fchmodSync(fd, 0o600);
-    fs.writeFileSync(fd, content, "utf-8");
-  } finally {
-    fs.closeSync(fd);
-  }
-
-  try {
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    fs.rmSync(tmpPath, { force: true });
-    throw err;
-  }
+  writeFileAtomic(getConfigFilePath(), `${JSON.stringify(data, null, 2)}\n`, {
+    mode: 0o600,
+    mkdirMode: 0o700,
+  });
 }
 
 /**
@@ -126,14 +108,26 @@ export function saveConfigFile(data: ConfigFileData): void {
  * `saveConfigFile` replaces the whole file, so writing a partial payload would
  * silently drop every credential the caller did not supply — configuring a
  * management key would erase the working key. Every CLI write goes through here.
+ *
+ * Omitting a key from `updates` therefore means "preserve", which leaves no way
+ * to *remove* a saved value — and `exactOptionalPropertyTypes` rightly rejects
+ * `{ key: undefined }` as a stand-in. `clear` is that missing operation: it names
+ * the fields to drop, so replacing an API key can discard the previous key's
+ * signer instead of silently pairing the new key with a mismatched one.
  */
-export function mergeConfigFile(updates: Partial<ConfigFileData>): ConfigFileData {
+export function mergeConfigFile(
+  updates: Partial<ConfigFileData>,
+  clear: readonly (keyof ConfigFileData)[] = [],
+): ConfigFileData {
   const lock = acquireLock();
   try {
     // Both the load and the save must sit inside the lock: holding it only over
     // the write would still let two processes read the same prior file and have
     // the later one's whole-file replacement drop the earlier one's field.
     const merged: ConfigFileData = { ...loadConfigFile(), ...updates };
+    // Applied after the spread so `clear` always wins over `updates` — a caller
+    // that both writes and clears the same key means "remove it".
+    for (const key of clear) delete merged[key];
     saveConfigFile(merged);
     return merged;
   } finally {

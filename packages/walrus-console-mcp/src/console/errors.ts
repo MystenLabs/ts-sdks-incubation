@@ -79,23 +79,6 @@ export class AdminCredentialMissingError extends Data.TaggedError("AdminCredenti
   readonly message: string;
 }> {}
 
-/** Raised when a minted child key never reaches "active" within the poll window. */
-export class KeyActivationError extends Data.TaggedError("KeyActivationError")<{
-  readonly keyId: string;
-  readonly status: string;
-  readonly progress?: { granted: number; total: number };
-}> {}
-
-/**
- * Raised when a mint returns a key in a different space than the caller requested.
- * The mint derives the space from the admin credential's scope, so a mismatch means
- * the admin credential doesn't cover the requested space — surface it, don't hide it.
- */
-export class SpaceMismatchError extends Data.TaggedError("SpaceMismatchError")<{
-  readonly requested: string;
-  readonly minted: string;
-}> {}
-
 export class MirrorGrantMissingError extends Data.TaggedError("MirrorGrantMissingError")<{
   readonly bucketId: string;
   readonly fileId?: string;

@@ -17,6 +17,7 @@ import { SealCryptoError } from "./errors";
 import { resolveFullnodeUrl, resolvePackageConfig, resolveSuiNetwork } from "./packageConfig";
 import { interpretSealProxyFailure, resolveSealConfig } from "./seal-config";
 import { buildSealApproveTransaction } from "./sealApprove";
+import { assertExpectedTransaction, type SponsoredTxExpectation } from "./txValidation";
 
 /**
  * SealCryptoService — the heart of private (encrypted) Console operations.
@@ -402,15 +403,43 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
     });
 
     /**
-     * Sign the base64-encoded sponsored transaction bytes returned by
-     * POST /api/v1/spaces/{id}/buckets (reserve step).
-     * Returns the signature in the format Console expects for /finalize.
+     * Sign base64-encoded sponsored transaction bytes returned by Console —
+     * POST /api/v1/spaces/{id}/buckets (reserve) or POST /api/v1/seal/sponsor
+     * (grant) — after checking they are the transaction this flow asked for.
+     *
+     * `expectation` is REQUIRED, and that is the whole point. Signing whatever
+     * bytes come back turns this keypair into an arbitrary signing oracle for any
+     * endpoint that passes the base-URL allowlist, including whatever happens to
+     * be listening on localhost when CONSOLE_API_BASE_URL points there for
+     * development. See src/console/txValidation.ts for what is checked and why it
+     * is checked rather than rebuilt locally.
      */
     const signTransactionBytes = Effect.fn("SealCryptoService.signTransactionBytes")(function* (
       bytesBase64: string,
+      expectation: SponsoredTxExpectation,
       source: SeedSource = "working",
     ) {
       const keypair = yield* getKeypair(source);
+
+      // Validated against the address that is ABOUT TO SIGN, read from the keypair
+      // rather than passed in: a caller-supplied sender could be made to agree with
+      // a forged transaction, which would check nothing.
+      yield* Effect.try({
+        try: () =>
+          assertExpectedTransaction(
+            bytesBase64,
+            keypair.toSuiAddress(),
+            expectation,
+            packageConfig,
+          ),
+        catch: (cause) =>
+          new SealCryptoError({
+            message: cause instanceof Error ? cause.message : String(cause),
+            cause,
+            step: "sign",
+          }),
+      });
+
       const { signature } = yield* Effect.tryPromise({
         try: () => keypair.signTransaction(fromBase64(bytesBase64)),
         catch: (cause) =>
