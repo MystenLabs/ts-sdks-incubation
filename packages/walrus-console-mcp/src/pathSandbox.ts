@@ -43,10 +43,10 @@ import { MAX_TRANSFER_BYTES_ENV } from "./transferLimits.js";
  * are still followed and checked, and must be, or macOS breaks immediately
  * (`/tmp` -> `/private/tmp`, `/var`, symlinked home directories).
  *
- * Residual note: this does not close the check-to-use TOCTOU window — a parent
- * directory swapped for a symlink between this check and the caller's
- * `fs.readFile`/`fs.writeFile` would evade it. Full closure needs O_NOFOLLOW
- * open-based I/O in ConsoleStorageService; out of scope here.
+ * Residual note: the final path component IS protected downstream (reads open
+ * with O_NOFOLLOW; writes go to a sibling temp then rename), but a swap of an
+ * ANCESTOR directory between this check and the open is not closed — see the
+ * scope note on readFileWithinRoot below.
  */
 
 /** Env var naming extra sandbox roots for clients that do not advertise MCP roots. */
