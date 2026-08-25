@@ -71,7 +71,7 @@ vi.mock("@mysten/sui/grpc", () => ({
 // === Fixtures =============================================================
 //
 // PROVENANCE — verified, not assumed. On 2026-08-21 a live end-to-end run
-// against the COMG-746/761 staging deployment (https://api.testnet.patestation.org)
+// against a COMG-746/761 staging deployment of the republished contract
 // confirmed these shapes over gRPC: it enumerated a real anchor group, parsed its
 // real BCS content, and authored a member whose role came from the on-chain
 // `has_permission` check rather than the `read` scope the API claimed for it. So

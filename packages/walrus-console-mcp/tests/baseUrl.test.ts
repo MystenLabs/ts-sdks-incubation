@@ -22,15 +22,9 @@ describe("isAllowedBaseUrl", () => {
     expect(isAllowedBaseUrl("http://api.testnet.console.walrus.xyz")).toBe(false);
   });
 
-  it("allows the COMG-746/761 staging host (exact match)", () => {
-    expect(isAllowedBaseUrl("https://api.testnet.patestation.org")).toBe(true);
-  });
-
-  it("rejects other patestation.org hosts and look-alikes", () => {
-    expect(isAllowedBaseUrl("http://api.testnet.patestation.org")).toBe(false);
-    expect(isAllowedBaseUrl("https://patestation.org")).toBe(false);
-    expect(isAllowedBaseUrl("https://evil.patestation.org")).toBe(false);
-    expect(isAllowedBaseUrl("https://api.testnet.patestation.org.evil.com")).toBe(false);
+  it("rejects hosts outside the walrus.xyz policy entirely", () => {
+    expect(isAllowedBaseUrl("https://example.org")).toBe(false);
+    expect(isAllowedBaseUrl("https://api.testnet.example.org")).toBe(false);
   });
 
   it("rejects a look-alike host that only shares a prefix (boundary-safe)", () => {

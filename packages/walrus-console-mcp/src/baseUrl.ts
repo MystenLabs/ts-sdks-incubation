@@ -22,8 +22,7 @@ export const DEFAULT_CONSOLE_API_BASE_URL = "https://api.testnet.console.walrus.
 
 /**
  * True if `raw` is an allowed Console base URL: https to `walrus.xyz` /
- * `*.walrus.xyz` (boundary-safe suffix), https to the COMG-746/761 staging
- * host `api.testnet.patestation.org` (exact match), or http(s) to loopback
+ * `*.walrus.xyz` (boundary-safe suffix), or http(s) to loopback
  * (localhost / 127.0.0.1 / ::1). Anything unparseable or off-policy is rejected.
  */
 export function isAllowedBaseUrl(raw: string): boolean {
@@ -38,13 +37,5 @@ export function isAllowedBaseUrl(raw: string): boolean {
     host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
   if (url.protocol === "http:") return loopback;
   if (url.protocol !== "https:") return false;
-  // `api.testnet.patestation.org` is the COMG-746/761 staging Console API
-  // (authored `members` + `space-signers`). Exact host, not a suffix: a
-  // look-alike `*.patestation.org.evil.com` must not inherit this.
-  return (
-    loopback ||
-    host === "walrus.xyz" ||
-    host.endsWith(".walrus.xyz") ||
-    host === "api.testnet.patestation.org"
-  );
+  return loopback || host === "walrus.xyz" || host.endsWith(".walrus.xyz");
 }

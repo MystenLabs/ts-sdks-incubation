@@ -1,7 +1,7 @@
 {
-  "_comment": "A REAL create-bucket reserve from the COMG-746/761 deployment, captured by scripts/capture-746-fixture.mts. Un-finalized: no bucket was created. This is the only create-bucket PTB in the suite whose shape this repository did not author — tests that build their own reserve prove the validator is self-consistent, and this proves it agrees with a real Console. Recapture whenever the API's PTB shape changes; a drift here is the signal that the hand-built fixtures have become fiction.",
+  "_comment": "A REAL create-bucket reserve from the COMG-746/761 staging deployment, captured by scripts/capture-746-fixture.mts. Un-finalized: no bucket was created. This is the only create-bucket PTB in the suite whose shape this repository did not author \u2014 tests that build their own reserve prove the validator is self-consistent, and this proves it agrees with a real Console. Recapture whenever the API's PTB shape changes; a drift here is the signal that the hand-built fixtures have become fiction.",
   "capturedAt": "2026-08-21T20:02:08.888Z",
-  "baseUrl": "https://api.testnet.patestation.org",
+  "baseUrl": "<staging Console deployment of the republished contract>",
   "packageConfig": {
     "packageId": "0xea146b35c7998a6da2db993a378058b3dffab71a60317ed2d587aecff6a498c6",
     "originalPackageId": "0xea146b35c7998a6da2db993a378058b3dffab71a60317ed2d587aecff6a498c6",

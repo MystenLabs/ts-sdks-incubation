@@ -1341,7 +1341,7 @@ describe("parseCredentialBundle", () => {
         servicePrivateKey: VALID_SIGNER,
         adminKey: "hbradm_ignored",
         adminServicePrivateKey: VALID_SIGNER,
-        baseUrl: "https://api.testnet.patestation.org",
+        baseUrl: "https://api.testnet.console.walrus.xyz",
         webAccountAddress: OWNER_ADDRESS,
         keyAdminAddress: KEY_ADMIN_ADDRESS,
       }),
