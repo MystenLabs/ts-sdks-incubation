@@ -170,8 +170,7 @@ export interface MemberFieldPage {
 /** A simulated PTB's per-command return values. */
 export interface SimulationRead {
   readonly commandResults?:
-    | readonly { readonly returnValues: readonly { readonly bcs: Uint8Array }[] }[]
-    | undefined;
+    readonly { readonly returnValues: readonly { readonly bcs: Uint8Array }[] }[] | undefined;
 }
 
 /**
@@ -623,10 +622,7 @@ export function resolveRosterRoles(
  * happened.
  */
 export type RosterOrigin =
-  | "bootstrap"
-  | "no_other_signers"
-  | "no_admitted_anchor"
-  | "chain_verified";
+  "bootstrap" | "no_other_signers" | "no_admitted_anchor" | "chain_verified";
 
 export interface AuthoredRoster {
   /** Send as `members` on the reserve, enforce as `expectedMembers`. Address-sorted. */
