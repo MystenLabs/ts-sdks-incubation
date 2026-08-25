@@ -130,6 +130,7 @@ overrides:
   vite: ^8.0.16
   tmp: '>=0.2.4'
   axios: ^1.16.0
+  prettier: 3.8.4
 
 importers:
 
@@ -878,8 +879,8 @@ importers:
         specifier: 1.47.0
         version: 1.47.0
       prettier:
-        specifier: ^3.8.4
-        version: 3.9.6
+        specifier: 3.8.4
+        version: 3.8.4
       tsdown:
         specifier: ^0.22.2
         version: 0.22.14(@arethetypeswrong/core@0.18.5)(tsx@4.23.12)(typescript@5.9.3)
@@ -1383,7 +1384,7 @@ packages:
       '@prettier/plugin-oxc': ^0.0.4 || ^0.1.0
       '@vue/compiler-sfc': 2.7.x || 3.x
       content-tag: ^4.0.0
-      prettier: 2 || 3 || ^4.0.0-0
+      prettier: 3.8.4
       prettier-plugin-ember-template-tag: ^2.1.0
     peerDependenciesMeta:
       '@prettier/plugin-oxc':
@@ -5452,7 +5453,7 @@ packages:
       '@shopify/prettier-plugin-liquid': '*'
       '@trivago/prettier-plugin-sort-imports': '*'
       '@zackad/prettier-plugin-twig': '*'
-      prettier: ^3.0
+      prettier: 3.8.4
       prettier-plugin-astro: '*'
       prettier-plugin-css-order: '*'
       prettier-plugin-jsdoc: '*'
@@ -5496,18 +5497,8 @@ packages:
       prettier-plugin-svelte:
         optional: true
 
-  prettier@2.8.8:
-    resolution: {integrity: sha512-tdN8qQGvNjw4CHbY+XXk0JgCXn9QiF21a55rBe5LJAU+kDyC4WQn4+awm2Xfk2lQMk5fKup9XgzTZtGkjBdP9Q==}
-    engines: {node: '>=10.13.0'}
-    hasBin: true
-
   prettier@3.8.4:
     resolution: {integrity: sha512-N2MylSdi48+5N/6S5j+maeHbUSIzzZ5uOcX5Hm4QpV8Dkb1HFjfAKTKX6yNPJQD9AhcT3ifHNB66tWTTJDi11Q==}
-    engines: {node: '>=14'}
-    hasBin: true
-
-  prettier@3.9.6:
-    resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
     engines: {node: '>=14'}
     hasBin: true
 
@@ -6685,7 +6676,7 @@ snapshots:
       fs-extra: 7.0.1
       lodash.startcase: 4.4.0
       outdent: 0.5.0
-      prettier: 2.8.8
+      prettier: 3.8.4
       resolve-from: 5.0.0
       semver: 7.8.5
 
@@ -6814,7 +6805,7 @@ snapshots:
       '@changesets/types': 6.1.0
       fs-extra: 7.0.1
       human-id: 4.2.1
-      prettier: 2.8.8
+      prettier: 3.8.4
 
   '@clack/core@1.4.3':
     dependencies:
@@ -7012,19 +7003,19 @@ snapshots:
       graphql: 16.14.2
       typescript: 6.0.3
 
-  '@gql.tada/cli-utils@1.9.3(@0no-co/graphqlsp@1.17.5(graphql@16.14.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)':
-    dependencies:
-      '@0no-co/graphqlsp': 1.17.5(graphql@16.14.2)(typescript@6.0.3)
-      '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@6.0.3)
-      graphql: 17.0.2
-      typescript: 6.0.3
-
   '@gql.tada/cli-utils@1.9.3(@0no-co/graphqlsp@1.17.5(graphql@17.0.2)(typescript@5.9.3))(graphql@17.0.2)(typescript@5.9.3)':
     dependencies:
       '@0no-co/graphqlsp': 1.17.5(graphql@17.0.2)(typescript@5.9.3)
       '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@5.9.3)
       graphql: 17.0.2
       typescript: 5.9.3
+
+  '@gql.tada/cli-utils@1.9.3(@0no-co/graphqlsp@1.17.5(graphql@17.0.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)':
+    dependencies:
+      '@0no-co/graphqlsp': 1.17.5(graphql@17.0.2)(typescript@6.0.3)
+      '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@6.0.3)
+      graphql: 17.0.2
+      typescript: 6.0.3
 
   '@gql.tada/internal@1.2.2(graphql@16.14.2)(typescript@6.0.3)':
     dependencies:
@@ -10088,7 +10079,7 @@ snapshots:
     dependencies:
       '@0no-co/graphql.web': 1.3.4(graphql@17.0.2)
       '@0no-co/graphqlsp': 1.17.5(graphql@17.0.2)(typescript@6.0.3)
-      '@gql.tada/cli-utils': 1.9.3(@0no-co/graphqlsp@1.17.5(graphql@16.14.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)
+      '@gql.tada/cli-utils': 1.9.3(@0no-co/graphqlsp@1.17.5(graphql@17.0.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)
       '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@6.0.3)
       typescript: 6.0.3
     transitivePeerDependencies:
@@ -11413,11 +11404,7 @@ snapshots:
     optionalDependencies:
       '@ianvs/prettier-plugin-sort-imports': 4.7.1(prettier@3.8.4)
 
-  prettier@2.8.8: {}
-
   prettier@3.8.4: {}
-
-  prettier@3.9.6: {}
 
   pretty-bytes@5.6.0: {}
 

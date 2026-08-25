@@ -70,6 +70,7 @@ overrides:
   vite: 'catalog:'
   tmp: '>=0.2.4'
   axios: ^1.16.0
+  prettier: 3.8.4
 
 minimumReleaseAge: 2880
 
