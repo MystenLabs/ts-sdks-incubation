@@ -7,10 +7,13 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  statSync,
 } from "node:fs";
+import { open as openFileAsync } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type ConfigFileData, loadConfigFileOrEmpty } from "./configFile.js";
 import { MAX_TRANSFER_BYTES_ENV } from "./transferLimits.js";
 
 /**
@@ -23,9 +26,10 @@ import { MAX_TRANSFER_BYTES_ENV } from "./transferLimits.js";
  *
  * Policy: **fail closed.** The allowed roots are the client's declared MCP roots
  * if it advertises any, otherwise the directories listed in the
- * `CONSOLE_MCP_ALLOWED_DIRS` env var. If neither yields a usable directory, the
- * path is rejected rather than allowed — an unsandboxed absolute path chosen by
- * the model (e.g. via prompt injection) must never reach `fs`.
+ * `CONSOLE_MCP_ALLOWED_DIRS` env var, otherwise `allowedDirs` saved in the
+ * installer config file. If none of those yields a usable directory, the path is
+ * rejected rather than allowed — an unsandboxed absolute path chosen by the
+ * model (e.g. via prompt injection) must never reach `fs`.
  *
  * Containment is checked on **canonical, symlink-resolved** paths (see
  * `toRealPath`): a *live* symlink inside an allowed root that points outside it
@@ -102,6 +106,48 @@ function expandTilde(p: string): string {
 }
 
 /**
+ * Split a raw allowed-dirs string on `delim` (default: `path.delimiter`).
+ *
+ * Callers that need Windows-safe parsing of a *single* path must pass `";"`
+ * (or not split at all): splitting on `:` would cut a `C:\…` drive letter.
+ * Repeatable `--allowed-dirs` flags never go through this with `:`.
+ */
+export function splitAllowedDirList(raw: string, delim: string = delimiter): string[] {
+  return raw
+    .split(delim)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
+
+/**
+ * Confirm `input` names an existing directory and return its canonical path.
+ *
+ * Used by the installer / `config --allowed-dirs` *write* path so we refuse to
+ * persist a file, a missing folder, or a dangling symlink. The runtime sandbox
+ * is looser (a download destination may not exist yet); this is not that check.
+ */
+export function validateAllowedDirectory(input: string): { dir: string } | { error: string } {
+  const trimmed = input.trim();
+  if (!trimmed) return { error: "Directory path is empty." };
+  const resolved = resolve(expandTilde(trimmed));
+  let real: string;
+  try {
+    real = toRealPath(resolved);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { error: message };
+  }
+  try {
+    if (!statSync(real).isDirectory()) {
+      return { error: `"${trimmed}" is not a directory.` };
+    }
+  } catch {
+    return { error: `"${trimmed}" does not exist — create the folder first, then re-run.` };
+  }
+  return { dir: real };
+}
+
+/**
  * Parse `CONSOLE_MCP_ALLOWED_DIRS` (a `path.delimiter`-separated list) into
  * absolute directories. Entries are trimmed, `~`-expanded, and resolved; blank
  * entries are dropped.
@@ -109,8 +155,19 @@ function expandTilde(p: string): string {
 export function allowedDirsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
   const raw = env[ALLOWED_DIRS_ENV];
   if (!raw) return [];
+  return splitAllowedDirList(raw).map((p) => resolve(expandTilde(p)));
+}
+
+/**
+ * Absolute directories from a saved config's `allowedDirs` array. Non-strings
+ * and blanks are dropped; `~` is expanded. Does not require the directories to
+ * exist — a folder deleted after install should fail the path check, not crash
+ * config load.
+ */
+export function allowedDirsFromConfig(file: ConfigFileData = loadConfigFileOrEmpty()): string[] {
+  const raw = file.allowedDirs;
+  if (!raw) return [];
   return raw
-    .split(delimiter)
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
     .map((p) => resolve(expandTilde(p)));
@@ -274,6 +331,55 @@ export function readFileWithinRoot(
 }
 
 /**
+ * Async, optionally cancellable sibling of `readFileWithinRoot`, for the transfer
+ * path (a source-file upload) where blocking the event loop on a large read is
+ * not acceptable.
+ *
+ * Identical protections: `O_NOFOLLOW` so a symlink swapped in after validation
+ * fails the open with ELOOP rather than being read through, and the size limit
+ * taken from the OPEN descriptor's `fstat` so the bytes and the size come from one
+ * handle and cannot be raced apart. The read itself takes the caller's
+ * `AbortSignal`, so a cancelled MCP request stops it instead of buffering a file
+ * nobody is waiting for.
+ */
+export async function readFileWithinRootAsync(
+  realPath: string,
+  opts: { maxBytes: number; label: string; signal?: AbortSignal },
+): Promise<Buffer> {
+  let handle: Awaited<ReturnType<typeof openFileAsync>>;
+  try {
+    handle = await openFileAsync(realPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") {
+      throw new Error(
+        `${opts.label} path "${realPath}" is a symbolic link now but was not when it was ` +
+          `validated. Refusing to read it.`,
+      );
+    }
+    throw new Error(`${opts.label} path "${realPath}" could not be opened: ${String(error)}`);
+  }
+
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      throw new Error(`${opts.label} path "${realPath}" is not a regular file.`);
+    }
+    if (stat.size > opts.maxBytes) {
+      throw new Error(
+        `${opts.label} file is ${stat.size} bytes, over the ${opts.maxBytes}-byte limit. ` +
+          `The server holds the plaintext and its ciphertext in memory at once, so an ` +
+          `oversized transfer can take down the whole MCP process. Split or compress it, ` +
+          `or raise ${MAX_TRANSFER_BYTES_ENV}.`,
+      );
+    }
+    return await handle.readFile(opts.signal ? { signal: opts.signal } : {});
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
  * Resolve a user-supplied path to a canonical absolute path and confine it to
  * the allowed roots. Returns the symlink-resolved absolute path the tool should
  * actually read/write.
@@ -282,32 +388,41 @@ export function readFileWithinRoot(
  *   - `~` is expanded to the user's home directory.
  *   - An absolute path is used as-is.
  *   - A RELATIVE path is resolved against the first allowed root — the user's
- *     workspace, or the first `CONSOLE_MCP_ALLOWED_DIRS` entry — **never** the
- *     server's own `process.cwd()` (the console-mcp repo).
+ *     workspace, or the first `CONSOLE_MCP_ALLOWED_DIRS` / saved `allowedDirs`
+ *     entry — **never** the server's own `process.cwd()` (the console-mcp repo).
  *
- * Fails closed: with no client roots AND no `CONSOLE_MCP_ALLOWED_DIRS`, the call
- * throws with an actionable message rather than allowing an unsandboxed path.
+ * Fails closed: with no client roots AND no `CONSOLE_MCP_ALLOWED_DIRS` AND no
+ * saved `allowedDirs`, the call throws with an actionable message rather than
+ * allowing an unsandboxed path.
+ *
+ * `fileAllowedDirs` is the saved-config fallback. Omit it to read
+ * `~/.config/walrus-console-mcp/config.json`; pass `[]` in tests so a
+ * developer's real config cannot un-fail-close the suite.
  */
 export async function resolvePathWithinRoots(
   server: RootsCapableServer,
   candidatePath: string,
   label: string,
   env: NodeJS.ProcessEnv = process.env,
+  fileAllowedDirs?: readonly string[],
 ): Promise<string> {
   const expanded = expandTilde(candidatePath);
   const caps = server.getClientCapabilities();
   const clientRoots = caps?.roots ? await listRootDirs(server, label) : [];
-  // Env fallback covers "no roots capability", "capability but zero usable
-  // roots", and a listRoots() error (all arrive here as an empty clientRoots).
-  const rootDirs = clientRoots.length > 0 ? clientRoots : allowedDirsFromEnv(env);
+  // Env, then the installer-saved list, cover "no roots capability", "capability
+  // but zero usable roots", and a listRoots() error (all arrive here as empty
+  // clientRoots). Client roots still win outright when present.
+  const envDirs = allowedDirsFromEnv(env);
+  const fileDirs = fileAllowedDirs !== undefined ? [...fileAllowedDirs] : allowedDirsFromConfig();
+  const rootDirs = clientRoots.length > 0 ? clientRoots : envDirs.length > 0 ? envDirs : fileDirs;
 
   const [firstRoot] = rootDirs;
   if (firstRoot === undefined) {
     throw new Error(
       `${label} path "${candidatePath}" cannot be validated: your MCP client did not ` +
         `advertise any filesystem roots. Use a client that provides MCP roots (your ` +
-        `workspace folders), or set ${ALLOWED_DIRS_ENV} to a "${delimiter}"-separated list ` +
-        `of directories this server may access.`,
+        `workspace folders), set ${ALLOWED_DIRS_ENV} to a "${delimiter}"-separated list ` +
+        `of directories this server may access, or run \`walrus-console-mcp config --allowed-dirs <dir>\`.`,
     );
   }
 

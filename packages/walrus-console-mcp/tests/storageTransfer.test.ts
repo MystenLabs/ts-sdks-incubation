@@ -1,11 +1,13 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Effect, Layer } from "effect";
+import { Effect, Fiber, Layer, Redacted } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { type ConsoleConfig, ConsoleConfigTag } from "../src/config";
 import { ConsoleApiError } from "../src/console/errors";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
-import { ConsoleStorageService } from "../src/console/ConsoleStorageService";
+import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/ConsoleStorageService";
+import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
 import { BucketId, FileId } from "../src/console/types";
 
@@ -34,6 +36,25 @@ afterAll(async () => {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/** Enough config for the service to build; no network or crypto reads it. */
+const STUB_CONFIG: ConsoleConfig = {
+  apiKey: Redacted.make("hbr_working_key_value"),
+  servicePrivateKey: Redacted.make("suiprivkey1working"),
+  adminKey: Redacted.make(""),
+  adminServicePrivateKey: Redacted.make(""),
+  baseUrl: "https://api.testnet.console.walrus.xyz",
+  webAccountAddress: "",
+  keyAdminAddress: "",
+};
+
+/**
+ * `createBucket` verifies its roster against chain state, so the service now
+ * declares those reads as a dependency. Nothing in this file creates a bucket,
+ * so an unreachable stub is enough — stated rather than defaulted, so a flow
+ * that DOES read chain can never silently reach a real fullnode from a test.
+ */
+const NO_CHAIN_READS = Layer.succeed(RosterChainDepsTag, {} as RosterChainDeps);
 
 interface HarnessOptions {
   onUpload?: () => Effect.Effect<void>;
@@ -72,6 +93,10 @@ function makeHarness(opts: HarnessOptions = {}) {
       Layer.mergeAll(
         Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
         Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+        // Only createBucket reads it (for the owner pin); the transfers below do
+        // not, so the address fields stay empty.
+        Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+        NO_CHAIN_READS,
       ),
     ),
   );
@@ -182,5 +207,46 @@ describe("accepted upload id survives a later failure (F14)", () => {
     const result = await Effect.runPromise(uploadWith(layer));
 
     expect(result.fileId).toBe("file-accepted-1");
+  });
+});
+
+describe("an aborted download leaves nothing behind (F10)", () => {
+  it("writes neither the destination nor a temp file when cancelled mid-transfer", async () => {
+    const dest = path.join(tmpDir, "aborted-dl.bin");
+
+    const api = {
+      downloadBucketFile: () => Effect.succeed(new Uint8Array([9, 9, 9])),
+    };
+    const seal = {
+      // A slow decrypt gives the test a window to cancel after the download but
+      // before the write lands — the point of the async, signal-aware writer.
+      decrypt: (ct: Uint8Array) => Effect.sleep("200 millis").pipe(Effect.as(ct)),
+    };
+    const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
+          Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+          Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+          NO_CHAIN_READS,
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConsoleStorageService;
+        const fiber = yield* Effect.fork(
+          svc.downloadFile(BucketId.make("bucket-1"), FileId.make("file-1"), "0xpolicy", dest),
+        );
+        yield* Effect.sleep("20 millis");
+        yield* Fiber.interrupt(fiber);
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // No destination, and no temp sibling either — the cancelled transfer left the
+    // directory exactly as it found it.
+    const entries = await fs.readdir(tmpDir);
+    expect(entries.some((f) => f.includes("aborted-dl.bin"))).toBe(false);
   });
 });

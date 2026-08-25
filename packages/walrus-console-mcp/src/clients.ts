@@ -172,7 +172,14 @@ export function jsonFileClient(opts: {
   /** Resolve the client's config path, or null if this platform is unsupported. */
   configPath: () => string | null;
   detect: () => boolean;
+  /**
+   * Read a config file as UTF-8. Defaults to `fs.readFileSync`; injectable so a
+   * test can drive the unreadable-file path deterministically instead of relying
+   * on `chmod 000` (which a root/Windows test runner reads straight through).
+   */
+  readFile?: (p: string) => string;
 }): Client {
+  const readFile = opts.readFile ?? ((p: string) => fs.readFileSync(p, "utf-8"));
   /**
    * Read the client's existing config, or `{}` if there is genuinely nothing
    * there.
@@ -186,7 +193,7 @@ export function jsonFileClient(opts: {
   const readConfig = (p: string): Record<string, unknown> => {
     let raw: string;
     try {
-      raw = fs.readFileSync(p, "utf-8");
+      raw = readFile(p);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
       throw new Error(

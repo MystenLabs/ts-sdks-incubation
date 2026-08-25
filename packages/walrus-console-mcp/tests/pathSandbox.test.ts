@@ -5,13 +5,16 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ALLOWED_DIRS_ENV,
+  allowedDirsFromConfig,
   allowedDirsFromEnv,
   isWithinRoots,
   type RootsCapableServer,
   resolvePathWithinRoots,
   rootsToDirs,
   readFileWithinRoot,
+  splitAllowedDirList,
   toRealPath,
+  validateAllowedDirectory,
 } from "../src/pathSandbox";
 
 /** Empty env so tests never pick up a developer's real CONSOLE_MCP_ALLOWED_DIRS. */
@@ -92,6 +95,76 @@ describe("rootsToDirs", () => {
   });
 });
 
+describe("splitAllowedDirList", () => {
+  it("splits on the supplied delimiter and drops blanks", () => {
+    expect(splitAllowedDirList("a;;b;  ;c", ";")).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not split a Windows drive-letter path on ':'", () => {
+    // Production on win32 uses path.delimiter === ';'. Passing ';' here so the
+    // assertion holds on POSIX CI too: C:\… must stay one entry.
+    expect(splitAllowedDirList("C:\\Users\\me\\Documents", ";")).toEqual([
+      "C:\\Users\\me\\Documents",
+    ]);
+  });
+
+  it("splits two Windows paths on ';'", () => {
+    expect(splitAllowedDirList("C:\\Users\\me\\Documents;C:\\Users\\me\\Downloads", ";")).toEqual([
+      "C:\\Users\\me\\Documents",
+      "C:\\Users\\me\\Downloads",
+    ]);
+  });
+});
+
+describe("validateAllowedDirectory", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "walrus-allowed-dir-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns the canonical path of an existing directory", () => {
+    const result = validateAllowedDirectory(dir);
+    expect(result).toEqual({ dir: toRealPath(dir) });
+  });
+
+  it("rejects a missing path", () => {
+    const result = validateAllowedDirectory(join(dir, "nope"));
+    expect(result).toMatchObject({ error: expect.stringMatching(/does not exist/) });
+  });
+
+  it("rejects a file", () => {
+    const file = join(dir, "file.txt");
+    writeFileSync(file, "x");
+    const result = validateAllowedDirectory(file);
+    expect(result).toMatchObject({ error: expect.stringMatching(/not a directory/) });
+  });
+
+  it("rejects a blank path", () => {
+    expect(validateAllowedDirectory("   ")).toMatchObject({
+      error: expect.stringMatching(/empty/),
+    });
+  });
+});
+
+describe("allowedDirsFromConfig", () => {
+  it("returns [] when allowedDirs is absent", () => {
+    expect(allowedDirsFromConfig({})).toEqual([]);
+  });
+
+  it("expands ~ and resolves entries", () => {
+    expect(allowedDirsFromConfig({ allowedDirs: ["~"] })).toEqual([homedir()]);
+  });
+
+  it("drops blank entries", () => {
+    expect(allowedDirsFromConfig({ allowedDirs: ["  ", ""] })).toEqual([]);
+  });
+});
+
 describe("allowedDirsFromEnv", () => {
   it("returns [] when the var is unset", () => {
     expect(allowedDirsFromEnv({})).toEqual([]);
@@ -167,20 +240,26 @@ describe("resolvePathWithinRoots (synthetic roots)", () => {
 
   it("fails closed when the client does not support roots and no env fallback", async () => {
     await expect(
-      resolvePathWithinRoots(fakeServer(null), join("/tmp", "anywhere.txt"), "Source", NO_ENV),
+      resolvePathWithinRoots(fakeServer(null), join("/tmp", "anywhere.txt"), "Source", NO_ENV, []),
     ).rejects.toThrow(new RegExp(ALLOWED_DIRS_ENV));
   });
 
   it("fails closed when the client advertises roots support but declares none", async () => {
     await expect(
-      resolvePathWithinRoots(fakeServer([]), join("/tmp", "anywhere.txt"), "Source", NO_ENV),
+      resolvePathWithinRoots(fakeServer([]), join("/tmp", "anywhere.txt"), "Source", NO_ENV, []),
     ).rejects.toThrow(new RegExp(ALLOWED_DIRS_ENV));
   });
 
   it("fails closed when listRoots() errors and there is no env fallback", async () => {
     await expect(
-      resolvePathWithinRoots(fakeServerListRootsThrows(), "/etc/hosts", "Source", NO_ENV),
+      resolvePathWithinRoots(fakeServerListRootsThrows(), "/etc/hosts", "Source", NO_ENV, []),
     ).rejects.toThrow(new RegExp(ALLOWED_DIRS_ENV));
+  });
+
+  it("the fail-closed message names config --allowed-dirs as well as the env var", async () => {
+    await expect(
+      resolvePathWithinRoots(fakeServer(null), join("/tmp", "anywhere.txt"), "Source", NO_ENV, []),
+    ).rejects.toThrow(/config --allowed-dirs/);
   });
 });
 
@@ -359,6 +438,34 @@ describe("resolvePathWithinRoots (real filesystem: symlinks + env fallback)", ()
       env,
     );
     expect(out).toBe(join(allowed, "ok.txt"));
+  });
+
+  it("uses saved allowedDirs when the client provides no roots and env is empty", async () => {
+    const out = await resolvePathWithinRoots(
+      fakeServer(null),
+      join(allowed, "ok.txt"),
+      "Source",
+      NO_ENV,
+      [allowed],
+    );
+    expect(out).toBe(join(allowed, "ok.txt"));
+  });
+
+  it("lets CONSOLE_MCP_ALLOWED_DIRS beat the saved config list", async () => {
+    const env = { [ALLOWED_DIRS_ENV]: allowed };
+    await expect(
+      resolvePathWithinRoots(fakeServer(null), join(outside, "secret.txt"), "Source", env, [
+        outside,
+      ]),
+    ).rejects.toThrow(/outside the/);
+  });
+
+  it("lets client roots beat the saved config list", async () => {
+    await expect(
+      resolvePathWithinRoots(fakeServer([allowed]), join(outside, "secret.txt"), "Source", NO_ENV, [
+        outside,
+      ]),
+    ).rejects.toThrow(/outside the/);
   });
 });
 

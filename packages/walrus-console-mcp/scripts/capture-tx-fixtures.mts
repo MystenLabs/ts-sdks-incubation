@@ -25,12 +25,30 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import { Transaction } from "@mysten/sui/transactions";
+import { fromBase64 } from "@mysten/sui/utils";
 
 const cfg = JSON.parse(
   fs.readFileSync(path.join(os.homedir(), ".config/walrus-console-mcp/config.json"), "utf-8"),
 );
 const addr = (seed: string) =>
   Ed25519Keypair.fromSecretKey(decodeSuiPrivateKey(seed).secretKey).toSuiAddress();
+
+/**
+ * The bucket id the reserve PTB carries — the single Pure input that is NOT a
+ * 32-byte address. It is a length-prefixed BCS string, so drop the one-byte ULEB
+ * length prefix (the UUID is 36 chars, well under 128).
+ */
+const extractBucketId = (bytes: string): string => {
+  const data = Transaction.from(fromBase64(bytes)).getData();
+  for (const input of data.inputs) {
+    const pure = (input as { Pure?: { bytes?: string } }).Pure?.bytes;
+    if (!pure) continue;
+    const raw = fromBase64(pure);
+    if (raw.length !== 32) return Buffer.from(raw.subarray(1)).toString("utf8");
+  }
+  throw new Error("no bucket-id input found in the reserve PTB");
+};
 
 const call = async (p: string, key: string, init?: RequestInit) => {
   const res = await fetch(`${cfg.baseUrl}${p}`, {
@@ -94,7 +112,14 @@ async function main() {
     network: "testnet",
     workingAddress,
     adminAddress,
-    createBucket: { bytes: reserve.bytes },
+    createBucket: {
+      _comment:
+        "Kept as a REJECTION input for the tests. The validator's create-bucket arm pins the " +
+        "add_owner + self-demotion shape the API builds now, and must refuse an older " +
+        "roster-only reserve rather than quietly accept it.",
+      bytes: reserve.bytes,
+      bucketId: extractBucketId(reserve.bytes),
+    },
     grantBucketAccessReadWrite: {
       bytes: sponsorRw.bytes,
       recipientAddress: child.toSuiAddress(),

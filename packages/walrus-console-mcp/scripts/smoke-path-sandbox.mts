@@ -226,7 +226,7 @@ async function run(): Promise<number> {
   };
   let failedClosed = false;
   try {
-    await resolvePathWithinRoots(noRoots, join(allowed, "x.pdf"), "Destination", {});
+    await resolvePathWithinRoots(noRoots, join(allowed, "x.pdf"), "Destination", {}, []);
   } catch {
     failedClosed = true;
   }

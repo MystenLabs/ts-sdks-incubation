@@ -48,6 +48,8 @@ function harness(responseBody: unknown) {
           adminKey: Redacted.make(""),
           adminServicePrivateKey: Redacted.make(""),
           baseUrl: "https://api.example.test",
+          webAccountAddress: "",
+          keyAdminAddress: "",
         }),
         Layer.succeed(HttpClient.HttpClient, stub),
       ),

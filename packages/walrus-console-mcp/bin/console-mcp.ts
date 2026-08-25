@@ -13,13 +13,16 @@ if (process.argv[2] === "install") {
   // registerConfigFileSecrets, not two registerSecret calls: it also covers the
   // management pair (adminKey / adminServicePrivateKey), which this path can now
   // read back out of the config file.
-  registerConfigFileSecrets(loadConfigFile());
+  registerConfigFileSecrets(loadConfigFileOrEmpty());
   installLogRedaction();
 
   const { runInstall } = await import("./install.js");
   try {
     await runInstall(process.argv.slice(3));
-    process.exit(0);
+    // Mirror the `config` branch below (`process.exit(await runConfigure(...))`):
+    // runInstall signals "credentials saved but nothing was registered" by
+    // setting process.exitCode, which a bare `process.exit(0)` would clobber.
+    process.exit(process.exitCode ?? 0);
   } catch (err) {
     // Print the message only (redacted), never the raw error object/stack.
     console.error(err instanceof Error ? err.message : String(err));
@@ -33,7 +36,7 @@ if (process.argv[2] === "config") {
   // Same redaction wiring as `install` above — this path handles the very same
   // credentials, so a mid-run throw must not print one either.
   registerSecretsFromEnv();
-  registerConfigFileSecrets(loadConfigFile());
+  registerConfigFileSecrets(loadConfigFileOrEmpty());
   installLogRedaction();
 
   const { runConfigure } = await import("./configure.js");
@@ -56,10 +59,10 @@ import {
   getRawAdminServiceKey,
   getRawServiceKey,
 } from "../src/config";
-import { loadConfigFile } from "../src/configFile";
+import { loadConfigFileOrEmpty } from "../src/configFile";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
 import { ConsoleStorageService } from "../src/console/ConsoleStorageService";
-import { KeyAdminService } from "../src/console/KeyAdminService";
+import { KeyAdminService, MAX_API_KEY_LABEL_LENGTH } from "../src/console/KeyAdminService";
 import {
   bucketDescriptionSchema,
   bucketTagsSchema,
@@ -98,7 +101,7 @@ type ToolExtra = { signal: AbortSignal };
 registerSecretsFromEnv();
 // Credentials can also come from the installer-saved config file (not env). Register those
 // too, or a file-backed key could leak unredacted into stderr / tool error output.
-const savedConfig = loadConfigFile();
+const savedConfig = loadConfigFileOrEmpty();
 registerConfigFileSecrets(savedConfig);
 installLogRedaction();
 
@@ -110,7 +113,7 @@ const server = new McpServer(
   {
     instructions:
       "Console is ggdrive-style decentralized storage (Walrus + Seal encryption). " +
-      "Use list_spaces / list_buckets / search_files before mutating. " +
+      "Use list_spaces / list_buckets / list_files (pass q to search) before mutating. " +
       "Uploads and downloads require the user's local service private key (never sent to remote).",
   },
 );
@@ -239,7 +242,24 @@ server.registerTool(
   "create_bucket",
   {
     title: "Create Private Encrypted Bucket",
-    description: "Creates a new Seal-encrypted bucket. Returns sealPolicyId (save it!).",
+    description:
+      "Creates a new Seal-encrypted bucket. Returns sealPolicyId (save it! — uploads and " +
+      "downloads need it), `identity` — what the signed transaction was found to DO, with " +
+      "`identity.owner` (the account that ends up owning the bucket) and `identity.members` (the " +
+      "exact addresses it grants access to) — and `disclosure`, one sentence saying who can read " +
+      "the bucket and on what evidence. Before uploading sensitive data, show `disclosure` and " +
+      "`identity.members` to the user and confirm the roster is expected. `disclosure` is not " +
+      "optional colour: an empty roster can mean 'this space has only this key' or 'nothing " +
+      "could be verified, so nobody else was granted access', and those write identical " +
+      "transactions — `disclosure` and `roster.reason` are the only place the difference " +
+      "surfaces. `roster.droppedCandidates` lists this space's keys that will NOT be able to " +
+      "read the bucket. There is NO top-level `members` field: `roster.members` is what this " +
+      "client demanded and `identity.members` is what the bytes it signed grant. " +
+      "This tool REFUSES rather than creating a bucket whose access it cannot account for. With " +
+      "no bucket-owner address pinned it fails with reason `missing_owner_pin` before any " +
+      "network call — that needs an operator (CONSOLE_WEB_ACCOUNT_ADDRESS, or " +
+      "`walrus-console-mcp config`), so retrying will not help. A RosterUnavailableError means a " +
+      "read failed before anything was reserved: no bucket, no gas, retry is safe.",
     inputSchema: {
       spaceId: z.string(),
       name: z.string().min(1).max(100),
@@ -283,7 +303,11 @@ server.registerTool(
         .string()
         .describe("Expected space UUID — validated against the Key-Admin credential's scope."),
       permission: z.enum(["read_only", "read_write"]),
-      label: z.string().max(64).optional(),
+      // The real ceiling, not 64: Console caps the stored `name` at 64 and the
+      // mint appends " [mcp-mint-…]", so a longer label would be rejected with a
+      // bare 400. Advertising a maximum the server refuses is worse than a
+      // smaller honest one.
+      label: z.string().max(MAX_API_KEY_LABEL_LENGTH).optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },

@@ -2,8 +2,60 @@
 
 ## Unreleased
 
+### Added
+
+- Interactive install now has a **File access** step that saves `allowedDirs` in
+  `config.json`, so clients that do not advertise MCP roots (Grok, Claude Desktop)
+  can upload/download without exporting `CONSOLE_MCP_ALLOWED_DIRS`. Already
+  installed: `walrus-console-mcp config --allowed-dirs <dir>` (repeatable; the
+  Windows-safe form) or the **File access folders** chooser in `config`.
+
 ### Changed
 
+- **Breaking:** `create_bucket` no longer returns a top-level `members` field.
+  What the new bucket grants is now reported from both sides: `identity.members`
+  is what the transaction this server signed was found to do, and
+  `roster.members` is what this client demanded. They agree because the validator
+  refuses to sign a transaction where they do not. Alongside them the result
+  carries `identity.owner`, `identity.signerRole`, `roster.reason`,
+  `roster.droppedCandidates` and `sealPolicyId` — and **`disclosure` is the field
+  to show a user**. An empty roster means either "this space has only this key"
+  or "nothing could be verified, so nobody else was granted access", and those
+  two write identical transaction bytes and leave identical state on Console, so
+  that one sentence (with `roster.reason`) is the only place the difference
+  exists.
+- **Breaking:** every `create_bucket` now requires a bucket-owner Sui address
+  pinned locally — `CONSOLE_WEB_ACCOUNT_ADDRESS`, or `webAccountAddress` in the
+  config file. Without one the tool refuses before any network call. The
+  transaction's `add_owner` call carries no type argument to bound a substituted
+  recipient, so an owner taken from the response is an owner the endpoint chose;
+  local config is the only thing that can catch that. Provision it by pasting the
+  `CONSOLE_CREDENTIAL_BUNDLE` from the Console key-mint screen into `install` /
+  `config`, or by entering the address at the prompt those flows now ask.
+  `keyAdminAddress` / `CONSOLE_KEY_ADMIN_ADDRESS` is the second pin: it is needed
+  only where the reserve carries a management grant, which is every space that
+  holds a Key-Admin key — worker hosts cannot derive that address, so they refuse
+  such a create until it is pinned.
+- **Breaking:** an updated client cannot create a bucket against a Console
+  deployment older than COMG-746. Those reserves build the pre-`add_owner` shape,
+  and the one create-bucket arm this client ships rejects it. That is a statement
+  of what already happens, not a compatibility mechanism: the arm is chosen by
+  client-side intent and the old arm was deleted rather than kept for "old"
+  responses, because dispatching on the response's shape would hand a hostile
+  endpoint a downgrade switch back to the weaker check.
+- If you ran this branch mid-development, `~/.config/walrus-console-mcp/anchors.json`
+  (`%APPDATA%\walrus-console-mcp\anchors.json` on Windows) **heals itself — no
+  action required.** An anchor recorded before the group id was derived locally
+  holds a **server-supplied** id, and nothing in the file distinguishes it from
+  a derived one, so this client no longer trusts either shape on sight: entries
+  lacking a `creator` are dropped at load, and an entry whose recorded
+  derivation inputs are absent or differ from the ids in use is treated as
+  **stale** — the next `create_bucket` in that space takes the bootstrap path
+  and re-anchors it. A hard refusal is reserved for the case that actually
+  warrants suspicion: recorded inputs that match, and a stored group id that
+  still does not reproduce from `(bucketId, creator)`. Deleting the file is
+  harmless if you prefer, since it is pure cache. This affects no released
+  version.
 - **Breaking:** Seal encryption now targets the **decentralized committee key
   server** for the resolved network, replacing the three independent testnet key
   servers at threshold 2. The key server's on-chain identity is embedded in every
@@ -83,6 +135,31 @@
   command kinds, package **and** function targets, referenced objects, the grant
   recipient, and the grant scope are all checked; a `read` grant that comes back
   as `add_editor` is refused rather than silently upgraded to write access.
+- A hostile or compromised Console endpoint can no longer choose who receives
+  access to a bucket this server creates. The owner and the Key-Admin are pinned
+  against local configuration (see the `create_bucket` notes above), and the rest
+  of the roster is **authored by this client**: the intersection of the space's
+  anchor groups' on-chain membership — bucket groups this MCP created and
+  validated on earlier runs, whose object ids are derived locally from the
+  transactions this client validated rather than read out of the responses —
+  with the space's active signers, with every role read from chain instead of
+  the scope the API claims. Membership in **any** anchor counts, and a member's
+  role is the highest it holds across them; a create adds an anchor and never
+  replaces one, so a bucket whose roster came out identity-only cannot shrink
+  what the next create can verify.
+  The returned transaction is then refused unless it grants exactly that roster,
+  makes exactly the pinned address the owner, hands management to nobody but the
+  pinned Key-Admin, and contains the three calls demoting the signing key — an
+  *omission* none of the other pins could catch. Every read happens before the
+  reserve, so a failure refuses at the cost of one retry rather than creating a
+  bucket that is permanently under-permissioned. Two gaps are disclosed rather
+  than papered over: a space's first bucket has no anchor, so it grants no other
+  service account, and a key that has never been granted on a bucket this MCP
+  created cannot be verified and is left off the roster (it is named in
+  `roster.droppedCandidates`, as is a key whose on-chain role contradicts the
+  scope Console claims for it — authoring that role would make the API reject
+  the whole create). Both leave a bucket under-permissioned; neither can
+  over-permission one.
 - Uploads now open the source file with `O_NOFOLLOW`, so a symlink planted
   between path validation and the read cannot redirect it, and take the size from
   the open descriptor rather than a separate `stat()`. Downloads write through a

@@ -1,10 +1,12 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { type ConsoleConfig, ConsoleConfigTag } from "../src/config";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
-import { ConsoleStorageService } from "../src/console/ConsoleStorageService";
+import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/ConsoleStorageService";
+import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
 import { BucketId, FileId } from "../src/console/types";
 
@@ -29,6 +31,25 @@ beforeAll(async () => {
 afterAll(async () => {
   await fs.rm(path.dirname(tmpFile), { recursive: true, force: true });
 });
+
+/** Enough config for the service to build; the upload path reads none of it. */
+const STUB_CONFIG: ConsoleConfig = {
+  apiKey: Redacted.make("hbr_working_key_value"),
+  servicePrivateKey: Redacted.make("suiprivkey1working"),
+  adminKey: Redacted.make(""),
+  adminServicePrivateKey: Redacted.make(""),
+  baseUrl: "https://api.testnet.console.walrus.xyz",
+  webAccountAddress: "",
+  keyAdminAddress: "",
+};
+
+/**
+ * `createBucket` verifies its roster against chain state, so the service now
+ * declares those reads as a dependency. Nothing in this file creates a bucket,
+ * so an unreachable stub is enough — stated rather than defaulted, so a flow
+ * that DOES read chain can never silently reach a real fullnode from a test.
+ */
+const NO_CHAIN_READS = Layer.succeed(RosterChainDepsTag, {} as RosterChainDeps);
 
 /** Captures what the API client was handed, and short-circuits the network. */
 function makeHarness() {
@@ -56,6 +77,8 @@ function makeHarness() {
       Layer.mergeAll(
         Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
         Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+        Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+        NO_CHAIN_READS,
       ),
     ),
   );

@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 import * as readline from "node:readline";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { styleText } from "node:util";
 import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "../src/baseUrl.js";
-import { parseArgs } from "../src/cliArgs.js";
+import { SECRET_VALUE_FIELDS, parseArgs } from "../src/cliArgs.js";
 import { getClients, selectClients } from "../src/clients.js";
 import { installServer } from "../src/installDir.js";
 import { type ConfigFileData, loadConfigFile, mergeConfigFile } from "../src/configFile.js";
+import { validateAllowedDirectory } from "../src/pathSandbox.js";
 import {
   type CredentialChoice,
+  type CredentialWrite,
   collectCredentials,
+  isEmptyWrite,
   probeKey,
   validateSilent,
 } from "../src/credentials.js";
@@ -130,12 +135,14 @@ export function packageSpec(version = getPackageVersion()): string {
 }
 
 /**
- * Interactive 3-step installer for walrus-console-mcp.
+ * Interactive 4-step installer for walrus-console-mcp.
  *
  * Step 1 — Choose:    Pick which credential to configure (API key, management
  *                     key, or both — see src/credentials.ts).
  * Step 2 — Auth:      Prompt for the chosen key(s), validate against the live API.
- * Step 3 — Register:  Detect installed agents and register the pinned launcher
+ * Step 3 — Files:     Pick directories upload/download may use when the agent
+ *                     does not advertise MCP roots (see src/pathSandbox.ts).
+ * Step 4 — Register:  Detect installed agents and register the pinned launcher
  *                     with the ones the user ticks (see src/clients.ts).
  *
  * Also supports a non-interactive path (`--api-key`/`--admin-key`/`--silent`
@@ -147,7 +154,12 @@ export function packageSpec(version = getPackageVersion()): string {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function prompt(rl: readline.Interface, question: string): Promise<string> {
+/**
+ * A plain, echoing prompt. Exported so bin/configure.ts shares one
+ * implementation for the values that are deliberately NOT masked — a y/N
+ * confirmation and the two address pins.
+ */
+export function prompt(rl: readline.Interface, question: string): Promise<string> {
   return new Promise((resolve) => rl.question(question, (answer) => resolve(answer.trim())));
 }
 
@@ -197,12 +209,12 @@ export function maskedLine(
  * it, then walk the cursor back so it sits after the last bullet rather than
  * outside the box.
  *
- * This is only possible because every prompt is masked. A masked prompt already
- * repaints its entire line on each keystroke, so there is a moment where we own
- * the whole row and can put a border at the end of it. An echoing prompt has
- * the terminal appending characters at the cursor, with nowhere to hang a
- * trailing border — which is why `collectCredentials` asks for masked input
- * everywhere (see src/credentials.ts).
+ * Masked prompts already repaint the whole row on each keystroke, so there is a
+ * moment where we own the line and can hang a border at the end of it. Echoing
+ * prompts get the same treatment via `echoPanelLine` — they hijack readline's
+ * echo the same way, because a native echo has nowhere to put the trailing
+ * border and a 66-character Sui address on the same line as a long question
+ * walks straight through the AUTHENTICATE box.
  */
 export const MASK_WIDTH = 16;
 
@@ -227,13 +239,73 @@ export function maskedPanelLine(
 }
 
 /**
+ * Echoing counterpart of `maskedPanelLine`: the typed characters are shown, the
+ * row is padded to the right border, and the cursor is walked back to sit after
+ * the last character.
+ *
+ * Unlike the masked field, the value itself must never be truncated — a pin
+ * confirmation that showed `0xaaa…` has not confirmed an address (same rule as
+ * `showRow`). When question + value cannot fit, this drops the border rather
+ * than the value.
+ */
+export function echoPanelLine(
+  question: string,
+  typed: string,
+  width: number,
+  border = (s: string) => styleText("dim", s),
+): string {
+  const used = visibleWidth(question) + visibleWidth(typed);
+  if (used > width - 2) {
+    return `\x1b[2K\x1b[0G${question}${typed}`;
+  }
+  const pad = Math.max(0, width - used - 1);
+  return `\x1b[2K\x1b[0G${question}${typed}${" ".repeat(pad)}${border("│")}\x1b[${pad + 1}D`;
+}
+
+/**
+ * Hijack readline's echo and repaint the row ourselves. Used by both the
+ * masked field and the echoing panel prompt: native echo cannot draw a trailing
+ * border, and a wrapped row would leave fragments that `\x1b[2K` cannot clear.
+ */
+function promptWithRedraw(
+  rl: readline.Interface,
+  question: string,
+  paint: (typed: string) => string,
+): Promise<string> {
+  const rli = rl as MaskableInterface;
+  const output = rli.output ?? process.stdout;
+  const original = rli._writeToOutput?.bind(rli);
+  let muted = false;
+
+  return new Promise((resolve) => {
+    rli._writeToOutput = (stringToWrite) => {
+      if (!muted) {
+        output.write(stringToWrite);
+        return;
+      }
+      output.write(paint(rli.line));
+    };
+
+    // Mute first so the prompt write itself goes through `paint` — otherwise
+    // the right border is missing until the first keystroke.
+    muted = true;
+    rl.question(question, (answer) => {
+      muted = false;
+      if (original) rli._writeToOutput = original;
+      else delete rli._writeToOutput;
+      output.write("\n");
+      resolve(answer.trim());
+    });
+  });
+}
+
+/**
  * Like `prompt`, but never echoes the typed characters — each keystroke is
  * redrawn as a bullet so secrets don't leak via screen-share or screenshots.
  * Backspace/paste still work because we rebuild from readline's current `line`.
  * Falls back to a plain prompt when stdout is not a TTY (pipes, CI, tests):
  * there is no terminal echo to hide, and the escape codes would pollute output.
- */
-/**
+ *
  * `panelWidth` closes the row with a right border; omit it (non-panel callers,
  * narrow terminals) and the line is drawn flat against the terminal width.
  */
@@ -243,38 +315,25 @@ export function promptMasked(
   panelWidth?: number,
 ): Promise<string> {
   if (!process.stdout.isTTY) return prompt(rl, question);
+  return promptWithRedraw(rl, question, (typed) =>
+    panelWidth === undefined
+      ? maskedLine(question, typed.length)
+      : maskedPanelLine(question, typed.length, panelWidth),
+  );
+}
 
-  const rli = rl as MaskableInterface;
-  const output = rli.output ?? process.stdout;
-  const original = rli._writeToOutput?.bind(rli);
-  let muted = false;
-
-  return new Promise((resolve) => {
-    // While muted, ignore whatever readline wants to echo and redraw the masked
-    // line instead. The prompt string itself is written before we mute, so it
-    // renders normally.
-    rli._writeToOutput = (stringToWrite) => {
-      if (!muted) {
-        output.write(stringToWrite);
-        return;
-      }
-      output.write(
-        panelWidth === undefined
-          ? maskedLine(question, rli.line.length)
-          : maskedPanelLine(question, rli.line.length, panelWidth),
-      );
-    };
-
-    rl.question(question, (answer) => {
-      muted = false;
-      if (original) rli._writeToOutput = original;
-      else delete rli._writeToOutput;
-      output.write("\n");
-      resolve(answer.trim());
-    });
-
-    muted = true;
-  });
+/**
+ * Echoing prompt inside a closed panel. Without a panel width (narrow
+ * terminals, tests, pipes) this is just `prompt` — native echo is the right
+ * fallback when there is no box to keep closed.
+ */
+export function promptEcho(
+  rl: readline.Interface,
+  question: string,
+  panelWidth?: number,
+): Promise<string> {
+  if (!process.stdout.isTTY || panelWidth === undefined) return prompt(rl, question);
+  return promptWithRedraw(rl, question, (typed) => echoPanelLine(question, typed, panelWidth));
 }
 
 function print(msg: string) {
@@ -315,18 +374,38 @@ function detail(msg: string) {
  *
  * Streaming does not require an open right side: the height is only needed for
  * the *bottom* border, which is printed at the end anyway, and each row can be
- * padded to the border as it arrives. The one genuinely hard row is the live
- * prompt, and `maskedPanelLine` handles that (see the note there).
+ * padded to the border as it arrives. Live prompts are the hard row:
+ * `maskedPanelLine` for secrets, `echoPanelLine` for unmasked values.
  *
  * `width === null` means the terminal is too narrow to frame anything, so every
  * method degrades to the flat indented style.
  */
-function streamPanel(label: string, step: string) {
+/**
+ * Render one value verbatim — never wrapped, never clamped — for a panel of
+ * `width` (or `null` when no panel is being drawn).
+ *
+ * Every other panel row goes through `wrapVisible`, which CLAMPS a single token
+ * wider than the rail: a 66-character Sui address renders as `0xaa…`. An
+ * operator who confirms a prefix has not confirmed an address, so when the row
+ * cannot hold the value this drops the BORDER rather than the value.
+ *
+ * The single home for that rule — `bin/configure.ts` renders its address rows
+ * through this same function, so the two entry points cannot drift.
+ */
+export function showRow(msg: string, width: number | null): string {
+  // panelRow clamps its content to width - 3, and the indent costs 2.
+  if (width === null || visibleWidth(msg) > width - 5) return `${PAD}${msg}`;
+  return panelRow(`  ${msg}`, width);
+}
+
+/** Exported for tests/install.test.ts, which asserts `show` cannot truncate. */
+export function streamPanel(label: string, step: string) {
   const width = panelWidth();
   if (width === null) {
     print(`${accent(step)}  ${styleText("bold", label)}`);
     return {
       line,
+      show: (msg: string) => print(showRow(msg, null)),
       blank: () => print(""),
       close: () => {},
       prefix: PAD,
@@ -348,6 +427,8 @@ function streamPanel(label: string, step: string) {
       print(panelRow(`  ${first ?? ""}`, width));
       for (const l of rest) print(panelRow(`    ${l}`, width));
     },
+    /** A value printed verbatim — see `showRow` for why it may break the border. */
+    show: (msg: string) => print(showRow(msg, width)),
     blank: () => print(panelRow("", width)),
     close: () => print(panelBottom(width)),
     /** Prefix the spinner prints after, so it lands inside the border. */
@@ -445,7 +526,22 @@ function printBanner() {
 
 // ─── Step 1: Choose ─────────────────────────────────────────────────────────
 
+/**
+ * Kept in sync by hand with the copy in bin/configure.ts — the two entry points
+ * offer the same credential types, and a choice added to one but not the other
+ * is unreachable from that command.
+ *
+ * The bundle leads because it is the only option that provisions the address
+ * pins as well as the key, and `create_bucket` refuses outright until the owner
+ * pin exists. A key minted before the bundle format existed still takes the
+ * "API key" path and enters its pins by hand.
+ */
 const CHOICES: { choice: CredentialChoice; label: string; hint: string }[] = [
+  {
+    choice: "bundle",
+    label: "Credential bundle",
+    hint: "one paste — key, signer and the address pins",
+  },
   { choice: "api", label: "API key", hint: "everyday key — buckets, upload, download" },
   { choice: "admin", label: "Management key", hint: "mints API keys via generate_api_key" },
   { choice: "both", label: "Both", hint: "" },
@@ -461,7 +557,7 @@ export async function chooseCredentials(notice?: string): Promise<CredentialChoi
     CHOICES.map(({ label, hint }) => ({ label, hint })),
     {
       title: "CHOOSE CREDENTIALS",
-      step: "1/3",
+      step: "1/4",
       notice,
       hint: "↑/↓ move   enter select   esc cancel",
     },
@@ -477,8 +573,197 @@ export async function chooseCredentials(notice?: string): Promise<CredentialChoi
 // src/credentials.ts alongside the other format checks.
 export { isValidServiceKeyFormat } from "../src/credentials.js";
 
-async function stepAuth(rl: readline.Interface, choice: CredentialChoice): Promise<void> {
-  const rail = streamPanel("AUTHENTICATE", "2/3");
+/**
+ * The one-line summary of what a write actually persisted.
+ *
+ * "Credentials saved" is a claim, and two flows can now make it false: a
+ * declined bundle confirmation writes nothing at all, and an address-pin-only
+ * run (`--owner-address`) writes no credential. Shared with bin/configure.ts so
+ * both commands report the same truth.
+ */
+export function savedLabel(write: CredentialWrite): string {
+  if (isEmptyWrite(write)) return "Nothing saved — the config file is unchanged";
+  const { apiKey, servicePrivateKey, adminKey, adminServicePrivateKey } = write.updates;
+  return apiKey || servicePrivateKey || adminKey || adminServicePrivateKey
+    ? "Credentials saved"
+    : "Configuration saved";
+}
+
+/** The same summary as a status row — a tick only when something was written. */
+const savedRow = (write: CredentialWrite): string =>
+  isEmptyWrite(write) ? warn(savedLabel(write)) : ok(savedLabel(write));
+
+/** Affirmative answers to a `[y/N]` question. Bare Enter is No. */
+const isAffirmative = (answer: string): boolean => {
+  const normalized = answer.trim().toLowerCase();
+  return normalized === "y" || normalized === "yes";
+};
+
+/**
+ * Loud on purpose: Home as a sandbox root lets the model read/write anything
+ * under the user's profile, which is the opposite of the fail-closed default.
+ */
+export const HOME_DIR_WARNING =
+  "Home is broad — this server may read and write anything in your home directory.";
+
+export interface AllowedDirChoice {
+  id: "cwd" | "documents" | "downloads" | "home" | "custom" | "skip";
+  label: string;
+  hint: string;
+  path?: string;
+}
+
+/** Preset radio rows for the File access step. `path` is omitted for custom/skip. */
+export function allowedDirChoices(cwd: string, home: string): AllowedDirChoice[] {
+  return [
+    { id: "cwd", path: cwd, label: "This folder", hint: cwd },
+    {
+      id: "documents",
+      path: join(home, "Documents"),
+      label: "Documents",
+      hint: join(home, "Documents"),
+    },
+    {
+      id: "downloads",
+      path: join(home, "Downloads"),
+      label: "Downloads",
+      hint: join(home, "Downloads"),
+    },
+    { id: "home", path: home, label: "Home", hint: "your whole home directory — broad" },
+    { id: "custom", label: "Custom path…", hint: "type a folder this server may read and write" },
+    {
+      id: "skip",
+      label: "Skip",
+      hint: "only works if your agent shares workspace folders",
+    },
+  ];
+}
+
+/** Injectable seams so stepAllowedDirs is unit-testable without a TTY. */
+export interface StepAllowedDirsDeps {
+  select?: typeof selectOne;
+  ask?: (question: string) => Promise<string>;
+  cwd?: string;
+  home?: string;
+  step?: string;
+  merge?: typeof mergeConfigFile;
+}
+
+/**
+ * Pick directories upload/download may use when the MCP client advertises no
+ * filesystem roots. Persists `allowedDirs` in the shared config file — not in
+ * each agent's launch env — so `config` can change them without re-registering.
+ *
+ * A skip or cancel writes nothing (credentials from the previous step stay).
+ */
+export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<CredentialWrite> {
+  const select = deps.select ?? selectOne;
+  const cwd = deps.cwd ?? process.cwd();
+  const home = deps.home ?? homedir();
+  const merge = deps.merge ?? mergeConfigFile;
+  const step = deps.step ?? "3/4";
+  const choices = allowedDirChoices(cwd, home);
+
+  const index = await select(
+    choices.map(({ label, hint }) => ({ label, hint })),
+    {
+      title: "FILE ACCESS",
+      step,
+      notice:
+        "Some agents don't share workspace folders. Pick directories upload and download may use.",
+      hint: "↑/↓ move   enter select   esc cancel",
+    },
+  );
+
+  if (index === null) {
+    print("");
+    line(
+      info("File access skipped — upload/download will fail on agents that don't share folders."),
+    );
+    gap();
+    return { updates: {}, clear: [] };
+  }
+
+  const picked = choices[index];
+  if (!picked || picked.id === "skip") {
+    print("");
+    line(
+      info("File access skipped — set later with walrus-console-mcp config --allowed-dirs <dir>"),
+    );
+    gap();
+    return { updates: {}, clear: [] };
+  }
+
+  print("");
+  if (picked.id === "home") line(warn(HOME_DIR_WARNING));
+
+  const ask =
+    deps.ask ??
+    (async (question: string) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        return await prompt(rl, `${PAD}${accent(question)}`);
+      } finally {
+        rl.close();
+      }
+    });
+
+  const dirs: string[] = [];
+  const accept = (raw: string): boolean => {
+    const result = validateAllowedDirectory(raw);
+    if ("error" in result) {
+      line(fail(result.error));
+      return false;
+    }
+    if (!dirs.includes(result.dir)) {
+      dirs.push(result.dir);
+      line(ok(result.dir));
+    }
+    return true;
+  };
+
+  if (picked.id === "custom") {
+    while (true) {
+      const typed = await ask("Folder: ");
+      if (!typed.trim()) {
+        line(fail("This value is required."));
+        continue;
+      }
+      if (accept(typed)) break;
+    }
+  } else if (picked.path) {
+    if (!accept(picked.path)) {
+      line(info("Nothing saved — pick an existing folder with --allowed-dirs, or re-run."));
+      gap();
+      return { updates: {}, clear: [] };
+    }
+  }
+
+  while (isAffirmative(await ask("Add another directory? [y/N]: "))) {
+    const typed = await ask("Folder: ");
+    if (!typed.trim()) {
+      line(info("Nothing added."));
+      continue;
+    }
+    accept(typed);
+  }
+
+  if (dirs.length === 0) {
+    gap();
+    return { updates: {}, clear: [] };
+  }
+
+  merge({ allowedDirs: dirs });
+  line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+  gap();
+  return { updates: { allowedDirs: dirs }, clear: [] };
+}
+
+async function stepAuth(
+  rl: readline.Interface,
+  choice: CredentialChoice,
+): Promise<CredentialWrite> {
+  const rail = streamPanel("AUTHENTICATE", "2/4");
   const gutter = rail.prefix;
   rail.blank();
   rail.line(`Get your key at ${accent("testnet.console.walrus.xyz")} → Integrations`);
@@ -486,24 +771,30 @@ async function stepAuth(rl: readline.Interface, choice: CredentialChoice): Promi
 
   const baseUrl = resolveInstallBaseUrl();
 
-  const { updates, clear } = await collectCredentials(
+  const write = await collectCredentials(
     choice,
     {
-      // Register each secret the moment it is typed, before collectCredentials
-      // probes it: a probe's fetch error can embed the Bearer header, and the
-      // redaction layer can only scrub values it already knows about.
       ask: async (question, opts) => {
-        const value =
-          opts?.masked === false
-            ? await prompt(rl, `${gutter}${accent(question)}`)
-            : await promptMasked(rl, `${gutter}${accent(question)}`, rail.width);
-        registerSecret(value);
+        const masked = opts?.masked !== false;
+        const value = masked
+          ? await promptMasked(rl, `${gutter}${accent(question)}`, rail.width)
+          : await promptEcho(rl, `${gutter}${accent(question)}`, rail.width);
+        // Register each secret the moment it is typed, before collectCredentials
+        // probes it: a probe's fetch error can embed the Bearer header, and the
+        // redaction layer can only scrub values it already knows about.
+        //
+        // Only the MASKED values. An unmasked prompt is deliberately a non-secret
+        // (a y/N answer, an address pin), and registering an address would scrub
+        // it out of the create_bucket disclosure — the field that exists to show
+        // a human which account was actually granted the bucket.
+        if (masked) registerSecret(value);
         return value;
       },
       ok: (msg) => rail.line(ok(msg)),
       fail: (msg) => rail.line(fail(msg)),
       warn: (msg) => rail.line(warn(msg)),
       info: (msg) => rail.line(info(msg)),
+      show: (msg) => rail.show(msg),
       probe: (kind, key) =>
         withSpinner("validating", () => probeKey(kind, key, baseUrl), gutter, rail.width),
     },
@@ -512,15 +803,52 @@ async function stepAuth(rl: readline.Interface, choice: CredentialChoice): Promi
     loadConfigFile(),
   );
 
-  mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
   rail.blank();
-  rail.line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+  if (isEmptyWrite(write)) {
+    // Nothing was confirmed (a declined bundle). Do not touch the file at all —
+    // not even for the base-URL bookkeeping a successful auth implies.
+    rail.line(info(savedLabel(write)));
+  } else {
+    const { updates, clear } = write;
+    mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
+    rail.line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+  }
   rail.blank();
   rail.close();
   gap();
+  return write;
 }
 
 // ─── Step 3: Register ───────────────────────────────────────────────────────
+
+/**
+ * How the Register step ended. `configured` only carries a meaningful count on
+ * `"installed"`; the others are zero. The distinction matters because the old
+ * `return 0` collapsed a *failed server install* into the same value as
+ * "cancelled" / "nothing ticked", so a scripted install couldn't tell a real
+ * failure from a deliberate no-op.
+ */
+export type RegisterOutcome = "installed" | "install-failed" | "cancelled" | "none-selected";
+export interface RegisterResult {
+  outcome: RegisterOutcome;
+  configured: number;
+}
+
+/** Injectable seams so stepRegister's outcomes are unit-testable. */
+interface StepRegisterDeps {
+  select?: typeof selectClients;
+  install?: typeof installServer;
+}
+
+/**
+ * The process exit code implied by a Register outcome. Only a failed server
+ * install is a hard error — the credentials were still saved (auth completed),
+ * but nothing usable was registered, so a scripted caller must see a non-zero
+ * exit. Cancelling the checklist or ticking no clients is a normal exit.
+ */
+export function registerExitCode(outcome: RegisterOutcome): number {
+  return outcome === "install-failed" ? 1 : 0;
+}
 
 /**
  * Register the launcher with the agents the user ticks. Detects every supported
@@ -534,30 +862,40 @@ async function stepAuth(rl: readline.Interface, choice: CredentialChoice): Promi
  * why `npx` is not usable here), and if the install fails there is nothing worth
  * writing — a config naming a launcher that does not exist fails at every future
  * startup, inside the agent, far from anything that can fix it.
+ *
+ * Returns a discriminated `RegisterResult` rather than a bare count so
+ * `runInstall` can set a non-zero exit code (and print a FAILED panel) when the
+ * server install threw, without conflating that with a user cancel.
  */
-async function stepRegister(spec: string): Promise<number> {
-  const selected = await selectClients(getClients(), {
+export async function stepRegister(
+  spec: string,
+  deps: StepRegisterDeps = {},
+): Promise<RegisterResult> {
+  const select = deps.select ?? selectClients;
+  const install = deps.install ?? installServer;
+
+  const selected = await select(getClients(), {
     title: "REGISTER",
-    step: "3/3",
+    step: "4/4",
     hint: "↑/↓ move   space toggle   a all   enter confirm",
   });
 
   if (selected === null) {
     print("");
     line(info("Registration cancelled — your saved credentials are untouched."));
-    return 0;
+    return { outcome: "cancelled", configured: 0 };
   }
   if (selected.length === 0) {
     print("");
     line(info("No clients selected — nothing registered."));
-    return 0;
+    return { outcome: "none-selected", configured: 0 };
   }
 
   print("");
   let command: string;
   try {
     line(info(`Installing ${spec}…`));
-    command = installServer(spec);
+    command = install(spec);
     line(ok(`Installed → ${command}`));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -567,7 +905,7 @@ async function stepRegister(spec: string): Promise<number> {
     // do it silently, on the path where something already went wrong.
     detail("Nothing was registered. Fix the install error above and re-run.");
     gap();
-    return 0;
+    return { outcome: "install-failed", configured: 0 };
   }
 
   let configured = 0;
@@ -583,7 +921,7 @@ async function stepRegister(spec: string): Promise<number> {
     }
   }
   gap();
-  return configured;
+  return { outcome: "installed", configured };
 }
 
 /** Silent mode does not run the interactive checklist; point at the manual path. */
@@ -605,11 +943,13 @@ export async function runInstall(argv: string[] = []): Promise<void> {
     const baseUrl = resolveInstallBaseUrl();
     // Flag- and env-supplied secrets never pass through the interactive `ask`
     // wrapper, so register them here — before validateSilent probes them and a
-    // fetch error can embed the Bearer header.
-    for (const value of Object.values(args.values)) {
-      if (value) registerSecret(value);
+    // fetch error can embed the Bearer header. Only the secret-bearing fields:
+    // registering an address pin would scrub it out of the create_bucket
+    // disclosure (see SECRET_VALUE_FIELDS).
+    for (const field of SECRET_VALUE_FIELDS) {
+      registerSecret(args.values[field]);
     }
-    const { updates, clear, errors } = await validateSilent(
+    const { updates, clear, errors, warnings } = await validateSilent(
       args.values,
       (kind, key) => probeKey(kind, key, baseUrl),
       loadConfigFile(),
@@ -621,7 +961,10 @@ export async function runInstall(argv: string[] = []): Promise<void> {
     // Persist the resolved base URL exactly as the interactive path does, so the
     // saved config points at the same API the key was just validated against.
     mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
-    print(ok("Credentials saved"));
+    print(ok(savedLabel({ updates, clear })));
+    // After the saved line: they describe what the just-written config costs,
+    // not a reason it failed. Exit code is unaffected.
+    for (const warning of warnings) print(warn(warning));
     if (args.register) stepRegisterSilentNote();
     process.exit(0);
   }
@@ -679,20 +1022,43 @@ export async function runInstall(argv: string[] = []): Promise<void> {
     if (phase === "auth") cancel();
   });
 
-  let configured = 0;
+  let register: RegisterResult | null = null;
+  let authWrite: CredentialWrite = { updates: {}, clear: [] };
+  let allowedWrite: CredentialWrite = { updates: {}, clear: [] };
   try {
-    await stepAuth(rl, choice);
-    // Free stdin from readline so the tickbox can take raw keypresses.
+    authWrite = await stepAuth(rl, choice);
+    // Free stdin from readline so the File access radio and the Register
+    // tickbox can take raw keypresses.
     phase = "register";
     rl.close();
-    if (args.register) configured = await stepRegister(packageSpec());
+    allowedWrite = await stepAllowedDirs();
+    if (args.register) register = await stepRegister(packageSpec());
     phase = "done";
   } finally {
     rl.close();
   }
 
+  if (register && register.outcome === "install-failed") {
+    // Auth completed, so the credentials ARE saved — but the server install
+    // failed and nothing was registered. Surface that to a scripted caller with
+    // a non-zero exit (propagated out of bin/console-mcp.ts) and say so plainly,
+    // rather than printing a green DONE panel over a failure.
+    process.exitCode = registerExitCode(register.outcome);
+    printSummaryPanel("FAILED", [
+      savedRow(authWrite),
+      fail("Server install failed — nothing was registered"),
+      "",
+      `Fix the install error above, then run ${accent("walrus-console-mcp install")}`,
+    ]);
+    // Trailing gap so the shell prompt doesn't come back flush against the panel.
+    gap();
+    return;
+  }
+
+  const configured = register?.configured ?? 0;
   printSummaryPanel("DONE", [
-    ok("Credentials saved"),
+    savedRow(authWrite),
+    ...(isEmptyWrite(allowedWrite) ? [] : [ok("File access folders saved")]),
     ...(args.register
       ? [ok(`${configured} ${configured === 1 ? "agent" : "agents"} configured`)]
       : []),

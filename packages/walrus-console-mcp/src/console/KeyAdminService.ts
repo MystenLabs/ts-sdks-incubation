@@ -31,6 +31,29 @@ const POLL_MAX_ATTEMPTS = 15;
 const ADMIN_SIGNER_HINT =
   "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY may not be the signer registered for CONSOLE_ADMIN_KEY.";
 
+/** Console's `name` limit on POST /api/v1/api-keys. Longer is a hard 400. */
+export const MAX_API_KEY_NAME_LENGTH = 64;
+
+/**
+ * Longest `label` a caller may pass, given that the mint marker is appended.
+ * Exported so the tool's input schema states the REAL limit instead of one the
+ * server will reject — an advertised maximum the API refuses is worse than a
+ * smaller honest one.
+ */
+export const MAX_API_KEY_LABEL_LENGTH = MAX_API_KEY_NAME_LENGTH - " [mcp-mint-123456789012]".length;
+
+/**
+ * Keep the composed key name inside Console's limit, preserving the TAIL.
+ *
+ * The tail is where the marker lives, and the marker is the only way to find a
+ * key whose 201 was lost in flight — so if something has to go, it is the
+ * operator's label, never the recovery handle.
+ */
+function clampKeyName(name: string): string {
+  if (name.length <= MAX_API_KEY_NAME_LENGTH) return name;
+  return name.slice(name.length - MAX_API_KEY_NAME_LENGTH);
+}
+
 const withHint = (message: string) => `${message} ${ADMIN_SIGNER_HINT}`;
 
 export interface GenerateApiKeyResult {
@@ -210,7 +233,7 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
       // the scope (so a `read` grant cannot come back as `add_editor`), the
       // groups, and the recipient (so access cannot be redirected to a third
       // party while the response still looks like our own grant).
-      const signature = yield* seal.signTransactionBytes(
+      const { signature } = yield* seal.signTransactionBytes(
         sponsor.bytes,
         { kind: "grantBucketAccess", recipientAddress: childAddress, groupIds, scope },
         "admin",
@@ -257,13 +280,41 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
       // 1. Generate a fresh child keypair locally; its address is the mint's signer.
       const child = yield* seal.generateChildKeypair();
 
+      // A unique client-side marker embedded in the mint's name. `createApiKey` is
+      // a point of no return whose 201 can be lost in flight (a crash, a dropped
+      // connection) AFTER the key was created server-side. There is no API to list
+      // or revoke keys, so a lost key becomes an orphan findable only by eye in the
+      // Console UI — this marker is what makes it findable. It does NOT make the
+      // mint idempotent: a retry still mints a second key. It only ensures the
+      // first one can be identified. Server-stored idempotency is the real fix
+      // (tracked separately).
+      // Console caps `name` at 64 characters and rejects a longer one with a bare
+      // 400 (`ZodError: String must contain at most 64 character(s)`), which
+      // surfaces here as an unexplained mint failure. A full UUID marker plus
+      // " [] " left only 16 characters for the label while the tool advertised 64,
+      // so any label past ~19 characters broke the mint outright — found by the
+      // COMG-761 e2e, not by a test. 12 hex digits (48 bits) is far past collision
+      // risk for "find this one key in one space's list", which is all the marker
+      // is for.
+      const marker = `mcp-mint-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+      const name = clampKeyName(args.label ? `${args.label} [${marker}]` : marker);
+
+      // Breadcrumb for the pre-201 window, emitted BEFORE the call: if the response
+      // never arrives, stderr still records that a key with this marker may exist.
+      // stderr, not the tool result, because it outlives a crashed request.
+      console.error(
+        `[console-mcp] generate_api_key: minting a Console key marked "${marker}". If this ` +
+          `call does not return (crash, timeout, dropped response), a key with that marker may ` +
+          `still have been created — find it by that marker in the Console UI before minting again.`,
+      );
+
       // 2. Ask Console to mint the child hbr_ key under the admin's key_admin scope.
       // The space is derived server-side from the admin credential — args.spaceId is
       // validated below, not used to select the space.
       const minted = yield* api.createApiKey({
         permissions: args.permission,
         serviceSignerAddress: child.address,
-        name: args.label,
+        name,
       });
 
       // From here down the key EXISTS. Build the credential immediately so every

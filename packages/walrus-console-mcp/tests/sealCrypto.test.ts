@@ -13,6 +13,8 @@ function makeConfig(
     adminKey: Redacted.make("hbradm_x"),
     adminServicePrivateKey: Redacted.make(over.adminServicePrivateKey ?? ""),
     baseUrl: "https://api.testnet.console.walrus.xyz",
+    webAccountAddress: "",
+    keyAdminAddress: "",
   } satisfies ConsoleConfig;
 }
 

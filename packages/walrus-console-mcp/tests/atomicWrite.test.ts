@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { writeFileAtomic } from "../src/atomicWrite.js";
+import { writeFileAtomic, writeFileAtomicAsync } from "../src/atomicWrite.js";
 
 let dir: string;
 
@@ -111,5 +111,58 @@ describe("writeFileAtomic", () => {
     });
 
     expect(observed.some((f) => f.includes("sibling.json") && f !== "sibling.json")).toBe(true);
+  });
+});
+
+describe("writeFileAtomicAsync", () => {
+  it("creates a new file with the requested mode and byte-exact content", async () => {
+    const target = path.join(dir, "async.bin");
+    const bytes = new Uint8Array([0, 1, 2, 253, 254, 255]);
+
+    await writeFileAtomicAsync(target, bytes, { mode: 0o600 });
+
+    expect(new Uint8Array(fs.readFileSync(target))).toEqual(bytes);
+    expect(modeOf(target)).toBe(0o600);
+  });
+
+  it("does not publish the file when the signal is already aborted, and leaves no temp", async () => {
+    // The F10 guarantee for a cancelled download: the destination is untouched and
+    // nothing half-written is left lying around.
+    const target = path.join(dir, "cancelled.bin");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      writeFileAtomicAsync(target, "secret plaintext", { mode: 0o600, signal: controller.signal }),
+    ).rejects.toThrow();
+
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.readdirSync(dir)).toEqual([]); // no destination AND no temp sibling
+  });
+
+  it("does not overwrite an existing file when aborted before the rename", async () => {
+    const target = path.join(dir, "keep.bin");
+    fs.writeFileSync(target, "original");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      writeFileAtomicAsync(target, "replacement", { mode: 0o600, signal: controller.signal }),
+    ).rejects.toThrow();
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("original");
+    expect(fs.readdirSync(dir)).toEqual(["keep.bin"]); // no temp left behind
+  });
+
+  it("leaves the original intact and no temp behind when the write fails", async () => {
+    const target = path.join(dir, "keep.json");
+    fs.writeFileSync(target, "original");
+
+    await expect(
+      writeFileAtomicAsync(target, { bad: true } as unknown as string, { mode: 0o600 }),
+    ).rejects.toThrow();
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("original");
+    expect(fs.readdirSync(dir)).toEqual(["keep.json"]);
   });
 });

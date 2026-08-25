@@ -10,16 +10,27 @@ import {
   isValidServiceKeyFormat,
   MASK_WIDTH,
   PACKAGE_NAME,
+  echoPanelLine,
   maskedLine,
   maskedPanelLine,
   packageSpec,
   promptMasked,
+  registerExitCode,
   resolveInstallBaseUrl,
+  savedLabel,
+  showRow,
+  allowedDirChoices,
+  HOME_DIR_WARNING,
+  stepAllowedDirs,
+  stepRegister,
+  streamPanel,
   visibleWidth,
 } from "../bin/install.js";
 import { DEFAULT_CONSOLE_API_BASE_URL } from "../src/baseUrl.js";
+import type { Client } from "../src/clients.js";
 import { saveConfigFile } from "../src/configFile.js";
-import { panelWidth } from "../src/tui.js";
+import { toRealPath } from "../src/pathSandbox.js";
+import { panelWidth, wrapVisible } from "../src/tui.js";
 
 /** A real, decodable signer — `isValidServiceKeyFormat` now actually decodes the value. */
 const VALID_SIGNER = Ed25519Keypair.generate().getSecretKey();
@@ -183,6 +194,48 @@ describe("maskedPanelLine", () => {
   });
 });
 
+describe("echoPanelLine", () => {
+  const WIDTH = 72;
+  const ESC = String.fromCharCode(27);
+  const CURSOR_BACK = new RegExp(`${ESC}\\[(\\d+)D$`);
+  const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
+  const strip = (s: string) => s.replace(`${ESC}[2K${ESC}[0G`, "").replace(CURSOR_BACK, "");
+  const plain = (s: string) => strip(s).replace(SGR, "");
+  const ADDRESS = `0x${"a".repeat(64)}`;
+
+  it("closes the row at exactly the panel width when the value fits", () => {
+    const row = plain(echoPanelLine("│  Pin this as the bucket owner? [y/N]: ", "y", WIDTH));
+    expect(row.length).toBe(WIDTH);
+    expect(row.endsWith("│")).toBe(true);
+  });
+
+  it("parks the cursor after the typed text, not outside the box", () => {
+    const question = "│  Pin this as the bucket owner? [y/N]: ";
+    const raw = echoPanelLine(question, "y", WIDTH);
+    const back = CURSOR_BACK.exec(raw);
+    expect(back).not.toBeNull();
+    const beforeCursor = plain(raw).length - Number(back?.[1] ?? 0);
+    expect(beforeCursor).toBe(visibleWidth(question) + 1);
+  });
+
+  // The load-bearing case from the AUTHENTICATE screenshot: a 66-char Sui
+  // address on a gutter-only row must stay inside the box. A question that
+  // already contains the address cannot.
+  it("frames a 66-character address when the question is only the gutter", () => {
+    const row = plain(echoPanelLine("│  ", ADDRESS, WIDTH));
+    expect(row.length).toBe(WIDTH);
+    expect(row.endsWith("│")).toBe(true);
+    expect(row).toContain(ADDRESS);
+  });
+
+  it("drops the border rather than clamping when the value cannot fit", () => {
+    const question = `│  Pin ${ADDRESS} as the bucket owner? [y/N]: `;
+    const row = plain(echoPanelLine(question, "y", WIDTH));
+    expect(row).toContain(ADDRESS);
+    expect(row.endsWith("│")).toBe(false);
+  });
+});
+
 describe("visibleWidth", () => {
   it("ignores ANSI SGR color codes", () => {
     expect(visibleWidth("\x1b[36mKey:\x1b[39m")).toBe(4);
@@ -289,6 +342,272 @@ describe("getPackageVersion", () => {
 
 // Client detection + registration (Claude Desktop, Cursor, Claude Code, Codex,
 // Gemini) lives in src/clients.ts and is covered by tests/clients.test.ts.
+
+describe("allowedDirChoices", () => {
+  it("builds presets from cwd and home, never POSIX literals", () => {
+    const cwd = path.join(tmpDir, "project");
+    const home = path.join(tmpDir, "home");
+    const choices = allowedDirChoices(cwd, home);
+    expect(choices.map((c) => c.id)).toEqual([
+      "cwd",
+      "documents",
+      "downloads",
+      "home",
+      "custom",
+      "skip",
+    ]);
+    expect(choices[0]?.path).toBe(cwd);
+    expect(choices[1]?.path).toBe(path.join(home, "Documents"));
+    expect(choices[2]?.path).toBe(path.join(home, "Downloads"));
+    expect(choices[3]?.path).toBe(home);
+    expect(choices[4]?.path).toBeUndefined();
+    expect(choices[5]?.path).toBeUndefined();
+  });
+});
+
+describe("stepAllowedDirs", () => {
+  it("persists the cwd preset and does not ask for a custom path", async () => {
+    const merged: unknown[] = [];
+    const write = await stepAllowedDirs({
+      cwd: tmpDir,
+      home: tmpDir,
+      select: async () => 0,
+      ask: async () => "",
+      merge: (updates) => {
+        merged.push(updates);
+        return { ...updates };
+      },
+    });
+    expect(write.updates.allowedDirs).toEqual([toRealPath(tmpDir)]);
+    expect(merged).toEqual([{ allowedDirs: [toRealPath(tmpDir)] }]);
+  });
+
+  it("writes nothing on skip", async () => {
+    let merged = false;
+    const write = await stepAllowedDirs({
+      cwd: tmpDir,
+      home: tmpDir,
+      select: async () => 5,
+      merge: () => {
+        merged = true;
+        return {};
+      },
+    });
+    expect(write.updates).toEqual({});
+    expect(merged).toBe(false);
+  });
+
+  it("writes nothing when the radio is cancelled", async () => {
+    const write = await stepAllowedDirs({
+      cwd: tmpDir,
+      home: tmpDir,
+      select: async () => null,
+      merge: () => {
+        throw new Error("must not persist");
+      },
+    });
+    expect(write.updates).toEqual({});
+  });
+
+  it("accepts a custom path and an extra directory", async () => {
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-extra-dir-"));
+    try {
+      const answers = [extra, "n"];
+      const write = await stepAllowedDirs({
+        cwd: tmpDir,
+        home: tmpDir,
+        select: async () => 4, // custom
+        ask: async () => answers.shift() ?? "",
+        merge: (updates) => updates,
+      });
+      expect(write.updates.allowedDirs).toEqual([toRealPath(extra)]);
+    } finally {
+      fs.rmSync(extra, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when Home is chosen", () => {
+    expect(HOME_DIR_WARNING).toMatch(/home directory/i);
+  });
+});
+
+describe("stepRegister outcome and exit code", () => {
+  const spec = "@scope/pkg@1.0.0";
+
+  const fakeClient = (over: Partial<Client> = {}): Client => ({
+    id: "fake",
+    label: "Fake Agent",
+    detect: () => true,
+    register: () => {},
+    manualHint: () => "fake --add",
+    ...over,
+  });
+
+  // The load-bearing case: auth succeeded (credentials saved) but the server
+  // install threw, so nothing was registered. This MUST map to a non-zero exit
+  // — the old `return 0` made it indistinguishable from a deliberate cancel.
+  it("reports install-failed with a non-zero exit code when the server install throws", async () => {
+    const result = await stepRegister(spec, {
+      select: async () => [fakeClient()],
+      install: () => {
+        throw new Error("EACCES: permission denied");
+      },
+    });
+    expect(result.outcome).toBe("install-failed");
+    expect(result.configured).toBe(0);
+    expect(registerExitCode(result.outcome)).toBe(1);
+  });
+
+  it("reports installed and a zero exit code when registration succeeds", async () => {
+    let registered = "";
+    const result = await stepRegister(spec, {
+      select: async () => [
+        fakeClient({
+          register: (cmd) => {
+            registered = cmd;
+          },
+        }),
+      ],
+      install: () => "/abs/launcher",
+    });
+    expect(result.outcome).toBe("installed");
+    expect(result.configured).toBe(1);
+    expect(registered).toBe("/abs/launcher");
+    expect(registerExitCode(result.outcome)).toBe(0);
+  });
+
+  it("keeps a zero exit code when the checklist is cancelled", async () => {
+    const result = await stepRegister(spec, { select: async () => null });
+    expect(result.outcome).toBe("cancelled");
+    expect(registerExitCode(result.outcome)).toBe(0);
+  });
+
+  it("keeps a zero exit code when no client is ticked", async () => {
+    const result = await stepRegister(spec, { select: async () => [] });
+    expect(result.outcome).toBe("none-selected");
+    expect(registerExitCode(result.outcome)).toBe(0);
+  });
+});
+
+// The anti-clamping guarantee, tested against the RENDERER rather than the
+// caller. `collectBundle` calling `deps.show` with an untruncated string says
+// nothing about whether the thing on the other end truncates it — and the whole
+// point of the seam is that an operator confirming `0xaaa…` has confirmed a
+// prefix, not an address. Anyone routing `show` back through the wrapping
+// closure (`line`) must fail here.
+describe("showRow — a pinned address is never clamped", () => {
+  const ADDRESS = `0x${"a".repeat(64)}`; // 66 visible columns
+  const strip = (s: string) =>
+    s.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
+
+  it("keeps the full address at every panel width, and when there is no panel", () => {
+    // Wide (the panel caps at MAX_PANEL_WIDTH), narrow, and the flat fallback.
+    for (const columns of [140, 80, 74, 60, 50]) {
+      const width = panelWidth(columns);
+      expect(strip(showRow(ADDRESS, width))).toContain(ADDRESS);
+    }
+    expect(strip(showRow(ADDRESS, null))).toContain(ADDRESS);
+  });
+
+  it("frames the value when the row can hold it", () => {
+    const width = panelWidth(140);
+    expect(width).not.toBeNull();
+    if (width === null) return;
+    const row = showRow(ADDRESS, width);
+    expect(visibleWidth(row)).toBe(width);
+    expect(strip(row).endsWith("│")).toBe(true);
+  });
+
+  it("drops the border rather than the value when the row cannot", () => {
+    // 48-column panel: 2 indent + 66 address is far past what panelRow keeps.
+    const width = panelWidth(50);
+    expect(width).not.toBeNull();
+    if (width === null) return;
+    const row = showRow(ADDRESS, width);
+    expect(strip(row)).toContain(ADDRESS);
+    expect(strip(row)).not.toContain("│");
+  });
+
+  // The contrast that makes the seam necessary: the wrapping path used by every
+  // other panel line truncates this exact value at every width we draw at.
+  it("is not what the wrapping path would have produced", () => {
+    for (const columns of [140, 80, 60]) {
+      const width = panelWidth(columns);
+      if (width === null) continue;
+      const [first] = wrapVisible(`· ${ADDRESS}`, width - 7);
+      expect(String(first)).not.toContain(ADDRESS);
+    }
+  });
+});
+
+describe("streamPanel().show", () => {
+  const ADDRESS = `0x${"b".repeat(64)}`;
+
+  /** Capture what the panel writes, at a chosen terminal width. */
+  const captureShow = (columns: number): string => {
+    const written: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    const originalColumns = process.stdout.columns;
+    Object.defineProperty(process.stdout, "columns", { value: columns, configurable: true });
+    process.stdout.write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      streamPanel("AUTHENTICATE", "2/4").show(ADDRESS);
+    } finally {
+      process.stdout.write = originalWrite;
+      Object.defineProperty(process.stdout, "columns", {
+        value: originalColumns,
+        configurable: true,
+      });
+    }
+    return written.join("");
+  };
+
+  // The seam is only worth having if the panel's own `show` is wired to it.
+  it("prints the address verbatim on a wide terminal", () => {
+    expect(captureShow(140)).toContain(ADDRESS);
+  });
+
+  it("prints the address verbatim on a narrow one", () => {
+    expect(captureShow(50)).toContain(ADDRESS);
+  });
+
+  it("prints it verbatim even when the terminal is too narrow to draw a panel", () => {
+    expect(captureShow(30)).toContain(ADDRESS);
+  });
+});
+
+// The summary line is a claim about what reached the disk, and two flows can
+// make the old unconditional "Credentials saved" false: a declined bundle
+// confirmation writes nothing, and --owner-address writes no credential.
+describe("savedLabel", () => {
+  it("says credentials were saved when a credential was written", () => {
+    expect(savedLabel({ updates: { apiKey: "hbr_x" }, clear: [] })).toBe("Credentials saved");
+    expect(savedLabel({ updates: { adminKey: "hbradm_x" }, clear: [] })).toBe("Credentials saved");
+  });
+
+  it("does not claim a credential for an address-pin-only write", () => {
+    const label = savedLabel({ updates: { webAccountAddress: `0x${"a".repeat(64)}` }, clear: [] });
+    expect(label).toBe("Configuration saved");
+  });
+
+  it("does not claim a credential for an allowedDirs-only write", () => {
+    expect(savedLabel({ updates: { allowedDirs: ["/tmp"] }, clear: [] })).toBe(
+      "Configuration saved",
+    );
+  });
+
+  it("says nothing was saved for an empty write", () => {
+    expect(savedLabel({ updates: {}, clear: [] })).toContain("Nothing saved");
+  });
+
+  // A clear-only write still touches the file, so it is not "nothing saved".
+  it("treats a clear-only write as a real change", () => {
+    expect(savedLabel({ updates: {}, clear: ["webAccountAddress"] })).toBe("Configuration saved");
+  });
+});
 
 describe("resolveInstallBaseUrl", () => {
   // The installer probes a credential against this URL and then persists it, so

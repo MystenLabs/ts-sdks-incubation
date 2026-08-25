@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 
 /**
@@ -46,6 +47,30 @@ export interface AtomicWriteOptions {
   onTempCreated?: () => void;
 }
 
+/** Async-write options: everything the sync writer takes, plus cancellation. */
+export interface AsyncAtomicWriteOptions extends AtomicWriteOptions {
+  /**
+   * When aborted before the rename, the temp is dropped and NOTHING is published
+   * at the destination. This is why a cancelled download leaves no half-written
+   * plaintext where a good file used to be — the target is untouched.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * The sibling temp path a write uses before renaming over `filePath`. Exported so
+ * a caller that abandons the write (an interrupted transfer) can remove the same
+ * temp the writer would have.
+ */
+export function atomicTempPath(filePath: string): string {
+  return path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.tmp`);
+}
+
+/** Best-effort removal of a write's temp file. Never throws. */
+export async function removeAtomicTemp(filePath: string): Promise<void> {
+  await fsp.rm(atomicTempPath(filePath), { force: true }).catch(() => {});
+}
+
 export function writeFileAtomic(
   filePath: string,
   content: string | Uint8Array,
@@ -58,7 +83,7 @@ export function writeFileAtomic(
 
   const mode = (options.preserveExistingMode ? existingMode(filePath) : undefined) ?? options.mode;
 
-  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.tmp`);
+  const tmpPath = atomicTempPath(filePath);
   const fd = fs.openSync(tmpPath, "wx", mode);
   try {
     fs.fchmodSync(fd, mode);
@@ -84,9 +109,80 @@ export function writeFileAtomic(
   }
 }
 
+/**
+ * Async, signal-aware sibling of `writeFileAtomic`, for the transfer paths (a
+ * decrypted download) rather than the config/installer paths.
+ *
+ * Same temp-then-rename shape, and the same `wx` + `fchmod` + `fsync`-before-
+ * `rename` guarantees, on `node:fs/promises` so it does not block the event loop
+ * while a large payload is written. The one addition is the `signal` check
+ * immediately before the rename: an aborted transfer must NOT publish a
+ * half-wanted file, so the temp is dropped and the destination left untouched.
+ * The sync writer is kept for the config/installer callers, whose lock is
+ * deliberately synchronous.
+ */
+export async function writeFileAtomicAsync(
+  filePath: string,
+  content: string | Uint8Array,
+  options: AsyncAtomicWriteOptions,
+): Promise<void> {
+  const dir = path.dirname(filePath);
+  if (options.mkdirMode !== undefined) {
+    await fsp.mkdir(dir, { recursive: true, mode: options.mkdirMode });
+  }
+
+  const mode =
+    (options.preserveExistingMode ? await existingModeAsync(filePath) : undefined) ?? options.mode;
+
+  const tmpPath = atomicTempPath(filePath);
+  const handle = await fsp.open(tmpPath, "wx", mode);
+  try {
+    await handle.chmod(mode);
+    // Thread the signal into the write itself (Node's FileHandle.writeFile takes
+    // one, like the sibling read in pathSandbox) so a cancel aborts mid-write
+    // instead of pushing the whole payload to disk before the post-write check.
+    await handle.writeFile(content, options.signal ? { signal: options.signal } : {});
+    // Durability before the rename, exactly as the sync writer: fsync so a crash
+    // cannot land the rename over data still only in the page cache.
+    await handle.sync();
+  } catch (err) {
+    await handle.close();
+    await fsp.rm(tmpPath, { force: true });
+    throw err;
+  }
+  await handle.close();
+
+  options.onTempCreated?.();
+
+  // Checked at the last moment before anything becomes visible at the
+  // destination: if the transfer was cancelled while we were writing, discard the
+  // temp rather than renaming a file nobody is waiting for anymore.
+  if (options.signal?.aborted) {
+    await fsp.rm(tmpPath, { force: true });
+    const aborted = new Error("The write was aborted before the file could be published.");
+    aborted.name = "AbortError";
+    throw aborted;
+  }
+
+  try {
+    await fsp.rename(tmpPath, filePath);
+  } catch (err) {
+    await fsp.rm(tmpPath, { force: true });
+    throw err;
+  }
+}
+
 function existingMode(filePath: string): number | undefined {
   try {
     return fs.statSync(filePath).mode & 0o777;
+  } catch {
+    return undefined;
+  }
+}
+
+async function existingModeAsync(filePath: string): Promise<number | undefined> {
+  try {
+    return (await fsp.stat(filePath)).mode & 0o777;
   } catch {
     return undefined;
   }

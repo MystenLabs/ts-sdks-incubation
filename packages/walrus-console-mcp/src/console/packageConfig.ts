@@ -53,11 +53,63 @@ export const MAINNET_PACKAGE_CONFIG: BucketGroupPackageConfig = {
   permissionedGroupPackageId: "0x0000000000000000000000000000000000000000000000000000000000000000",
 };
 
+/**
+ * The COMG-746/761 staging deploy at `api.testnet.patestation.org`.
+ *
+ * COMG-746 is "align with the REPUBLISHED contract": that branch republished
+ * `walrus_console` (harbor `e0a74060`), so the staging API builds its PTBs
+ * against a different `bucket_policy` package and a different registry than the
+ * one production testnet still runs. Both hosts are the testnet *network*, so
+ * network alone cannot tell them apart — hence a host-keyed entry rather than a
+ * change to `TESTNET_PACKAGE_CONFIG`, which would break the default endpoint.
+ *
+ * These four values were read back out of a live reserve from that deployment
+ * (`scripts/probe-746-package-ids.mts`), not copied from a document: the ids in
+ * harbor's `constants.ts` live on the unmerged republish branch, and its main
+ * still carries the production ids below.
+ *
+ * TEMPORARY. When the republish merges and production testnet is upgraded, this
+ * collapses back into `TESTNET_PACKAGE_CONFIG` and this entry is deleted. A
+ * stale entry here does not weaken anything — a wrong package id makes every
+ * signature REFUSE (`txValidation` allowlists exact packages), which is the
+ * direction to fail in.
+ */
+export const STAGING_TESTNET_PACKAGE_CONFIG: BucketGroupPackageConfig = {
+  packageId: "0xea146b35c7998a6da2db993a378058b3dffab71a60317ed2d587aecff6a498c6",
+  originalPackageId: "0xea146b35c7998a6da2db993a378058b3dffab71a60317ed2d587aecff6a498c6",
+  bucketRegistryId: "0xa425e58c5cb70069488301c9e296831ab7cecaa3ac547cabbad7f29dbf0bd83e",
+  // Unchanged by the republish: `permissioned_group` is the sui-groups framework
+  // package, versioned independently of `bucket_policy`.
+  permissionedGroupPackageId: "0xba8a26d42bc8b5e5caf4dac2a0f7544128d5dd9b4614af88eec1311ade11de79",
+};
+
+/** Hosts whose Console API builds PTBs against a non-default package set. */
+const HOST_PACKAGE_CONFIGS: Record<string, BucketGroupPackageConfig> = {
+  "api.testnet.patestation.org": STAGING_TESTNET_PACKAGE_CONFIG,
+};
+
 const PACKAGE_CONFIGS: Record<SuiNetwork, BucketGroupPackageConfig> = {
   testnet: TESTNET_PACKAGE_CONFIG,
   mainnet: MAINNET_PACKAGE_CONFIG,
 };
 
+/**
+ * Public fullnodes, reached over **gRPC**. Every on-chain read in this client
+ * goes through `SuiGrpcClient` — `SealCryptoService`'s (which it also hands to
+ * `SealClient` and `SessionKey.create`, so the SDK's reads ride the same
+ * transport) and `rosterVerification`'s own.
+ *
+ * JSON-RPC is not an alternative here, it is GONE: the same host answers
+ * `sui_getObject` with `-32601 "Method not found. JSON-RPC on public fullnodes
+ * has been deprecated. Please migrate to gRPC or GraphQL endpoints."` Verified
+ * live on 2026-08-22 against testnet; `scripts/probe-sui-transport.mts` re-checks
+ * both halves (gRPC answers, JSON-RPC does not) and is the thing to run if a
+ * chain read ever starts failing in a way that tempts someone to switch back.
+ *
+ * The host:port is the same for both — which is why a JSON-RPC caller fails at
+ * the METHOD rather than at connect, and so reads as a broken query rather than
+ * a wrong transport.
+ */
 const FULLNODE_URLS: Record<SuiNetwork, string> = {
   testnet: "https://fullnode.testnet.sui.io:443",
   mainnet: "https://fullnode.mainnet.sui.io:443",
@@ -81,6 +133,38 @@ export function resolveSuiNetwork(baseUrl: string): SuiNetwork {
 
 export function resolvePackageConfig(network: SuiNetwork): BucketGroupPackageConfig {
   return PACKAGE_CONFIGS[network];
+}
+
+/**
+ * The package set the Console at `baseUrl` actually builds its PTBs against.
+ *
+ * Prefer this over `resolvePackageConfig(resolveSuiNetwork(...))` anywhere the
+ * result is compared against bytes that host returned. Two Console deployments
+ * can sit on the same Sui network and different contract versions — that is the
+ * state during a republish — and network alone cannot distinguish them, so
+ * resolving by network there pins the wrong package and refuses every
+ * signature. Hosts with no entry fall through to their network's config.
+ */
+export function resolvePackageConfigForBaseUrl(baseUrl: string): BucketGroupPackageConfig {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return resolvePackageConfig(resolveSuiNetwork(baseUrl));
+  }
+  // `Object.hasOwn` rather than a bare index. `host` is caller-supplied, and
+  // `HOST_PACKAGE_CONFIGS` is an object literal, so `https://constructor/` would
+  // otherwise resolve through `Object.prototype` and return a FUNCTION where a
+  // package config belongs — the same prototype-chain hole `anchorStore` closes
+  // with a prototype-less map. One guard is enough here because this map has
+  // exactly one reader and is a fixed literal rather than something built from
+  // untrusted input. Unreachable today (the base-URL allowlist filters the host
+  // long before this) and kept anyway: nothing about this function documents
+  // that the allowlist is what makes it safe.
+  const hostConfig = Object.hasOwn(HOST_PACKAGE_CONFIGS, host)
+    ? HOST_PACKAGE_CONFIGS[host]
+    : undefined;
+  return hostConfig ?? resolvePackageConfig(resolveSuiNetwork(baseUrl));
 }
 
 export function resolveFullnodeUrl(network: SuiNetwork): string {

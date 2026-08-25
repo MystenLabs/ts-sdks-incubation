@@ -27,6 +27,8 @@ const TestConfig = Layer.succeed(ConsoleConfigTag, {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.example.test",
+  webAccountAddress: "",
+  keyAdminAddress: "",
 });
 
 const TestLayer = ConsoleApiClient.Default.pipe(
@@ -176,6 +178,50 @@ describe("uploadBucketFile — other failures stay in ConsoleApiError", () => {
     // from server-side rejections by the absent `status` field + generic tag.
     expect((err as { status?: number }).status).toBeUndefined();
     expect(err.message).toMatch(/upload failed/i);
+  });
+});
+
+describe("uploadBucketFile — the error body is bounded (F9)", () => {
+  it("stops reading an oversized error body, cancels it, and bounds the message", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(body, { status: 500 }));
+
+    const err = (await runUpload("ok.txt")) as { _tag: string; message: string };
+    expect(err._tag).toBe("ConsoleApiError");
+    expect(err.message.length).toBeLessThan(70_000);
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(200);
+  });
+});
+
+describe("uploadBucketFile — a 202 whose body cannot be read (F8)", () => {
+  it("reports the upload as ACCEPTED and points to list_files/get_file_status, not a re-upload", async () => {
+    // 202 = accepted; an unreadable body is not an upload failure. The message
+    // must not read like one, or an agent re-uploads and duplicates the file.
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response("<html>not json</html>", {
+        status: 202,
+        headers: { "content-type": "text/html" },
+      }),
+    );
+
+    const err = (await runUpload("report.pdf")) as { _tag: string; message: string };
+    expect(err._tag).toBe("ConsoleApiError");
+    expect(err.message).toMatch(/accepted/i);
+    expect(err.message).toMatch(/list_files/);
+    expect(err.message).toMatch(/get_file_status/);
+    // The old, misleading wording is gone.
+    expect(err.message).not.toMatch(/failed to parse/i);
   });
 });
 

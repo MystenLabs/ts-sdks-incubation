@@ -74,6 +74,56 @@ export class SealProxyError extends Data.TaggedError("SealProxyError")<{
   readonly code: string;
 }> {}
 
+/**
+ * A create-bucket refusal about the caller's own IDENTITY PINS, raised either
+ * side of the reserve but always BEFORE anything is signed.
+ *
+ * Separate from `SealCryptoError` because the remedy is completely different:
+ * nothing here is a crypto or transaction problem, and an agent told to "check
+ * your service key" when the real defect is an unset
+ * `CONSOLE_WEB_ACCOUNT_ADDRESS` will retry the wrong fix forever.
+ *
+ * - `missing_owner_pin` — no owner address is configured, so the `add_owner`
+ *   call in the reserve could never be checked against anything. Refused before
+ *   the reserve, so no half-created bucket is left behind.
+ * - `owner_echo_mismatch` / `admin_echo_mismatch` — the reserve response echoed
+ *   back an owner / Key-Admin that is not the one we pinned. These are
+ *   DIAGNOSTICS, not the security boundary: the boundary is `txValidation`'s
+ *   walk of the signed bytes, which does not consult the echo at all. They exist
+ *   so "the server ignored the pin I sent" reads as itself instead of surfacing
+ *   later as a mysterious refusal to sign.
+ * - `group_id_underivable` — the object id of the group the transaction creates
+ *   could not be computed locally, so there is no trustworthy value to cache as
+ *   the space's anchor. Raised BEFORE finalize.
+ * - `group_id_mismatch` — the locally derived group id and the one the server
+ *   reported disagree. Unlike the two echoes, this one is NOT merely diagnostic
+ *   in effect: the anchor decides who a later create may grant access to, so the
+ *   derived value is authoritative and a disagreement refuses rather than
+ *   resolving. Raised after finalize, so the bucket exists; the message says so
+ *   and names `finalized.bucket_id` so the orphan is findable.
+ * - `bucket_id_arg_mismatch` — the BCS `bucket_id` in the validated PTB does
+ *   not match the reserve's id. Raised BEFORE finalize; nothing was submitted.
+ * - `bucket_id_mismatch` — finalize reported a different bucket id than the
+ *   reserve. Raised after finalize; the message names both so the orphan is
+ *   findable.
+ * - `anchor_id_mismatch` — a stored anchor's group id does not reproduce from
+ *   its recorded bucket id and creator. Raised before the reserve, so nothing
+ *   is created; the operator deletes `anchors.json` (or restores a file this
+ *   client wrote) and the next create bootstraps.
+ */
+export class BucketCreatePinError extends Data.TaggedError("BucketCreatePinError")<{
+  readonly message: string;
+  readonly reason:
+    | "missing_owner_pin"
+    | "owner_echo_mismatch"
+    | "admin_echo_mismatch"
+    | "group_id_underivable"
+    | "group_id_mismatch"
+    | "bucket_id_arg_mismatch"
+    | "bucket_id_mismatch"
+    | "anchor_id_mismatch";
+}> {}
+
 /** Raised when a mint is attempted without a configured Key-Admin credential. */
 export class AdminCredentialMissingError extends Data.TaggedError("AdminCredentialMissingError")<{
   readonly message: string;

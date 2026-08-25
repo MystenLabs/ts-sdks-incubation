@@ -31,6 +31,18 @@ export const SECRET_ENV_VARS = [
   // Present on hosts that also mint keys (Key-Admin). Harmless to list when unset.
   "CONSOLE_ADMIN_KEY",
   "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY",
+  // The one-time provisioning bundle: it carries a live API key AND its signer
+  // secret in one string, so the whole value is a secret. Registering it does
+  // NOT cover the two credentials inside it — redaction matches whole registered
+  // values inside output, not the other way round — so `parseCredentialBundle`'s
+  // callers register those separately before probing (see src/credentials.ts).
+  //
+  // The two ADDRESS env vars (CONSOLE_WEB_ACCOUNT_ADDRESS /
+  // CONSOLE_KEY_ADMIN_ADDRESS) are deliberately NOT listed. They are public
+  // trust anchors, and registering one would scrub the owner address out of the
+  // create_bucket disclosure — the field that exists to show a human which
+  // account was actually granted the bucket.
+  "CONSOLE_CREDENTIAL_BUNDLE",
 ] as const;
 
 /**

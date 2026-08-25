@@ -78,13 +78,22 @@
       "name": "ping_console",
       "description": "Check whether required Console credentials are present."
     },
-    { "name": "list_spaces", "description": "List your Personal and Team spaces." },
+    {
+      "name": "list_spaces",
+      "description": "List your Personal and Team spaces."
+    },
     {
       "name": "get_storage_usage",
       "description": "Get aggregated storage usage for your active Console space."
     },
-    { "name": "list_buckets", "description": "List buckets in a space." },
-    { "name": "create_bucket", "description": "Create a new Seal-encrypted bucket." },
+    {
+      "name": "list_buckets",
+      "description": "List buckets in a space."
+    },
+    {
+      "name": "create_bucket",
+      "description": "Create a new Seal-encrypted bucket. Refuses unless a bucket-owner Sui address is pinned locally (CONSOLE_WEB_ACCOUNT_ADDRESS or the config file). Returns identity.owner and identity.members — who the signed transaction makes the owner and which addresses it grants access to — plus disclosure, one sentence on who can read the bucket and on what evidence; show it and confirm the roster before uploading sensitive data. There is no top-level members field."
+    },
     {
       "name": "generate_api_key",
       "description": "Mint a new Console working API key headlessly using the Key-Admin credential."
@@ -93,15 +102,45 @@
       "name": "upload_file",
       "description": "Read a local file, encrypt it with Seal, and upload it."
     },
-    { "name": "download_file", "description": "Download a file, decrypt it, and save it locally." },
-    { "name": "list_files", "description": "List files inside a specific bucket." },
+    {
+      "name": "download_file",
+      "description": "Download a file, decrypt it, and save it locally."
+    },
+    {
+      "name": "list_files",
+      "description": "List files inside a specific bucket."
+    },
     {
       "name": "get_file_status",
       "description": "Check the processing state of an in-flight upload."
     },
-    { "name": "get_bucket", "description": "Fetch a single bucket's metadata." },
-    { "name": "rename_bucket", "description": "Rename a bucket." },
-    { "name": "delete_bucket", "description": "Permanently delete a bucket and all its files." },
-    { "name": "delete_file", "description": "Permanently delete a single file from a bucket." }
+    {
+      "name": "get_bucket",
+      "description": "Fetch a single bucket's metadata."
+    },
+    {
+      "name": "rename_bucket",
+      "description": "Rename a bucket."
+    },
+    {
+      "name": "delete_bucket",
+      "description": "Permanently delete a bucket and all its files."
+    },
+    {
+      "name": "delete_file",
+      "description": "Permanently delete a single file from a bucket."
+    },
+    {
+      "name": "update_file",
+      "description": "Rename a file or edit its description and tags."
+    },
+    {
+      "name": "get_bucket_metadata",
+      "description": "Read a bucket's description and tags."
+    },
+    {
+      "name": "update_bucket_metadata",
+      "description": "Edit a bucket's description and tags."
+    }
   ]
 }

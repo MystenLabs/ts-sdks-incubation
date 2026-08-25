@@ -1,11 +1,13 @@
 import { Effect, Layer, Redacted } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { type ConsoleConfig, ConsoleConfigTag, hasAdminCredential } from "../src/config";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
 import { ConsoleApiError, ConsoleAuthError } from "../src/console/errors";
 import {
   type GenerateApiKeyOutcome,
   KeyAdminService,
+  MAX_API_KEY_LABEL_LENGTH,
+  MAX_API_KEY_NAME_LENGTH,
   pollUntilActive,
 } from "../src/console/KeyAdminService";
 import { SealCryptoService } from "../src/console/SealCryptoService";
@@ -20,6 +22,8 @@ function makeConfig(
     adminKey: Redacted.make(over.adminKey ?? ""),
     adminServicePrivateKey: Redacted.make(over.adminServicePrivateKey ?? ""),
     baseUrl: "https://api.testnet.console.walrus.xyz",
+    webAccountAddress: "",
+    keyAdminAddress: "",
   } satisfies ConsoleConfig;
 }
 
@@ -220,7 +224,7 @@ function mintHarness(over: {
 
   const stubSeal = {
     generateChildKeypair: () => Effect.succeed(CHILD),
-    signTransactionBytes: () => Effect.succeed("c2lnbmF0dXJl"),
+    signTransactionBytes: () => Effect.succeed({ signature: "c2lnbmF0dXJl" }),
   } as unknown as SealCryptoService;
 
   return KeyAdminService.DefaultWithoutDependencies.pipe(
@@ -264,6 +268,116 @@ describe("generateApiKey — a successful mint", () => {
     expect(outcome.credential.privateKey).toBe("suiprivkey1child");
     expect(outcome.credential.keyId).toBe("key_1");
     expect(outcome.credential.privateBuckets).toEqual([{ bucketId: "b1", groupId: "g1" }]);
+  });
+});
+
+describe("generateApiKey — lost-response mitigation (F7)", () => {
+  it("embeds a unique marker in the mint name and logs a pre-mint breadcrumb", async () => {
+    // If createApiKey's 201 is lost after the key is created, the marker is the
+    // only way an operator finds the orphan (there is no list/revoke API). This
+    // does not make the mint idempotent — it makes a lost key findable.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let capturedName: string | undefined;
+
+    const stubApi = {
+      createApiKey: (a: { name?: string }) => {
+        capturedName = a.name;
+        return Effect.succeed(MINTED);
+      },
+      sponsorGrantBucketAccess: () => Effect.succeed({ bytes: "AAAA", digest: "0xdigest" }),
+      executeSponsored: () => Effect.succeed({ digest: "0xdigest" }),
+      getApiKeyStatus: () => Effect.succeed({ data: { status: "active" as const } }),
+    } as unknown as ConsoleApiClient;
+
+    const stubSeal = {
+      generateChildKeypair: () => Effect.succeed(CHILD),
+      signTransactionBytes: () => Effect.succeed({ signature: "c2lnbmF0dXJl" }),
+    } as unknown as SealCryptoService;
+
+    const layer = KeyAdminService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, stubApi),
+          Layer.succeed(SealCryptoService, stubSeal),
+          Layer.succeed(
+            ConsoleConfigTag,
+            makeConfig({ adminKey: "hbradm_x", adminServicePrivateKey: "suiprivkey1a" }),
+          ),
+        ),
+      ),
+    );
+
+    await mint(layer);
+
+    expect(capturedName).toMatch(/mcp-mint-/);
+    const marker = capturedName?.match(/mcp-mint-[0-9a-f-]+/)?.[0];
+    expect(marker).toBeTruthy();
+    // The breadcrumb names the same marker, so a lost mint is traceable.
+    expect(spy.mock.calls.flat().join(" ")).toContain(marker as string);
+  });
+
+  /**
+   * Console caps the stored `name` at 64 and rejects a longer one with a bare
+   * 400 — which surfaced as an unexplained mint failure, found by the COMG-761
+   * e2e rather than by a test. The label is the operator's convenience; the
+   * marker is the only handle on a key whose 201 was lost. So when something
+   * has to give, it is the label.
+   */
+  it("keeps a long label from pushing the mint name past Console's limit", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let capturedName: string | undefined;
+
+    const stubApi = {
+      createApiKey: (a: { name?: string }) => {
+        capturedName = a.name;
+        return Effect.succeed(MINTED);
+      },
+      sponsorGrantBucketAccess: () => Effect.succeed({ bytes: "AAAA", digest: "0xdigest" }),
+      executeSponsored: () => Effect.succeed({ digest: "0xdigest" }),
+      getApiKeyStatus: () => Effect.succeed({ data: { status: "active" as const } }),
+    } as unknown as ConsoleApiClient;
+
+    const stubSeal = {
+      generateChildKeypair: () => Effect.succeed(CHILD),
+      signTransactionBytes: () => Effect.succeed({ signature: "c2lnbmF0dXJl" }),
+    } as unknown as SealCryptoService;
+
+    const layer = KeyAdminService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, stubApi),
+          Layer.succeed(SealCryptoService, stubSeal),
+          Layer.succeed(
+            ConsoleConfigTag,
+            makeConfig({ adminKey: "hbradm_x", adminServicePrivateKey: "suiprivkey1a" }),
+          ),
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const keyAdmin = yield* KeyAdminService;
+        return yield* keyAdmin.generateApiKey({
+          spaceId: "sp_1",
+          permission: "read_only",
+          label: "x".repeat(200),
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(capturedName).toBeTruthy();
+    expect((capturedName as string).length).toBeLessThanOrEqual(MAX_API_KEY_NAME_LENGTH);
+    // The marker survives the clamp — it is the tail, and it is the recovery handle.
+    expect(capturedName).toMatch(/mcp-mint-[0-9a-f]{12}\]$/);
+    expect(spy.mock.calls.flat().join(" ")).toContain("mcp-mint-");
+  });
+
+  it("advertises a label limit the server will actually accept", () => {
+    // An advertised maximum the API refuses is worse than a smaller honest one:
+    // the tool's schema previously said 64 while ~19 was the real ceiling.
+    const longestName = `${"x".repeat(MAX_API_KEY_LABEL_LENGTH)} [mcp-mint-123456789012]`;
+    expect(longestName.length).toBe(MAX_API_KEY_NAME_LENGTH);
   });
 });
 
@@ -359,7 +473,7 @@ describe("generateApiKey — pre-mint failures still fail", () => {
 
     const stubSeal = {
       generateChildKeypair: () => Effect.succeed(CHILD),
-      signTransactionBytes: () => Effect.succeed("c2lnbmF0dXJl"),
+      signTransactionBytes: () => Effect.succeed({ signature: "c2lnbmF0dXJl" }),
     } as unknown as SealCryptoService;
 
     const layer = KeyAdminService.DefaultWithoutDependencies.pipe(

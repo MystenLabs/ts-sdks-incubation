@@ -66,3 +66,93 @@ describe("ConsoleConfig — management key from the config file", () => {
     expect(mod.getRawAdminKey(cfg)).toBe("hbradm_from_env");
   });
 });
+
+describe("ConsoleConfig — corrupt config file at startup (review #5)", () => {
+  it("does not crash module load; falls back to env credentials", async () => {
+    // config.ts reads the file at module-load time. A corrupt file must not take
+    // down a server that is correctly configured through the environment — the
+    // read is caught loudly and falls back to env creds.
+    const dir = path.join(tmpDir, "walrus-console-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not json", "utf-8");
+    process.env = { ...process.env, CONSOLE_API_KEY: "hbr_env_only" };
+
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    vi.resetModules();
+    const mod = await import("../src/config.js"); // must not throw at import
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect(mod.getRawApiKey(cfg)).toBe("hbr_env_only");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe("ConsoleConfig — mismatched credential source (review #6)", () => {
+  it("suppresses a file signer when the working bearer comes from env", async () => {
+    // An env-supplied bearer paired with a file-supplied signer is almost
+    // certainly a mismatched pair (the env key is not the one the file was saved
+    // for). Suppress the file signer to "" and warn, rather than sign with it.
+    process.env = { ...process.env, CONSOLE_API_KEY: "hbr_env_bearer" };
+    const mod = await loadConfigModuleWith({
+      apiKey: "hbr_file_bearer",
+      servicePrivateKey: "suiprivkey1_file_signer",
+    });
+
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect(mod.getRawApiKey(cfg)).toBe("hbr_env_bearer");
+    expect(mod.getRawServiceKey(cfg)).toBe("");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("CONSOLE_SERVICE_PRIVATE_KEY"));
+    warn.mockRestore();
+  });
+
+  it("suppresses a file admin signer when the admin bearer comes from env", async () => {
+    process.env = { ...process.env, CONSOLE_ADMIN_KEY: "hbradm_env_bearer" };
+    const mod = await loadConfigModuleWith({
+      adminKey: "hbradm_file_bearer",
+      adminServicePrivateKey: "suiprivkey1_file_admin_signer",
+    });
+
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect(mod.getRawAdminKey(cfg)).toBe("hbradm_env_bearer");
+    expect(mod.getRawAdminServiceKey(cfg)).toBe("");
+    expect(mod.hasAdminCredential(cfg)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY"));
+    warn.mockRestore();
+  });
+
+  it("keeps a file signer when its bearer also comes from the file", async () => {
+    // No env bearer → no mismatch → the saved pair resolves intact.
+    const mod = await loadConfigModuleWith({
+      apiKey: "hbr_file_bearer",
+      servicePrivateKey: "suiprivkey1_file_signer",
+    });
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect(mod.getRawApiKey(cfg)).toBe("hbr_file_bearer");
+    expect(mod.getRawServiceKey(cfg)).toBe("suiprivkey1_file_signer");
+  });
+
+  it("suppresses a file BEARER when only the signer comes from env (bug_003 mirror)", async () => {
+    // The mirror of the first case: a saved bearer paired with an env-only signer
+    // is equally a mismatch. Drop the file bearer to "" and warn, rather than
+    // pairing it with an unrelated env signer.
+    process.env = { ...process.env, CONSOLE_SERVICE_PRIVATE_KEY: "suiprivkey1_env_signer" };
+    const mod = await loadConfigModuleWith({
+      apiKey: "hbr_file_bearer",
+      servicePrivateKey: "suiprivkey1_file_signer",
+    });
+
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect(mod.getRawServiceKey(cfg)).toBe("suiprivkey1_env_signer");
+    expect(mod.getRawApiKey(cfg)).toBe("");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("CONSOLE_API_KEY"));
+    warn.mockRestore();
+  });
+});

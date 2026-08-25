@@ -56,6 +56,8 @@ function makeConfig(baseUrl: string): ConsoleConfig {
     adminKey: Redacted.make("hbradm_x"),
     adminServicePrivateKey: Redacted.make(""),
     baseUrl,
+    webAccountAddress: "",
+    keyAdminAddress: "",
   } satisfies ConsoleConfig;
 }
 

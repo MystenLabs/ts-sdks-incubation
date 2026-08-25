@@ -9,6 +9,7 @@ import {
   registerConfigFileSecrets,
   registerSecret,
   registerSecretsFromEnv,
+  SECRET_ENV_VARS,
 } from "../src/redaction.js";
 
 // Realistic-shaped fakes — never real credentials, just long enough to register.
@@ -173,5 +174,68 @@ describe("registerConfigFileSecrets", () => {
 
   it("tolerates an empty config object", () => {
     expect(() => registerConfigFileSecrets({})).not.toThrow();
+  });
+});
+
+// The two Sui-address config pins (webAccountAddress/keyAdminAddress) are new,
+// non-secret trust anchors — unlike the other ConfigFileData fields above, they
+// must NOT be scrubbed from tool output or logs, since an operator needs to be
+// able to see what they are pinned to.
+describe("address pins are not registered as secrets", () => {
+  const WEB_ACCOUNT_ADDRESS = `0x${"4".repeat(64)}`;
+  const KEY_ADMIN_ADDRESS = `0x${"5".repeat(64)}`;
+
+  it("SECRET_ENV_VARS does not include the address pin env vars", () => {
+    expect(SECRET_ENV_VARS).not.toContain("CONSOLE_WEB_ACCOUNT_ADDRESS");
+    expect(SECRET_ENV_VARS).not.toContain("CONSOLE_KEY_ADMIN_ADDRESS");
+  });
+
+  it("registerConfigFileSecrets does not scrub webAccountAddress or keyAdminAddress", () => {
+    registerConfigFileSecrets({
+      webAccountAddress: WEB_ACCOUNT_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+    const text = `web=${WEB_ACCOUNT_ADDRESS} admin=${KEY_ADMIN_ADDRESS}`;
+    expect(redactString(text)).toBe(text);
+  });
+});
+
+// The one-time CONSOLE_CREDENTIAL_BUNDLE carries a live API key AND its signer
+// secret in one string, so the whole value is a secret — while the two addresses
+// it also carries are not.
+describe("CONSOLE_CREDENTIAL_BUNDLE", () => {
+  const OWNER_ADDRESS = `0x${"6".repeat(64)}`;
+  const KEY_ADMIN_ADDRESS = `0x${"7".repeat(64)}`;
+  const BUNDLE = JSON.stringify({
+    v: 1,
+    apiKey: API_KEY,
+    servicePrivateKey: SERVICE_KEY,
+    webAccountAddress: OWNER_ADDRESS,
+    keyAdminAddress: KEY_ADMIN_ADDRESS,
+  });
+
+  it("is a registered secret env var", () => {
+    expect(SECRET_ENV_VARS).toContain("CONSOLE_CREDENTIAL_BUNDLE");
+  });
+
+  it("redacts a bundle supplied through the environment", () => {
+    registerSecretsFromEnv({ CONSOLE_CREDENTIAL_BUNDLE: BUNDLE } as NodeJS.ProcessEnv);
+    expect(redactString(`bundle=${BUNDLE}`)).toBe(`bundle=${REDACTION_PLACEHOLDER}`);
+  });
+
+  // Both directions in one assertion: the bundle string is scrubbed, and the
+  // addresses it happens to contain still print on their own. If an address were
+  // ever registered as a secret, the second half of this fails — and the
+  // create_bucket disclosure would show «redacted» where the owner should be.
+  it("scrubs the bundle without scrubbing the addresses it carries", () => {
+    registerSecretsFromEnv({
+      CONSOLE_CREDENTIAL_BUNDLE: BUNDLE,
+      CONSOLE_WEB_ACCOUNT_ADDRESS: OWNER_ADDRESS,
+      CONSOLE_KEY_ADMIN_ADDRESS: KEY_ADMIN_ADDRESS,
+    } as NodeJS.ProcessEnv);
+
+    expect(redactString(`bundle=${BUNDLE}`)).not.toContain(API_KEY);
+    const disclosure = `owner=${OWNER_ADDRESS} manager=${KEY_ADMIN_ADDRESS}`;
+    expect(redactString(disclosure)).toBe(disclosure);
   });
 });

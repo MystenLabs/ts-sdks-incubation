@@ -66,6 +66,8 @@ const TestConfig = Layer.succeed(ConsoleConfigTag, {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.example.test",
+  webAccountAddress: "",
+  keyAdminAddress: "",
 });
 
 /** A fresh layer per test, so every run starts with a genuinely cold cache. */

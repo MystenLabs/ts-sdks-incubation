@@ -14,7 +14,11 @@ import {
 } from "../config";
 import { SealIdentity, type SealIdentityInput } from "./constants";
 import { SealCryptoError } from "./errors";
-import { resolveFullnodeUrl, resolvePackageConfig, resolveSuiNetwork } from "./packageConfig";
+import {
+  resolveFullnodeUrl,
+  resolvePackageConfigForBaseUrl,
+  resolveSuiNetwork,
+} from "./packageConfig";
 import { interpretSealProxyFailure, resolveSealConfig } from "./seal-config";
 import { buildSealApproveTransaction } from "./sealApprove";
 import { assertExpectedTransaction, type SponsoredTxExpectation } from "./txValidation";
@@ -203,7 +207,10 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
     // The network follows the Console API the MCP is pointed at, so the on-chain
     // identifiers can never disagree with the backend serving the buckets.
     const network = resolveSuiNetwork(config.baseUrl);
-    const packageConfig = resolvePackageConfig(network);
+    // By BASE URL, not by network: two Console deploys can share a Sui network
+    // and run different contract versions (a republish window), and these ids
+    // are compared against bytes that host returned.
+    const packageConfig = resolvePackageConfigForBaseUrl(config.baseUrl);
 
     // SuiGrpcClient + SealClient are stateless config holders (no network I/O until a
     // call is made), so build them once per runtime instead of per encrypt/decrypt. The
@@ -421,16 +428,35 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
     ) {
       const keypair = yield* getKeypair(source);
 
+      // The create-bucket PTB hands management to the Key-Admin (manager) address.
+      // Resolve it locally through the SAME generator as the signer, tolerating
+      // absence: a host with no admin key configured leaves this undefined.
+      //
+      // This locally-DERIVED address is the FALLBACK BENEATH the caller's config
+      // pin, never a competitor to it: `resolveManager` in txValidation prefers
+      // the pin, REFUSES when pin and derived address disagree (one of them is
+      // stale and we cannot tell which), and fails closed on a `grant_permission`
+      // it can check against neither. `getKeypair` does no I/O, so this is cheap
+      // even on the grant flow, where the manager is not consulted at all.
+      const managerAddress = yield* getKeypair("admin").pipe(
+        Effect.either,
+        Effect.map((either) => (either._tag === "Right" ? either.right.toSuiAddress() : undefined)),
+      );
+
       // Validated against the address that is ABOUT TO SIGN, read from the keypair
       // rather than passed in: a caller-supplied sender could be made to agree with
-      // a forged transaction, which would check nothing.
-      yield* Effect.try({
+      // a forged transaction, which would check nothing. For a create-bucket
+      // reserve the validator returns a summary of the identities the PTB grants
+      // (owner, roster, the signing key's remaining scope, the manager) so the
+      // caller can disclose them.
+      const { create } = yield* Effect.try({
         try: () =>
           assertExpectedTransaction(
             bytesBase64,
             keypair.toSuiAddress(),
             expectation,
             packageConfig,
+            managerAddress,
           ),
         catch: (cause) =>
           new SealCryptoError({
@@ -449,7 +475,13 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
             step: "sign",
           }),
       });
-      return signature; // base64 string ready for /finalize
+      // `signature` is base64, ready for /finalize. `create` is the validator's
+      // WHOLE summary — owner, roster, the signing key's remaining scope and the
+      // manager — passed through rather than reduced to its roster half: a caller
+      // that can only see `members` cannot disclose who ended up owning the
+      // bucket or who was handed group management. It is `undefined` for the
+      // grant flow, which validates a PTB that grants none of those.
+      return { signature, create };
     });
 
     return {

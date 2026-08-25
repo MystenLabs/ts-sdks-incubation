@@ -7,6 +7,7 @@ import {
   getConfigDir,
   getConfigFilePath,
   loadConfigFile,
+  loadConfigFileOrEmpty,
   mergeConfigFile,
   saveConfigFile,
 } from "../src/configFile.js";
@@ -47,12 +48,35 @@ describe("loadConfigFile", () => {
     expect(result).toEqual({});
   });
 
-  it("returns empty object when file contains invalid JSON", () => {
+  it("throws a path-named error when the file contains invalid JSON", () => {
+    // A parse failure must NOT resolve to {}: the write path merges over the
+    // result, so a phantom empty object would silently wipe every saved
+    // credential the corrupt file still holds. Refuse loudly instead.
     const dir = getConfigDir();
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "config.json"), "not json", "utf-8");
-    const result = loadConfigFile();
-    expect(result).toEqual({});
+    expect(() => loadConfigFile()).toThrow(/could not be parsed/i);
+    expect(() => loadConfigFile()).toThrow(getConfigFilePath());
+  });
+
+  it("throws a path-named error when the file cannot be read (non-ENOENT)", () => {
+    // Put a *directory* where the config file belongs so readFileSync fails with
+    // EISDIR — a non-ENOENT read error on every platform, no chmod/root games.
+    const dir = getConfigDir();
+    fs.mkdirSync(path.join(dir, "config.json"), { recursive: true });
+    expect(() => loadConfigFile()).toThrow(/could not be read/i);
+    expect(() => loadConfigFile()).toThrow(getConfigFilePath());
+  });
+
+  it("loadConfigFileOrEmpty returns {} on a corrupt file instead of throwing (review bug_002)", () => {
+    // The read-only boot and redaction-wiring paths, and the install/config repair
+    // commands, must not be taken down by a corrupt file — they use the safe
+    // wrapper, which warns and falls back to {} so env credentials still apply.
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not json", "utf-8");
+    expect(() => loadConfigFile()).toThrow(); // the fail-stop reader still throws
+    expect(loadConfigFileOrEmpty()).toEqual({}); // the safe wrapper does not
   });
 
   it("ignores non-string fields", () => {
@@ -113,9 +137,13 @@ describe("saveConfigFile", () => {
 
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = JSON.parse(raw);
+    expect(parsed.v).toBe(1);
     expect(parsed.apiKey).toBe("hbr_test123");
     expect(parsed.servicePrivateKey).toBe("suiprivkey1_abc");
     expect(parsed.baseUrl).toBe("https://api.testnet.console.walrus.xyz");
+    // One JSON value plus the trailing newline — pasteable into the one-line installer prompt.
+    expect(raw.endsWith("\n")).toBe(true);
+    expect(raw.trimEnd().includes("\n")).toBe(false);
   });
 
   it("overwrites existing config file", () => {
@@ -161,6 +189,79 @@ describe("management key fields", () => {
     const loaded = loadConfigFile();
     expect(loaded.adminKey).toBeUndefined();
     expect(loaded.adminServicePrivateKey).toBeUndefined();
+  });
+});
+
+describe("address pin fields", () => {
+  const WEB_ACCOUNT_ADDRESS = `0x${"a".repeat(64)}`;
+  const KEY_ADMIN_ADDRESS = `0x${"b".repeat(64)}`;
+
+  it("round-trips webAccountAddress and keyAdminAddress", () => {
+    saveConfigFile({ webAccountAddress: WEB_ACCOUNT_ADDRESS, keyAdminAddress: KEY_ADMIN_ADDRESS });
+    const loaded = loadConfigFile();
+    expect(loaded.webAccountAddress).toBe(WEB_ACCOUNT_ADDRESS);
+    expect(loaded.keyAdminAddress).toBe(KEY_ADMIN_ADDRESS);
+  });
+
+  it("ignores a non-address webAccountAddress on load", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ webAccountAddress: "not-an-address" }),
+      "utf-8",
+    );
+    expect(loadConfigFile().webAccountAddress).toBeUndefined();
+  });
+
+  // Symmetric guard on the second address field — same isValidSuiAddress check,
+  // exercised on the other property so both trust anchors are covered.
+  it("ignores a non-address keyAdminAddress on load", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ keyAdminAddress: "0xnothex" }),
+      "utf-8",
+    );
+    expect(loadConfigFile().keyAdminAddress).toBeUndefined();
+  });
+});
+
+describe("allowedDirs field", () => {
+  it("round-trips a list of absolute directories", () => {
+    saveConfigFile({ allowedDirs: [tmpDir, path.join(tmpDir, "nested")] });
+    expect(loadConfigFile().allowedDirs).toEqual([tmpDir, path.join(tmpDir, "nested")]);
+  });
+
+  it("ignores a non-array allowedDirs", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ allowedDirs: "/not/an/array" }),
+      "utf-8",
+    );
+    expect(loadConfigFile().allowedDirs).toBeUndefined();
+  });
+
+  it("drops non-strings and blanks, and omits an empty result", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ allowedDirs: [tmpDir, 12, "  ", "", { x: 1 }] }),
+      "utf-8",
+    );
+    expect(loadConfigFile().allowedDirs).toEqual([tmpDir]);
+  });
+
+  it("mergeConfigFile can set allowedDirs without clobbering credentials", () => {
+    saveConfigFile({ apiKey: "hbr_keep" });
+    mergeConfigFile({ allowedDirs: [tmpDir] });
+    const loaded = loadConfigFile();
+    expect(loaded.apiKey).toBe("hbr_keep");
+    expect(loaded.allowedDirs).toEqual([tmpDir]);
   });
 });
 

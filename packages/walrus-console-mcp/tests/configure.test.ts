@@ -5,9 +5,25 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runConfigure } from "../bin/configure.js";
 import { loadConfigFile, saveConfigFile } from "../src/configFile.js";
+import { toRealPath } from "../src/pathSandbox.js";
 
 /** A real, decodable signer — validateSilent now actually decodes the value. */
 const VALID_SIGNER = Ed25519Keypair.generate().getSecretKey();
+
+const OWNER_ADDRESS = `0x${"a".repeat(64)}`;
+const KEY_ADMIN_ADDRESS = `0x${"b".repeat(64)}`;
+const STALE_ADDRESS = `0x${"9".repeat(64)}`;
+const BUNDLE_API_KEY = "hbr_bundle_key_value";
+
+const bundleJson = (overrides: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    v: 1,
+    apiKey: BUNDLE_API_KEY,
+    servicePrivateKey: VALID_SIGNER,
+    webAccountAddress: OWNER_ADDRESS,
+    keyAdminAddress: KEY_ADMIN_ADDRESS,
+    ...overrides,
+  });
 
 let tmpDir: string;
 let originalEnv: NodeJS.ProcessEnv;
@@ -93,6 +109,26 @@ describe("runConfigure — silent mode", () => {
     expect(await runConfigure(["--silent"])).toBe(1);
   });
 
+  it("persists --allowed-dirs without credentials and leaves existing keys", async () => {
+    saveConfigFile({ apiKey: "hbr_existing" });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-cfg-dirs-"));
+    try {
+      const code = await runConfigure(["--allowed-dirs", dir]);
+      expect(code).toBe(0);
+      const saved = loadConfigFile();
+      expect(saved.apiKey).toBe("hbr_existing");
+      expect(saved.allowedDirs).toEqual([toRealPath(dir)]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 1 for a missing --allowed-dirs path", async () => {
+    const code = await runConfigure(["--allowed-dirs", path.join(tmpDir, "missing")]);
+    expect(code).toBe(1);
+    expect(loadConfigFile()).toEqual({});
+  });
+
   it("persists a non-default CONSOLE_API_BASE_URL alongside the saved credentials", async () => {
     process.env = {
       ...process.env,
@@ -117,5 +153,185 @@ describe("runConfigure — silent mode", () => {
     ]);
     expect(code).toBe(0);
     expect(loadConfigFile().baseUrl).toBeUndefined();
+  });
+});
+
+describe("runConfigure — silent mode, credential bundle", () => {
+  // A working key is verified by a 2xx on the data plane (the suite-wide 404
+  // stub is the management-probe signal, which a working key never gets).
+  beforeEach(() => {
+    vi.stubGlobal("fetch", async () => new Response("", { status: 200 }));
+  });
+
+  it("writes all four fields from one bundle", async () => {
+    const code = await runConfigure(["--credential-bundle", bundleJson()]);
+
+    expect(code).toBe(0);
+    expect(loadConfigFile()).toMatchObject({
+      apiKey: BUNDLE_API_KEY,
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+  });
+
+  it("reads CONSOLE_CREDENTIAL_BUNDLE under --silent", async () => {
+    process.env = { ...process.env, CONSOLE_CREDENTIAL_BUNDLE: bundleJson() };
+
+    const code = await runConfigure(["--silent"]);
+
+    expect(code).toBe(0);
+    expect(loadConfigFile().webAccountAddress).toBe(OWNER_ADDRESS);
+  });
+
+  it("returns 1 and writes nothing for a malformed bundle", async () => {
+    const code = await runConfigure(["--credential-bundle", "definitely not json"]);
+
+    expect(code).toBe(1);
+    expect(loadConfigFile()).toEqual({});
+  });
+
+  it("returns 1 and writes nothing when the bundle's key is rejected", async () => {
+    vi.stubGlobal("fetch", async () => new Response("", { status: 401 }));
+
+    const code = await runConfigure(["--credential-bundle", bundleJson()]);
+
+    expect(code).toBe(1);
+    expect(loadConfigFile()).toEqual({});
+  });
+
+  it("clears a stale owner pin the bundle carries as null", async () => {
+    saveConfigFile({ webAccountAddress: STALE_ADDRESS, keyAdminAddress: KEY_ADMIN_ADDRESS });
+
+    const code = await runConfigure([
+      "--credential-bundle",
+      bundleJson({ webAccountAddress: null }),
+    ]);
+
+    expect(code).toBe(0);
+    const saved = loadConfigFile();
+    expect(saved.webAccountAddress).toBeUndefined();
+    expect(saved.keyAdminAddress).toBe(KEY_ADMIN_ADDRESS);
+  });
+
+  // The entry point must actually PRINT the warning the validator returns —
+  // otherwise a scripted install reports success and produces a config where
+  // every create_bucket refuses.
+  it("prints the owner warning on a silent --api-key install with no pin", async () => {
+    const written: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+
+    const savedEnv = process.env["CONSOLE_WEB_ACCOUNT_ADDRESS"];
+    delete process.env["CONSOLE_WEB_ACCOUNT_ADDRESS"];
+
+    let code: number;
+    try {
+      code = await runConfigure(["--api-key", "hbr_working_key_value"]);
+    } finally {
+      process.stdout.write = original;
+      if (savedEnv === undefined) delete process.env["CONSOLE_WEB_ACCOUNT_ADDRESS"];
+      else process.env["CONSOLE_WEB_ACCOUNT_ADDRESS"] = savedEnv;
+    }
+
+    expect(code).toBe(0);
+    const out = written.join("");
+    expect(out).toContain("Credentials saved");
+    expect(out).toContain("create_bucket will REFUSE");
+    expect(out).toContain("CONSOLE_WEB_ACCOUNT_ADDRESS");
+  });
+
+  it("stays silent on --api-key when CONSOLE_WEB_ACCOUNT_ADDRESS is already set", async () => {
+    process.env["CONSOLE_WEB_ACCOUNT_ADDRESS"] = OWNER_ADDRESS;
+    const written: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+
+    let code: number;
+    try {
+      code = await runConfigure(["--api-key", "hbr_working_key_value"]);
+    } finally {
+      process.stdout.write = original;
+    }
+
+    expect(code).toBe(0);
+    expect(written.join("")).not.toContain("create_bucket will REFUSE");
+  });
+
+  it("prints the owner warning alongside the saved line when the bundle has no owner", async () => {
+    const written: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+
+    let code: number;
+    try {
+      code = await runConfigure(["--credential-bundle", bundleJson({ webAccountAddress: null })]);
+    } finally {
+      process.stdout.write = original;
+    }
+
+    expect(code).toBe(0);
+    const out = written.join("");
+    expect(out).toContain("Credentials saved");
+    expect(out).toContain("create_bucket will REFUSE");
+    expect(out).toContain("CONSOLE_WEB_ACCOUNT_ADDRESS");
+  });
+
+  it("returns 1 and writes nothing when a bundle is combined with --api-key", async () => {
+    const code = await runConfigure([
+      "--credential-bundle",
+      bundleJson(),
+      "--api-key",
+      "hbr_some_other_key",
+    ]);
+
+    expect(code).toBe(1);
+    expect(loadConfigFile()).toEqual({});
+  });
+});
+
+describe("runConfigure — silent mode, address pins", () => {
+  it("persists a bare --owner-address without touching the credentials", async () => {
+    saveConfigFile({ apiKey: "hbr_existing", servicePrivateKey: VALID_SIGNER });
+
+    const code = await runConfigure(["--owner-address", OWNER_ADDRESS]);
+
+    expect(code).toBe(0);
+    expect(loadConfigFile()).toMatchObject({
+      apiKey: "hbr_existing",
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+    });
+  });
+
+  it("persists both address flags together", async () => {
+    const code = await runConfigure([
+      "--owner-address",
+      OWNER_ADDRESS,
+      "--key-admin-address",
+      KEY_ADMIN_ADDRESS,
+    ]);
+
+    expect(code).toBe(0);
+    expect(loadConfigFile()).toMatchObject({
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+  });
+
+  it("returns 1 and writes nothing for a malformed address", async () => {
+    const code = await runConfigure(["--owner-address", "0xNOT_AN_ADDRESS"]);
+
+    expect(code).toBe(1);
+    expect(loadConfigFile()).toEqual({});
   });
 });

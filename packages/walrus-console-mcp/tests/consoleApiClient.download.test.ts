@@ -19,6 +19,8 @@ const TestConfig = Layer.succeed(ConsoleConfigTag, {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.example.test",
+  webAccountAddress: "",
+  keyAdminAddress: "",
 });
 
 const TestLayer = ConsoleApiClient.Default.pipe(
@@ -154,5 +156,36 @@ describe("downloadBucketFile size limits", () => {
     );
 
     expect(await download()).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+});
+
+describe("downloadBucketFile bounds the ERROR body too (F9)", () => {
+  it("stops reading an oversized error body, cancels it, and truncates the message", async () => {
+    // A non-OK response from a hostile-but-allowlisted endpoint could stream an
+    // endless error body; `failFromFetchResponse` must not buffer it whole.
+    let pulls = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 500 })),
+    );
+
+    const error = (await downloadError()) as { _tag: string; message: string };
+    expect(error._tag).toBe("ConsoleApiError");
+    // Bounded to ~64 KiB, nowhere near the endless body it was fed.
+    expect(error.message.length).toBeLessThan(70_000);
+    expect(error.message).toMatch(/truncated/);
+    expect(cancelled).toBe(true);
+    // 64 KiB / 1 KiB ≈ 64 reads, not an unbounded drain.
+    expect(pulls).toBeLessThan(200);
   });
 });

@@ -1,5 +1,6 @@
 import { HttpBody, HttpClient, HttpClientRequest, type HttpClientResponse } from "@effect/platform";
-import { Effect } from "effect";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { Effect, Stream } from "effect";
 import { ConsoleConfigTag, getRawAdminKey, getRawApiKey } from "../config";
 import { MAX_TRANSFER_BYTES_ENV, maxTransferBytes } from "../transferLimits";
 import {
@@ -18,6 +19,7 @@ import type {
   SpaceListItem,
   StorageUsage,
 } from "./types";
+import type { RosterMember } from "./txValidation";
 
 // Console stores a file's mime_type from the multipart part's content-type (it does NOT
 // sniff the ciphertext or read the extension server-side). The UI keys preview/rendering
@@ -58,13 +60,33 @@ export interface CreateBucketReserveResponse {
   readonly bucket_id: BucketId;
   readonly bytes: string; // base64 sponsored tx
   readonly digest: string;
-  readonly state: "pending_policy";
+  /**
+   * Wire name is `provisioning_state`. There is no `state` key and never was —
+   * the DB column behind it is called `state`, which is where that name leaks in
+   * from on the server side, and reading it here silently yielded `undefined`.
+   */
+  readonly provisioning_state: "pending_policy";
+  // Echoes of the request's `expectedOwnerAddress` / the space's admin signer,
+  // for disclosure only — the validator (txValidation.ts) is what actually
+  // checks the signed PTB against the caller's pins; these are not consulted.
+  readonly owner_address?: string;
+  readonly admin_signer_address?: string | null;
+}
+
+/** Response of GET /api/v1/api-keys/space-signers — Task 7's roster-candidate source. */
+export interface SpaceSignersResponse {
+  readonly signers: readonly {
+    readonly api_key_id: string;
+    readonly service_signer_address: string;
+    readonly scope: "read" | "readwrite";
+  }[];
 }
 
 export interface FinalizeBucketResponse {
   readonly bucket_id: BucketId;
   readonly seal_policy_id: string | null;
-  readonly state: string;
+  /** See `CreateBucketReserveResponse` — the wire name is `provisioning_state`. */
+  readonly provisioning_state: string;
 }
 
 export interface FileUploadResponse {
@@ -189,7 +211,9 @@ function failFromFetchResponse(
   action: string,
 ): Effect.Effect<never, ConsoleApiError> {
   return Effect.gen(function* () {
-    const text = yield* Effect.tryPromise(() => response.text()).pipe(
+    // Bounded: a non-OK response from a hostile-but-allowlisted endpoint could
+    // carry a multi-megabyte body, and this text ends up on a long-lived error.
+    const text = yield* Effect.tryPromise(() => boundedResponseText(response)).pipe(
       Effect.catchAll(() => Effect.succeed("")),
     );
     let decoded: unknown;
@@ -282,6 +306,67 @@ async function readBounded(
   return out;
 }
 
+/**
+ * Bytes of an ERROR body we are willing to buffer before giving up on it.
+ *
+ * An error body is a `{ code, message }` JSON a few hundred bytes long; anything
+ * past this is a misbehaving or hostile endpoint (a multi-megabyte proxy HTML
+ * page, or a stream that never ends). The failure path runs in a long-lived
+ * process, so an unbounded read here is the same liveness hazard the transfer cap
+ * guards against on the happy path — and it is deliberately far below that
+ * 256 MiB cap, because an error is not a transfer. Large enough that no real
+ * Console error body is ever truncated, so `parseConsoleErrorBody` keeps working.
+ */
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
+/**
+ * Concatenate up to `MAX_ERROR_BODY_BYTES` of body chunks into UTF-8 text,
+ * appending a marker when the body was cut short. Pure, so both the raw-`fetch`
+ * and the HttpClient error paths share one truncation rule.
+ */
+function decodeBoundedBody(chunks: readonly Uint8Array[], truncated: boolean): string {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const cap = Math.min(total, MAX_ERROR_BODY_BYTES);
+  const buf = new Uint8Array(cap);
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= cap) break;
+    const slice = chunk.subarray(0, cap - offset);
+    buf.set(slice, offset);
+    offset += slice.length;
+  }
+  const text = new TextDecoder().decode(buf);
+  return truncated ? `${text}… (response body truncated)` : text;
+}
+
+/**
+ * Read a non-OK raw-`fetch` body into bounded text, cancelling whatever is left
+ * once the cap is reached rather than draining (and buffering) the whole thing.
+ */
+async function boundedResponseText(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return decodeBoundedBody([new Uint8Array(await response.arrayBuffer())], false);
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    while (total < MAX_ERROR_BODY_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.length;
+    }
+    if (total >= MAX_ERROR_BODY_BYTES) {
+      truncated = true;
+      await reader.cancel();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return decodeBoundedBody(chunks, truncated);
+}
+
 export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("ConsoleApiClient", {
   effect: Effect.gen(function* () {
     const config = yield* ConsoleConfigTag;
@@ -309,10 +394,33 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
 
     const handleError = (res: HttpClientResponse.HttpClientResponse) =>
       Effect.gen(function* () {
-        const body: ConsoleErrorBody = yield* res.json.pipe(
-          Effect.catchAll(() => Effect.succeed({})),
-          Effect.map((b) => b as ConsoleErrorBody),
+        // Bound the body BEFORE decoding it: `res.json` buffers the whole thing,
+        // so a hostile endpoint's oversized error body would be read in full. Read
+        // the stream up to the cap, cancelling the rest, then parse what we got —
+        // a real Console error is a small JSON well under the cap, so this is a
+        // no-op for it; an over-cap body is truncated (and so fails to parse,
+        // falling back to the status line) rather than buffered.
+        const rawText = yield* res.stream.pipe(
+          Stream.runFoldWhile(
+            { chunks: [] as Uint8Array[], total: 0 },
+            (acc) => acc.total < MAX_ERROR_BODY_BYTES,
+            (acc, chunk: Uint8Array) => ({
+              chunks: [...acc.chunks, chunk],
+              total: acc.total + chunk.length,
+            }),
+          ),
+          Effect.map(({ chunks, total }) =>
+            decodeBoundedBody(chunks, total >= MAX_ERROR_BODY_BYTES),
+          ),
+          Effect.catchAll(() => Effect.succeed("")),
         );
+        let body: ConsoleErrorBody = {};
+        try {
+          body = JSON.parse(rawText) as ConsoleErrorBody;
+        } catch {
+          // Non-JSON or truncated body — leave {} so `message` falls back to the
+          // status line below, exactly as the old `res.json` catch did.
+        }
         const parsed = parseConsoleErrorBody(body);
         const code = parsed.code;
         const message = parsed.message ?? `HTTP ${res.status}`;
@@ -346,7 +454,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     // "never going to work" vs "retry later".
     const handleUploadError = (response: Response, fileName: string, bytes: number) =>
       Effect.gen(function* () {
-        const rawText = yield* Effect.tryPromise(() => response.text()).pipe(
+        // Bounded, like the download path: an oversized or endless error body must
+        // not be buffered into an error message in this long-lived process.
+        const rawText = yield* Effect.tryPromise(() => boundedResponseText(response)).pipe(
           Effect.catchAll(() => Effect.succeed("")),
         );
         let code: string | undefined;
@@ -439,12 +549,40 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
 
     // === Write flows support ===
 
+    /**
+     * Reserve a bucket-creation PTB. `members` is a REQUIRED parameter, not an
+     * optional one with a default: the server treats `[]` (an authored EMPTY
+     * roster) as semantically different from an ABSENT `members` key (fall
+     * back to the server's own derived roster) — and this client's
+     * `txValidation` refuses a server-derived roster it never asked for. So
+     * every call site must decide its roster explicitly; there is no call
+     * shape here that silently omits the key.
+     *
+     * `expectedOwnerAddress` is the caller's diagnostic cross-check against
+     * the space's on-chain owner; a mismatch is a 409
+     * (`bucket_create_owner_mismatch`) surfaced via `handleError`. Both it and
+     * every member address are normalized here (`normalizeSuiAddress`)
+     * because config pins are stored raw and `isValidSuiAddress` accepts
+     * mixed-case / `0x`-less forms — this is the boundary where that gets
+     * resolved before the address leaves the process.
+     */
     const createBucket = Effect.fn("ConsoleApiClient.createBucket")(function* (
       spaceId: SpaceId,
       name: string,
+      expectedOwnerAddress: string,
+      members: readonly RosterMember[],
     ) {
+      const body = {
+        name,
+        scope: "private",
+        expectedOwnerAddress: normalizeSuiAddress(expectedOwnerAddress),
+        members: members.map((member) => ({
+          address: normalizeSuiAddress(member.address),
+          role: member.role,
+        })),
+      };
       const res = yield* authed.post(`/api/v1/spaces/${spaceId}/buckets`, {
-        body: HttpBody.text(JSON.stringify({ name, scope: "private" }), "application/json"),
+        body: HttpBody.text(JSON.stringify(body), "application/json"),
       });
       if (res.status !== 201) return yield* handleError(res);
       return (yield* res.json) as CreateBucketReserveResponse;
@@ -560,7 +698,16 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         try: () => response.json(),
         catch: () =>
           new ConsoleApiError({
-            message: "Failed to parse upload response JSON",
+            // A 202 means the upload was ACCEPTED — the bytes are stored and the
+            // server has an id for them — so an unreadable body here is NOT an
+            // upload failure. Say so, and steer away from the one response that
+            // makes it worse: re-uploading duplicates a file the server already
+            // has. The file is findable by the name it was uploaded under.
+            message:
+              `The upload was ACCEPTED (HTTP 202) but its response body could not be read, so ` +
+              `the server's file id is not available here. Do NOT upload again — that would ` +
+              `duplicate a file the server already has. Find it with list_files (search by the ` +
+              `name you uploaded), then track its processing with get_file_status.`,
             status: response.status,
           }),
       });
@@ -701,6 +848,24 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       return (yield* res.json) as FileListResponse;
     });
 
+    /**
+     * GET /api/v1/api-keys/space-signers — candidate roster addresses for a
+     * later create-bucket authoring step (Task 7). Space is resolved from
+     * auth; no params, no body.
+     *
+     * Deliberately on the `authed` (working-key) lane, NOT `adminAuthed`:
+     * Console accepts session-or-any-active-API-key here, so a plain
+     * WORKING key can call it — and that is exactly the population this
+     * exists for. A worker host holds no admin credential at all, so putting
+     * this on `adminAuthed` would break it for the very host the feature is
+     * for.
+     */
+    const listSpaceSigners = Effect.fn("ConsoleApiClient.listSpaceSigners")(function* () {
+      const res = yield* authed.get("/api/v1/api-keys/space-signers");
+      if (res.status !== 200) return yield* handleError(res);
+      return (yield* res.json) as SpaceSignersResponse;
+    });
+
     // === Key-Admin mint flow (all calls bear the hbradm_ credential) ===
 
     const createApiKey = Effect.fn("ConsoleApiClient.createApiKey")(function* (args: {
@@ -785,6 +950,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       updateBucket,
       renameBucket,
       deleteBucket,
+      listSpaceSigners,
     } as const;
   }),
   // HttpClient + ConsoleConfigTag are provided by the AppLayer at the runtime composition point (see src/runtime.ts)

@@ -1,16 +1,25 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  NO_KEY_ADMIN_PIN_WARNING,
+  NO_OWNER_PIN_WARNING,
   classifyProbe,
   collectCredentials,
+  isEmptyWrite,
   isValidAdminKeyFormat,
   isValidApiKeyFormat,
   isValidServiceKeyFormat,
   keyKindOf,
   mismatchMessage,
+  parseCredentialBundle,
   probeKey,
   validateSilent,
 } from "../src/credentials.js";
+import { getConfigFilePath, saveConfigFile } from "../src/configFile.js";
+import { toRealPath } from "../src/pathSandbox.js";
 
 /**
  * Real, decodable signers for tests that exercise `decodeSuiPrivateKey`
@@ -22,6 +31,25 @@ const VALID_SIGNER_2 = Ed25519Keypair.generate().getSecretKey();
 
 /** Well-formed prefix, wrong length/checksum — the "pasted garbage" case. */
 const GARBLED_SIGNER = `suiprivkey1${"x".repeat(59)}`;
+
+/** Shared fixtures for the bundle/address-pin flows. */
+const OWNER_ADDRESS = `0x${"a".repeat(64)}`;
+const KEY_ADMIN_ADDRESS = `0x${"b".repeat(64)}`;
+const STALE_ADDRESS = `0x${"9".repeat(64)}`;
+const BUNDLE_API_KEY = "hbr_bundle_key_value";
+
+/** Empty env so tests do not inherit a real `CONSOLE_WEB_ACCOUNT_ADDRESS`. */
+const NO_ENV: NodeJS.ProcessEnv = {};
+
+const bundleJson = (overrides: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    v: 1,
+    apiKey: BUNDLE_API_KEY,
+    servicePrivateKey: VALID_SIGNER,
+    webAccountAddress: OWNER_ADDRESS,
+    keyAdminAddress: KEY_ADMIN_ADDRESS,
+    ...overrides,
+  });
 
 describe("format checks", () => {
   it("accepts a working key and rejects a management key", () => {
@@ -169,19 +197,24 @@ describe("probeKey", () => {
 /** Scripted prompter: answers come from a queue; questions are recorded. */
 const scriptedDeps = (answers: string[]) => {
   const asked: string[] = [];
+  /** `opts.masked` per question, so a test can assert what was hidden. */
+  const askedMasked: (boolean | undefined)[] = [];
   const messages: string[] = [];
   return {
     asked,
+    askedMasked,
     messages,
     deps: {
-      ask: async (question: string) => {
+      ask: async (question: string, opts?: { masked?: boolean }) => {
         asked.push(question);
+        askedMasked.push(opts?.masked);
         return answers.shift() ?? "";
       },
       ok: (m: string) => messages.push(`ok:${m}`),
       fail: (m: string) => messages.push(`fail:${m}`),
       warn: (m: string) => messages.push(`warn:${m}`),
       info: (m: string) => messages.push(`info:${m}`),
+      show: (m: string) => messages.push(`show:${m}`),
       probe: async () => "ok" as const,
     },
   };
@@ -277,6 +310,7 @@ describe("collectCredentials", () => {
       fail: () => {},
       warn: () => {},
       info: () => {},
+      show: () => {},
       probe: async () => (call++ === 0 ? "invalid" : "ok"),
     });
     expect(updates.apiKey).toBe("hbr_working_key_value");
@@ -298,6 +332,317 @@ describe("collectCredentials", () => {
     });
     expect(asked[0]).toContain("CONSOLE_API_KEY");
     expect(asked[2]).toContain("CONSOLE_ADMIN_KEY");
+  });
+});
+
+describe("collectCredentials — credential bundle", () => {
+  it("writes the key, the signer and both pins after an explicit confirmation", async () => {
+    const { deps, asked, messages } = scriptedDeps([bundleJson(), "y"]);
+
+    const { updates, clear } = await collectCredentials("bundle", deps);
+
+    expect(updates).toEqual({
+      apiKey: BUNDLE_API_KEY,
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+    expect(clear).toEqual([]);
+    // Both addresses are shown, unmasked, BEFORE the confirmation — the display
+    // is the whole trust step.
+    expect(messages.join("\n")).toContain(OWNER_ADDRESS);
+    expect(messages.join("\n")).toContain(KEY_ADMIN_ADDRESS);
+    expect(asked[1]).toMatch(/\[y\/N\]/);
+  });
+
+  it("masks the paste but not the confirmation", async () => {
+    const { deps, askedMasked } = scriptedDeps([bundleJson(), "y"]);
+
+    await collectCredentials("bundle", deps);
+
+    // The bundle carries a live key and signer: it is a secret.
+    expect(askedMasked[0]).not.toBe(false);
+    // The confirmation answer is not, and masking it would hide the y/N.
+    expect(askedMasked[1]).toBe(false);
+  });
+
+  it("writes NOTHING when the confirmation is declined", async () => {
+    const { deps } = scriptedDeps([bundleJson(), "n"]);
+
+    const write = await collectCredentials("bundle", deps, {
+      webAccountAddress: STALE_ADDRESS,
+    });
+
+    expect(write.updates).toEqual({});
+    expect(write.clear).toEqual([]);
+    expect(isEmptyWrite(write)).toBe(true);
+  });
+
+  it("treats a bare Enter as a decline — the confirmation must be affirmative", async () => {
+    const { deps } = scriptedDeps([bundleJson(), ""]);
+
+    const write = await collectCredentials("bundle", deps);
+
+    expect(isEmptyWrite(write)).toBe(true);
+  });
+
+  it("accepts a spelled-out yes", async () => {
+    const { deps } = scriptedDeps([bundleJson(), "YES"]);
+
+    const { updates } = await collectCredentials("bundle", deps);
+
+    expect(updates.apiKey).toBe(BUNDLE_API_KEY);
+  });
+
+  // The bundle is authoritative for the pins: a `null` means THIS key has no
+  // such address, so a value saved for a previous key must go.
+  it("clears a stale owner pin the bundle carries as null", async () => {
+    const { deps } = scriptedDeps([bundleJson({ webAccountAddress: null }), "y"]);
+
+    const { updates, clear } = await collectCredentials("bundle", deps, {
+      webAccountAddress: STALE_ADDRESS,
+    });
+
+    expect(updates.webAccountAddress).toBeUndefined();
+    expect(clear).toContain("webAccountAddress");
+    expect(clear).not.toContain("keyAdminAddress");
+  });
+
+  it("clears a stale Key-Admin pin the bundle carries as null", async () => {
+    const { deps } = scriptedDeps([bundleJson({ keyAdminAddress: null }), "y"]);
+
+    const { updates, clear } = await collectCredentials("bundle", deps, {
+      keyAdminAddress: STALE_ADDRESS,
+    });
+
+    expect(updates.keyAdminAddress).toBeUndefined();
+    expect(clear).toContain("keyAdminAddress");
+  });
+
+  it("clears BOTH stale pins when the bundle carries both as null", async () => {
+    const { deps, messages } = scriptedDeps([
+      bundleJson({ webAccountAddress: null, keyAdminAddress: null }),
+      "y",
+    ]);
+
+    const { updates, clear } = await collectCredentials("bundle", deps, {
+      webAccountAddress: STALE_ADDRESS,
+      keyAdminAddress: STALE_ADDRESS,
+    });
+
+    expect(updates).toEqual({ apiKey: BUNDLE_API_KEY, servicePrivateKey: VALID_SIGNER });
+    expect(clear).toEqual(["webAccountAddress", "keyAdminAddress"]);
+    // Both are shown as absent, and both warnings fire.
+    expect(messages.filter((m) => m.includes("(none in this bundle)")).length).toBe(2);
+    expect(messages.filter((m) => m.startsWith("warn:") && m.includes("Key-Admin")).length).toBe(1);
+  });
+
+  it("saves the credentials and warns loudly when the bundle has no owner", async () => {
+    const { deps, messages } = scriptedDeps([bundleJson({ webAccountAddress: null }), "y"]);
+
+    const { updates } = await collectCredentials("bundle", deps);
+
+    expect(updates.apiKey).toBe(BUNDLE_API_KEY);
+    expect(updates.servicePrivateKey).toBe(VALID_SIGNER);
+    expect(messages.some((m) => m.startsWith("warn:") && m.includes("create_bucket"))).toBe(true);
+  });
+
+  it("re-prompts on a malformed bundle without ever echoing the paste", async () => {
+    const junk = '{"v":1,"apiKey":"hbr_x","serviceSecret":"NEVER_ECHO_THIS_VALUE"}';
+    const { deps, messages } = scriptedDeps([junk, bundleJson(), "y"]);
+
+    const { updates } = await collectCredentials("bundle", deps);
+
+    expect(updates.apiKey).toBe(BUNDLE_API_KEY);
+    expect(messages.some((m) => m.startsWith("fail:"))).toBe(true);
+    expect(messages.join("\n")).not.toContain("NEVER_ECHO_THIS_VALUE");
+    expect(messages.join("\n")).not.toContain(junk);
+  });
+
+  it("re-prompts on an empty paste", async () => {
+    const { deps, asked } = scriptedDeps(["", bundleJson(), "y"]);
+
+    const { updates } = await collectCredentials("bundle", deps);
+
+    expect(updates.apiKey).toBe(BUNDLE_API_KEY);
+    expect(asked.filter((q) => q.includes("CONSOLE_CREDENTIAL_BUNDLE")).length).toBe(2);
+  });
+
+  it("does not confirm or write a bundle whose API key the probe rejects", async () => {
+    const answers = [bundleJson(), bundleJson(), "y"];
+    const asked: string[] = [];
+    let call = 0;
+    const { updates } = await collectCredentials("bundle", {
+      ask: async (q: string) => {
+        asked.push(q);
+        return answers.shift() ?? "";
+      },
+      ok: () => {},
+      fail: () => {},
+      warn: () => {},
+      info: () => {},
+      show: () => {},
+      probe: async () => (call++ === 0 ? "invalid" : "ok"),
+    });
+
+    expect(updates.apiKey).toBe(BUNDLE_API_KEY);
+    // Prompt, (rejected — no confirmation), prompt, confirmation.
+    expect(asked.filter((q) => /\[y\/N\]/.test(q)).length).toBe(1);
+  });
+
+  it("probes the bundle's key as a working key, not a management key", async () => {
+    const kinds: string[] = [];
+    const answers = [bundleJson(), "y"];
+    await collectCredentials("bundle", {
+      ask: async () => answers.shift() ?? "",
+      ok: () => {},
+      fail: () => {},
+      warn: () => {},
+      info: () => {},
+      show: () => {},
+      probe: async (kind) => {
+        kinds.push(kind);
+        return "ok" as const;
+      },
+    });
+    expect(kinds).toEqual(["api"]);
+  });
+});
+
+describe("collectCredentials — manual address pins", () => {
+  const API_ANSWERS = ["hbr_working_key_value", VALID_SIGNER];
+
+  it("persists each address only after its own confirmation", async () => {
+    const { deps, asked, messages } = scriptedDeps([
+      ...API_ANSWERS,
+      OWNER_ADDRESS,
+      "y",
+      KEY_ADMIN_ADDRESS,
+      "y",
+    ]);
+
+    const { updates, clear } = await collectCredentials("api", deps);
+
+    expect(updates.webAccountAddress).toBe(OWNER_ADDRESS);
+    expect(updates.keyAdminAddress).toBe(KEY_ADMIN_ADDRESS);
+    expect(clear).toEqual([]);
+    // The unmasked input row is the re-read; a second `show` of the same value
+    // is what printed the address twice in the AUTHENTICATE panel. `show` is
+    // reserved for a saved pin / bundle the operator did not just type.
+    expect(messages).not.toContain(`show:${OWNER_ADDRESS}`);
+    expect(messages).not.toContain(`show:${KEY_ADMIN_ADDRESS}`);
+    expect(asked[3]).toMatch(/\[y\/N\]/);
+    expect(asked[3]).not.toContain(OWNER_ADDRESS);
+    expect(asked[5]).toMatch(/\[y\/N\]/);
+    expect(asked[5]).not.toContain(KEY_ADMIN_ADDRESS);
+    // The input row is just the gutter (empty question): a 66-char address
+    // plus a long "Bucket owner Sui address…" label cannot share a line.
+    expect(asked[2]).toBe("");
+    expect(messages.some((m) => m.startsWith("info:") && /Sui address/i.test(m))).toBe(true);
+  });
+
+  it("writes nothing for an address whose confirmation is declined", async () => {
+    // Declined → re-prompt → bare Enter skips it.
+    const { deps } = scriptedDeps([...API_ANSWERS, OWNER_ADDRESS, "n", "", ""]);
+
+    const { updates, clear } = await collectCredentials("api", deps);
+
+    expect(updates.webAccountAddress).toBeUndefined();
+    expect(clear).toEqual([]);
+  });
+
+  it("skips on a bare Enter and warns that create_bucket will refuse", async () => {
+    const { deps, messages } = scriptedDeps([...API_ANSWERS, "", ""]);
+
+    const { updates } = await collectCredentials("api", deps);
+
+    expect(updates.webAccountAddress).toBeUndefined();
+    expect(messages.some((m) => m.startsWith("warn:") && m.includes("create_bucket"))).toBe(true);
+  });
+
+  it("re-prompts on a malformed address without echoing it", async () => {
+    const junk = "0xNOT_AN_ADDRESS_VALUE";
+    const { deps, messages } = scriptedDeps([...API_ANSWERS, junk, OWNER_ADDRESS, "y", ""]);
+
+    const { updates } = await collectCredentials("api", deps);
+
+    expect(updates.webAccountAddress).toBe(OWNER_ADDRESS);
+    expect(messages.some((m) => m.startsWith("fail:"))).toBe(true);
+    expect(messages.join("\n")).not.toContain(junk);
+  });
+
+  // The asymmetry with the bundle path: manual entry MERGES, so skipping a
+  // prompt leaves whatever is already saved alone.
+  it("preserves saved pins when both prompts are skipped", async () => {
+    const { deps } = scriptedDeps([...API_ANSWERS, "", ""]);
+
+    const { updates, clear } = await collectCredentials("api", deps, {
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+
+    expect(clear).not.toContain("webAccountAddress");
+    expect(clear).not.toContain("keyAdminAddress");
+    expect(updates.webAccountAddress).toBeUndefined();
+    expect(updates.keyAdminAddress).toBeUndefined();
+  });
+
+  // Skipping is only a refusal-in-waiting when nothing is pinned. Warning about
+  // it while a perfectly good pin sits in the file sends the operator hunting for
+  // a problem they do not have.
+  it("reports what it is keeping instead of warning when a pin is already saved", async () => {
+    const { deps, messages } = scriptedDeps([...API_ANSWERS, "", ""]);
+
+    await collectCredentials("api", deps, { webAccountAddress: OWNER_ADDRESS });
+
+    expect(messages.some((m) => m.startsWith("warn:") && m.includes("create_bucket"))).toBe(false);
+    expect(messages).toContain(`show:${OWNER_ADDRESS}`);
+    // ...and the copy says Enter keeps it, rather than "skip". The wording
+    // lives on an info line so the input row can hold the 66-char address.
+    expect(messages.join("\n")).toMatch(/keep/i);
+  });
+
+  it("still warns for the pin that is NOT saved", async () => {
+    const { deps, messages } = scriptedDeps([...API_ANSWERS, "", ""]);
+
+    await collectCredentials("api", deps, { keyAdminAddress: KEY_ADMIN_ADDRESS });
+
+    expect(messages.some((m) => m.startsWith("warn:") && m.includes("create_bucket"))).toBe(true);
+  });
+
+  it("asks for the addresses unmasked — they are not secrets", async () => {
+    const { deps, askedMasked } = scriptedDeps([...API_ANSWERS, "", ""]);
+
+    await collectCredentials("api", deps);
+
+    expect(askedMasked[2]).toBe(false);
+    expect(askedMasked[3]).toBe(false);
+  });
+
+  it("asks for the pins on the 'both' flow without disturbing the credential order", async () => {
+    const { deps, asked } = scriptedDeps([
+      "hbr_working_key_value",
+      VALID_SIGNER,
+      "hbradm_management_key",
+      VALID_SIGNER_2,
+      OWNER_ADDRESS,
+      "y",
+      "",
+    ]);
+
+    const { updates } = await collectCredentials("both", deps);
+
+    expect(asked[0]).toContain("CONSOLE_API_KEY");
+    expect(asked[2]).toContain("CONSOLE_ADMIN_KEY");
+    expect(updates.webAccountAddress).toBe(OWNER_ADDRESS);
+  });
+
+  it("does not ask for pins on the management-only flow", async () => {
+    const { deps, asked } = scriptedDeps(["hbradm_management_key", VALID_SIGNER]);
+
+    await collectCredentials("admin", deps);
+
+    expect(asked.some((q) => /Sui address/i.test(q))).toBe(false);
   });
 });
 
@@ -359,6 +704,43 @@ describe("validateSilent", () => {
     expect(errors[0]).toContain("No credentials given");
   });
 
+  describe("allowed dirs", () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-silent-dirs-"));
+    });
+    afterEach(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("accepts --allowed-dirs alone and writes no credentials", async () => {
+      const { updates, errors } = await validateSilent({ allowedDirs: [dir] }, okProbe);
+      expect(errors).toEqual([]);
+      expect(updates.apiKey).toBeUndefined();
+      expect(updates.allowedDirs).toEqual([toRealPath(dir)]);
+    });
+
+    it("writes allowedDirs alongside an API key", async () => {
+      const { updates, errors } = await validateSilent(
+        { apiKey: "hbr_x_value", allowedDirs: [dir] },
+        okProbe,
+      );
+      expect(errors).toEqual([]);
+      expect(updates.apiKey).toBe("hbr_x_value");
+      expect(updates.allowedDirs).toEqual([toRealPath(dir)]);
+    });
+
+    it("rejects a missing directory and writes nothing", async () => {
+      const { updates, errors } = await validateSilent(
+        { allowedDirs: [path.join(dir, "missing")] },
+        okProbe,
+      );
+      expect(updates).toEqual({});
+      expect(errors[0]).toContain("--allowed-dirs");
+      expect(errors[0]).toMatch(/does not exist/);
+    });
+  });
+
   it("accepts a real generated working-key signer", async () => {
     const { updates, errors } = await validateSilent({ serviceKey: VALID_SIGNER }, okProbe);
     expect(errors).toEqual([]);
@@ -381,6 +763,318 @@ describe("validateSilent", () => {
     expect(updates).toEqual({});
     expect(errors[0]).toContain("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY");
     expect(errors.join(" ")).not.toContain(GARBLED_SIGNER);
+  });
+});
+
+describe("validateSilent — credential bundle", () => {
+  const okProbe = async () => "ok" as const;
+
+  it("maps a bundle to all four fields", async () => {
+    const { updates, clear, errors } = await validateSilent({ bundle: bundleJson() }, okProbe);
+
+    expect(errors).toEqual([]);
+    expect(updates).toEqual({
+      apiKey: BUNDLE_API_KEY,
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+    expect(clear).toEqual([]);
+  });
+
+  it("clears a stale pin the bundle carries as null", async () => {
+    const { updates, clear, errors } = await validateSilent(
+      { bundle: bundleJson({ webAccountAddress: null }) },
+      okProbe,
+      { webAccountAddress: STALE_ADDRESS },
+    );
+
+    expect(errors).toEqual([]);
+    expect(updates.webAccountAddress).toBeUndefined();
+    expect(clear).toContain("webAccountAddress");
+  });
+
+  it("clears BOTH stale pins when the bundle carries both as null", async () => {
+    const { updates, clear, errors } = await validateSilent(
+      { bundle: bundleJson({ webAccountAddress: null, keyAdminAddress: null }) },
+      okProbe,
+      { webAccountAddress: STALE_ADDRESS, keyAdminAddress: STALE_ADDRESS },
+    );
+
+    expect(errors).toEqual([]);
+    expect(updates).toEqual({ apiKey: BUNDLE_API_KEY, servicePrivateKey: VALID_SIGNER });
+    expect(clear).toEqual(["webAccountAddress", "keyAdminAddress"]);
+  });
+
+  // A scripted install must not silently produce a config where every
+  // create_bucket refuses. --silent has no prompt to warn on, so the warning
+  // rides back on the result and the entry points print it.
+  it("returns the owner warning when the bundle carries a null owner", async () => {
+    const { warnings, errors } = await validateSilent(
+      { bundle: bundleJson({ webAccountAddress: null }) },
+      okProbe,
+      {},
+      NO_ENV,
+    );
+
+    expect(errors).toEqual([]);
+    expect(warnings.join(" ")).toContain("create_bucket");
+    expect(warnings.join(" ")).toContain("CONSOLE_WEB_ACCOUNT_ADDRESS");
+    // Word for word what the interactive path says — one message, not two dialects.
+    expect(warnings).toEqual([NO_OWNER_PIN_WARNING]);
+  });
+
+  it("returns both warnings when the bundle carries neither address", async () => {
+    const { warnings } = await validateSilent(
+      { bundle: bundleJson({ webAccountAddress: null, keyAdminAddress: null }) },
+      okProbe,
+      {},
+      NO_ENV,
+    );
+
+    expect(warnings).toEqual([NO_OWNER_PIN_WARNING, NO_KEY_ADMIN_PIN_WARNING]);
+  });
+
+  it("returns no warnings for a complete bundle", async () => {
+    const { warnings } = await validateSilent({ bundle: bundleJson() }, okProbe, {}, NO_ENV);
+    expect(warnings).toEqual([]);
+  });
+
+  it("returns no warnings when nothing was written", async () => {
+    const { warnings, errors } = await validateSilent({ bundle: "not json" }, okProbe, {}, NO_ENV);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(warnings).toEqual([]);
+  });
+
+  it("refuses a bundle combined with an individual credential flag", async () => {
+    const { updates, clear, errors } = await validateSilent(
+      { bundle: bundleJson(), apiKey: "hbr_some_other_key" },
+      okProbe,
+      {},
+      NO_ENV,
+    );
+
+    expect(updates).toEqual({});
+    expect(clear).toEqual([]);
+    expect(errors.join(" ")).toContain("--credential-bundle");
+    // Nothing in the environment supplied it, so the message must not send the
+    // operator hunting for a variable they never exported.
+    expect(errors.join(" ")).not.toContain("CONSOLE_CREDENTIAL_BUNDLE");
+  });
+
+  it("refuses a bundle combined with an address flag", async () => {
+    const { updates, errors } = await validateSilent(
+      { bundle: bundleJson(), ownerAddress: STALE_ADDRESS },
+      okProbe,
+      {},
+      NO_ENV,
+    );
+
+    expect(updates).toEqual({});
+    expect(errors.join(" ")).toContain("--credential-bundle");
+  });
+
+  it("names the environment variable when the bundle came from CONSOLE_CREDENTIAL_BUNDLE", async () => {
+    // `parseArgs` folds CONSOLE_CREDENTIAL_BUNDLE into this field whenever
+    // --silent is in effect, so an operator who exported it at install time and
+    // later runs `config --api-key hbr_… --silent` to swap keys lands here having
+    // passed no --credential-bundle at all. Naming that flag sends them searching
+    // their own command line for it; the fix is to unset the variable, so the
+    // message has to say which variable and what to do with it.
+    const bundle = bundleJson();
+    const { updates, errors } = await validateSilent(
+      { bundle, apiKey: "hbr_some_other_key" },
+      okProbe,
+      {},
+      { CONSOLE_CREDENTIAL_BUNDLE: bundle },
+    );
+
+    expect(updates).toEqual({});
+    expect(errors.join(" ")).toContain("CONSOLE_CREDENTIAL_BUNDLE");
+    expect(errors.join(" ")).toMatch(/unset/i);
+    expect(errors.join(" ")).toContain("--api-key");
+    // Never the bundle itself: it is a live credential.
+    expect(errors.join(" ")).not.toContain(BUNDLE_API_KEY);
+  });
+
+  // The management pair is a different credential slot, so it composes with the
+  // bundle rather than conflicting with it. Silently dropping it — the shape the
+  // early return had — would be the worst of the three options.
+  it("configures the management pair alongside a bundle", async () => {
+    const { updates, errors } = await validateSilent(
+      {
+        bundle: bundleJson(),
+        adminKey: "hbradm_management_key",
+        adminSigner: VALID_SIGNER_2,
+      },
+      okProbe,
+    );
+
+    expect(errors).toEqual([]);
+    expect(updates).toEqual({
+      apiKey: BUNDLE_API_KEY,
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+      adminKey: "hbradm_management_key",
+      adminServicePrivateKey: VALID_SIGNER_2,
+    });
+  });
+
+  it("writes nothing at all when the bundle is fine but the management pair is half-given", async () => {
+    const { updates, errors } = await validateSilent(
+      { bundle: bundleJson(), adminKey: "hbradm_management_key" },
+      okProbe,
+    );
+
+    expect(updates).toEqual({});
+    expect(errors.join(" ")).toContain("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY");
+  });
+
+  it("rejects a malformed bundle, writes nothing, and never echoes it", async () => {
+    const junk = '{"v":1,"apiKey":"hbr_x","serviceSecret":"NEVER_ECHO_THIS_VALUE"}';
+    const { updates, errors } = await validateSilent({ bundle: junk }, okProbe);
+
+    expect(updates).toEqual({});
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.join(" ")).not.toContain("NEVER_ECHO_THIS_VALUE");
+    expect(errors.join(" ")).not.toContain(junk);
+  });
+
+  it("writes nothing when the bundle's key cannot be verified", async () => {
+    const { updates, errors } = await validateSilent(
+      { bundle: bundleJson() },
+      async () => "unreachable" as const,
+    );
+
+    expect(updates).toEqual({});
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe("validateSilent — address pins", () => {
+  const okProbe = async () => "ok" as const;
+
+  it("persists a bare --owner-address without probing anything", async () => {
+    let probed = false;
+    const { updates, clear, errors } = await validateSilent(
+      { ownerAddress: OWNER_ADDRESS },
+      async () => {
+        probed = true;
+        return "ok" as const;
+      },
+    );
+
+    expect(errors).toEqual([]);
+    expect(updates).toEqual({ webAccountAddress: OWNER_ADDRESS });
+    expect(clear).toEqual([]);
+    expect(probed).toBe(false);
+  });
+
+  it("persists a bare --key-admin-address", async () => {
+    const { updates, errors } = await validateSilent(
+      { keyAdminAddress: KEY_ADMIN_ADDRESS },
+      okProbe,
+    );
+
+    expect(errors).toEqual([]);
+    expect(updates).toEqual({ keyAdminAddress: KEY_ADMIN_ADDRESS });
+  });
+
+  // Merge semantics, matching the interactive manual path: only the bundle is
+  // authoritative enough to remove a pin it did not set.
+  it("leaves the other saved pin alone", async () => {
+    const { clear } = await validateSilent({ ownerAddress: OWNER_ADDRESS }, okProbe, {
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+
+    expect(clear).toEqual([]);
+  });
+
+  it("rejects a malformed address, names the flag, and writes nothing", async () => {
+    const junk = "0xNOT_AN_ADDRESS_VALUE";
+    const { updates, errors } = await validateSilent({ ownerAddress: junk }, okProbe);
+
+    expect(updates).toEqual({});
+    expect(errors.join(" ")).toContain("--owner-address");
+    expect(errors.join(" ")).not.toContain(junk);
+  });
+
+  it("rejects a malformed key-admin address the same way", async () => {
+    const { updates, errors } = await validateSilent({ keyAdminAddress: "nope" }, okProbe);
+
+    expect(updates).toEqual({});
+    expect(errors.join(" ")).toContain("--key-admin-address");
+  });
+
+  it("treats an address flag alone as something to do", async () => {
+    const { errors } = await validateSilent({ ownerAddress: OWNER_ADDRESS }, okProbe);
+    expect(errors.join(" ")).not.toContain("No credentials given");
+  });
+
+  it("saves an address alongside a credential", async () => {
+    const { updates, errors } = await validateSilent(
+      { apiKey: "hbr_working_key_value", ownerAddress: OWNER_ADDRESS },
+      okProbe,
+    );
+
+    expect(errors).toEqual([]);
+    expect(updates.apiKey).toBe("hbr_working_key_value");
+    expect(updates.webAccountAddress).toBe(OWNER_ADDRESS);
+  });
+
+  // This branch is what made a silent `--api-key` install leave create_bucket
+  // refusing. Warn only when no pin is resolvable from the write, the saved
+  // file, or the env — an env-configured host must stay silent.
+  it("warns on a silent --api-key write that leaves no owner pin", async () => {
+    const { warnings, errors } = await validateSilent(
+      { apiKey: "hbr_working_key_value" },
+      okProbe,
+      {},
+      NO_ENV,
+    );
+
+    expect(errors).toEqual([]);
+    expect(warnings).toEqual([NO_OWNER_PIN_WARNING]);
+  });
+
+  it("does not warn when a saved owner pin will survive the write", async () => {
+    const { warnings } = await validateSilent(
+      { apiKey: "hbr_working_key_value" },
+      okProbe,
+      { webAccountAddress: OWNER_ADDRESS },
+      NO_ENV,
+    );
+
+    expect(warnings).toEqual([]);
+  });
+
+  it("does not warn when CONSOLE_WEB_ACCOUNT_ADDRESS is set", async () => {
+    const { warnings } = await validateSilent(
+      { apiKey: "hbr_working_key_value" },
+      okProbe,
+      {},
+      { CONSOLE_WEB_ACCOUNT_ADDRESS: OWNER_ADDRESS },
+    );
+
+    expect(warnings).toEqual([]);
+  });
+
+  it("does not warn when the write itself carries --owner-address", async () => {
+    const { warnings } = await validateSilent(
+      { apiKey: "hbr_working_key_value", ownerAddress: OWNER_ADDRESS },
+      okProbe,
+      {},
+      NO_ENV,
+    );
+
+    expect(warnings).toEqual([]);
+  });
+
+  it("does not warn on a signer-only write", async () => {
+    const { warnings } = await validateSilent({ serviceKey: VALID_SIGNER }, okProbe, {}, NO_ENV);
+
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -471,5 +1165,238 @@ describe("replacing an API key does not keep the previous key's signer", () => {
 
     expect(updates.servicePrivateKey).toBe(VALID_SIGNER_2);
     expect(clear).toEqual([]);
+  });
+});
+
+describe("parseCredentialBundle", () => {
+  const OWNER_ADDRESS = `0x${"a".repeat(64)}`;
+  const KEY_ADMIN_ADDRESS = `0x${"b".repeat(64)}`;
+  const API_KEY = "hbr_bundle_key_value";
+
+  const validBundle = (overrides: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      v: 1,
+      apiKey: API_KEY,
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+      ...overrides,
+    });
+
+  it("parses a well-formed v1 bundle", () => {
+    const result = parseCredentialBundle(validBundle());
+    expect("bundle" in result).toBe(true);
+    if (!("bundle" in result)) throw new Error("expected a bundle");
+    expect(result.bundle).toEqual({
+      apiKey: API_KEY,
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+  });
+
+  it("accepts null for both webAccountAddress and keyAdminAddress", () => {
+    const result = parseCredentialBundle(
+      validBundle({ webAccountAddress: null, keyAdminAddress: null }),
+    );
+    expect("bundle" in result).toBe(true);
+    if (!("bundle" in result)) throw new Error("expected a bundle");
+    expect(result.bundle.webAccountAddress).toBeNull();
+    expect(result.bundle.keyAdminAddress).toBeNull();
+  });
+
+  it("accepts a null webAccountAddress paired with a real keyAdminAddress", () => {
+    const result = parseCredentialBundle(validBundle({ webAccountAddress: null }));
+    expect("bundle" in result).toBe(true);
+    if (!("bundle" in result)) throw new Error("expected a bundle");
+    expect(result.bundle.webAccountAddress).toBeNull();
+    expect(result.bundle.keyAdminAddress).toBe(KEY_ADMIN_ADDRESS);
+  });
+
+  it("rejects a raw string that is not valid JSON, without echoing it", () => {
+    const raw = "definitely not json {{{";
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(raw);
+    expect(result.error.toLowerCase()).toContain("json");
+  });
+
+  it("rejects JSON that is not an object (array), without echoing it", () => {
+    const raw = JSON.stringify([1, 2, 3]);
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(raw);
+  });
+
+  it("rejects JSON that is not an object (null), without echoing it", () => {
+    const result = parseCredentialBundle("null");
+    expect("error" in result).toBe(true);
+  });
+
+  it("rejects a future/unknown version rather than best-effort parsing it", () => {
+    const raw = validBundle({ v: 2 });
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(raw);
+    expect(result.error).not.toContain(API_KEY);
+    expect(result.error.toLowerCase()).toContain("version");
+  });
+
+  it("accepts a bundle missing the v field (a pasted config.json has none)", () => {
+    const parsed = JSON.parse(validBundle()) as Record<string, unknown>;
+    delete parsed["v"];
+    const result = parseCredentialBundle(JSON.stringify(parsed));
+    expect("bundle" in result).toBe(true);
+  });
+
+  it("rejects a missing apiKey without echoing any other field", () => {
+    const parsed = JSON.parse(validBundle()) as Record<string, unknown>;
+    delete parsed["apiKey"];
+    const raw = JSON.stringify(parsed);
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(raw);
+    expect(result.error).not.toContain(VALID_SIGNER);
+  });
+
+  it("rejects an apiKey that does not match the hbr_ format, without echoing it", () => {
+    const badKey = "not_an_hbr_key_at_all";
+    const raw = validBundle({ apiKey: badKey });
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(badKey);
+    expect(result.error).not.toContain(raw);
+  });
+
+  it("rejects a missing servicePrivateKey without echoing any other field", () => {
+    const parsed = JSON.parse(validBundle()) as Record<string, unknown>;
+    delete parsed["servicePrivateKey"];
+    const raw = JSON.stringify(parsed);
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(raw);
+    expect(result.error).not.toContain(API_KEY);
+  });
+
+  it("rejects a servicePrivateKey that does not genuinely Bech32-decode, without echoing it", () => {
+    const result = parseCredentialBundle(validBundle({ servicePrivateKey: GARBLED_SIGNER }));
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(GARBLED_SIGNER);
+  });
+
+  it("rejects a servicePrivateKey that merely looks right (prefix heuristic would pass)", () => {
+    const looksRight = `suiprivkey1${"x".repeat(30)}`;
+    const result = parseCredentialBundle(validBundle({ servicePrivateKey: looksRight }));
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(looksRight);
+  });
+
+  it("rejects a non-null, non-address webAccountAddress, without echoing it", () => {
+    const badAddress = "not-an-address";
+    const raw = validBundle({ webAccountAddress: badAddress });
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(badAddress);
+    expect(result.error).not.toContain(raw);
+  });
+
+  // Symmetric coverage on the second address field, same guard.
+  it("rejects a non-null, non-address keyAdminAddress, without echoing it", () => {
+    const badAddress = "0xnothex";
+    const raw = validBundle({ keyAdminAddress: badAddress });
+    const result = parseCredentialBundle(raw);
+    expect("error" in result).toBe(true);
+    if (!("error" in result)) throw new Error("expected an error");
+    expect(result.error).not.toContain(badAddress);
+    expect(result.error).not.toContain(raw);
+  });
+
+  it("does not depend on key order when parsing", () => {
+    const reordered = JSON.stringify({
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+      webAccountAddress: OWNER_ADDRESS,
+      servicePrivateKey: VALID_SIGNER,
+      apiKey: API_KEY,
+      v: 1,
+    });
+    const result = parseCredentialBundle(reordered);
+    expect("bundle" in result).toBe(true);
+    if (!("bundle" in result)) throw new Error("expected a bundle");
+    expect(result.bundle.apiKey).toBe(API_KEY);
+  });
+
+  it("parses a saved config.json (no v, extra admin/baseUrl keys ignored)", () => {
+    const result = parseCredentialBundle(
+      JSON.stringify({
+        apiKey: API_KEY,
+        servicePrivateKey: VALID_SIGNER,
+        adminKey: "hbradm_ignored",
+        adminServicePrivateKey: VALID_SIGNER,
+        baseUrl: "https://api.testnet.patestation.org",
+        webAccountAddress: OWNER_ADDRESS,
+        keyAdminAddress: KEY_ADMIN_ADDRESS,
+      }),
+    );
+    expect("bundle" in result).toBe(true);
+    if (!("bundle" in result)) throw new Error("expected a bundle");
+    expect(result.bundle).toEqual({
+      apiKey: API_KEY,
+      servicePrivateKey: VALID_SIGNER,
+      webAccountAddress: OWNER_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+  });
+
+  it("round-trips saveConfigFile output through parseCredentialBundle", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-bundle-roundtrip-"));
+    const originalEnv = { ...process.env };
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    try {
+      saveConfigFile({
+        apiKey: API_KEY,
+        servicePrivateKey: VALID_SIGNER,
+        webAccountAddress: OWNER_ADDRESS,
+        keyAdminAddress: KEY_ADMIN_ADDRESS,
+      });
+      const raw = fs.readFileSync(getConfigFilePath(), "utf-8");
+      expect(raw.trimEnd().includes("\n")).toBe(false);
+      const result = parseCredentialBundle(raw);
+      expect("bundle" in result).toBe(true);
+      if (!("bundle" in result)) throw new Error("expected a bundle");
+      expect(result.bundle).toEqual({
+        apiKey: API_KEY,
+        servicePrivateKey: VALID_SIGNER,
+        webAccountAddress: OWNER_ADDRESS,
+        keyAdminAddress: KEY_ADMIN_ADDRESS,
+      });
+    } finally {
+      process.env = originalEnv;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still parses a pre-unification reveal (serviceSecret / ownerAddress)", () => {
+    const result = parseCredentialBundle(
+      JSON.stringify({
+        v: 1,
+        apiKey: API_KEY,
+        serviceSecret: VALID_SIGNER,
+        ownerAddress: OWNER_ADDRESS,
+        keyAdminAddress: KEY_ADMIN_ADDRESS,
+      }),
+    );
+    expect("bundle" in result).toBe(true);
+    if (!("bundle" in result)) throw new Error("expected a bundle");
+    expect(result.bundle.servicePrivateKey).toBe(VALID_SIGNER);
+    expect(result.bundle.webAccountAddress).toBe(OWNER_ADDRESS);
   });
 });

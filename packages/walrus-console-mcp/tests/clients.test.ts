@@ -462,16 +462,24 @@ describe("jsonFileClient — preserving an existing config", () => {
   });
 
   it("refuses to register rather than replacing a config it cannot read", () => {
+    // Inject a read that fails with EACCES so the case is deterministic on every
+    // platform. A chmod 000 file is still readable as root and on Windows, which
+    // made this test silently pass without exercising the refusal.
     const configPath = path.join(tmpDir, "cursor", "unreadable.json");
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, "{}");
-    fs.chmodSync(configPath, 0o000);
+    const eacces = Object.assign(new Error("EACCES: permission denied, open"), {
+      code: "EACCES",
+    });
+    const client = jsonFileClient({
+      id: "cursor",
+      label: "Cursor",
+      configPath: () => configPath,
+      detect: () => true,
+      readFile: () => {
+        throw eacces;
+      },
+    });
 
-    try {
-      expect(() => clientFor(configPath).register(pkgSpec)).toThrow();
-    } finally {
-      fs.chmodSync(configPath, 0o600);
-    }
+    expect(() => client.register(pkgSpec)).toThrow(/could not be read/i);
   });
 
   it("still treats a missing config as empty and creates it", () => {
