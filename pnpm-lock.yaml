@@ -143,7 +143,7 @@ importers:
         version: 2.31.1(@types/node@25.9.5)
       '@ianvs/prettier-plugin-sort-imports':
         specifier: ^4.7.0
-        version: 4.7.1(prettier@3.9.6)
+        version: 4.7.1(prettier@3.8.4)
       '@manypkg/cli':
         specifier: ^0.25.1
         version: 0.25.1
@@ -154,11 +154,11 @@ importers:
         specifier: 1.47.0
         version: 1.47.0
       prettier:
-        specifier: ^3.8.4
-        version: 3.9.6
+        specifier: 3.8.4
+        version: 3.8.4
       prettier-plugin-tailwindcss:
         specifier: ^0.8.0
-        version: 0.8.1(@ianvs/prettier-plugin-sort-imports@4.7.1(prettier@3.9.6))(prettier@3.9.6)
+        version: 0.8.1(@ianvs/prettier-plugin-sort-imports@4.7.1(prettier@3.8.4))(prettier@3.8.4)
       tsdown:
         specifier: ^0.22.2
         version: 0.22.14(@arethetypeswrong/core@0.18.5)(tsx@4.23.12)(typescript@6.0.3)
@@ -5501,6 +5501,11 @@ packages:
     engines: {node: '>=10.13.0'}
     hasBin: true
 
+  prettier@3.8.4:
+    resolution: {integrity: sha512-N2MylSdi48+5N/6S5j+maeHbUSIzzZ5uOcX5Hm4QpV8Dkb1HFjfAKTKX6yNPJQD9AhcT3ifHNB66tWTTJDi11Q==}
+    engines: {node: '>=14'}
+    hasBin: true
+
   prettier@3.9.6:
     resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
     engines: {node: '>=14'}
@@ -7007,19 +7012,19 @@ snapshots:
       graphql: 16.14.2
       typescript: 6.0.3
 
+  '@gql.tada/cli-utils@1.9.3(@0no-co/graphqlsp@1.17.5(graphql@16.14.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)':
+    dependencies:
+      '@0no-co/graphqlsp': 1.17.5(graphql@16.14.2)(typescript@6.0.3)
+      '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@6.0.3)
+      graphql: 17.0.2
+      typescript: 6.0.3
+
   '@gql.tada/cli-utils@1.9.3(@0no-co/graphqlsp@1.17.5(graphql@17.0.2)(typescript@5.9.3))(graphql@17.0.2)(typescript@5.9.3)':
     dependencies:
       '@0no-co/graphqlsp': 1.17.5(graphql@17.0.2)(typescript@5.9.3)
       '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@5.9.3)
       graphql: 17.0.2
       typescript: 5.9.3
-
-  '@gql.tada/cli-utils@1.9.3(@0no-co/graphqlsp@1.17.5(graphql@17.0.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)':
-    dependencies:
-      '@0no-co/graphqlsp': 1.17.5(graphql@17.0.2)(typescript@6.0.3)
-      '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@6.0.3)
-      graphql: 17.0.2
-      typescript: 6.0.3
 
   '@gql.tada/internal@1.2.2(graphql@16.14.2)(typescript@6.0.3)':
     dependencies:
@@ -7118,13 +7123,13 @@ snapshots:
     dependencies:
       hono: 4.13.3
 
-  '@ianvs/prettier-plugin-sort-imports@4.7.1(prettier@3.9.6)':
+  '@ianvs/prettier-plugin-sort-imports@4.7.1(prettier@3.8.4)':
     dependencies:
       '@babel/generator': 7.29.8
       '@babel/parser': 7.29.8
       '@babel/traverse': 7.29.8
       '@babel/types': 7.29.8
-      prettier: 3.9.6
+      prettier: 3.8.4
       semver: 7.8.5
     transitivePeerDependencies:
       - supports-color
@@ -7567,7 +7572,7 @@ snapshots:
       '@stricli/core': 1.3.0
       '@types/node': 25.9.5
       cosmiconfig: 9.0.2(typescript@6.0.3)
-      prettier: 3.9.6
+      prettier: 3.8.4
       toml: 4.3.0
       typescript: 6.0.3
       zod: 4.4.3
@@ -10083,7 +10088,7 @@ snapshots:
     dependencies:
       '@0no-co/graphql.web': 1.3.4(graphql@17.0.2)
       '@0no-co/graphqlsp': 1.17.5(graphql@17.0.2)(typescript@6.0.3)
-      '@gql.tada/cli-utils': 1.9.3(@0no-co/graphqlsp@1.17.5(graphql@17.0.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)
+      '@gql.tada/cli-utils': 1.9.3(@0no-co/graphqlsp@1.17.5(graphql@16.14.2)(typescript@6.0.3))(graphql@17.0.2)(typescript@6.0.3)
       '@gql.tada/internal': 1.2.2(graphql@17.0.2)(typescript@6.0.3)
       typescript: 6.0.3
     transitivePeerDependencies:
@@ -11402,13 +11407,15 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  prettier-plugin-tailwindcss@0.8.1(@ianvs/prettier-plugin-sort-imports@4.7.1(prettier@3.9.6))(prettier@3.9.6):
+  prettier-plugin-tailwindcss@0.8.1(@ianvs/prettier-plugin-sort-imports@4.7.1(prettier@3.8.4))(prettier@3.8.4):
     dependencies:
-      prettier: 3.9.6
+      prettier: 3.8.4
     optionalDependencies:
-      '@ianvs/prettier-plugin-sort-imports': 4.7.1(prettier@3.9.6)
+      '@ianvs/prettier-plugin-sort-imports': 4.7.1(prettier@3.8.4)
 
   prettier@2.8.8: {}
+
+  prettier@3.8.4: {}
 
   prettier@3.9.6: {}
 
