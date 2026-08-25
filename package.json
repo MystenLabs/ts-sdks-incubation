@@ -31,6 +31,19 @@
 			"INVALID_DEV_AND_PEER_DEPENDENCY_RELATIONSHIP"
 		]
 	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild"
+		],
+		"overrides": {
+			"@mysten/sui": "catalog:",
+			"picomatch": "^4.0.4",
+			"path-to-regexp": "^8.4.0",
+			"protobufjs": "7.5.9",
+			"undici": "^8.5.0",
+			"vite": "catalog:"
+		}
+	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "^0.18.3",
 		"@changesets/cli": "^2.31.0",
