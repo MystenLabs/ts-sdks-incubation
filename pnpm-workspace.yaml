@@ -58,6 +58,19 @@ catalog:
   vitest: ^4.1.8
   zod: ^3.24.1
 
+onlyBuiltDependencies:
+  - esbuild
+
+overrides:
+  '@mysten/sui': 'catalog:'
+  picomatch: ^4.0.4
+  path-to-regexp: ^8.4.0
+  protobufjs: ^7.6.5
+  undici: ^8.5.0
+  vite: 'catalog:'
+  tmp: '>=0.2.4'
+  axios: ^1.16.0
+
 minimumReleaseAge: 2880
 
 minimumReleaseAgeExclude:
