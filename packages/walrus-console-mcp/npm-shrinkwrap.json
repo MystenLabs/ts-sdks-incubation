@@ -8,12 +8,12 @@
       "name": "@mysten-incubation/walrus-console-mcp",
       "version": "0.1.0",
       "dependencies": {
-        "@effect/platform": "^0.97.1",
-        "@modelcontextprotocol/sdk": "^1.30.0",
-        "@mysten/seal": "^1.2.0",
-        "@mysten/sui": "^2.18.0",
-        "effect": "^3.22.1",
-        "zod": "^3.24.4"
+        "@effect/platform": "0.97.1",
+        "@modelcontextprotocol/sdk": "1.30.0",
+        "@mysten/seal": "1.2.0",
+        "@mysten/sui": "2.18.0",
+        "effect": "3.22.1",
+        "zod": "3.25.76"
       }
     },
     "node_modules/@0no-co/graphql.web": {
@@ -223,40 +223,40 @@
       }
     },
     "node_modules/@mysten/seal": {
-      "version": "1.4.4",
-      "resolved": "https://registry.npmjs.org/@mysten/seal/-/seal-1.4.4.tgz",
-      "integrity": "sha512-QUrG9/L1LDd3ylP01rnUK0cnnrXckPaKuS2K2IrrlHeeSesupKs5RAjyYr7nV9PFWXCCJpt8tdH9xr2bjtdVNw==",
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@mysten/seal/-/seal-1.2.0.tgz",
+      "integrity": "sha512-AOykL52LZ8IfI9Uut2nJFlPB9EAyZgLN76ZlN8OpVKCCIM1LE4OPNcVvq1Fpb0dNCUNAkUevv4ZMlkis73TpZQ==",
       "license": "Apache-2.0",
       "dependencies": {
-        "@mysten/bcs": "^2.1.1",
-        "@noble/curves": "^2.3.0",
-        "@noble/hashes": "^2.3.0"
+        "@mysten/bcs": "^2.1.0",
+        "@noble/curves": "^2.2.0",
+        "@noble/hashes": "^2.2.0"
       },
       "peerDependencies": {
-        "@mysten/sui": "^2.26.2"
+        "@mysten/sui": "^2.18.0"
       }
     },
     "node_modules/@mysten/sui": {
-      "version": "2.26.2",
-      "resolved": "https://registry.npmjs.org/@mysten/sui/-/sui-2.26.2.tgz",
-      "integrity": "sha512-G1ILAQ9HY98UJsLH2SAJv5DXuWNI3i7xBZBL77U6DW/MCoCISBj5HpeJ3xaSClXSTgHMbPyHDxs5XMhEAnKLAg==",
+      "version": "2.18.0",
+      "resolved": "https://registry.npmjs.org/@mysten/sui/-/sui-2.18.0.tgz",
+      "integrity": "sha512-CW6T1giC9d3QzZPxRXjGxMnBndGf6EONBoAX3HVKn58z4smgYbbBga79IzxhRqMVPyMAhYZVaFJLqE/xjCMUOw==",
       "license": "Apache-2.0",
       "dependencies": {
         "@graphql-typed-document-node/core": "^3.2.0",
-        "@mysten/bcs": "^2.1.1",
-        "@mysten/utils": "^0.4.1",
-        "@noble/curves": "^2.3.0",
-        "@noble/hashes": "^2.3.0",
+        "@mysten/bcs": "^2.1.0",
+        "@mysten/utils": "^0.4.0",
+        "@noble/curves": "^2.2.0",
+        "@noble/hashes": "^2.2.0",
         "@protobuf-ts/grpcweb-transport": "^2.11.1",
         "@protobuf-ts/runtime": "^2.11.1",
         "@protobuf-ts/runtime-rpc": "^2.11.1",
-        "@scure/base": "^2.3.0",
-        "@scure/bip32": "^2.3.0",
-        "@scure/bip39": "^2.3.0",
-        "gql.tada": "^1.11.3",
-        "graphql": "^17.0.2",
-        "poseidon-lite": "0.3.0",
-        "valibot": "^1.4.2"
+        "@scure/base": "^2.2.0",
+        "@scure/bip32": "^2.2.0",
+        "@scure/bip39": "^2.2.0",
+        "gql.tada": "^1.10.1",
+        "graphql": "^16.14.2",
+        "poseidon-lite": "0.2.1",
+        "valibot": "^1.4.1"
       },
       "engines": {
         "node": ">=22"
@@ -272,12 +272,12 @@
       }
     },
     "node_modules/@noble/curves": {
-      "version": "2.3.0",
-      "resolved": "https://registry.npmjs.org/@noble/curves/-/curves-2.3.0.tgz",
-      "integrity": "sha512-v7cY+4oWYPQszRj6ZFGzTVL7uP2TaLo1xMhWHzYC5wj0ZhOXQ5x+sBre8rF3hi8cAoi0bh1qXoovoOkdFtvqEg==",
+      "version": "2.4.0",
+      "resolved": "https://registry.npmjs.org/@noble/curves/-/curves-2.4.0.tgz",
+      "integrity": "sha512-P4/62zrgfH33CneE3Dn4WhJVA22YUU0eR51wKIan4NVRvwsA0YnPTwWGpNbpuacSujmSFLvyzpyuR30+fbq2Ew==",
       "license": "MIT",
       "dependencies": {
-        "@noble/hashes": "2.3.0"
+        "@noble/hashes": "2.4.0"
       },
       "engines": {
         "node": ">= 20.19.0"
@@ -287,9 +287,9 @@
       }
     },
     "node_modules/@noble/hashes": {
-      "version": "2.3.0",
-      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.3.0.tgz",
-      "integrity": "sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ==",
+      "version": "2.4.0",
+      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.4.0.tgz",
+      "integrity": "sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==",
       "license": "MIT",
       "engines": {
         "node": ">= 20.19.0"
@@ -346,6 +346,33 @@
         "url": "https://paulmillr.com/funding/"
       }
     },
+    "node_modules/@scure/bip32/node_modules/@noble/curves": {
+      "version": "2.3.0",
+      "resolved": "https://registry.npmjs.org/@noble/curves/-/curves-2.3.0.tgz",
+      "integrity": "sha512-v7cY+4oWYPQszRj6ZFGzTVL7uP2TaLo1xMhWHzYC5wj0ZhOXQ5x+sBre8rF3hi8cAoi0bh1qXoovoOkdFtvqEg==",
+      "license": "MIT",
+      "dependencies": {
+        "@noble/hashes": "2.3.0"
+      },
+      "engines": {
+        "node": ">= 20.19.0"
+      },
+      "funding": {
+        "url": "https://paulmillr.com/funding/"
+      }
+    },
+    "node_modules/@scure/bip32/node_modules/@noble/hashes": {
+      "version": "2.3.0",
+      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.3.0.tgz",
+      "integrity": "sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 20.19.0"
+      },
+      "funding": {
+        "url": "https://paulmillr.com/funding/"
+      }
+    },
     "node_modules/@scure/bip39": {
       "version": "2.3.0",
       "resolved": "https://registry.npmjs.org/@scure/bip39/-/bip39-2.3.0.tgz",
@@ -353,6 +380,18 @@
       "license": "MIT",
       "dependencies": {
         "@noble/hashes": "2.3.0"
+      },
+      "funding": {
+        "url": "https://paulmillr.com/funding/"
+      }
+    },
+    "node_modules/@scure/bip39/node_modules/@noble/hashes": {
+      "version": "2.3.0",
+      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.3.0.tgz",
+      "integrity": "sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 20.19.0"
       },
       "funding": {
         "url": "https://paulmillr.com/funding/"
@@ -926,12 +965,12 @@
       }
     },
     "node_modules/graphql": {
-      "version": "17.0.2",
-      "resolved": "https://registry.npmjs.org/graphql/-/graphql-17.0.2.tgz",
-      "integrity": "sha512-FRWbddMxfkjiB7z+aQDWIR+E34xo9I8c9mtK2RPv8PmMzKRvrdsreHL/Ui/TmwHJfhHChEtsFPyMHKI+xuarQQ==",
+      "version": "16.14.2",
+      "resolved": "https://registry.npmjs.org/graphql/-/graphql-16.14.2.tgz",
+      "integrity": "sha512-Chq1s4CY7jmh8gO2qvLIJyfCDIN+EHLFW/9iShnp1z8FjBQMoodWP1kDC36VAMXXIvAjj4ARa7ntfAV2BrjsbA==",
       "license": "MIT",
       "engines": {
-        "node": "^22.0.0 || ^24.0.0 || ^25.0.0 || >=26.0.0"
+        "node": "^12.22.0 || ^14.16.0 || ^16.0.0 || >=17.0.0"
       }
     },
     "node_modules/has-symbols": {
@@ -959,9 +998,9 @@
       }
     },
     "node_modules/hono": {
-      "version": "4.13.4",
-      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.4.tgz",
-      "integrity": "sha512-AGEwKIyRMHRv1t8Wjwa3LHxQ61X5CqrdFT+4BRNTpqS5aJNnpl5WLjADb7vFlJzI/8uK7T5QLVApCMQKNa3LgQ==",
+      "version": "4.13.5",
+      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.5.tgz",
+      "integrity": "sha512-O6+/eCYRkzzzy0rPWwKLiGBR1nFuUPZynnwjxN1MBA62NNqbT0wQEzQyK2gSO5yDIDB336sXQleAhOHrzlYyKw==",
       "license": "MIT",
       "engines": {
         "node": ">=16.9.0"
@@ -1286,9 +1325,9 @@
       }
     },
     "node_modules/poseidon-lite": {
-      "version": "0.3.0",
-      "resolved": "https://registry.npmjs.org/poseidon-lite/-/poseidon-lite-0.3.0.tgz",
-      "integrity": "sha512-ilJj4MIve4uBEG7SrtPqUUNkvpJ/pLVbndxa0WvebcQqeIhe+h72JR4g0EvwchUzm9sOQDlOjiDNmRAgxNZl4A==",
+      "version": "0.2.1",
+      "resolved": "https://registry.npmjs.org/poseidon-lite/-/poseidon-lite-0.2.1.tgz",
+      "integrity": "sha512-xIr+G6HeYfOhCuswdqcFpSX47SPhm0EpisWJ6h7fHlWwaVIvH3dLnejpatrtw6Xc6HaLrpq05y7VRfvDmDGIog==",
       "license": "MIT"
     },
     "node_modules/proxy-addr": {

@@ -1,11 +1,14 @@
 /**
- * Supply-chain pinning guard: fails if npm-shrinkwrap.json is missing, or no
- * longer agrees with package.json's `dependencies` ranges.
+ * Supply-chain pinning guard: fails if npm-shrinkwrap.json is missing, no
+ * longer agrees with package.json's `dependencies` ranges, or pins a direct
+ * dependency to a different version than the one installed under node_modules
+ * (i.e. the one the workspace lockfile resolved and the tests ran against).
  *
  * Regenerate with `pnpm shrinkwrap:generate` after any `dependencies` change,
  * and commit the result.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import * as path from "node:path";
 import { findStaleDependencies } from "./shrinkwrapStaleness.mjs";
 
 interface ShrinkwrapPackage {
@@ -66,6 +69,24 @@ if (outOfRange.length > 0) {
           `npm-shrinkwrap.json pins ${d.name}@${d.pinned}, which does not satisfy package.json's ${d.range}.`,
       )
       .join("\n"),
+  );
+}
+
+const pinned = directDependencyVersions(shrinkwrap);
+const drifted: string[] = [];
+for (const name of Object.keys(pkg.dependencies ?? {})) {
+  const manifest = path.join("node_modules", name, "package.json");
+  if (!existsSync(manifest)) continue; // not installed here; the range check above still applies
+  const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version?: string };
+  if (typeof version === "string" && pinned[name] !== undefined && pinned[name] !== version) {
+    drifted.push(`${name}: shrinkwrap pins ${pinned[name]}, node_modules has ${version}`);
+  }
+}
+if (drifted.length > 0) {
+  failures.push(
+    `npm-shrinkwrap.json pins direct dependencies to versions other than the installed ones:\n  ` +
+      drifted.join("\n  ") +
+      `\n  The shipped graph must be the graph the tests ran against.`,
   );
 }
 

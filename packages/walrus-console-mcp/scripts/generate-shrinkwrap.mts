@@ -1,9 +1,16 @@
 /**
- * Regenerate npm-shrinkwrap.json from package.json's own dependency ranges,
- * resolved by npm against the live registry — independent of the pnpm
- * workspace this repo otherwise uses for local development.
+ * Regenerate npm-shrinkwrap.json with every direct dependency pinned to the
+ * exact version the pnpm workspace has installed under node_modules, and the
+ * transitive graph resolved by npm against the live registry.
  *
- * Run after any `dependencies` change and commit the result:
+ * Direct deps are pinned rather than re-resolved from package.json's ranges so
+ * the graph an end user gets from `npm install <spec>` (which honours the
+ * shipped shrinkwrap) is the graph this repo's tests actually ran against. A
+ * range-only resolution can drift to newer minors than the workspace lockfile
+ * pins; check-shrinkwrap.mts fails on that drift.
+ *
+ * Run after any `dependencies` change (and after `pnpm install` moves a direct
+ * dep) and commit the result:
  *   pnpm shrinkwrap:generate
  *
  * Uses a throwaway directory rather than running npm in place: this repo's
@@ -17,6 +24,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const ROOT = path.join(import.meta.dirname, "..");
+
+/** Exact version of `name` as installed in this package's node_modules. */
+function installedVersion(name: string): string {
+  const manifest = path.join(ROOT, "node_modules", name, "package.json");
+  const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version?: string };
+  if (typeof version !== "string") {
+    throw new Error(`${manifest} has no version — run \`pnpm install\` first`);
+  }
+  return version;
+}
 const tmp = mkdtempSync(path.join(os.tmpdir(), "walrus-console-mcp-shrinkwrap-"));
 
 try {
@@ -25,9 +42,12 @@ try {
     version: string;
     dependencies?: Record<string, string>;
   };
+  const dependencies = Object.fromEntries(
+    Object.keys(pkg.dependencies ?? {}).map((name) => [name, installedVersion(name)]),
+  );
   writeFileSync(
     path.join(tmp, "package.json"),
-    JSON.stringify({ name: pkg.name, version: pkg.version, dependencies: pkg.dependencies ?? {} }),
+    JSON.stringify({ name: pkg.name, version: pkg.version, dependencies }),
   );
 
   execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts"], {
@@ -36,7 +56,11 @@ try {
   });
   execFileSync("npm", ["shrinkwrap"], { cwd: tmp, stdio: "inherit" });
 
-  cpSync(path.join(tmp, "npm-shrinkwrap.json"), path.join(ROOT, "npm-shrinkwrap.json"));
+  const out = path.join(ROOT, "npm-shrinkwrap.json");
+  cpSync(path.join(tmp, "npm-shrinkwrap.json"), out);
+  // npm's own JSON layout does not match this repo's prettier config; format
+  // it so `pnpm lint` stays green and regenerations diff cleanly.
+  execFileSync("pnpm", ["exec", "prettier", "-w", out], { cwd: ROOT, stdio: "inherit" });
   console.log(`npm-shrinkwrap.json regenerated at ${path.join(ROOT, "npm-shrinkwrap.json")}`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
