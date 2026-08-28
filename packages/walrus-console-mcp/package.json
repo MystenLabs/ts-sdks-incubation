@@ -1,6 +1,6 @@
 {
   "name": "@mysten-incubation/walrus-console-mcp",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "MCP server for Walrus Console — ggdrive-style decentralized, Seal-encrypted storage on Walrus + Sui",
   "type": "module",
   "bin": {
@@ -17,7 +17,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MystenLabs/walrus-console-mcp.git"
+    "url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+    "directory": "packages/walrus-console-mcp"
+  },
+  "homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/walrus-console-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
   },
   "publishConfig": {
     "access": "public"
