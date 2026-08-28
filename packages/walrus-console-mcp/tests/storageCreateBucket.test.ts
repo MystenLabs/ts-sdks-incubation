@@ -15,7 +15,10 @@ import {
   deriveBucketGroupId,
   RosterChainDepsTag,
 } from "../src/console/ConsoleStorageService";
-import { TESTNET_PACKAGE_CONFIG } from "../src/console/packageConfig";
+import {
+  type BucketGroupPackageConfig,
+  TESTNET_PACKAGE_CONFIG,
+} from "../src/console/packageConfig";
 import type {
   MemberFieldPage,
   RosterChainDeps,
@@ -90,13 +93,22 @@ const TABLE = normalizeSuiAddress("0x7ab1e");
  * verbatim from harbor's own `deriveBucketGroupId` unit vector.
  *
  * Using ground truth here rather than "whatever our derivation returns" is the
- * whole point: this file is what proves the anchor id is computed correctly, and
- * a test that compared our implementation against itself would pass just as
- * happily with the BCS layout or the type-tag root wrong — and a wrong anchor
- * silently poisons every later roster in the space. `CONFIG` is
- * `TESTNET_PACKAGE_CONFIG`, whose registry and original package id are the same
- * two the vector was captured against.
+ * whole point: the `deriveBucketGroupId` tests below are what prove the anchor
+ * id is computed correctly, and a test that compared our implementation against
+ * itself would pass just as happily with the BCS layout or the type-tag root
+ * wrong — and a wrong anchor silently poisons every later roster in the space.
+ *
+ * The vector was captured against the testnet deploy that preceded the COMG-786
+ * fresh publish, so it pins THAT package set (`GOLDEN_CONFIG`), not the live
+ * `TESTNET_PACKAGE_CONFIG`: the live config moves on every republish, the
+ * captured `derived_object::claim` result does not.
  */
+const GOLDEN_CONFIG: BucketGroupPackageConfig = {
+  packageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
+  originalPackageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
+  bucketRegistryId: "0x314fc86db4449e75f542015fd952513393b4671f6cf1dea01fd1f94697d97ab6",
+  permissionedGroupPackageId: "0xba8a26d42bc8b5e5caf4dac2a0f7544128d5dd9b4614af88eec1311ade11de79",
+};
 const SIGNER = normalizeSuiAddress(
   "0x5a3e25849766e4bf120a9aff641b8e7f665261726e4191ab03ad2a0a49bfafb5",
 );
@@ -104,9 +116,17 @@ const BUCKET_UUID = "b3b7930f-5f5a-4a2c-8e0d-3aa6c7287184";
 /** `create_bucket_group`'s bucket-id argument, as the PTB carries it. */
 const BUCKET_ID_ARG = bcs.string().serialize(BUCKET_UUID).toBytes();
 /** The group `derived_object::claim` actually produced for that triple, on chain. */
-const DERIVED_GROUP = normalizeSuiAddress(
+const GOLDEN_DERIVED_GROUP = normalizeSuiAddress(
   "0xbfeeed093c6cc91e815793383cc30122b68315864d578dffcdbd4576d8da951b",
 );
+/**
+ * What the live package set derives for the same triple. The create-bucket flow
+ * tests resolve `CONFIG` from `BASE_CONFIG.baseUrl` inside the code under test,
+ * so the group the mocked Console "reports" has to be the one that config
+ * derives — correctness of the derivation itself is pinned by the golden vector
+ * above, not by these.
+ */
+const DERIVED_GROUP = deriveBucketGroupId(CONFIG, BUCKET_ID_ARG, SIGNER);
 /** Some other group entirely — what a substituting endpoint would report. */
 const IMPOSTOR_GROUP = normalizeSuiAddress("0xbad9e77");
 
@@ -473,7 +493,7 @@ afterEach(() => {
 
 describe("deriveBucketGroupId", () => {
   it("reproduces a real on-chain derived_object::claim result", () => {
-    expect(deriveBucketGroupId(CONFIG, BUCKET_ID_ARG, SIGNER)).toBe(DERIVED_GROUP);
+    expect(deriveBucketGroupId(GOLDEN_CONFIG, BUCKET_ID_ARG, SIGNER)).toBe(GOLDEN_DERIVED_GROUP);
   });
 
   it("roots the type tag at originalPackageId, not the upgraded packageId", () => {
@@ -481,11 +501,11 @@ describe("deriveBucketGroupId", () => {
     // not move the derivation. Testnet's two ids are identical, so the real flow
     // cannot distinguish them — this is the only thing that does, and harbor's own
     // derivation carries the same warning.
-    const upgraded = { ...CONFIG, packageId: normalizeSuiAddress("0xfeed") };
-    expect(deriveBucketGroupId(upgraded, BUCKET_ID_ARG, SIGNER)).toBe(DERIVED_GROUP);
+    const upgraded = { ...GOLDEN_CONFIG, packageId: normalizeSuiAddress("0xfeed") };
+    expect(deriveBucketGroupId(upgraded, BUCKET_ID_ARG, SIGNER)).toBe(GOLDEN_DERIVED_GROUP);
 
-    const wrongRoot = { ...CONFIG, originalPackageId: normalizeSuiAddress("0xfeed") };
-    expect(deriveBucketGroupId(wrongRoot, BUCKET_ID_ARG, SIGNER)).not.toBe(DERIVED_GROUP);
+    const wrongRoot = { ...GOLDEN_CONFIG, originalPackageId: normalizeSuiAddress("0xfeed") };
+    expect(deriveBucketGroupId(wrongRoot, BUCKET_ID_ARG, SIGNER)).not.toBe(GOLDEN_DERIVED_GROUP);
   });
 
   it("binds the address to the creator and to the registry", () => {

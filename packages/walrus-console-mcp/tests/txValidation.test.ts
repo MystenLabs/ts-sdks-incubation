@@ -4,7 +4,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { fromBase64, toBase64 } from "@mysten/sui/utils";
 import { describe, expect, it } from "vitest";
 import realFixture from "./fixtures/createBucket746.json" with { type: "json" };
-import { TESTNET_PACKAGE_CONFIG } from "../src/console/packageConfig";
+import type { BucketGroupPackageConfig } from "../src/console/packageConfig";
 import {
   assertExpectedTransaction,
   type RosterMember,
@@ -26,7 +26,18 @@ import fixtures from "./fixtures/sponsoredTransactions.json" with { type: "json"
  * old roster-only shape rather than quietly accept it.
  */
 
-const cfg = TESTNET_PACKAGE_CONFIG;
+/**
+ * The package set every fixture in this file was captured against — the testnet
+ * deploy that preceded the COMG-786 fresh publish. Pinned literally rather than
+ * read from the live testnet config: the captured bytes name these packages, and
+ * the live config moves on every republish.
+ */
+const cfg: BucketGroupPackageConfig = {
+  packageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
+  originalPackageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
+  bucketRegistryId: "0x314fc86db4449e75f542015fd952513393b4671f6cf1dea01fd1f94697d97ab6",
+  permissionedGroupPackageId: "0xba8a26d42bc8b5e5caf4dac2a0f7544128d5dd9b4614af88eec1311ade11de79",
+};
 
 const grantExpectation = (scope: "read" | "readwrite") => {
   const f =

@@ -38,9 +38,9 @@ describe("resolvePackageConfig", () => {
 
   it("pins the current testnet deploy", () => {
     expect(TESTNET_PACKAGE_CONFIG).toEqual({
-      packageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
-      originalPackageId: "0x28d1cf624b03376df62138a0372b506bbd456790ee183e244c25231a39c618db",
-      bucketRegistryId: "0x314fc86db4449e75f542015fd952513393b4671f6cf1dea01fd1f94697d97ab6",
+      packageId: "0xf9b261d4c0dbcf845d79f864e85581f9686fd6de9f4770ba1d77489d67f7833c",
+      originalPackageId: "0xf9b261d4c0dbcf845d79f864e85581f9686fd6de9f4770ba1d77489d67f7833c",
+      bucketRegistryId: "0x902841af0cd25c5f8dee4980fe2942687c9ca80db56d77ff67a4ba6d9d97b9cf",
       // Not built with locally — pinned because the sponsored create-bucket PTB
       // calls into it, so txValidation must allow exactly this package and no
       // other. Captured from a live testnet reserve.
