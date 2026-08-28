@@ -55,7 +55,7 @@ catalog:
   turbo: ^2.9.18
   typescript: ^6.0.3
   vite: ^8.0.16
-  vitest: ^4.1.8
+  vitest: ^4.1.11
   zod: ^3.24.1
 
 minimumReleaseAge: 2880

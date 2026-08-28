@@ -87,8 +87,8 @@
 		"@testing-library/react": "^16.3.1",
 		"@types/node": "^25.9.3",
 		"@types/react": "^19.2.17",
-		"@vitest/browser": "^4.1.8",
-		"@vitest/browser-playwright": "^4.1.8",
+		"@vitest/browser": "^4.1.11",
+		"@vitest/browser-playwright": "^4.1.11",
 		"happy-dom": "^20.10.3",
 		"playwright": "^1.60.0",
 		"react": "^19.2.7",
@@ -98,12 +98,12 @@
 		"vitest": "catalog:"
 	},
 	"dependencies": {
-		"@hono/node-server": "^2.0.4",
+		"@hono/node-server": "^2.1.1",
 		"@mysten/utils": "^0.4.0",
 		"@mysten/wallet-sdk": "^0.4.0",
 		"@mysten/wallet-standard": "catalog:",
 		"@mysten/window-wallet-core": "^0.2.0",
-		"hono": "^4.12.25",
+		"hono": "^4.13.5",
 		"lit": "^3.3.3"
 	},
 	"peerDependencies": {
