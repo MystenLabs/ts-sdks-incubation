@@ -43,6 +43,9 @@ function writeRaw(data: unknown): void {
   fs.writeFileSync(path.join(dir, "anchors.json"), JSON.stringify(data), "utf-8");
 }
 
+/** Absolute path to src/console/anchorStore.ts, so a child process can import it directly. */
+const MODULE = path.resolve(__dirname, "../src/console/anchorStore.ts");
+
 describe("readAnchors — missing file", () => {
   it("returns [] when anchors.json does not exist (ENOENT, silent)", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -277,5 +280,62 @@ describe("corrupt or unreadable anchors file — degrades to empty with a warnin
     expect(() => recordAnchor("space_1", entry())).not.toThrow();
 
     expect(readAnchors("space_1")).toEqual([entry()]);
+  });
+});
+
+/**
+ * recordAnchor is a read-modify-write across processes, same shape as
+ * mergeConfigFile: four `create_bucket`s landing on different processes
+ * (concurrent server instances, or a CLI run overlapping a server) each load
+ * anchors.json, add their own group, and write the whole file back. Without
+ * coordination the later writer's whole-file replacement wins and silently
+ * drops every earlier writer's group.
+ *
+ * These drive real child processes, mirroring
+ * tests/configFile.concurrency.test.ts's four-process merge test — an
+ * in-process test cannot observe an inter-process race.
+ */
+describe("recordAnchor — concurrent writers", () => {
+  it("keeps every writer's group when four processes record at once", async () => {
+    const groups = ["group_1", "group_2", "group_3", "group_4"];
+    const startAt = Date.now() + 1200;
+    const { spawn } = await import("node:child_process");
+
+    const procs = groups.map((groupId) => {
+      const file = path.join(tmpDir, `record-${groupId}.mts`);
+      const payload = JSON.stringify({
+        groupId,
+        bucketId: `bucket_for_${groupId}`,
+        creator: CREATOR,
+        recordedAt: "2026-08-21T00:00:00.000Z",
+      });
+      fs.writeFileSync(
+        file,
+        `import { recordAnchor } from ${JSON.stringify(MODULE)};\n` +
+          `while (Date.now() < ${startAt}) {}\n` +
+          `recordAnchor("space_1", ${payload});\n`,
+      );
+      return spawn("npx", ["tsx", file], {
+        env: { ...process.env, XDG_CONFIG_HOME: tmpDir },
+        stdio: "ignore",
+      });
+    });
+
+    const codes = await Promise.all(
+      procs.map((p) => new Promise<number | null>((resolve) => p.on("exit", resolve))),
+    );
+    expect(codes.every((c) => c === 0)).toBe(true);
+
+    expect(
+      readAnchors("space_1")
+        .map((a) => a.groupId)
+        .sort(),
+    ).toEqual([...groups].sort());
+  }, 60_000);
+
+  it("removes the lock file once the record completes", () => {
+    recordAnchor("space_1", entry());
+    const leftovers = fs.readdirSync(getConfigDir()).filter((n) => n.includes("lock"));
+    expect(leftovers).toEqual([]);
   });
 });

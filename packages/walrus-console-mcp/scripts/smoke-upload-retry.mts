@@ -33,8 +33,9 @@ import { HttpClient, HttpClientResponse } from "@effect/platform";
 import { Effect, Layer, Redacted } from "effect";
 import { ConsoleConfigTag } from "../src/config.js";
 import { ConsoleApiClient, parseConsoleErrorBody } from "../src/console/ConsoleApiClient.js";
-import { ConsoleStorageService } from "../src/console/ConsoleStorageService.js";
+import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/ConsoleStorageService.js";
 import { ConsoleApiError } from "../src/console/errors.js";
+import type { RosterChainDeps } from "../src/console/rosterVerification.js";
 import { SealCryptoService } from "../src/console/SealCryptoService.js";
 import type { BucketId } from "../src/console/types.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -104,6 +105,16 @@ const stubSeal = Layer.succeed(SealCryptoService, {
   encrypt: (bytes: Uint8Array) => Effect.succeed(bytes),
 } as unknown as SealCryptoService);
 
+/**
+ * `createBucket` verifies its roster against chain state, so `ConsoleStorageService`
+ * declares those reads as a dependency (see `tests/storageTransfer.test.ts`'s
+ * `NO_CHAIN_READS`, same pattern). This script never calls `createBucket` — it only
+ * exercises the `mirror_missing_grant` upload retry — so an unreachable stub is
+ * enough to satisfy the layer. It asserts nothing about roster verification; do not
+ * read its passing as coverage for that path.
+ */
+const NO_CHAIN_READS = Layer.succeed(RosterChainDepsTag, {} as RosterChainDeps);
+
 const ApiLayer = ConsoleApiClient.Default.pipe(
   Layer.provideMerge(Layer.mergeAll(TestConfig, Layer.succeed(HttpClient.HttpClient, stubHttp))),
 );
@@ -111,7 +122,7 @@ const ApiLayer = ConsoleApiClient.Default.pipe(
 // declared dependencies (including the real SealCryptoService), which would
 // override the stub and drag in Sui BCS encoding for a policy id we do not have.
 const StorageLayer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
-  Layer.provide(Layer.mergeAll(ApiLayer, stubSeal)),
+  Layer.provide(Layer.mergeAll(ApiLayer, stubSeal, NO_CHAIN_READS)),
 );
 
 const BUCKET = "bucket-smoke" as BucketId;

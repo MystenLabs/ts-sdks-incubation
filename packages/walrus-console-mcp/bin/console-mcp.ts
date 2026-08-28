@@ -292,12 +292,26 @@ server.registerTool(
       "The space is fixed by the Key-Admin credential; spaceId is checked against it, but only " +
       "AFTER the mint — the Key-Admin credential has no data-plane access, so the space cannot be " +
       "read beforehand. " +
-      "Returns { ok, credential } where credential holds apiKey (hbr_…) and privateKey " +
-      "(suiprivkey1…) — both shown ONCE; store them securely and never echo them back. " +
-      "IMPORTANT: ok:false still carries a real, live credential. The mint had already succeeded " +
-      "and a later step failed, so `stage` says which and `recovery` says what to do. Do NOT call " +
-      "this tool again to retry an ok:false result — the key already exists, and retrying mints a " +
-      "second one while orphaning the first.",
+      "Returns { ok, credential } where credential no longer carries the raw secrets: apiKey " +
+      "(hbr_…) and privateKey (suiprivkey1…) are written ONCE to a private 0600 file, whose path " +
+      "is credential.credentialFile — read them from there; they never appear in this output. " +
+      "IMPORTANT: ok:false usually still carries that credential (with its file pointer, so the " +
+      "secrets remain recoverable) — the mint had already succeeded and a later step failed, so " +
+      "`stage` says which and `recovery` says what to do. TWO stages carry NO credential field " +
+      'at all. stage:"persist": the mint succeeded but its secrets could not be saved to disk, ' +
+      "so that result has only keyId, spaceId, attemptedPath, and recovery guidance — the key " +
+      "exists server-side with no local record of its secrets, and this tool's own result cannot " +
+      'name it beyond keyId. stage:"mint": Console returned a 201 (a point of no return — the ' +
+      "key likely exists server-side) but its response body itself failed validation, so there " +
+      "is not even a keyId here — only a marker and recovery guidance. For BOTH of these, the " +
+      'pre-mint stderr marker ("minting a Console key marked...", logged before the mint even ' +
+      "runs) is the only way to find that key in the Console UI afterward. " +
+      'stage:"private-buckets-unknown" DOES carry the credential (secrets are already saved) but ' +
+      "means Console's response left private_buckets unusable — missing, not a list, or a list " +
+      "with an unreadable entry — so bucket access grants were skipped entirely; the key may " +
+      "have no access to buckets it should. " +
+      "Either way, do NOT call this tool again to retry an ok:false result — the key already " +
+      "exists, and retrying mints a second one while orphaning the first.",
     inputSchema: {
       spaceId: z
         .string()
@@ -376,9 +390,29 @@ server.registerTool(
       },
       extra: ToolExtra,
     ) => {
-      const resolvedPath = await resolvePathWithinRoots(server.server, localPath, "Source");
       return await runPromise(
         Effect.gen(function* () {
+          // M9: canonicalize the path INSIDE the fiber `runPromise` drives, not
+          // before it. `resolvePathWithinRoots` calls `toRealPathAsync`, which
+          // can block on a stalled network mount's `realpath()`; done here the
+          // walk is part of the request's own effect, so it no longer stalls
+          // the whole event loop (every other in-flight request, the
+          // transport, cancellation itself) while it waits. It is NOT
+          // cancellable, though: `try` below declares zero parameters, so
+          // `Effect.tryPromise` never manufactures an `AbortSignal` for it
+          // (arity must be >= 1 — see `effectPromise.ts`), and `fs/promises`
+          // `realpath`/`lstat`/`readlink` take no signal to pass anyway.
+          // Interrupting this request abandons the promise; the underlying
+          // `realpath(2)` keeps running in the libuv threadpool until the
+          // filesystem answers. Plain-Error passthrough (not a tagged error)
+          // so `safeTool`'s output stays byte-identical: `unwrapFiberFailure`
+          // recovers this same `Error`, and `describeError` renders a plain
+          // `Error` by its `.message` either way — precedent
+          // `ConsoleStorageService.ts:902` (`catch: (cause) => cause`).
+          const resolvedPath = yield* Effect.tryPromise({
+            try: () => resolvePathWithinRoots(server.server, localPath, "Source"),
+            catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+          });
           const storage = yield* ConsoleStorageService;
           return yield* storage.uploadFileToBucket(
             BucketId.make(bucketId),
@@ -423,9 +457,16 @@ server.registerTool(
       },
       extra: ToolExtra,
     ) => {
-      const resolvedPath = await resolvePathWithinRoots(server.server, destPath, "Destination");
       return await runPromise(
         Effect.gen(function* () {
+          // M9: same reasoning as upload_file above — canonicalize inside the
+          // fiber so the walk no longer stalls the event loop (it is NOT
+          // cancellable: see upload_file's comment for why), plain-Error
+          // passthrough so the tool's output text is unaffected by the move.
+          const resolvedPath = yield* Effect.tryPromise({
+            try: () => resolvePathWithinRoots(server.server, destPath, "Destination"),
+            catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+          });
           const storage = yield* ConsoleStorageService;
           return yield* storage.downloadFile(
             BucketId.make(bucketId),

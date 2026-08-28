@@ -14,6 +14,7 @@ import {
   readFileWithinRoot,
   splitAllowedDirList,
   toRealPath,
+  toRealPathAsync,
   validateAllowedDirectory,
 } from "../src/pathSandbox";
 
@@ -260,6 +261,107 @@ describe("resolvePathWithinRoots (synthetic roots)", () => {
     await expect(
       resolvePathWithinRoots(fakeServer(null), join("/tmp", "anywhere.txt"), "Source", NO_ENV, []),
     ).rejects.toThrow(/config --allowed-dirs/);
+  });
+});
+
+// M9: `resolvePathWithinRoots` now resolves candidates and roots through
+// `toRealPathAsync` instead of the synchronous `toRealPath`, so request-path
+// canonicalization no longer blocks the event loop. These cases exercise the
+// symlink-resolution behavior directly against BOTH implementations — sync
+// `toRealPath` (still exported and used by `validateAllowedDirectory`, the
+// installer, `cliArgs.ts`, `credentials.ts`, and other tests on non-request
+// paths) and the new `toRealPathAsync` — so a divergence between the two
+// (wrong message, different rejection, different suffix handling) fails here
+// instead of only showing up once `resolvePathWithinRoots` is wired to one of
+// them. `call` below folds a synchronous throw into a rejected promise so the
+// same assertions work for both implementations.
+describe.each([
+  ["toRealPath", toRealPath],
+  ["toRealPathAsync", toRealPathAsync],
+] as const)("%s", (_name, resolveFn) => {
+  let base: string;
+  let allowed: string;
+  let outside: string;
+
+  // Wraps `resolveFn` so a synchronous throw (from `toRealPath`) and an async
+  // rejection (from `toRealPathAsync`) both surface as a rejected promise —
+  // an `async` function catches a synchronous throw in its body and turns it
+  // into a rejection automatically.
+  const call = async (p: string): Promise<string> => resolveFn(p);
+
+  beforeAll(() => {
+    base = toRealPath(mkdtempSync(join(tmpdir(), "wcm-realpath-")));
+    allowed = join(base, "allowed");
+    outside = join(base, "outside");
+    mkdirSync(allowed);
+    mkdirSync(outside);
+    symlinkSync(join(outside, "not-created-yet.txt"), join(allowed, "dangling-out"), "file");
+    symlinkSync(join(allowed, "not-created-yet.txt"), join(allowed, "dangling-in"), "file");
+    symlinkSync(join(allowed, "loop-b"), join(allowed, "loop-a"), "file");
+    symlinkSync(join(allowed, "loop-a"), join(allowed, "loop-b"), "file");
+    writeFileSync(join(allowed, "target.txt"), "inside");
+    symlinkSync(join(allowed, "target.txt"), join(allowed, "live-in"), "file");
+  });
+
+  afterAll(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it("resolves a live symlink to its real target", async () => {
+    expect(await call(join(allowed, "live-in"))).toBe(join(allowed, "target.txt"));
+  });
+
+  it("resolves a not-yet-existing suffix under an existing directory", async () => {
+    expect(await call(join(allowed, "newsub", "new.txt"))).toBe(join(allowed, "newsub", "new.txt"));
+  });
+
+  it("rejects a dangling symlink and names its target", async () => {
+    await expect(call(join(allowed, "dangling-in"))).rejects.toThrow(/not-created-yet\.txt/);
+  });
+
+  it("rejects a dangling symlink whose target is outside the allowed dir the same as one inside it", async () => {
+    await expect(call(join(allowed, "dangling-out"))).rejects.toThrow(/broken symlink/);
+  });
+
+  it("rejects a symlink cycle instead of hanging", async () => {
+    await expect(call(join(allowed, "loop-a"))).rejects.toThrow(/broken symlink/);
+  });
+});
+
+// The two implementations must fail identically, not merely "similarly" — a
+// caller (resolvePathWithinRoots) wraps whichever one throws with the same
+// `${label} path "..." cannot be used: ${message}` template, so any drift here
+// would leak into the tool-facing error text depending only on which twin is
+// in use.
+describe("toRealPath vs toRealPathAsync — message parity", () => {
+  let dir: string;
+  let danglingLink: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "wcm-realpath-parity-"));
+    danglingLink = join(dir, "dangling");
+    symlinkSync(join(dir, "does-not-exist.txt"), danglingLink, "file");
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("throws byte-identical messages for a broken symlink", async () => {
+    let syncMessage: string | undefined;
+    try {
+      toRealPath(danglingLink);
+    } catch (error) {
+      syncMessage = error instanceof Error ? error.message : String(error);
+    }
+    let asyncMessage: string | undefined;
+    try {
+      await toRealPathAsync(danglingLink);
+    } catch (error) {
+      asyncMessage = error instanceof Error ? error.message : String(error);
+    }
+    expect(syncMessage).toBeDefined();
+    expect(asyncMessage).toBe(syncMessage);
   });
 });
 

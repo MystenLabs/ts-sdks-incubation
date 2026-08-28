@@ -3,6 +3,10 @@ import { Transaction } from "@mysten/sui/transactions";
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
+// Test-only: `MAX_CONSULTED_ANCHORS`'s relation to the store's retention cap
+// (M11) is asserted below, but `rosterVerification.ts` itself must never import
+// from `anchorStore` — that dependency is exactly what this task removes.
+import { MAX_ANCHORS_PER_SPACE } from "../src/console/anchorStore";
 import { ConsoleApiClient, type SpaceSignersResponse } from "../src/console/ConsoleApiClient";
 import { MAINNET_PACKAGE_CONFIG, TESTNET_PACKAGE_CONFIG } from "../src/console/packageConfig";
 import {
@@ -11,6 +15,7 @@ import {
   makeRosterChainDeps,
   MAX_ADDRESSES_PER_SIMULATION,
   MAX_ADMITTED_ANCHORS,
+  MAX_CONSULTED_ANCHORS,
   MAX_ROSTER_MEMBERS,
   resolveRosterRoles,
   RosterUnavailableError,
@@ -1152,9 +1157,11 @@ describe("authorVerifiedRoster", () => {
 
     expect(result.reason).toBe("no_admitted_anchor");
     expect(result.members).toEqual([]);
-    // Nothing backed it, and nothing was left unread either — the consult cap
-    // cannot bite before 20 anchors are ADMITTED, so it can never be the reason
-    // this set is empty.
+    // Nothing backed it, and nothing was left unread either — with only two
+    // anchors here, neither MAX_ADMITTED_ANCHORS nor MAX_CONSULTED_ANCHORS
+    // (M11's separate consult budget, which — unlike this one — can bite with
+    // NOTHING admitted; see the M11 tests below) ever comes close to biting, so
+    // neither cap can be the reason this set is empty.
     expect(result.anchorGroupIds).toEqual([]);
     expect(result.anchorsNotConsulted).toBeUndefined();
     // The candidate is still named, exactly as the other arms name theirs.
@@ -1452,6 +1459,77 @@ describe("authorVerifiedRoster", () => {
     expect(result.members).toEqual([{ address: member, role: "editor" }]);
     expect(result.anchorGroupIds).toEqual([carriesEvidence]);
     expect(result.anchorsNotConsulted).toBeUndefined();
+  });
+
+  it("caps the CONSULTED anchors at MAX_CONSULTED_ANCHORS, independent of admission (M11)", async () => {
+    // The admitted cap above cannot be what bounds this: only ONE anchor here
+    // ever gets admitted, so `admitted.length >= MAX_ADMITTED_ANCHORS` never
+    // trips. The loop still must not enumerate all of them — it owns its own
+    // budget rather than borrowing the store's read cap (`anchorStore.ts`'s
+    // `MAX_ANCHORS_PER_SPACE`), which this module has no way to see was ever
+    // applied to the list it was handed.
+    const member = addr(1);
+    const anchors = Array.from({ length: MAX_CONSULTED_ANCHORS + 3 }, (_, i) => addr(0xd000 + i));
+    const world = {
+      [anchors[0] as string]: [OWNER, member],
+      ...Object.fromEntries(anchors.slice(1).map((groupId) => [groupId, [OWNER, SIGNER, MANAGER]])),
+    };
+    const stub = multiAnchorStub(world, () => [true, true]);
+
+    const result = await runOk(
+      authorVerifiedRoster(
+        stub.deps,
+        input({
+          anchorGroupIds: anchors,
+          listCandidates: () => Effect.succeed(candidates({ address: member })),
+        }),
+      ),
+    );
+
+    expect(result.reason).toBe("chain_verified");
+    expect(result.members).toEqual([{ address: member, role: "editor" }]);
+    // Enumerated exactly the budget, not the full 35-anchor list.
+    expect(stub.groupReads).toHaveLength(MAX_CONSULTED_ANCHORS);
+    // The three past the budget were never looked at, and that has to be said
+    // out loud — an anchor this create never read can only under-permission.
+    expect(result.anchorsNotConsulted).toBe(3);
+  });
+
+  it("caps enumeration at MAX_CONSULTED_ANCHORS even when NOTHING is ever admitted (M11)", async () => {
+    // `no_admitted_anchor` deliberately omits `anchorsNotConsulted` (see the
+    // return arm below) — this test pins the OTHER half of that arm's
+    // contract: the read count itself still stops at the budget, so a run of
+    // identity-only anchors past it cannot cost unbounded chain work even
+    // though the disclosed field stays absent.
+    const anchors = Array.from({ length: MAX_CONSULTED_ANCHORS + 3 }, (_, i) => addr(0xe000 + i));
+    const world = Object.fromEntries(anchors.map((groupId) => [groupId, [OWNER, SIGNER, MANAGER]]));
+    const stub = multiAnchorStub(world, () => [true, true]);
+
+    const result = await runOk(
+      authorVerifiedRoster(
+        stub.deps,
+        input({
+          anchorGroupIds: anchors,
+          listCandidates: () => Effect.succeed(candidates({ address: addr(1) })),
+        }),
+      ),
+    );
+
+    expect(result.reason).toBe("no_admitted_anchor");
+    // Reads only, not disclosure: the arm's shape is unchanged by this budget.
+    expect(stub.groupReads).toHaveLength(MAX_CONSULTED_ANCHORS);
+    expect(result.anchorsNotConsulted).toBeUndefined();
+  });
+
+  it("relates MAX_CONSULTED_ANCHORS to the other two anchor bounds (M11)", () => {
+    // Load-bearing: below MAX_ANCHORS_PER_SPACE, this loop would look at fewer
+    // anchors than the store bothers to retain, making some of that retention
+    // (and the evict-the-evidence guarantee it exists for — see
+    // `anchorStore.ts`'s `MAX_ANCHORS_PER_SPACE` doc) pointless. Below
+    // MAX_ADMITTED_ANCHORS, the admitted cap could never be reached by
+    // admission alone, which would make it dead code.
+    expect(MAX_CONSULTED_ANCHORS).toBeGreaterThanOrEqual(MAX_ANCHORS_PER_SPACE);
+    expect(MAX_CONSULTED_ANCHORS).toBeGreaterThanOrEqual(MAX_ADMITTED_ANCHORS);
   });
 
   it("de-duplicates the recorded anchors instead of paying twice for one group", async () => {

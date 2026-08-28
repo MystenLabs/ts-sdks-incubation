@@ -85,7 +85,11 @@ export function installServer(spec: string, opts: InstallServerOptions = {}): st
   try {
     // `--global-style` is deliberately NOT used: a plain local install under the
     // prefix is what puts the bin shim at node_modules/.bin.
-    run("npm", ["install", "--prefix", root, "--no-audit", "--no-fund", spec]);
+    // --ignore-scripts: a fetched package's preinstall/postinstall (or that of
+    // any of its dependencies) is unreviewed code that would otherwise run
+    // automatically under this installer's own privileges. Mirrors the same
+    // flag's rationale in scripts/pack-check.mts.
+    run("npm", ["install", "--prefix", root, "--no-audit", "--no-fund", "--ignore-scripts", spec]);
   } catch (error) {
     throw new Error(
       `${spec} could not be installed into ${root}: ${

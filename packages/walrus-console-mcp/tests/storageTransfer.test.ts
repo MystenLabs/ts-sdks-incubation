@@ -10,6 +10,7 @@ import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/Consol
 import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
 import { BucketId, FileId } from "../src/console/types";
+import { tryPromiseSettling } from "../src/effectPromise";
 
 /**
  * Two properties of the transfer path that only show up under failure or load:
@@ -172,6 +173,151 @@ describe("transfer concurrency (F11)", () => {
 
     // A permit leaked on the failure path would deadlock the second transfer.
     expect(events.filter((e) => e === "upload:start")).toHaveLength(2);
+  });
+
+  it("releases the permit once the upload is accepted, before polling (M12)", async () => {
+    // Bespoke layer, keyed by fileId rather than makeHarness's shared onUpload
+    // hook: this test needs upload A to poll forever while upload B's own poll
+    // completes immediately, and only the fileId each one is issued tells them
+    // apart.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const events: string[] = [];
+    let uploadCount = 0;
+
+    const api = {
+      uploadBucketFile: () =>
+        Effect.sync(() => {
+          uploadCount += 1;
+          const n = uploadCount;
+          events.push(`upload:${n}`);
+          return { data: { id: FileId.make(`file-${n}`) } };
+        }),
+      // file-1 (upload A) never reaches a terminal state — if the permit were
+      // still held across the poll (pre-fix), upload B could never even start.
+      getFileUploadStatus: (_bucketId: BucketId, fileId: FileId) =>
+        fileId === FileId.make("file-1")
+          ? Effect.never
+          : Effect.succeed({ data: { state: "completed" as const } }),
+    };
+    const seal = {
+      encrypt: (plaintext: Uint8Array) => Effect.succeed(plaintext),
+    };
+
+    const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
+          Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+          Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+          NO_CHAIN_READS,
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const a = yield* Effect.fork(uploadEffect);
+        // Give A time to clear its payload phase and start (never-ending) polling
+        // before B is forked, so a leaked permit shows up as B never starting.
+        yield* Effect.sleep("20 millis");
+        const b = yield* Effect.fork(uploadEffect);
+
+        // Post-fix, B's upload is accepted and polled to completion in
+        // milliseconds. Pre-fix, B is stuck waiting on A's permit, which A never
+        // releases (its poll never terminates) — bounding the wait turns that
+        // deadlock into an observed TimeoutException instead of a hung test.
+        yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"));
+
+        yield* Fiber.interrupt(a);
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(events).toEqual(["upload:1", "upload:2"]);
+  });
+
+  it("holds the permit until a cancelled upload's abandoned encrypt settles (M8)", async () => {
+    // Cancelling an MCP request interrupts the fiber, but no Seal API takes a
+    // signal, so `sealClient.encrypt`'s promise keeps running with the plaintext
+    // AND the ciphertext reachable. If the permit were released during that
+    // teardown, a retry would start its own payload phase alongside it — two
+    // payloads live at once, which is exactly what the size-1 permit exists to
+    // prevent. `tryPromiseSettling` is what the real service wraps its Seal
+    // calls in; the stub below models it with a gate the test controls.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const events: string[] = [];
+    let encryptCalls = 0;
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    let markAEntered!: () => void;
+    const aEntered = new Promise<void>((resolve) => {
+      markAEntered = resolve;
+    });
+
+    const api = {
+      uploadBucketFile: () =>
+        Effect.sync(() => ({ data: { id: FileId.make(`file-${encryptCalls}`) } })),
+      getFileUploadStatus: () => Effect.succeed({ data: { state: "completed" as const } }),
+    };
+    const seal = {
+      encrypt: (plaintext: Uint8Array) =>
+        tryPromiseSettling({
+          try: () => {
+            encryptCalls += 1;
+            const which = encryptCalls === 1 ? "A" : "B";
+            events.push(`encrypt:${which}`);
+            if (which === "A") markAEntered();
+            return which === "A" ? gate.then(() => plaintext) : Promise.resolve(plaintext);
+          },
+          catch: (cause) => cause as Error,
+          // Bounded far under the 60s default so a regression fails this test
+          // instead of wedging the suite for a minute.
+          settleTimeoutMs: 2_000,
+          label: "Seal encrypt",
+        }),
+    };
+
+    const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
+          Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+          Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+          NO_CHAIN_READS,
+        ),
+      ),
+    );
+
+    let eventsWhileHeld: readonly string[] = [];
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const a = yield* Effect.fork(uploadEffect);
+        // Deterministic rather than timed: the interrupt below must land while
+        // A's encrypt promise is genuinely pending, or it would be testing the
+        // (signal-aware, fast-settling) file read instead.
+        yield* Effect.promise(() => aEntered);
+
+        // Forked, not awaited: the interrupt itself cannot complete until A's
+        // abandoned promise settles, so awaiting it here would deadlock the test.
+        yield* Effect.fork(Fiber.interrupt(a));
+        const b = yield* Effect.fork(uploadEffect);
+
+        yield* Effect.sleep("50 millis");
+        // Snapshot rather than assert in-fiber: a throw here would be a defect
+        // that never releases the gate.
+        eventsWhileHeld = [...events];
+
+        yield* Effect.sync(() => resolveGate());
+        yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"));
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // 50ms after the cancel, B had still not started: the permit was held.
+    expect(eventsWhileHeld).toEqual(["encrypt:A"]);
+    // And releasing the gate lets it through — held, not deadlocked.
+    expect(events).toEqual(["encrypt:A", "encrypt:B"]);
   });
 });
 

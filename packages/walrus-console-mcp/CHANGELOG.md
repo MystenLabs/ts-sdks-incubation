@@ -103,6 +103,46 @@
 - The id of an accepted upload is logged as soon as Console accepts the bytes and
   attached to any error raised while polling, so a crash or a failing status check
   leaves a recoverable id instead of prompting a duplicate re-upload.
+- `create_bucket`'s anchor bookkeeping (`recordAnchor`) is now serialized across
+  processes with the same file lock the config writer uses. It previously loaded,
+  mutated and saved `anchors.json` unlocked, so two concurrent `create_bucket`
+  calls on the same host could each report `anchorRecorded: true` while one of
+  their anchors — potentially another space's too — silently disappeared. A
+  contended lock now surfaces as an honest `anchorRecorded: false` instead of
+  losing data.
+- Atomic writes generate a per-attempt random nonce for their temp file, instead
+  of deriving the temp name from the destination path and pid alone. A retry
+  immediately after a cancelled write could previously collide with the
+  still-live temp of the prior attempt (`EEXIST`) or have its own temp deleted by
+  that attempt's detached cleanup (`ENOENT` at rename). A temp left by a crashed
+  process now accumulates instead of colliding with the next attempt.
+- Upload/download path canonicalization now runs inside the request's own
+  Effect fiber, using async filesystem calls, instead of synchronous
+  `realpathSync`/`lstatSync`/`readlinkSync` on the main thread before the
+  request's `AbortSignal` was even attached. A stalled NFS/FUSE mount behind a
+  user-chosen path previously froze the stdio transport and every other
+  in-flight tool call on the very first request; the walk no longer runs
+  synchronously on the main thread, so a stalled mount no longer freezes the
+  whole server that way. It is not abortable, though: `fs/promises`
+  `realpath`/`lstat`/`readlink` take no `AbortSignal`, so a cancelled request
+  still abandons the underlying `realpath(2)` call, which keeps running in the
+  libuv threadpool; a handful of requests naming paths on the same stalled
+  mount can exhaust the default `UV_THREADPOOL_SIZE=4` and stall all `fs` work
+  and DNS lookups process-wide. Raise `UV_THREADPOOL_SIZE`, and keep allowed
+  roots off unreliable network mounts, to limit the exposure.
+- The transfer permit `uploadFileToBucket` holds is released as soon as an
+  upload's bytes are accepted, instead of being held through up to 180s of
+  status polling afterward. The permit exists to bound peak payload memory, not
+  to serialize polling; holding it that long blocked every unrelated upload and
+  download for the duration of one upload's activation wait.
+- Every write-failure test (`storageCreateBucket.test.ts`,
+  `mintedCredentialStore.test.ts`, `keyAdmin.test.ts`) now injects the failure
+  through a `vi.mock` spy — on `writeFileAtomic`, or on the
+  `persistMintedCredential` spy that suite already installs — instead of
+  `chmod 0o500` on the config directory, which a process running as `root`
+  ignores. Those tests previously failed spuriously when the suite ran as root,
+  because the chmod never actually injected the write failure their assertions
+  depended on. No `chmod 0o500` failure injection remains in the suite.
 
 ### Added
 
@@ -144,9 +184,11 @@
   transactions this client validated rather than read out of the responses —
   with the space's active signers, with every role read from chain instead of
   the scope the API claims. Membership in **any** anchor counts, and a member's
-  role is the highest it holds across them; a create adds an anchor and never
-  replaces one, so a bucket whose roster came out identity-only cannot shrink
-  what the next create can verify.
+  role is the one it holds on the **newest** anchor that holds it — not the
+  highest across anchors, so an old anchor cannot restore an `editor` revoked on
+  recent buckets; a create adds an anchor and never replaces one, so a bucket
+  whose roster came out identity-only cannot shrink what the next create can
+  verify.
   The returned transaction is then refused unless it grants exactly that roster,
   makes exactly the pinned address the owner, hands management to nobody but the
   pinned Key-Admin, and contains the three calls demoting the signing key — an
@@ -176,6 +218,27 @@
   instead of replacing it**. Only a missing file counts as empty; previously any
   error produced an empty config, so one unreadable byte erased every setting
   that client had. The write itself is atomic.
+- Cancelling an in-flight Seal encrypt/decrypt (or the local file read/download
+  write around it) now holds the transfer permit until the abandoned promise
+  actually settles, instead of releasing it immediately on interrupt. Seal's SDK
+  accepts no `AbortSignal`, so an interrupted call keeps running in the
+  background; releasing the permit right away let a retry be admitted while the
+  abandoned call still held a full plaintext-and-ciphertext buffer, exceeding the
+  single-transfer memory bound the permit exists to enforce. Bounded by an
+  explicit settle timeout, so a promise that genuinely never settles still
+  releases the permit eventually; `SealClient` now states its `timeout: 10_000`
+  explicitly rather than relying on the SDK default.
+- The roster verifier (`authorVerifiedRoster`) now enforces its own bound on how
+  many anchors it will enumerate (`MAX_CONSULTED_ANCHORS`, 32), instead of
+  relying on `anchorStore`'s read cap to keep the list it is handed small. The
+  verifier's loop had no bound of its own — correct today only because every
+  caller happens to go through a store that already caps at 32 entries, not
+  because the loop protects itself.
+- Contract identity is resolved by **network** (one Console deployment per
+  network: testnet, mainnet); a loopback host gets the testnet package set. A
+  wrong package set cannot over-permission anything — the validator allowlists exact packages and
+  refuses to sign, anchors recorded under other ids go stale, and `seal_approve`
+  targets a package the key servers will not honour.
 
 ### Security
 

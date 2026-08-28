@@ -1,6 +1,7 @@
 import { HttpBody, HttpClient, HttpClientRequest, type HttpClientResponse } from "@effect/platform";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { Effect, Stream } from "effect";
+import { z } from "zod";
 import { ConsoleConfigTag, getRawAdminKey, getRawApiKey } from "../config";
 import { MAX_TRANSFER_BYTES_ENV, maxTransferBytes } from "../transferLimits";
 import {
@@ -121,24 +122,133 @@ interface DataEnvelope<T> {
 
 export type ApiKeyPermission = "read_only" | "read_write";
 
-export interface PrivateBucketGrant {
-  readonly bucket_id: string;
-  readonly group_id: string; // 0x… Sui object id of the bucket's access group
-}
+const privateBucketGrantSchema = z.object({
+  bucket_id: z.string(),
+  group_id: z.string(), // 0x… Sui object id of the bucket's access group
+});
+export type PrivateBucketGrant = z.infer<typeof privateBucketGrantSchema>;
 
-/** Response of POST /api/v1/api-keys (mint child under key_admin scope). */
-export interface CreateApiKeyResponse {
-  readonly id: string;
-  readonly name: string | null;
-  readonly key: string; // hbr_… raw bearer, shown once
-  readonly space_id: string;
-  readonly permissions: ApiKeyPermission;
-  readonly service_signer_address: string;
-  readonly status: "registering" | "active";
-  readonly expected_permission: "BucketViewer" | "BucketEditor" | null;
-  readonly private_buckets: readonly PrivateBucketGrant[];
-  readonly created_at: string;
-}
+/** Raw string Console echoed for `permissions`, when it isn't a usable one. */
+const UNREPORTED_PERMISSION = "(not reported by Console)";
+
+/**
+ * Response of POST /api/v1/api-keys (mint child under key_admin scope).
+ *
+ * Narrow on purpose, but not uniformly strict — two tiers, split by what a
+ * failure to parse actually costs:
+ *
+ *  - `id`, `key`, `space_id` are load-bearing and stay REQUIRED, non-empty
+ *    strings (`.min(1)`, not just `z.string()`). Without `key` there are no
+ *    secrets to persist at all; without `id`/`space_id` there is nothing to
+ *    build a credential file path from, or to name in a recovery message. An
+ *    EMPTY string passes `z.string()` but is exactly as unusable as a missing
+ *    field — `{"id": "", "space_id": "", "key": "hbr_…"}` would otherwise
+ *    parse successfully, persist to `minted-keys/<sha256 of "">.json`, and
+ *    render `incomplete()`'s recovery as "The key  already exists in space "
+ *    (naming nothing); a SECOND such response would then hit the `exclusive`
+ *    EEXIST at that same fixed empty-string path and be misreported as a
+ *    duplicate keyId, even though that second key's secrets are genuinely
+ *    gone. A response missing (or emptying) any of these genuinely cannot be
+ *    used, so `KeyAdminService.generateApiKey` treats a parse failure here as
+ *    a `stage: "mint"` outcome (no credential, recovery via the pre-mint
+ *    marker) — never a crash, and never silently trusted with `as`.
+ *  - `permissions`, `status`, `private_buckets` are pass-through or seed a poll
+ *    loop; loosened so that `id`/`key`/`space_id` are genuinely the ONLY
+ *    fields that can fail this parse — a Console-side widening of any of the
+ *    three below (a third permission tier, a new status string, an extra
+ *    field on a bucket-grant element) must never discard a mint that
+ *    otherwise succeeded (the createApiKey call is a point of no return — see
+ *    its own message on a validation failure). Each is built on
+ *    `z.unknown().transform(...)`, not a typed Zod primitive, specifically so
+ *    a WRONG-TYPED value (a number where a string was expected, a string
+ *    where an array was expected) degrades the same way a missing one does,
+ *    instead of failing `.safeParse` for the whole body. This closes a
+ *    hazard class that surfaced three review rounds running (round 1 F1,
+ *    round 3 M1, and this one): treating "optional" as `.nullish()` on an
+ *    otherwise-typed field still lets any OTHER wrong type on that field nuke
+ *    the parse.
+ *
+ *    `permissions` echoes Console's raw string as-is when it is a non-empty
+ *    string, and otherwise falls back to `UNREPORTED_PERMISSION` — a string
+ *    that reads as "we don't know" rather than as a real tier. This
+ *    deliberately does NOT default to `"read_only"`/`"read_write"` or to the
+ *    caller's requested permission: either would silently claim the minted
+ *    key has a permission it may not actually have. `permissions` is
+ *    pass-through display data (`GenerateApiKeyResult.permission`, itself now
+ *    `string` rather than `ApiKeyPermission` for the same reason) — nothing
+ *    in `KeyAdminService` branches on the parsed response value, only on the
+ *    caller's own `args.permission` request, so loosening the type has no
+ *    control-flow effect.
+ *
+ *    `status` falls back to `"registering"` (a real Console value meaning
+ *    "poll me") for anything that isn't a non-empty string — missing, null,
+ *    or wrong-typed alike. That is the honest assumption when the field
+ *    can't be read: keep polling rather than guess "active".
+ *
+ *    `private_buckets` distinguishes "Console said this space has zero
+ *    private buckets" from "we don't know" — the two mean OPPOSITE things to
+ *    `KeyAdminService.generateApiKey`'s grant step (see its own comments): an
+ *    explicit `[]` skips granting because there is nothing to grant; `null`
+ *    means grants were skipped because Console's response didn't say. A
+ *    non-array value (missing, `null`, or any other wrong type) parses to
+ *    `null` for exactly this reason.
+ *
+ *    A real, non-empty array is Console making a POSITIVE assertion — "this
+ *    space has private buckets" — and that assertion is trusted, but only
+ *    once EVERY element in it parses via `privateBucketGrantSchema.safeParse`.
+ *    If even one element fails, the whole array parses to `null`, not a
+ *    filtered-down list of the elements that DID parse: a caller who reads a
+ *    partial array as authoritative grants access to the buckets it could
+ *    read and silently skips the rest, ending up with a key that has NO
+ *    access to whichever buckets were behind the unparseable element(s) and
+ *    nothing in the outcome saying so — an under-grant, not an over-grant,
+ *    but a silent one either way. That is worse than not knowing at all,
+ *    because it looks like success (`ok: true`) right up until someone hits a
+ *    permission error on a bucket that was silently dropped. An unreadable
+ *    element in an otherwise-real array is, if anything, a STRONGER signal of
+ *    "unknown" than a missing field is: a missing field is merely ambiguous,
+ *    while a non-empty-but-partially-unreadable array positively tells us
+ *    there was real data here that this parse could not fully trust. An
+ *    explicit `[]`, by contrast, has no elements to fail on and stays a real,
+ *    trusted empty array — Console's word that there is nothing to grant.
+ *
+ *    So `null` has THREE distinct causes, all folded into one value on
+ *    purpose (`KeyAdminService.generateApiKey` reacts identically to all
+ *    three — see its own `"private-buckets-unknown"` stage): the field was
+ *    missing or `null`; the field was present but not an array; or the field
+ *    WAS a real, non-empty array and at least one of its elements failed
+ *    `privateBucketGrantSchema.safeParse`.
+ *
+ * `name`, `service_signer_address`, `expected_permission`, and `created_at` are
+ * real wire fields but nothing in this codebase reads them, so they are
+ * deliberately left out entirely: an unread field changing shape upstream must
+ * not break a mint. See docs/pr-39-code-review.md section 3.
+ */
+const createApiKeyResponseSchema = z.object({
+  id: z.string().min(1),
+  key: z.string().min(1), // hbr_… raw bearer, shown once
+  space_id: z.string().min(1),
+  permissions: z
+    .unknown()
+    .transform((v) => (typeof v === "string" && v.length > 0 ? v : UNREPORTED_PERMISSION)),
+  status: z.unknown().transform((v) => (typeof v === "string" && v.length > 0 ? v : "registering")),
+  private_buckets: z.unknown().transform((v): readonly PrivateBucketGrant[] | null => {
+    if (!Array.isArray(v)) return null; // missing, null, or simply not an array
+    if (v.length === 0) return []; // Console's own word: no private buckets
+    // A non-empty array is Console asserting buckets EXIST — if any element
+    // can't be read, the whole list is untrustworthy (not just that element):
+    // granting only the elements that DID parse would silently under-grant.
+    // See this schema's doc comment above.
+    const grants: PrivateBucketGrant[] = [];
+    for (const el of v) {
+      const parsed = privateBucketGrantSchema.safeParse(el);
+      if (!parsed.success) return null;
+      grants.push(parsed.data);
+    }
+    return grants;
+  }),
+});
+export type CreateApiKeyResponse = z.infer<typeof createApiKeyResponseSchema>;
 
 /** Response of POST /api/v1/seal/sponsor (sponsored grant_bucket_access PTB). */
 export interface SponsorResponse {
@@ -146,16 +256,38 @@ export interface SponsorResponse {
   readonly digest: string; // 0x…
 }
 
-/** Response of GET /api/v1/api-keys/:id while a mint is registering / once active. */
-export interface ApiKeyStatusResponse {
-  readonly data: {
-    readonly id: string;
-    // "revoking"/"revoked" only occur on the revoke path (with a revocation_progress
-    // sibling); modeled here so revoke_api_key/list_api_keys can reuse this shape.
-    readonly status: "registering" | "active" | "revoking" | "revoked";
-    readonly registration_progress?: { readonly granted: number; readonly total: number };
-  };
-}
+/**
+ * Response of GET /api/v1/api-keys/:id while a mint is registering / once active.
+ *
+ * Narrow on purpose — only `data.status` and `data.registration_progress` are
+ * read (by `pollUntilActive` in KeyAdminService.ts). `data.id` is a real wire
+ * field nothing here reads, so it is left out. See docs/pr-39-code-review.md
+ * section 3.
+ *
+ * `data.status` is a plain string, not a closed enum, for the SAME reason
+ * `createApiKeyResponseSchema.status` above is: `pollUntilActive` polls this
+ * endpoint in a loop purely to compare against the literal `"active"`, so a
+ * Console-side status this build has never seen (say `"pending"`) must not
+ * turn every poll of an otherwise-healthy mint into an `invalid_response_shape`
+ * failure — that would report a misleading `stage: "activation"` outcome for a
+ * key that is registering completely normally. (The credential is still
+ * preserved either way, since `KeyAdminService` treats this as a post-mint
+ * failure — but a wrong "the key is stuck" reading is still wrong.)
+ *
+ * `registration_progress` is `.nullish()`, not `.optional()`: JSON APIs
+ * routinely serialize an absent optional field as an explicit `null` rather
+ * than omitting the key, and the old `as ApiKeyStatusResponse` cast tolerated
+ * either (`pollUntilActive` just left `progress` falsy either way). `.optional()`
+ * alone rejects `null` outright, which would fail every poll of a `registering`
+ * key that had not yet accrued any grants — a regression `.nullish()` closes.
+ */
+const apiKeyStatusResponseSchema = z.object({
+  data: z.object({
+    status: z.string(),
+    registration_progress: z.object({ granted: z.number(), total: z.number() }).nullish(),
+  }),
+});
+export type ApiKeyStatusResponse = z.infer<typeof apiKeyStatusResponseSchema>;
 
 /** Console error bodies arrive as `{ error: "msg" }` or `{ error: { code, message } }`. */
 interface ConsoleErrorBody {
@@ -193,6 +325,47 @@ export function parseConsoleErrorBody(body: unknown): {
     code: code ?? (error && typeof error === "object" ? error.code : undefined),
     message: (typeof error === "string" ? error : error?.message) ?? message,
   };
+}
+
+/**
+ * Flatten a Zod validation failure into one readable line naming WHICH
+ * field(s) were wrong, e.g. `"id: Required; status: Invalid enum value"`.
+ * Used at the `createApiKey` / `getApiKeyStatus` parse boundary so a
+ * `ConsoleApiError.message` says more than "the response was malformed".
+ */
+function zodIssues(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "(root)"}: ${issue.message}`)
+    .join("; ");
+}
+
+/**
+ * The `ConsoleApiError` `createApiKey` fails with when a definite 201 —
+ * Console's own point of no return — turns out to carry a body this client
+ * cannot use. Shared by BOTH ways that can happen: the body isn't valid JSON
+ * at all (a proxy injecting an HTML error page, a truncated connection —
+ * `res.json` itself fails, before `safeParse` ever runs), or it decodes fine
+ * but fails schema validation. Both routes need the IDENTICAL shape
+ * (`code: "invalid_response_shape"`, `status: 201`) because both are meant to
+ * reach `KeyAdminService.generateApiKey`'s `createApiKey` `catchIf` and
+ * convert into the same recoverable `stage: "mint"` outcome — not the
+ * `isError: true` that would otherwise invite a second-orphan retry. Scoped
+ * to `createApiKey` only: `getApiKeyStatus`'s identical `res.json` pattern is
+ * NOT wrapped this way, because it runs inside `KeyAdminService`'s
+ * `completion` pipeline, where `Effect.exit` already catches a decode failure
+ * and preserves the credential — wrapping it here too would just be doing the
+ * same job twice.
+ */
+function createApiKeyUnusableResponse(detail: string): ConsoleApiError {
+  return new ConsoleApiError({
+    message:
+      `createApiKey received a 201 response that could not be used: ${detail} This does NOT ` +
+      `mean nothing was created — the mint is a point of no return, so the key may already ` +
+      `exist server-side despite this failure. Check the pre-mint marker breadcrumb logged to ` +
+      `stderr before this call to find it by name in the Console UI.`,
+    code: "invalid_response_shape",
+    status: 201,
+  });
 }
 
 /**
@@ -883,7 +1056,31 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         body: HttpBody.text(JSON.stringify(body), "application/json"),
       });
       if (res.status !== 201) return yield* handleError(res);
-      return (yield* res.json) as CreateApiKeyResponse;
+      // `res.json` itself can fail — a proxy injecting an HTML error page, a
+      // truncated connection — and that failure is an `@effect/platform`
+      // `ResponseError`, NOT a `ConsoleApiError`. Left uncaught, it would ride
+      // the error channel straight past `KeyAdminService`'s `catchIf` (which
+      // only matches `ConsoleApiError`), reaching the caller as `isError: true`
+      // with no marker and no "do NOT retry" guidance on a mint that is,
+      // exactly like the schema-mismatch case below, already a point of no
+      // return. Converted here into the SAME `ConsoleApiError` shape so both
+      // routes reach the same `stage: "mint"` recovery.
+      const decodedBody = yield* res.json.pipe(
+        Effect.catchTag("ResponseError", (error) =>
+          Effect.fail(
+            createApiKeyUnusableResponse(
+              `Its body could not be parsed as JSON (${error.message}).`,
+            ),
+          ),
+        ),
+      );
+      const parsed = createApiKeyResponseSchema.safeParse(decodedBody);
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          createApiKeyUnusableResponse(`It failed schema validation: ${zodIssues(parsed.error)}.`),
+        );
+      }
+      return parsed.data;
     });
 
     const sponsorGrantBucketAccess = Effect.fn("ConsoleApiClient.sponsorGrantBucketAccess")(
@@ -925,7 +1122,19 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     ) {
       const res = yield* adminAuthed.get(`/api/v1/api-keys/${encodeURIComponent(keyId)}`);
       if (res.status !== 200) return yield* handleError(res);
-      return (yield* res.json) as ApiKeyStatusResponse;
+      const parsed = apiKeyStatusResponseSchema.safeParse(yield* res.json);
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new ConsoleApiError({
+            message:
+              `getApiKeyStatus received a 200 response that failed validation: ` +
+              `${zodIssues(parsed.error)}.`,
+            code: "invalid_response_shape",
+            status: res.status,
+          }),
+        );
+      }
+      return parsed.data;
     });
 
     return {

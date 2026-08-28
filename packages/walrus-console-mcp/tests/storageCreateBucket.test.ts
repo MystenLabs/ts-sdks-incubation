@@ -6,6 +6,7 @@ import type { Transaction } from "@mysten/sui/transactions";
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { Effect, Layer, Redacted } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeFileAtomic } from "../src/atomicWrite";
 import { type ConsoleConfig, ConsoleConfigTag } from "../src/config";
 import { MAX_ANCHORS_PER_SPACE, readAnchors, recordAnchor } from "../src/console/anchorStore";
 import { ConsoleApiClient, type SpaceSignersResponse } from "../src/console/ConsoleApiClient";
@@ -26,6 +27,26 @@ import type {
   CreateBucketIdentitySummary,
   SponsoredTxExpectation,
 } from "../src/console/txValidation";
+
+/**
+ * Spies on `writeFileAtomic` (`{ spy: true }` keeps every other call's real
+ * behaviour — `spyOn(container, "writeFileAtomic").mockImplementation(original)`,
+ * per `@vitest/mocker`) so a single test can fail the NEXT write with
+ * `mockImplementationOnce` instead of `chmod`ing the config dir. `chmod 0o500`
+ * is a no-op under root (root ignores DAC entirely), which made the old version
+ * of these tests pass locally and fail in a privileged container — see m2 in
+ * `docs/pr44-major-findings-verification.md`. This seam has no such
+ * dependency: it fails the call regardless of who is running the process.
+ */
+vi.mock("../src/atomicWrite", { spy: true });
+
+afterEach(() => {
+  // A leaked `mockImplementationOnce` from a test that failed before consuming
+  // it would otherwise fail the NEXT write in the NEXT test — `mockReset`
+  // clears the once-queue and, because this is a real spy, falls back to the
+  // original `writeFileAtomic` rather than a permanent no-op.
+  vi.mocked(writeFileAtomic).mockReset();
+});
 
 /**
  * The create-bucket flow as a whole: pin gate → verified roster → reserve → echo
@@ -1015,9 +1036,11 @@ describe("createBucket — the anchor is DERIVED, never taken from the server", 
     // itself — the group this bucket creates is anchored under the ids in
     // force now"), computed once and shared across every arm. Proven here on
     // `chain_verified` (one reproducing anchor plus one stale one), with the
-    // write of THIS create's own anchor blocked by removing the config dir's
-    // write bit — read access survives, only new writes fail, unlike the
-    // regular-file trick used above.
+    // write of THIS create's own anchor failed via the `writeFileAtomic` spy
+    // (module doc comment above) instead of a chmod — `mockImplementationOnce`
+    // fails exactly the NEXT write, which is `recordAnchor`'s inside `create`;
+    // the two setup writes above (`recordAnchor`, `seedAnchor`) have already
+    // gone through the real implementation by the time it is installed.
     recordAnchor(SPACE, {
       ...REPRODUCING_ANCHOR,
       groupId: groupOf("stale-bucket"),
@@ -1025,7 +1048,6 @@ describe("createBucket — the anchor is DERIVED, never taken from the server", 
       bucketRegistryId: addr(0xdead),
     });
     seedAnchor();
-    const configDir = path.join(tmpDir, "walrus-console-mcp");
     const warn = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = makeHarness({
       candidates: () => Effect.succeed(signers(MEMBER)),
@@ -1033,29 +1055,24 @@ describe("createBucket — the anchor is DERIVED, never taken from the server", 
       roles: [[true, true]],
     });
 
-    fs.chmodSync(configDir, 0o500);
-    try {
-      const result = await Effect.runPromise(create(h.layer));
+    vi.mocked(writeFileAtomic).mockImplementationOnce(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+    const result = await Effect.runPromise(create(h.layer));
 
-      expect(result.roster.reason).toBe("chain_verified");
-      expect(result.roster.anchorsStale).toBe(1);
-      expect(result.anchorRecorded).toBe(false);
-      expect(result.disclosure).toMatch(/stale/i);
-      expect(result.disclosure).not.toMatch(/this heals by itself/i);
-      expect(result.disclosure).toMatch(/did not land this time/i);
-    } finally {
-      // Restore before the suite's own afterEach recursively removes tmpDir —
-      // a read-only directory would make that cleanup fail.
-      fs.chmodSync(configDir, 0o700);
-      warn.mockRestore();
-    }
+    expect(result.roster.reason).toBe("chain_verified");
+    expect(result.roster.anchorsStale).toBe(1);
+    expect(result.anchorRecorded).toBe(false);
+    expect(result.disclosure).toMatch(/stale/i);
+    expect(result.disclosure).not.toMatch(/this heals by itself/i);
+    expect(result.disclosure).toMatch(/did not land this time/i);
+    warn.mockRestore();
   });
 
   it("does not claim a re-anchor from no_admitted_anchor either, when the write fails", async () => {
     // Same fault-tolerant write, checked against the OTHER arm with its own
     // unconditional claim: "This bucket joins the space's anchors either way."
     seedAnchor();
-    const configDir = path.join(tmpDir, "walrus-console-mcp");
     const warn = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = makeHarness({
       candidates: () => Effect.succeed(signers(MEMBER)),
@@ -1064,18 +1081,16 @@ describe("createBucket — the anchor is DERIVED, never taken from the server", 
       chainMembers: [WEB_ACCOUNT, SIGNER],
     });
 
-    fs.chmodSync(configDir, 0o500);
-    try {
-      const result = await Effect.runPromise(create(h.layer));
+    vi.mocked(writeFileAtomic).mockImplementationOnce(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+    const result = await Effect.runPromise(create(h.layer));
 
-      expect(result.roster.reason).toBe("no_admitted_anchor");
-      expect(result.anchorRecorded).toBe(false);
-      expect(result.disclosure).not.toMatch(/this bucket joins the space's anchors either way/i);
-      expect(result.disclosure).toMatch(/was not cached/i);
-    } finally {
-      fs.chmodSync(configDir, 0o700);
-      warn.mockRestore();
-    }
+    expect(result.roster.reason).toBe("no_admitted_anchor");
+    expect(result.anchorRecorded).toBe(false);
+    expect(result.disclosure).not.toMatch(/this bucket joins the space's anchors either way/i);
+    expect(result.disclosure).toMatch(/was not cached/i);
+    warn.mockRestore();
   });
 });
 

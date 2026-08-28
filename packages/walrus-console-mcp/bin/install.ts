@@ -148,7 +148,14 @@ export function packageSpec(version = getPackageVersion()): string {
  * Also supports a non-interactive path (`--api-key`/`--admin-key`/`--silent`
  * flags or CONSOLE_* env vars — see src/cliArgs.ts) for scripted installs.
  *
- * Runs in the terminal via: npx -y @mysten-incubation/walrus-console-mcp install
+ * Runs in the terminal via README.md's "Install from npm (recommended)" bootstrap
+ * (see "Why the launcher is an absolute path" there for why a bare `npx` is not
+ * used — an ancestor `node_modules` can shadow the package name and hijack it):
+ *
+ *   cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund \
+ *       --ignore-scripts @mysten-incubation/walrus-console-mcp && \
+ *       ./node_modules/.bin/walrus-console-mcp install
+ *
  * Uses only Node.js built-ins (readline, fs, fetch) — zero extra dependencies.
  */
 

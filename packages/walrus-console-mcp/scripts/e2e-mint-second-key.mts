@@ -11,6 +11,7 @@
  * Usage: pnpm tsx scripts/e2e-mint-second-key.mts
  * Prints the new signer address and key id. Never prints the key or its seed.
  */
+import * as fs from "node:fs";
 import { Effect } from "effect";
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -34,6 +35,33 @@ const program = Effect.gen(function* () {
     label: `e2e-roster-peer-${Date.now()}`,
   });
 
+  // Two failure branches carry no `credential` field at all, so both must be
+  // handled before touching `outcome.credential` below.
+  if (!outcome.ok && outcome.stage === "persist") {
+    // The mint succeeded server-side but its secrets never made it to disk, so
+    // there is no credential (and no credentialFile) to read a private key from.
+    return yield* Effect.fail(
+      new Error(
+        `key ${outcome.keyId} was minted but its secrets could not be persisted ` +
+          `(attempted ${outcome.attemptedPath}): ${outcome.reason}`,
+      ),
+    );
+  }
+  if (!outcome.ok && outcome.stage === "mint") {
+    // The 201 itself failed validation — there is no keyId, spaceId, or
+    // credential at all here, only the pre-mint marker.
+    return yield* Effect.fail(
+      new Error(`mint response failed validation (marker ${outcome.marker}): ${outcome.reason}`),
+    );
+  }
+
+  // Secrets no longer ride on the outcome — generateApiKey persists them to a
+  // private file immediately after mint and hands back only a pointer. Read
+  // the file to get the private key needed to derive the new signer's address.
+  const persisted = JSON.parse(fs.readFileSync(outcome.credential.credentialFile, "utf-8")) as {
+    privateKey: string;
+  };
+
   const signers = yield* api.listSpaceSigners();
 
   return {
@@ -46,7 +74,7 @@ const program = Effect.gen(function* () {
     // key inside `spaceSignersNow` below.
     newSignerAddress: normalizeSuiAddress(
       Ed25519Keypair.fromSecretKey(
-        decodeSuiPrivateKey(outcome.credential.privateKey).secretKey,
+        decodeSuiPrivateKey(persisted.privateKey).secretKey,
       ).toSuiAddress(),
     ),
     privateBucketsGranted: outcome.credential.privateBuckets.map((b) => ({

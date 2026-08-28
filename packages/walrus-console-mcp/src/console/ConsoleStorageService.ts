@@ -2,13 +2,14 @@ import * as path from "node:path";
 import { bcs } from "@mysten/sui/bcs";
 import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
 import { Context, Effect, Layer } from "effect";
-import { removeAtomicTemp, writeFileAtomicAsync } from "../atomicWrite";
+import { writeFileAtomicAsync } from "../atomicWrite";
 import {
   ConsoleConfigLive,
   ConsoleConfigTag,
   getKeyAdminAddress,
   getWebAccountAddress,
 } from "../config";
+import { tryPromiseSettling } from "../effectPromise";
 import { readFileWithinRootAsync } from "../pathSandbox";
 import { maxTransferBytes } from "../transferLimits";
 import { type AnchorEntry, readAnchors, recordAnchor } from "./anchorStore";
@@ -540,19 +541,41 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
       const packageConfig = resolvePackageConfigForBaseUrl(config.baseUrl);
 
       /**
-       * One transfer at a time, across BOTH directions.
+       * One PAYLOAD-HOLDING phase at a time, across BOTH directions — not one
+       * whole transfer (M12).
        *
        * Size-capping each transfer bounds one payload; it does nothing about N of
-       * them at once. Every transfer holds two full copies — an upload has the
-       * plaintext and the Seal ciphertext, a download has the ciphertext and the
-       * decrypted plaintext — so peak memory is (permits x 2 x cap). The cap and
-       * this limit are the same guard from two directions, and they only work
-       * together.
+       * them at once. An upload holds two full copies while it holds this permit
+       * — the plaintext and the Seal ciphertext — and a download holds two for
+       * its entire body (ciphertext in, plaintext out), so peak memory is
+       * (permits x 2 x cap). The cap and this limit are the same guard from two
+       * directions, and they only work together.
        *
        * One permit rather than a few: the two directions share one heap, so
        * splitting the budget between them just makes the worst case a multiple of
        * itself. Created here, in the service effect, so it is per-layer and shared
        * by every call — a semaphore built per invocation would gate nothing.
+       *
+       * `uploadFileToBucket` releases this permit as soon as its bytes are
+       * ACCEPTED — the `withPermits(1)` wrap covers only read → encrypt →
+       * upload, not the status poll that follows. Past acceptance the transfer
+       * holds nothing but ids, not a payload, so it does not need to keep
+       * another transfer's payload phase waiting — polling one upload may
+       * overlap another upload's or download's payload phase. `downloadFile`
+       * holds its payload for its whole body, so its permit still spans start
+       * to finish.
+       *
+       * Cancellation does NOT shorten the permit (M8). No Seal API takes an
+       * AbortSignal, so interrupting a transfer only abandons its
+       * `encrypt`/`decrypt` promise — that promise keeps running with both
+       * buffers reachable — and releasing the permit during fiber teardown would
+       * admit a retry's payload alongside it. Every promise held inside this
+       * permit therefore goes through `tryPromiseSettling`, whose interrupt
+       * cleanup runs before the semaphore's release and waits for the abandoned
+       * promise to settle. What that costs is cancellation LATENCY, bounded by
+       * the crypto still owed on a <=cap buffer — and, for a promise that never
+       * settles at all, by the helper's `settleTimeoutMs`, after which the permit
+       * is released with a line on stderr rather than lost for good.
        */
       const transferLock = yield* Effect.makeSemaphore(1);
 
@@ -958,72 +981,90 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         targetName?: string,
         userMetadata?: FileUserMetadata,
       ) {
-        // readFileWithinRoot, not fs.readFile: it opens with O_NOFOLLOW so a
-        // symlink planted between the path's validation and this read cannot
-        // redirect it, and it takes the size from the OPEN descriptor to reject an
-        // oversized file BEFORE the bytes are buffered. That ordering is the whole
-        // point — this process then holds the plaintext and the Seal ciphertext at
-        // once, so learning the size after the read is too late to protect it.
-        // Returns a Buffer, which IS a Uint8Array, so it goes straight to
-        // seal.encrypt with no second copy.
-        // `Effect.tryPromise` hands the callback the running fiber's AbortSignal,
-        // so a cancelled MCP request stops the read rather than buffering a file
-        // nobody is waiting for. The O_NOFOLLOW open + fstat-from-descriptor size
-        // check are the async read's, unchanged from the sync one.
-        const fileBytes = yield* Effect.tryPromise({
-          try: (signal) =>
-            readFileWithinRootAsync(localPath, {
-              maxBytes: maxTransferBytes(),
-              label: "Source",
-              signal,
-            }),
-          catch: (cause) =>
-            new LocalFsError({
-              message: cause instanceof Error ? cause.message : "Failed to read local file",
-              path: localPath,
-              operation: "read",
-            }),
-        });
+        // Only the payload-holding phase — read, encrypt, upload — needs the
+        // transfer permit (see `transferLock` above). It is released the moment
+        // this returns, which is also the moment the bytes are ACCEPTED: from
+        // there on this holds nothing but ids, so it does not need to serialize
+        // against another transfer's payload (M12).
+        const { fileId, fileName } = yield* transferLock.withPermits(1)(
+          Effect.gen(function* () {
+            // readFileWithinRoot, not fs.readFile: it opens with O_NOFOLLOW so a
+            // symlink planted between the path's validation and this read cannot
+            // redirect it, and it takes the size from the OPEN descriptor to reject an
+            // oversized file BEFORE the bytes are buffered. That ordering is the whole
+            // point — this process then holds the plaintext and the Seal ciphertext at
+            // once, so learning the size after the read is too late to protect it.
+            // Returns a Buffer, which IS a Uint8Array, so it goes straight to
+            // seal.encrypt with no second copy.
+            // `tryPromiseSettling` hands the callback the running fiber's AbortSignal,
+            // so a cancelled MCP request stops the read rather than buffering a file
+            // nobody is waiting for — and holds this permit until the read has
+            // actually settled, so the retry it admits cannot buffer a second
+            // payload alongside this one (M8). The O_NOFOLLOW open +
+            // fstat-from-descriptor size check are the async read's, unchanged from
+            // the sync one.
+            const fileBytes = yield* tryPromiseSettling({
+              try: (signal) =>
+                readFileWithinRootAsync(localPath, {
+                  maxBytes: maxTransferBytes(),
+                  label: "Source",
+                  signal,
+                }),
+              catch: (cause) =>
+                new LocalFsError({
+                  message: cause instanceof Error ? cause.message : "Failed to read local file",
+                  path: localPath,
+                  operation: "read",
+                }),
+              label: "local file read",
+            });
 
-        const fileName = targetName ?? path.basename(localPath);
+            const fileName = targetName ?? path.basename(localPath);
 
-        // Undefined when the caller supplied neither field, so the multipart form
-        // omits `metadata` rather than sending `{}` (COMG-662).
-        const metadata = buildUploadMetadata(userMetadata ?? {});
+            // Undefined when the caller supplied neither field, so the multipart form
+            // omits `metadata` rather than sending `{}` (COMG-662).
+            const metadata = buildUploadMetadata(userMetadata ?? {});
 
-        // Encrypt
-        const encrypted = yield* seal.encrypt(fileBytes, sealPolicyId);
+            // Encrypt
+            const encrypted = yield* seal.encrypt(fileBytes, sealPolicyId);
 
-        // Upload with simple retry loop on mirror_missing_grant (pragmatic & type-safe).
-        // uploadBucketFile now surfaces deny-list (415) and size-cap (413) as
-        // dedicated tagged errors — those fall straight through the
-        // `mirror_missing_grant` gate and abort the loop instead of retrying a
-        // rejection that will never change.
-        let uploadResult: FileUploadResponse | undefined;
-        let lastErr: ConsoleApiError | UnsupportedFileTypeError | PayloadTooLargeError | undefined;
-        for (let attempt = 0; attempt < 12; attempt++) {
-          const res = yield* api
-            .uploadBucketFile(bucketId, encrypted, fileName, metadata, fileBytes.length)
-            .pipe(Effect.either);
+            // Upload with simple retry loop on mirror_missing_grant (pragmatic & type-safe).
+            // uploadBucketFile now surfaces deny-list (415) and size-cap (413) as
+            // dedicated tagged errors — those fall straight through the
+            // `mirror_missing_grant` gate and abort the loop instead of retrying a
+            // rejection that will never change. The loop stays inside the permit: a
+            // retry re-sends the same ciphertext, which is still a payload.
+            let uploadResult: FileUploadResponse | undefined;
+            let lastErr:
+              | ConsoleApiError
+              | UnsupportedFileTypeError
+              | PayloadTooLargeError
+              | undefined;
+            for (let attempt = 0; attempt < 12; attempt++) {
+              const res = yield* api
+                .uploadBucketFile(bucketId, encrypted, fileName, metadata, fileBytes.length)
+                .pipe(Effect.either);
 
-          if (res._tag === "Right") {
-            uploadResult = res.right;
-            break;
-          }
+              if (res._tag === "Right") {
+                uploadResult = res.right;
+                break;
+              }
 
-          lastErr = res.left;
-          if (lastErr instanceof ConsoleApiError && lastErr.code === "mirror_missing_grant") {
-            yield* Effect.sleep("3 seconds");
-            continue;
-          }
-          return yield* Effect.fail(lastErr);
-        }
+              lastErr = res.left;
+              if (lastErr instanceof ConsoleApiError && lastErr.code === "mirror_missing_grant") {
+                yield* Effect.sleep("3 seconds");
+                continue;
+              }
+              return yield* Effect.fail(lastErr);
+            }
 
-        if (!uploadResult) {
-          return yield* Effect.fail(new MirrorGrantMissingError({ bucketId, attempt: 12 }));
-        }
+            if (!uploadResult) {
+              return yield* Effect.fail(new MirrorGrantMissingError({ bucketId, attempt: 12 }));
+            }
 
-        const fileId = uploadResult.data.id;
+            return { fileId: uploadResult.data.id, fileName };
+          }),
+        );
 
         // The upload is ACCEPTED at this point: the bytes are stored and the server
         // has an id for them. Everything after this is observation. Emit the id
@@ -1068,7 +1109,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         }
 
         return describeUploadResult(outcome, fileId, fileName);
-      }, transferLock.withPermits(1));
+      });
 
       /**
        * Download + decrypt to a local path.
@@ -1098,7 +1139,14 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         // Async + signal-aware: the fiber's AbortSignal reaches the writer, which
         // checks it right before the rename, so a cancelled download never
         // publishes a half-written plaintext over a good file at the destination.
-        yield* Effect.tryPromise({
+        //
+        // `tryPromiseSettling` rather than `Effect.tryPromise` for the permit (M8),
+        // and that subsumes the temp cleanup this call used to need on interrupt:
+        // every abort path through `writeFileAtomicAsync` removes its own sibling
+        // temp BEFORE the promise settles — the aborted write rejects into the
+        // `rm` in its catch, or the pre-rename signal check drops it — so waiting
+        // for the promise to settle IS the guarantee that nothing was left behind.
+        yield* tryPromiseSettling({
           try: (signal) => writeFileAtomicAsync(destPath, plaintext, { mode: 0o600, signal }),
           catch: (cause) =>
             new LocalFsError({
@@ -1106,12 +1154,8 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
               path: destPath,
               operation: "write",
             }),
-        }).pipe(
-          // Interruption abandons the write's promise before its own signal check
-          // can drop the temp, so remove the sibling temp here too — deterministic
-          // cleanup that leaves neither a temp nor a partial destination behind.
-          Effect.onInterrupt(() => Effect.promise(() => removeAtomicTemp(destPath))),
-        );
+          label: "download write",
+        });
 
         return { bytesWritten: plaintext.length, destPath };
       }, transferLock.withPermits(1));

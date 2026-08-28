@@ -350,6 +350,261 @@ describe("recipient and targets cannot be substituted", () => {
   });
 });
 
+describe("grant: every requested group must actually receive a call (F1)", () => {
+  it("rejects a PTB that grants only some of the requested groups", async () => {
+    const f = fixtures.grantBucketAccessReadWrite;
+    const bytes = await forged((tx) => {
+      const registry = tx.sharedObjectRef({
+        objectId: cfg.bucketRegistryId,
+        initialSharedVersion: "1",
+        mutable: true,
+      });
+      // Only the first two of the three requested groups get a call; the
+      // third is silently dropped, the way a zero- or partial-command PTB
+      // would drop it.
+      for (const groupId of f.groupIds.slice(0, 2)) {
+        const group = tx.sharedObjectRef({
+          objectId: groupId,
+          initialSharedVersion: "1",
+          mutable: true,
+        });
+        tx.moveCall({
+          target: `${cfg.packageId}::bucket_policy::add_editor`,
+          arguments: [group, registry, tx.pure.address(f.recipientAddress)],
+        });
+      }
+    }, ADMIN);
+
+    expect(() =>
+      assertExpectedTransaction(bytes, ADMIN, grantExpectation("readwrite"), cfg),
+    ).toThrow(new RegExp(`does not grant access to group ${f.groupIds[2]}`));
+  });
+
+  it("rejects a zero-command PTB instead of accepting it as an empty no-op grant", async () => {
+    const f = fixtures.grantBucketAccessReadWrite;
+    const bytes = await forged(() => {}, ADMIN);
+
+    expect(() =>
+      assertExpectedTransaction(bytes, ADMIN, grantExpectation("readwrite"), cfg),
+    ).toThrow(new RegExp(`does not grant access to group ${f.groupIds[0]}`));
+  });
+});
+
+describe("grant: a group is only credited when argument 1 is really the registry (F8)", () => {
+  it("does not credit a group whose add_editor call's argument 1 is not the bucket registry", async () => {
+    // groupA gets a correctly-wired call (argument 1 is really the
+    // registry). groupB gets only a MALFORMED call: argument 0 names groupB
+    // (a legitimately-requested group), but argument 1 is groupA's object,
+    // not the registry — a shared object that passes the step-5 allowlist on
+    // its own, so nothing else in this file catches the substitution. Before
+    // the F8 fix, the group-touched collection trusted argument 0 alone, so
+    // groupB was (wrongly) credited as touched despite never really being
+    // wired to the registry. After the fix, a call whose argument 1 does not
+    // resolve to the registry is not credited at all, so groupB is correctly
+    // reported as never granted.
+    const f = fixtures.grantBucketAccessReadWrite;
+    const groupA = f.groupIds[0] as string;
+    const groupB = f.groupIds[1] as string;
+    const tampered = { ...grantExpectation("readwrite"), groupIds: [groupA, groupB] };
+
+    const bytes = await forged((tx) => {
+      const registry = tx.sharedObjectRef({
+        objectId: cfg.bucketRegistryId,
+        initialSharedVersion: "1",
+        mutable: true,
+      });
+      const groupARef = tx.sharedObjectRef({
+        objectId: groupA,
+        initialSharedVersion: "1",
+        mutable: true,
+      });
+      const groupBRef = tx.sharedObjectRef({
+        objectId: groupB,
+        initialSharedVersion: "1",
+        mutable: true,
+      });
+      // A correctly-wired call for groupA.
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [groupARef, registry, tx.pure.address(f.recipientAddress)],
+      });
+      // A malformed call: argument 0 is groupB, but argument 1 is groupA's
+      // object, not the registry. Move-VM argument type-checking would
+      // reject this on-chain (the function's second parameter is typed as
+      // the registry), but this client-side structural check does not see
+      // Move types — only object identity — so before the fix this call's
+      // argument 0 alone was enough to (wrongly) credit groupB as touched,
+      // even though it was never really wired to the registry.
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [groupBRef, groupARef, tx.pure.address(f.recipientAddress)],
+      });
+    }, ADMIN);
+
+    // Before the extraction into `assertGrantBucketAccessStructure`, this
+    // malformed call was silently NOT credited, and the failure surfaced
+    // later as the deferred completeness message ("does not grant access to
+    // group groupB"). After the extraction, the per-call pin on argument 1
+    // (mirroring `membershipRecipient`'s registry pin) rejects this call
+    // IMMEDIATELY, with a message naming the registry mismatch rather than
+    // the eventual missing-coverage symptom.
+    expect(() => assertExpectedTransaction(bytes, ADMIN, tampered, cfg)).toThrow(
+      /uses a different registry/i,
+    );
+  });
+
+  it("rejects a forged add_editor whose argument 1 is some other shared object, not the registry", async () => {
+    // The dispatch's literal scenario: argument 0 is a legitimately-requested
+    // group, argument 1 is not the bucket registry. This particular shape is
+    // already rejected today via the step-5 object allowlist (the substitute
+    // object is neither the registry nor a requested group) regardless of
+    // the F8 fix — kept as a regression test proving the layered defense
+    // holds either way.
+    const f = fixtures.grantBucketAccessReadWrite;
+    const groupA = f.groupIds[0] as string;
+    const notRegistry = `0x${"7".repeat(64)}`;
+
+    const bytes = await forged((tx) => {
+      const groupARef = tx.sharedObjectRef({
+        objectId: groupA,
+        initialSharedVersion: "1",
+        mutable: true,
+      });
+      const notRegistryRef = tx.sharedObjectRef({
+        objectId: notRegistry,
+        initialSharedVersion: "1",
+        mutable: true,
+      });
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [groupARef, notRegistryRef, tx.pure.address(f.recipientAddress)],
+      });
+    }, ADMIN);
+
+    expect(() =>
+      assertExpectedTransaction(bytes, ADMIN, grantExpectation("readwrite"), cfg),
+    ).toThrow(/not the bucket registry|does not grant access to group/i);
+  });
+});
+
+describe("grant: group, registry and recipient are pinned together per call", () => {
+  // These exercise `assertGrantBucketAccessStructure` directly: the per-call
+  // pin that mirrors create-bucket's `membershipRecipient` (group, registry,
+  // recipient checked TOGETHER, not as three independent passes over the
+  // whole PTB), plus the exact-once coverage a `Map<groupId, count>` gives
+  // that a `Set` could not.
+  const registryRef = (tx: Transaction) =>
+    tx.sharedObjectRef({
+      objectId: cfg.bucketRegistryId,
+      initialSharedVersion: "1",
+      mutable: true,
+    });
+  const groupRef = (tx: Transaction, groupId: string) =>
+    tx.sharedObjectRef({ objectId: groupId, initialSharedVersion: "1", mutable: true });
+
+  it("rejects a duplicate add_editor for the same group", async () => {
+    const f = fixtures.grantBucketAccessReadWrite;
+    const groupId = f.groupIds[0] as string;
+    const tampered = { ...grantExpectation("readwrite"), groupIds: [groupId] };
+
+    const bytes = await forged((tx) => {
+      const registry = registryRef(tx);
+      const group = groupRef(tx, groupId);
+      // Two correctly-wired calls for the SAME group. A `Set` cannot tell
+      // one call for a group from two; a `Map<groupId, count>` can.
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [group, registry, tx.pure.address(f.recipientAddress)],
+      });
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [group, registry, tx.pure.address(f.recipientAddress)],
+      });
+    }, ADMIN);
+
+    expect(() => assertExpectedTransaction(bytes, ADMIN, tampered, cfg)).toThrow(
+      new RegExp(`grants access to group ${groupId} more than once`),
+    );
+  });
+
+  it("rejects a call with a missing recipient argument, rather than silently not crediting it", async () => {
+    const f = fixtures.grantBucketAccessReadWrite;
+    const groupId = f.groupIds[0] as string;
+    const tampered = { ...grantExpectation("readwrite"), groupIds: [groupId] };
+
+    const bytes = await forged((tx) => {
+      const registry = registryRef(tx);
+      const group = groupRef(tx, groupId);
+      // Group and registry are wired correctly; the recipient argument is
+      // missing entirely (only 2 arguments), not merely wrong. The old
+      // Set-based code only checked `groupId && wiredToRegistry`, so this
+      // call would have been silently credited and the PTB accepted.
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [group, registry],
+      });
+    }, ADMIN);
+
+    expect(() => assertExpectedTransaction(bytes, ADMIN, tampered, cfg)).toThrow(
+      /is not the requested recipient/i,
+    );
+  });
+
+  it("rejects a call whose first argument is the registry, not a requested group", async () => {
+    const f = fixtures.grantBucketAccessReadWrite;
+    const groupId = f.groupIds[0] as string;
+    const tampered = { ...grantExpectation("readwrite"), groupIds: [groupId] };
+
+    const bytes = await forged((tx) => {
+      const registry = registryRef(tx);
+      const group = groupRef(tx, groupId);
+      // A legitimate call for the real group — completeness is satisfied —
+      // PLUS a bogus call whose FIRST argument is the registry itself. The
+      // registry passes the step-5 object allowlist on its own (every grant
+      // references it), so only a per-call check that argument 0 is a
+      // REQUESTED GROUP, not merely an allowed object, catches this.
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [group, registry, tx.pure.address(f.recipientAddress)],
+      });
+      tx.moveCall({
+        target: `${cfg.packageId}::bucket_policy::add_editor`,
+        arguments: [registry, registry, tx.pure.address(f.recipientAddress)],
+      });
+    }, ADMIN);
+
+    expect(() => assertExpectedTransaction(bytes, ADMIN, tampered, cfg)).toThrow(
+      /is not one of the groups this flow asked for/i,
+    );
+  });
+
+  it("still rejects an address smuggled in as an unreferenced input (preserves the closing sweep)", async () => {
+    // Passes today, before the extraction — this proves the whole-PTB
+    // closing Pure-address sweep (which is not equivalent to the per-call
+    // recipient pin above: the pin only reads argument 2 of a call already
+    // narrowed to add_editor/add_viewer) survives moving into the new
+    // function as its last check.
+    const f = fixtures.grantBucketAccessReadWrite;
+
+    const bytes = await forged((tx) => {
+      const registry = registryRef(tx);
+      for (const groupId of f.groupIds) {
+        const group = groupRef(tx, groupId);
+        tx.moveCall({
+          target: `${cfg.packageId}::bucket_policy::add_editor`,
+          arguments: [group, registry, tx.pure.address(f.recipientAddress)],
+        });
+      }
+      // Carried by the PTB but referenced by no command.
+      tx.pure.address(ATTACKER);
+    }, ADMIN);
+
+    expect(() =>
+      assertExpectedTransaction(bytes, ADMIN, grantExpectation("readwrite"), cfg),
+    ).toThrow(/grants access to .*, not the requested recipient/i);
+  });
+});
+
 describe("forged transactions from a hostile endpoint", () => {
   const sender = fixtures.workingAddress;
 

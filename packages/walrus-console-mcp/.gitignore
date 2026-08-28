@@ -28,3 +28,6 @@ coverage/
 .mcp.json
 .claude/
 /temp
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/

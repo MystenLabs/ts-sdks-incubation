@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeFileAtomic } from "../atomicWrite.js";
 import { getConfigDir } from "../configFile.js";
+import { withFileLock } from "../fileLock.js";
 
 /**
  * Local cache of "anchor groups" per space.
@@ -37,10 +38,21 @@ import { getConfigDir } from "../configFile.js";
  *    empty rather than failing the caller. A genuinely missing file (ENOENT)
  *    is the ordinary first-run case, not a problem, so it is silent.
  *
- * No locking, also unlike `mergeConfigFile`. The lock there exists because
- * losing a credential update is unacceptable; here, two writers racing and one
- * update getting lost just degrades that one space back to the bootstrap
- * path next time — safe to lose, not worth the complexity of a lock.
+ * `recordAnchor` is guarded by the SAME cross-process lock as
+ * `mergeConfigFile` (`withFileLock`, `../fileLock.ts`), just under its own
+ * lock path (`.anchors.json.lock` beside `.config.json.lock`), so the two
+ * files' writers never block each other. Unlike `configFile.ts`, a lost
+ * update here was never unsafe to LOSE — it only degrades that one space back
+ * to the bootstrap path next time — but a lost update was never the actual
+ * failure mode: this is a whole-file read-modify-write exactly like
+ * `mergeConfigFile`'s, so an unlocked race did not merely drop a write, it
+ * dropped OTHER writers' groups while every one of them still reported
+ * `anchorRecorded: true` (`ConsoleStorageService.createBucket` derives that
+ * flag from its own local write not throwing, never from re-reading — see
+ * `recordAnchor`'s doc comment below). The lock closes that: contention now
+ * degrades to an honest `anchorRecorded: false`, surfaced through the
+ * existing `Effect.try`/`catchAll` around the `recordAnchor` call, instead of
+ * a silent wrong answer.
  */
 
 const ANCHORS_FILENAME = "anchors.json";
@@ -49,11 +61,19 @@ const ANCHORS_FILENAME = "anchors.json";
  * The most anchors retained for one space, newest first.
  *
  * Strictly GREATER than `MAX_ADMITTED_ANCHORS` (20), the cap the roster verifier
- * applies to the anchors it actually consults, and that ordering is the whole
- * reason for the number: the store cannot tell an anchor that carries evidence
- * from one that does not (that needs a chain read), so if retention were the
- * tighter bound it would be silently pre-applying a recency cap the verifier is
- * careful to apply only AFTER admission — the original bug wearing a bound.
+ * applies to anchors it ADMITS, and that ordering is the whole reason for the
+ * number: the store cannot tell an anchor that carries evidence from one that
+ * does not (that needs a chain read), so if retention were the tighter bound it
+ * would be silently pre-applying a recency cap the verifier is careful to apply
+ * only AFTER admission — the original bug wearing a bound.
+ *
+ * EQUAL TO, NEVER LESS THAN, `MAX_CONSULTED_ANCHORS` (`rosterVerification.ts`,
+ * also 32) — the roster verifier's OWN defence-in-depth budget on anchors it
+ * merely CONSULTS (enumerates), independent of this store's cap. That loop does
+ * not read this constant, or otherwise depend on this module for its bound; the
+ * two are sized to match on purpose so this store's retention is never looked
+ * at through a narrower window than it keeps, which is what would make some of
+ * that retention pointless.
  *
  * THE 12 SPARE SLOTS ARE HEADROOM FOR A RUN OF IDENTITY-ONLY CREATES, AND THAT
  * HEADROOM IS BOUNDED — READ THIS BEFORE TREATING THE RATCHET AS IMPOSSIBLE.
@@ -283,16 +303,35 @@ export function readAnchors(spaceId: string): readonly AnchorEntry[] {
  * twice — a duplicate would spend an anchor slot and a chain read on membership
  * that has already been counted.
  *
- * No lock guards this read-then-write (see the module comment): a write lost
- * to a concurrent racer just means that space keeps the anchors it already had,
- * which is always a safe outcome here — it can only under-permission.
+ * Runs the whole load-mutate-save inside `withFileLock` (see the module
+ * comment): without it, two `create_bucket`s landing on different processes
+ * each load the same prior file, and the later whole-file `saveAnchors`
+ * silently drops every earlier writer's group — not merely "that space keeps
+ * what it already had", but every OTHER space's concurrently-recorded anchor
+ * along with it, while every writer still reports `anchorRecorded: true`
+ * (`ConsoleStorageService.createBucket` derives that flag from this call not
+ * throwing, never from re-reading afterward). A lock timeout now surfaces
+ * instead, through the same `Effect.try`/`catchAll` that already handles a
+ * failed write — an honest `anchorRecorded: false`.
+ *
+ * The lock's wait is synchronous (`Atomics.wait`, 20ms retries, ~100
+ * attempts, so ~2s worst case) even though this sits on the `create_bucket`
+ * request path. That is a deliberate, not overlooked, trade: contention here
+ * needs two `create_bucket` calls from different processes to overlap a
+ * sub-millisecond local read-modify-write on the same space, `mergeConfigFile`
+ * already accepts the identical bound on the same request-adjacent paths
+ * (`install`/`config`), and an async lock would need a second
+ * `recordAnchorAsync` entry point rippling through every test's
+ * `seedAnchor()` helper for a race this narrow.
  */
 export function recordAnchor(spaceId: string, entry: AnchorEntry): void {
-  const anchors = loadAnchors();
-  const existing = anchors[spaceId] ?? [];
-  anchors[spaceId] = [entry, ...existing.filter((other) => other.groupId !== entry.groupId)].slice(
-    0,
-    MAX_ANCHORS_PER_SPACE,
-  );
-  saveAnchors(anchors);
+  withFileLock(path.join(getConfigDir(), `.${ANCHORS_FILENAME}.lock`), () => {
+    const anchors = loadAnchors();
+    const existing = anchors[spaceId] ?? [];
+    anchors[spaceId] = [
+      entry,
+      ...existing.filter((other) => other.groupId !== entry.groupId),
+    ].slice(0, MAX_ANCHORS_PER_SPACE);
+    saveAnchors(anchors);
+  });
 }

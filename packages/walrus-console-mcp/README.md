@@ -11,7 +11,7 @@ Using a coding agent like **Claude Code**, **Codex**, **Cursor**, or **Gemini CL
 ```text
 Set up the @mysten-incubation/walrus-console-mcp MCP server for me by running these steps in order. Stop and ask me only if a step actually fails.
 
-1. Run the interactive installer from an empty directory (so it can't launch a same-named package the current project happens to ship): `cd "$(mktemp -d)" && npx -y @mysten-incubation/walrus-console-mcp install`. At the first prompt choose **Credential bundle** and paste the CONSOLE_CREDENTIAL_BUNDLE value from the Console key-mint screen — one paste carries the API key, the service key and the two addresses `create_bucket` needs pinned. If I only kept the individual values, choose **API key** instead: it asks for CONSOLE_API_KEY (starts with `hbr_`) and CONSOLE_SERVICE_PRIVATE_KEY (starts with `suiprivkey1`), then for the two addresses. Either way it validates and saves to a user-only config file. Don't print my keys back to me; the addresses are not secret and it will show them for me to confirm.
+1. Run the interactive installer from an empty directory (so it can't launch a same-named package the current project happens to ship): `cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install`. At the first prompt choose **Credential bundle** and paste the CONSOLE_CREDENTIAL_BUNDLE value from the Console key-mint screen — one paste carries the API key, the service key and the two addresses `create_bucket` needs pinned. If I only kept the individual values, choose **API key** instead: it asks for CONSOLE_API_KEY (starts with `hbr_`) and CONSOLE_SERVICE_PRIVATE_KEY (starts with `suiprivkey1`), then for the two addresses. Either way it validates and saves to a user-only config file. Don't print my keys back to me; the addresses are not secret and it will show them for me to confirm.
 2. Let the same installer register the server — it offers a checklist of the agents it detects. That step installs the package into its own directory and writes the **absolute** path of the launcher into each config. Prefer it over registering by hand.
 3. Then tell me: restart the agent (or run `/mcp`), approve walrus-console-mcp when prompted, and test with the `ping_console` tool.
 
@@ -33,7 +33,7 @@ That's it — once the agent finishes and you've approved the MCP server, you ca
 ### Install from npm (recommended)
 
 ```bash
-cd "$(mktemp -d)" && npx -y @mysten-incubation/walrus-console-mcp install
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install
 ```
 
 This interactive CLI will:
@@ -72,7 +72,7 @@ command is an absolute path, not `npx`, for
 ### 2. Configure the server
 
 ```bash
-cd "$(mktemp -d)" && npx -y @mysten-incubation/walrus-console-mcp install
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install
 ```
 
 The installer saves credentials to `~/.config/walrus-console-mcp/config.json` (`%APPDATA%\walrus-console-mcp\config.json` on Windows) with user-only file permissions. MCP client config files only need to launch the server; they do not need to contain your API key or service private key.
@@ -80,13 +80,17 @@ The installer saves credentials to `~/.config/walrus-console-mcp/config.json` (`
 ### 3. Run with Claude Desktop / Claude Code / Codex
 
 Claude Desktop, Claude Code, Cursor, Codex, and Gemini CLI are all configured by
-the installer's Register step. The generated server entry looks like this:
+the installer's Register step. The generated server entry looks like this — the
+path shown is illustrative; if you are pointing a client at this by hand, paste
+the path printed by the `echo` command in
+[Adding to an agent (npm)](#adding-to-an-agent-npm) below instead of typing `~`
+— MCP clients spawn `command` without a shell, so `~` is not expanded:
 
 ```json
 {
   "mcpServers": {
     "walrus-console-mcp": {
-      "command": "~/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp",
+      "command": "/home/you/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp",
       "args": []
     }
   }
@@ -151,7 +155,7 @@ Both are configured with the CLI and land in the same 0600 file:
 
 ```bash
 # Worker / everyday host — working key only, cannot mint
-cd "$(mktemp -d)" && npx -y @mysten-incubation/walrus-console-mcp install   # choose "API key"
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install   # choose "API key"
 
 # Provisioning host — additionally loads the management key
 "${XDG_DATA_HOME:-$HOME/.local/share}/walrus-console-mcp/node_modules/.bin/walrus-console-mcp" config   # choose "Management key"
@@ -196,18 +200,19 @@ key-admin grant, not a re-mint. See
 {
   "ok": true,
   "credential": {
-    "apiKey": "hbr_…",
-    "privateKey": "suiprivkey1…",
     "permission": "read_write",
     "spaceId": "…",
     "keyId": "…",
-    "privateBuckets": [{ "bucketId": "…", "groupId": "0x…" }]
+    "privateBuckets": [{ "bucketId": "…", "groupId": "0x…" }],
+    "credentialFile": "/home/you/.config/walrus-console-mcp/minted-keys/<hash of keyId>.json"
   }
 }
 ```
 
-Hand `credential.apiKey` + `credential.privateKey` to the new worker as its `CONSOLE_API_KEY` +
-`CONSOLE_SERVICE_PRIVATE_KEY`. Both are shown only once — Console never stores them.
+`credential` no longer carries the raw secrets. Read `apiKey` (`hbr_…`) and `privateKey`
+(`suiprivkey1…`) from `credential.credentialFile` — a private `0600` file written once, whose
+contents are shown nowhere else, including this tool's own output — and hand them to the new
+worker as its `CONSOLE_API_KEY` + `CONSOLE_SERVICE_PRIVATE_KEY`.
 
 ### When a step after the mint fails
 
@@ -215,7 +220,8 @@ The mint is the point of no return: once Console accepts it the key exists, and 
 has been shown for the only time it ever will be. The space check, the bucket grant and the
 activation poll all run after that, so each can fail with a **live key already created**.
 
-Those failures come back as `ok: false` **carrying the credential**, not as an error:
+Those failures come back as `ok: false` **usually still carrying the credential** (via the same
+`credentialFile` pointer), not as an error:
 
 ```json
 {
@@ -223,15 +229,42 @@ Those failures come back as `ok: false` **carrying the credential**, not as an e
   "stage": "grant",
   "reason": "…the original error message…",
   "detail": { "tag": "ConsoleApiError", "code": "insufficient_scope", "status": 403 },
-  "credential": { "apiKey": "hbr_…", "privateKey": "suiprivkey1…", "…": "…" },
+  "credential": {
+    "permission": "read_write",
+    "spaceId": "…",
+    "keyId": "…",
+    "privateBuckets": [{ "bucketId": "…", "groupId": "0x…" }],
+    "credentialFile": "/home/you/.config/walrus-console-mcp/minted-keys/<hash of keyId>.json"
+  },
   "recovery": "…what to do, and what not to…"
 }
 ```
 
-Read `ok` before using the result — **`ok: false` still contains a real, usable credential.**
-`stage` is one of `space-check`, `grant`, `activation`; `detail` carries the machine-readable form
-of the failure so you can tell a permanent problem (a `403 insufficient_scope` will never succeed)
-from a transient one.
+Read `ok` before using the result — **`ok: false` usually still contains a real, usable
+credential**, reachable through `credential.credentialFile`. `stage` is one of `space-check`,
+`grant`, `activation`, or `persist`; `detail` carries the machine-readable form of the failure so
+you can tell a permanent problem (a `403 insufficient_scope` will never succeed) from a transient
+one.
+
+The exception is `stage: "persist"`: the mint succeeded, but its secrets could not be saved to
+disk at all, so there is no `credentialFile` to point at and the result carries **no `credential`
+field**:
+
+```json
+{
+  "ok": false,
+  "stage": "persist",
+  "reason": "…the write error…",
+  "keyId": "…",
+  "spaceId": "…",
+  "attemptedPath": "/home/you/.config/walrus-console-mcp/minted-keys/<hash of keyId>.json",
+  "recovery": "…what to do, and what not to…"
+}
+```
+
+`keyId` + `spaceId` name the key that was minted and `attemptedPath` is where its credential file
+should have been written, so an operator can still locate it in the Console UI even though this
+process never got to save its secrets.
 
 **Do not call the tool again to "retry" an `ok: false` result.** The mint already succeeded, so a
 second call mints a _second_ key and orphans the first. This matters more than it sounds: Console
@@ -491,12 +524,36 @@ records where it landed. Nothing is resolved at launch time, so there is nothing
 left to shadow. Upgrading means re-running the installer — which was already true,
 since the registered spec was version-pinned.
 
-The one step that still runs through `npx` is the very first bootstrap (`install`),
-before any protected launcher exists. Run it from an empty directory — prefix it
-with `cd "$(mktemp -d)"` — so that first resolution cannot be hijacked by a package
-the current project happens to ship; a version pin alone does not help, since a
-local package can simply claim that version. Every command after install points at
-the installed absolute launcher.
+**The bootstrap step no longer runs through `npx` either.** Every bootstrap
+command in this README now reads:
+
+```bash
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp <verb>
+```
+
+`npx` and a bare `npm install` (no `--prefix`) both perform an ambient
+**upward** resolution step before they run anything: `npx` walks up looking
+for a same-named package to launch instead of fetching one, and a bare
+`npm install` walks up looking for the nearest `package.json` to treat as the
+project root. `cd "$(mktemp -d)"` alone defeats only the first of those — it
+stops a project's own `node_modules` from shadowing the install, which is
+what the original mitigation here covered. It does **not** stop the second:
+`mktemp -d` directories are typically created under `/tmp` or `$TMPDIR`, a
+shared, sometimes multi-tenant directory, and if any ancestor **above** the
+fresh directory carries a `node_modules` (or a `package.json`) planted by
+another process on that machine, the upward walk can still find and use it —
+reaching outside the fresh directory entirely.
+
+`npm install --prefix <dir> <spec>` has no such walk: it fetches `<spec>`
+from the registry and installs it into `<dir>/node_modules`, full stop —
+there is no ambient resolve-and-run step for a planted ancestor directory to
+hijack. `mktemp -d` is kept in the command above because it is still good
+hygiene (an isolated, disposable directory), but it is no longer
+load-bearing for this attack; `--prefix .` is what actually closes it, by
+construction, wherever the directory happens to sit. `--ignore-scripts`
+additionally stops the fetched package's own `preinstall`/`postinstall`
+(or that of any of its dependencies) from running arbitrary code during this
+one-time bootstrap.
 
 Get the path with:
 
@@ -520,13 +577,15 @@ codex mcp add walrus-console-mcp -- ~/.local/share/walrus-console-mcp/node_modul
 
 **Cursor, Gemini CLI, Claude Desktop, or any hand-written config:** point
 `command` at the same absolute path, with no arguments. For example, in a Claude
-config file (usually `~/.claude.json`, `~/.claude/config.json`, or `~/.config/claude/config.json`):
+config file (usually `~/.claude.json`, `~/.claude/config.json`, or `~/.config/claude/config.json`) —
+paste the path printed by the `echo` above — MCP clients spawn `command` without
+a shell, so `~` is not expanded:
 
 ```json
 {
   "mcpServers": {
     "walrus-console-mcp": {
-      "command": "~/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp",
+      "command": "/home/you/.local/share/walrus-console-mcp/node_modules/.bin/walrus-console-mcp",
       "args": [],
       "description": "Walrus Console decentralized storage"
     }
@@ -568,6 +627,7 @@ After registering, restart the agent (or reload the window if using it inside VS
 - Path sandboxing **fails closed**. `upload_file` (localPath) and `download_file` (destPath) are confined to the allowed roots — the filesystem roots your MCP client advertises, or `CONSOLE_MCP_ALLOWED_DIRS` when the client advertises none, or `allowedDirs` saved by `install` / `config`. If none of those is available the path is **rejected**, so a model-chosen path (e.g. from prompt injection) can't reach an arbitrary file. Relative paths (and a leading `~`) are resolved against the first allowed root rather than the MCP server directory.
 - Symlinks are resolved before the containment check: a symlink inside an allowed root that points outside it is rejected, not followed.
 - **Accepted limitation (ancestor-directory TOCTOU):** the _final_ path component is protected against a symlink swapped in after validation (reads open with `O_NOFOLLOW`; downloads write a sibling temp then `rename`), but a swap of an _ancestor_ directory between the check and the open is not closed — Node exposes no `openat2`/descriptor-relative traversal on any platform. Exploiting it requires a local process that already holds write access inside an allowed root and wins a race — a strictly weaker position than reading the credential file directly. Prefer per-user allowed roots, and avoid pointing `CONSOLE_MCP_ALLOWED_DIRS` at a directory that other local users can write — or whose ancestor directories they can write.
+- Contract identity is resolved by **network** (one Console deployment per network: testnet, mainnet); a loopback host gets the testnet package set. A wrong package set cannot over-permission anything — the validator allowlists exact packages and refuses to sign, anchors recorded under other ids go stale, and `seal_approve` targets a package the key servers will not honour.
 
 ## MCPB bundle (one-file distribution)
 
@@ -580,7 +640,7 @@ pnpm mcpb:pack       # build the self-contained bundle, then pack -> walrus-cons
 
 On install, the client prompts for the `CONSOLE_API_KEY` (required), `CONSOLE_SERVICE_PRIVATE_KEY` (optional, sensitive), the optional Key-Admin pair `CONSOLE_ADMIN_KEY` / `CONSOLE_ADMIN_SERVICE_PRIVATE_KEY` (sensitive — provisioning host only; see [Headless key minting](#headless-key-minting-generate_api_key)), and an optional `CONSOLE_API_BASE_URL` override, wired in via `user_config` in `manifest.json`.
 
-`user_config` does **not** carry the two `create_bucket` address pins, so a bundle install cannot prompt for them. A `.mcpb` server reads the same `~/.config/walrus-console-mcp/config.json` as the CLI, so provision them once with `cd "$(mktemp -d)" && npx -y @mysten-incubation/walrus-console-mcp config` — see [Who gets access to a new bucket](#who-gets-access-to-a-new-bucket-create_bucket). Until then `create_bucket` refuses; every other tool is unaffected.
+`user_config` does **not** carry the two `create_bucket` address pins, so a bundle install cannot prompt for them. A `.mcpb` server reads the same `~/.config/walrus-console-mcp/config.json` as the CLI, so provision them once with `cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp config` — see [Who gets access to a new bucket](#who-gets-access-to-a-new-bucket-create_bucket). Until then `create_bucket` refuses; every other tool is unaffected.
 
 ## Development
 

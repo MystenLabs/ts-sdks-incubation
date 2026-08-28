@@ -9,7 +9,7 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
-import { open as openFileAsync } from "node:fs/promises";
+import { lstat, open as openFileAsync, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,10 +32,14 @@ import { MAX_TRANSFER_BYTES_ENV } from "./transferLimits.js";
  * model (e.g. via prompt injection) must never reach `fs`.
  *
  * Containment is checked on **canonical, symlink-resolved** paths (see
- * `toRealPath`): a *live* symlink inside an allowed root that points outside it
- * cannot smuggle a read/write past the boundary, because it is resolved to its
- * real target before the check. The canonical path is returned so the caller's
- * `fs` call operates on the vetted target.
+ * `toRealPathAsync`, the async twin of `toRealPath` that the request path uses
+ * so this resolution no longer blocks the event loop the way the synchronous
+ * `toRealPath` did — it is not itself cancellable, since `fs/promises`
+ * `realpath`/`lstat`/`readlink` take no `AbortSignal`): a *live* symlink inside
+ * an allowed root that points outside it cannot smuggle a read/write past the
+ * boundary, because it is resolved to its real target before the check. The
+ * canonical path is returned so the caller's `fs` call operates on the vetted
+ * target.
  *
  * A **dangling** symlink — one whose target does not exist yet — is rejected
  * outright rather than resolved. See `toRealPath` for why that trade is worth
@@ -207,6 +211,22 @@ function readLinkTarget(p: string): string | undefined {
 }
 
 /**
+ * Async twin of {@link readLinkTarget} (`fsp.lstat`/`readlink` instead of the
+ * `*Sync` calls), so `toRealPathAsync` never blocks the event loop while it
+ * walks up a path (M9). Same two states folded into the same "not a symlink"
+ * answer, for the same reason — see the sync version's comment above before
+ * treating this catch as exhaustively safe.
+ */
+async function readLinkTargetAsync(p: string): Promise<string | undefined> {
+  try {
+    if (!(await lstat(p)).isSymbolicLink()) return undefined;
+    return await readlink(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Canonical (symlink-free) absolute form of `p`. When the full path does not
  * exist yet — the common case for a download destination — the deepest EXISTING
  * ancestor is realpath-resolved and the not-yet-created suffix re-appended, so a
@@ -242,6 +262,46 @@ export function toRealPath(p: string): string {
       return suffix.length === 0 ? real : join(real, ...suffix);
     } catch {
       const target = readLinkTarget(existing);
+      if (target !== undefined) {
+        throw new Error(
+          `"${existing}" is a broken symlink (it points at "${target}", which does not exist). ` +
+            `Point it at an existing location, or remove the link and use a real path.`,
+        );
+      }
+      const parent = dirname(existing);
+      if (parent === existing) return resolved; // reached the fs root; nothing exists (defensive)
+      suffix.unshift(basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+/**
+ * Async twin of {@link toRealPath} (`fsp.realpath` instead of `realpathSync`).
+ *
+ * `resolvePathWithinRoots` runs on the MCP request path, inside the fiber
+ * `runPromise` drives — canonicalizing there with the synchronous `toRealPath`
+ * blocked the whole event loop (every other in-flight request, the transport's
+ * heartbeat, cancellation itself) for as long as `realpathSync` took to answer,
+ * which is unbounded against a stalled network mount (M9). This does the same
+ * walk-up-on-ENOENT resolution, the same dangling-symlink rejection, and throws
+ * the same messages — see {@link toRealPath}'s docstring for the full rationale
+ * (the depth-cap hazard that rules out resolving through a broken link, the
+ * cycle argument, the plain-vs-`.native` `realpath` note). `toRealPath` itself
+ * stays exported: `validateAllowedDirectory`, the installer, `cliArgs.ts`, and
+ * `credentials.ts` all canonicalize paths outside the request path, where
+ * synchronous is fine.
+ */
+export async function toRealPathAsync(p: string): Promise<string> {
+  const resolved = resolve(p);
+  let existing = resolved;
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      const real = await realpath(existing);
+      return suffix.length === 0 ? real : join(real, ...suffix);
+    } catch {
+      const target = await readLinkTargetAsync(existing);
       if (target !== undefined) {
         throw new Error(
           `"${existing}" is a broken symlink (it points at "${target}", which does not exist). ` +
@@ -436,7 +496,7 @@ export async function resolvePathWithinRoots(
   // ever accept fewer paths, and an empty list rejects everything.
   let realCandidate: string;
   try {
-    realCandidate = toRealPath(resolved);
+    realCandidate = await toRealPathAsync(resolved);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${label} path "${candidatePath}" cannot be used: ${message}`);
@@ -444,7 +504,7 @@ export async function resolvePathWithinRoots(
   const realRoots: string[] = [];
   for (const dir of rootDirs) {
     try {
-      realRoots.push(toRealPath(dir));
+      realRoots.push(await toRealPathAsync(dir));
     } catch {
       console.error(`[console-mcp] Ignoring unresolvable sandbox root "${dir}"`);
     }

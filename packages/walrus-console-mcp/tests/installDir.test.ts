@@ -98,6 +98,15 @@ describe("installServer", () => {
     expect(call).toContain(spec);
   });
 
+  it("disables npm lifecycle scripts so a malicious dependency cannot run install-time code", () => {
+    const calls: string[][] = [];
+
+    installServer(spec, { root: tmp, run: fakeNpm(calls), platform: "linux" });
+
+    const [call] = calls;
+    expect(call).toContain("--ignore-scripts");
+  });
+
   it("throws when npm fails, rather than returning an unusable path", () => {
     expect(() =>
       installServer(spec, {

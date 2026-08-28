@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
  * deliberate act. `package.json` is always included by npm regardless of
  * `files`, so it belongs in this list.
  */
-const EXPECTED_TOP_LEVEL = ["LICENSE", "README.md", "dist", "package.json"];
+const EXPECTED_TOP_LEVEL = ["LICENSE", "README.md", "dist", "npm-shrinkwrap.json", "package.json"];
 
 interface PackFile {
   readonly path: string;

@@ -9,7 +9,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "npm-shrinkwrap.json"
   ],
   "engines": {
     "node": ">=24"
@@ -29,7 +30,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "pack:check": "tsx scripts/pack-check.mts",
+    "pack:check": "tsx scripts/pack-check.mts && tsx scripts/check-shrinkwrap.mts",
+    "shrinkwrap:generate": "tsx scripts/generate-shrinkwrap.mts",
     "prettier:check": "prettier -c --ignore-unknown .",
     "prettier:fix": "prettier -w --ignore-unknown .",
     "oxlint:check": "oxlint --deny-warnings .",

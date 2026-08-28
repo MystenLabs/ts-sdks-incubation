@@ -261,26 +261,16 @@ export function assertExpectedTransaction(
     }
   }
 
-  // 6. For a grant, every address it carries must be the recipient we generated.
-  //    This is what stops access being handed to a third party while the response
-  //    still looks like the grant we asked for.
+  // 6. Each flow's own structural checks. Steps 1-5 already pinned the sender,
+  //    sponsorship, call targets and objects; this pins the WIRING and the
+  //    IDENTITIES for whichever flow this is — who the grant's group/registry/
+  //    recipient are pinned to, or (for create-bucket) who becomes owner, who
+  //    is on the roster, who gets management, and that the signing key demotes
+  //    itself on the way out.
   if (expectation.kind === "grantBucketAccess") {
-    const recipient = normalizeSuiAddress(expectation.recipientAddress);
-    for (const input of data.inputs) {
-      const address = pureAddress(input);
-      if (address && address !== recipient) {
-        throw new UnexpectedTransactionError(
-          `it grants access to ${address}, not the requested recipient ${expectation.recipientAddress}`,
-        );
-      }
-    }
+    assertGrantBucketAccessStructure(data, config, expectation);
     return {};
   }
-
-  // 7. Create-bucket only: the full command graph. Steps 1-5 already pinned the
-  //    sender, sponsorship, call targets and objects; this pins the WIRING and the
-  //    IDENTITIES — who becomes owner, who is on the roster, who gets management,
-  //    and that the signing key demotes itself on the way out.
   return {
     create: assertCreateBucketIdentityStructure(data, config, sender, expectation, managerAddress),
   };
@@ -348,6 +338,153 @@ function resolveManager(
     );
   }
   return pin ?? local;
+}
+
+/**
+ * Validate the exact per-call wiring of a grant-bucket-access PTB, and that every
+ * requested group is covered exactly once.
+ *
+ * The PTB the API builds is N calls to the SAME function — `add_editor` for a
+ * readwrite grant, `add_viewer` for a read grant, already pinned by
+ * `allowedTargets`/step 4 above — one per group: `add_editor(group, registry,
+ * recipient)`. This walks those calls and pins all THREE arguments TOGETHER, per
+ * call, the same shape `membershipRecipient` below uses for create-bucket's
+ * membership calls, rather than checking "is the object allowed", "is argument 1
+ * the registry" and "is the recipient present anywhere in the PTB" as three
+ * separate, looser passes over the whole transaction (which is what the code this
+ * replaces did, and how it missed a duplicate call and an uncredited recipient).
+ *
+ * WHY PER-CALL, NOT PER-CHECK:
+ * - Checking the group and the registry SEPARATELY lets a call whose argument 0 is
+ *   a real, requested group be paired with an argument 1 that is anything else the
+ *   step-5 allowlist happens to accept — such as another requested group's object,
+ *   standing in for the registry. Argument 0 is checked FIRST against
+ *   `expectation.groupIds` specifically, not merely against "is this object
+ *   allowed at all": the registry itself is also in the step-5 allowlist (every
+ *   grant references it), so "is it allowed" alone would let the registry sit
+ *   undetected in the group slot.
+ * - Checking the recipient only via the whole-PTB sweep (below) lets a call be
+ *   credited toward a group's coverage without that SAME call naming the
+ *   recipient anywhere — the sweep only proves the recipient's address appears
+ *   somewhere in the transaction, not that it appears in THIS call's third
+ *   argument. `grantedGroup` requires argument 2 to decode as an address and
+ *   equal the recipient before the call counts toward anything.
+ *
+ * GROUP IDENTITY IS BY OBJECT ID, NOT PTB `Result` POSITION. This is the one place
+ * the create-bucket pattern below does NOT transfer: `membershipRecipient` checks
+ * `isCreateBucketGroupResult(args[0])` because create-bucket's OWN PTB PRODUCES
+ * the group as `Result:0` of its first command — there is a PTB-local position to
+ * check the argument against. A grant never creates its group: the group is
+ * always a pre-existing object the caller already verified against chain state
+ * and passed in as an `Input`. There is no position to pin it to; the only thing
+ * to check the id against is `expectation.groupIds`. Do not "fix" this to call
+ * `isCreateBucketGroupResult` — it would reject every legitimate grant.
+ *
+ * EXACTLY-ONCE COVERAGE uses a `Map<groupId, count>`, not a `Set`: a `Set` cannot
+ * tell one correctly-wired call for a group from two, so a duplicate `add_editor`
+ * for the same group — a shape this client has never verified — would pass
+ * silently. `count === 0` reproduces the pre-extraction refusal message verbatim
+ * (existing tests assert against its exact wording); `count > 1` is new, and
+ * closes the duplicate-call hole a `Set` could not see.
+ *
+ * THE CLOSING PURE-ADDRESS SWEEP runs LAST, over every input, not only the ones
+ * the per-call pins read. The per-call pin above checks exactly one argument
+ * position (argument 2) on calls this flow's own target allowlist already
+ * narrowed to `add_editor`/`add_viewer`. The sweep is what catches an address
+ * parked anywhere else — an argument position no check reads, or an input no
+ * command references at all. Dropping it in favor of the per-call pin is NOT
+ * equivalent, and would be a real regression, not a simplification.
+ */
+function assertGrantBucketAccessStructure(
+  data: ReturnType<Transaction["getData"]>,
+  config: BucketGroupPackageConfig,
+  expectation: Extract<SponsoredTxExpectation, { kind: "grantBucketAccess" }>,
+): void {
+  const { commands, inputs } = data;
+  const registryId = normalizeSuiAddress(config.bucketRegistryId);
+  const recipient = normalizeSuiAddress(expectation.recipientAddress);
+  const requestedGroupIds = new Set(expectation.groupIds.map((id) => normalizeSuiAddress(id)));
+
+  /**
+   * The group id of a `(group, registry, address)` membership call, after pinning
+   * all three arguments together. Throws immediately — rather than silently
+   * declining to credit the call — on the first pin that fails, so a malformed
+   * call is reported for what it is instead of surfacing later as a missing
+   * group.
+   */
+  const grantedGroup = (fn: string, args: readonly unknown[]): string => {
+    // Pin 1: argument 0 must be a group we actually asked for.
+    const groupIndex = inputIndexOf(args[0]);
+    const groupId =
+      groupIndex === undefined ? undefined : sharedOrOwnedObjectId(inputs[groupIndex]);
+    if (!groupId || !requestedGroupIds.has(normalizeSuiAddress(groupId))) {
+      throw new UnexpectedTransactionError(
+        `${fn}'s first argument is not one of the groups this flow asked for`,
+      );
+    }
+    // Pin 2: argument 1 must really be the shared bucket registry.
+    const registryIndex = inputIndexOf(args[1]);
+    const registryArgId =
+      registryIndex === undefined ? undefined : sharedOrOwnedObjectId(inputs[registryIndex]);
+    if (!registryArgId || normalizeSuiAddress(registryArgId) !== registryId) {
+      throw new UnexpectedTransactionError(
+        `${fn} uses a different registry than the bucket registry`,
+      );
+    }
+    // Pin 3: argument 2 must decode as an address and be the recipient we
+    // generated — not merely present somewhere else in the PTB.
+    const recipientIndex = inputIndexOf(args[2]);
+    const argRecipient =
+      recipientIndex === undefined ? undefined : pureAddress(inputs[recipientIndex]);
+    if (!argRecipient || argRecipient !== recipient) {
+      throw new UnexpectedTransactionError(
+        `${fn}'s recipient is not the requested recipient ${expectation.recipientAddress}`,
+      );
+    }
+    return normalizeSuiAddress(groupId);
+  };
+
+  const coverage = new Map<string, number>();
+  for (const command of commands) {
+    const call = moveCallOf(command);
+    const fn = call?.function ?? "the call";
+    const groupId = grantedGroup(fn, call?.arguments ?? []);
+    coverage.set(groupId, (coverage.get(groupId) ?? 0) + 1);
+  }
+
+  // Every group the caller asked for must be covered EXACTLY once. Zero
+  // reproduces the pre-extraction "silently dropped" refusal verbatim, so the
+  // existing F1 tests keep passing unchanged; more than one is new, closing the
+  // duplicate-call hole a Set-based accumulator could not see.
+  for (const groupId of expectation.groupIds) {
+    const normalized = normalizeSuiAddress(groupId);
+    const count = coverage.get(normalized) ?? 0;
+    if (count === 0) {
+      throw new UnexpectedTransactionError(
+        `it does not grant access to group ${groupId}, one of the groups this flow asked for`,
+      );
+    }
+    if (count > 1) {
+      throw new UnexpectedTransactionError(
+        `it grants access to group ${groupId} more than once (${count} calls), which this flow ` +
+          `does not expect`,
+      );
+    }
+  }
+
+  // Closing sweep: every address the PTB carries must be the recipient we
+  // generated. This is what stops access being handed to a third party while the
+  // response still looks like the grant we asked for — and, unlike the per-call
+  // pin above, it is not limited to argument 2 of an already-narrowed call: it
+  // walks every input, so an address parked anywhere else is still caught.
+  for (const input of inputs) {
+    const address = pureAddress(input);
+    if (address && address !== recipient) {
+      throw new UnexpectedTransactionError(
+        `it grants access to ${address}, not the requested recipient ${expectation.recipientAddress}`,
+      );
+    }
+  }
 }
 
 /**

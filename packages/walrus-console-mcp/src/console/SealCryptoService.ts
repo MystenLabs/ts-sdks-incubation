@@ -12,6 +12,7 @@ import {
   getRawApiKey,
   getRawServiceKey,
 } from "../config";
+import { tryPromiseSettling } from "../effectPromise";
 import { SealIdentity, type SealIdentityInput } from "./constants";
 import { SealCryptoError } from "./errors";
 import {
@@ -235,6 +236,12 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
       // entirely for committee servers because their requests go through an aggregator.
       // Turning it on would buy nothing on either network.
       verifyKeyServers: false,
+      // The SDK's own default (`options.timeout ?? 1e4`), stated out loud because
+      // M8's liveness argument rests on it: a cancelled encrypt/decrypt holds the
+      // transfer permit until its promise settles, and this is what makes a key
+      // server that stops answering settle at all rather than hang. Pinning it
+      // here means a future SDK default cannot silently lengthen that wait.
+      timeout: 10_000,
     });
 
     // SessionKey.create performs a network round-trip (a getObject RPC to assert
@@ -314,7 +321,12 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
       };
       const id = SealIdentity.serialize(idInput).toHex();
 
-      const { encryptedObject } = yield* Effect.tryPromise({
+      // `tryPromiseSettling`, not `Effect.tryPromise`: `EncryptOptions` has no
+      // `signal` field, so a cancelled request cannot stop this call — it keeps
+      // running with the plaintext and the ciphertext both reachable. Holding the
+      // caller's transfer permit until the promise settles is what stops a retry
+      // from buffering a second payload alongside it (M8).
+      const { encryptedObject } = yield* tryPromiseSettling({
         try: () =>
           sealClient.encrypt({
             // 1, from the single committee entry's weight — not the old 2-of-3 over three
@@ -330,6 +342,7 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
             cause,
             step: "encrypt",
           }),
+        label: "Seal encrypt",
       });
       return encryptedObject;
     });
@@ -387,7 +400,12 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
       // package and ttl; concurrent cold callers share one registration).
       const sessionKey = yield* getSessionKey(keypair);
 
-      const plaintext = yield* Effect.tryPromise({
+      // `tryPromiseSettling` for the same reason as `encrypt` above — `DecryptOptions`
+      // takes no signal either. This is the call the settle bound exists for: decrypt
+      // fetches key shares over the network, so a key server that stops answering is
+      // the one way this promise fails to settle promptly. `SealClient`'s `timeout`
+      // (10s, pinned above) bounds that; the helper's own bound is the backstop.
+      const plaintext = yield* tryPromiseSettling({
         try: () => sealClient.decrypt({ data: ciphertext, sessionKey, txBytes }),
         // A failure inside the Console proxy is not a decryption problem and must not be
         // reported as one: an agent told "check your service key" when the proxy is simply
@@ -404,6 +422,7 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
             cause,
             step: "decrypt",
           }),
+        label: "Seal decrypt",
       });
 
       return plaintext;

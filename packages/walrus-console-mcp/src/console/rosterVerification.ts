@@ -142,6 +142,28 @@ export const MAX_ADDRESSES_PER_SIMULATION = 512;
 export const MAX_ADMITTED_ANCHORS = 20;
 
 /**
+ * The most anchors this loop will CONSULT (enumerate) in one create, whatever
+ * gets admitted along the way — DEFENCE IN DEPTH, not the primary bound.
+ *
+ * `anchorStore.ts` already read-caps `readAnchors(spaceId)` at
+ * `MAX_ANCHORS_PER_SPACE` (also 32) on both read and write, so in production
+ * this loop is never handed more ids than that to begin with. But this loop
+ * must not depend on ANOTHER module for its own bound: nothing here can see
+ * whether the list it was handed came through that cap, and borrowing it
+ * silently would leave the enumeration count unbounded the moment it did not
+ * — a hand-edited `anchors.json`, a future caller that skips `readAnchors`, a
+ * test. Set no lower than `MAX_ANCHORS_PER_SPACE`, on purpose: anything
+ * tighter would mean this loop looks at fewer anchors than the store bothers
+ * to retain, which makes some of that retention pointless before a single
+ * enumeration runs.
+ *
+ * Rejected anchors spend ONLY this budget; admitted ones spend this budget AND
+ * a slot in `MAX_ADMITTED_ANCHORS` above — an anchor that fails admission
+ * still cost the enumeration that decided so.
+ */
+export const MAX_CONSULTED_ANCHORS = 32;
+
+/**
  * Pages a single enumeration may read before giving up.
  *
  * The member-count cross-check below cannot fire until the pagination loop ends,
@@ -658,10 +680,15 @@ export interface AuthoredRoster {
    */
   readonly anchorGroupIds: readonly string[];
   /**
-   * Recorded anchors this create did NOT look at because `MAX_ADMITTED_ANCHORS`
-   * was already full. Present only when the cap actually bit, because a
-   * truncated view can only under-permission and the caller has to be able to
-   * say so.
+   * Recorded anchors this create did NOT look at, because EITHER
+   * `MAX_ADMITTED_ANCHORS` was already full or `MAX_CONSULTED_ANCHORS` (M11's
+   * defence-in-depth budget on enumeration itself) was reached first — the loop
+   * stops at whichever bites, and this field does not distinguish which one
+   * did. Present only when a cap actually bit and this result is
+   * `chain_verified`, because a truncated view can only under-permission and
+   * the caller has to be able to say so. `no_admitted_anchor` DROPS this field
+   * even when the consult budget is what stopped the loop — see that arm's
+   * comment for why that is still safe.
    */
   readonly anchorsNotConsulted?: number;
 }
@@ -950,7 +977,11 @@ export function authorVerifiedRoster(
     const admitted: { readonly groupId: string; readonly members: ReadonlySet<string> }[] = [];
     let notConsulted = 0;
     for (const [index, groupId] of anchorGroupIds.entries()) {
-      if (admitted.length >= MAX_ADMITTED_ANCHORS) {
+      // `index >= MAX_CONSULTED_ANCHORS` is the defence-in-depth half (M11):
+      // `anchorGroupIds` in production is `readAnchors(spaceId)`, already
+      // read-capped by `anchorStore.ts`, but this loop has no way to see that
+      // and must not assume it — see `MAX_CONSULTED_ANCHORS`'s doc.
+      if (admitted.length >= MAX_ADMITTED_ANCHORS || index >= MAX_CONSULTED_ANCHORS) {
         notConsulted = anchorGroupIds.length - index;
         break;
       }
@@ -1005,10 +1036,20 @@ export function authorVerifiedRoster(
     //     and every one was rejected, so no membership backed anything and there
     //     is nothing to be verified against.
     //
-    //     `anchorsNotConsulted` is deliberately absent rather than zero, and it
-    //     cannot be anything else: the cap only bites once MAX_ADMITTED_ANCHORS
-    //     anchors have been ADMITTED, so an empty admitted set means the loop ran
-    //     to the end of the list.
+    //     `anchorsNotConsulted` is deliberately DROPPED in this arm, even though
+    //     the loop above can now leave anchors genuinely unconsulted while
+    //     admitting none of them (M11's `MAX_CONSULTED_ANCHORS` breaks on INDEX
+    //     alone, unlike `MAX_ADMITTED_ANCHORS`, which cannot bite without a
+    //     non-empty admitted set). That is safe to drop rather than report,
+    //     because this arm's whole disclosure is "no anchor backed anything",
+    //     and that is equally true whether the loop reached the end of the list
+    //     or stopped partway through it on the enumeration budget — every
+    //     anchor it DID look at was rejected, and the caller's remedy is the
+    //     same either way: nothing here can be verified until somebody is
+    //     granted a role on one of this space's buckets. Unlike `chain_verified`,
+    //     this arm never claims to have verified membership from a specific
+    //     number of anchors, so there is no count here for a partial consult to
+    //     correct.
     //
     //     Every candidate is dropped, and each is named for the same reason the
     //     other arms name theirs: the key will not be able to read this bucket.
