@@ -159,7 +159,7 @@ describe("downloadBucketFile size limits", () => {
   });
 });
 
-describe("downloadBucketFile UGC redirect policy (SEC-491 F-17 / COMG-817)", () => {
+describe("downloadBucketFile UGC redirect policy (COMG-817)", () => {
   // TestConfig's baseUrl has no "mainnet" in its hostname, so the session
   // resolves to testnet and the one legal redirect target is the testnet host.
   const UGC = "https://testnet-files.walrususercontent.com/downloads/tok-123";
@@ -219,6 +219,18 @@ describe("downloadBucketFile UGC redirect policy (SEC-491 F-17 / COMG-817)", () 
     const error = (await downloadError()) as { _tag: string; message: string };
     expect(error._tag).toBe("ConsoleApiError");
     expect(error.message).toMatch(/redirect refused/i);
+  });
+
+  it("refuses an explicit port even on the right host — token URLs never carry one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        redirectTo("https://testnet-files.walrususercontent.com:8080/downloads/tok-123"),
+      ),
+    );
+
+    const error = (await downloadError()) as { _tag: string };
+    expect(error._tag).toBe("ConsoleApiError");
   });
 
   it("refuses an http (non-https) redirect even to the right host", async () => {

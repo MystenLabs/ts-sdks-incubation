@@ -26,7 +26,7 @@ export const DEFAULT_CONSOLE_API_BASE_URL = "https://api.testnet.console.walrus.
  * (localhost / 127.0.0.1 / ::1). Anything unparseable or off-policy is rejected.
  */
 /**
- * User-content download hosts (SEC-491 F-1/F-36 UGC isolation, COMG-817).
+ * User-content download hosts (COMG-817).
  *
  * Once the Console activates `UGC_HOST`, the Bearer download endpoint stops
  * serving file bytes and answers 307 to a short-lived token URL on the

@@ -381,8 +381,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /**
  * GET the download endpoint with the Bearer key, following at most ONE
- * redirect, and only to the network's pinned UGC host (SEC-491 F-17 +
- * F-1/F-36 UGC isolation, COMG-817).
+ * redirect, and only to the network's pinned UGC host (COMG-817).
  *
  * Once Console activates `UGC_HOST`, the Bearer download endpoint stops
  * serving bytes and answers 307 to a short-lived token URL on
@@ -413,8 +412,8 @@ async function fetchDownloadFollowingUgcRedirect(
   await (first.body?.cancel() ?? Promise.resolve()).catch(() => {});
 
   const location = first.headers.get("location");
-  // Location may legally be relative; resolve it against the request URL so a
-  // same-host relative redirect is judged by its real absolute target.
+  // Location may be relative per the HTTP spec; resolve it against the request
+  // URL so a same-host relative redirect is judged by its real absolute target.
   let target: string | undefined;
   if (location !== null) {
     try {
@@ -424,15 +423,10 @@ async function fetchDownloadFollowingUgcRedirect(
     }
   }
   if (target === undefined || !isAllowedUgcRedirectUrl(target, network)) {
-    // Name only the host — the full target carries the download token.
-    let host = "<unparseable Location>";
-    if (target !== undefined) {
-      try {
-        host = new URL(target).host;
-      } catch {
-        // keep the placeholder
-      }
-    }
+    // Name only the host, for the error message — the full target carries the
+    // download token. `target` already round-tripped through `new URL`, so
+    // re-parsing it cannot throw.
+    const host = target === undefined ? "<unparseable Location>" : new URL(target).host;
     throw new DisallowedRedirectError(
       `Download redirect refused: the Console answered ${first.status} pointing at ` +
         `"${host}", which is not this network's user-content host. Refusing to follow.`,
