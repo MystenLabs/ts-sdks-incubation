@@ -159,6 +159,127 @@ describe("downloadBucketFile size limits", () => {
   });
 });
 
+describe("downloadBucketFile UGC redirect policy (SEC-491 F-17 / COMG-817)", () => {
+  // TestConfig's baseUrl has no "mainnet" in its hostname, so the session
+  // resolves to testnet and the one legal redirect target is the testnet host.
+  const UGC = "https://testnet-files.walrususercontent.com/downloads/tok-123";
+
+  const redirectTo = (location: string, status = 307): Response =>
+    new Response(null, { status, headers: { location } });
+
+  it("follows a 307 to the network's UGC host, WITHOUT the Authorization header", async () => {
+    const calls: { url: string; init: RequestInit | undefined }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        if (calls.length === 1) return redirectTo(UGC);
+        return streamed([new Uint8Array([9, 8, 7])], { "content-length": "3" });
+      }),
+    );
+
+    expect(await download()).toEqual(new Uint8Array([9, 8, 7]));
+    expect(calls).toHaveLength(2);
+    // First request carries the key and must not auto-follow.
+    expect((calls[0]!.init!.headers as Record<string, string>)["Authorization"]).toMatch(
+      /^Bearer /,
+    );
+    expect(calls[0]!.init!.redirect).toBe("manual");
+    // The hop goes to the token URL, credential-less, and refuses further hops.
+    expect(calls[1]!.url).toBe(UGC);
+    expect(calls[1]!.init!.headers).toBeUndefined();
+    expect(calls[1]!.init!.redirect).toBe("error");
+  });
+
+  it("refuses a redirect to any other host, and never fetches it", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        return redirectTo("https://evil.example.com/downloads/tok-123");
+      }),
+    );
+
+    const error = (await downloadError()) as { _tag: string; message: string };
+    expect(error._tag).toBe("ConsoleApiError");
+    expect(error.message).toMatch(/redirect refused/i);
+    expect(error.message).toContain("evil.example.com");
+    // The token must never leak into the error string.
+    expect(error.message).not.toContain("tok-123");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses the OTHER network's UGC host — hosts are pinned per network", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => redirectTo("https://files.walrususercontent.com/downloads/tok-123")),
+    );
+
+    const error = (await downloadError()) as { _tag: string; message: string };
+    expect(error._tag).toBe("ConsoleApiError");
+    expect(error.message).toMatch(/redirect refused/i);
+  });
+
+  it("refuses an http (non-https) redirect even to the right host", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => redirectTo("http://testnet-files.walrususercontent.com/downloads/tok-123")),
+    );
+
+    const error = (await downloadError()) as { _tag: string };
+    expect(error._tag).toBe("ConsoleApiError");
+  });
+
+  it("refuses a redirect with no Location header", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 307 })),
+    );
+
+    const error = (await downloadError()) as { _tag: string; message: string };
+    expect(error._tag).toBe("ConsoleApiError");
+    expect(error.message).toMatch(/redirect refused/i);
+  });
+
+  it("refuses a relative Location — it resolves to the API host, not the UGC host", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => redirectTo("/downloads/tok-123")),
+    );
+
+    const error = (await downloadError()) as { _tag: string; message: string };
+    expect(error._tag).toBe("ConsoleApiError");
+    expect(error.message).toMatch(/redirect refused/i);
+  });
+
+  it("applies the size cap to the redirected body too", async () => {
+    process.env[MAX_TRANSFER_BYTES_ENV] = "16";
+    let first = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        if (first) {
+          first = false;
+          return redirectTo(UGC);
+        }
+        return streamed([new Uint8Array(64)]);
+      }),
+    );
+
+    await expect(downloadError()).resolves.toMatchObject({ _tag: "PayloadTooLargeError" });
+  });
+
+  it("still serves a plain 200 with no redirect — pre-UGC behavior unchanged", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => streamed([new Uint8Array([1, 2, 3])], { "content-length": "3" })),
+    );
+
+    expect(await download()).toEqual(new Uint8Array([1, 2, 3]));
+  });
+});
+
 describe("downloadBucketFile bounds the ERROR body too (F9)", () => {
   it("stops reading an oversized error body, cancels it, and truncates the message", async () => {
     // A non-OK response from a hostile-but-allowlisted endpoint could stream an

@@ -2,8 +2,10 @@ import { HttpBody, HttpClient, HttpClientRequest, type HttpClientResponse } from
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { Effect, Stream } from "effect";
 import { z } from "zod";
+import { isAllowedUgcRedirectUrl } from "../baseUrl";
 import { ConsoleConfigTag, getRawAdminKey, getRawApiKey } from "../config";
 import { MAX_TRANSFER_BYTES_ENV, maxTransferBytes } from "../transferLimits";
+import { resolveSuiNetwork } from "./packageConfig";
 import {
   ConsoleApiError,
   ConsoleAuthError,
@@ -366,6 +368,79 @@ function createApiKeyUnusableResponse(detail: string): ConsoleApiError {
     code: "invalid_response_shape",
     status: 201,
   });
+}
+
+/**
+ * Thrown (inside `Effect.tryPromise`) when the download endpoint redirects
+ * anywhere other than the network's UGC host. Carries a safe message: the
+ * redirect target's token must never end up in an error string.
+ */
+class DisallowedRedirectError extends Error {}
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * GET the download endpoint with the Bearer key, following at most ONE
+ * redirect, and only to the network's pinned UGC host (SEC-491 F-17 +
+ * F-1/F-36 UGC isolation, COMG-817).
+ *
+ * Once Console activates `UGC_HOST`, the Bearer download endpoint stops
+ * serving bytes and answers 307 to a short-lived token URL on
+ * `files.walrususercontent.com` (testnet: `testnet-files.…`). Before that it
+ * answers 200 directly — both shapes work here. The hop is followed WITHOUT
+ * the Authorization header: the token in the URL is the whole grant, and the
+ * key must never travel to the user-content host. Any other redirect target
+ * is refused outright (`redirect: "manual"` on the first request,
+ * `redirect: "error"` on the hop), so a compromised Console cannot bounce
+ * this request — or the key — anywhere else.
+ */
+async function fetchDownloadFollowingUgcRedirect(
+  url: string,
+  bearerKey: string,
+  network: "testnet" | "mainnet",
+  signal: AbortSignal,
+): Promise<Response> {
+  const first = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${bearerKey}` },
+    redirect: "manual",
+    signal,
+  });
+  if (!REDIRECT_STATUSES.has(first.status)) return first;
+
+  // A redirect body is empty or boilerplate; release it so the socket returns
+  // to the pool instead of idling under an abandoned stream.
+  await (first.body?.cancel() ?? Promise.resolve()).catch(() => {});
+
+  const location = first.headers.get("location");
+  // Location may legally be relative; resolve it against the request URL so a
+  // same-host relative redirect is judged by its real absolute target.
+  let target: string | undefined;
+  if (location !== null) {
+    try {
+      target = new URL(location, url).toString();
+    } catch {
+      target = undefined;
+    }
+  }
+  if (target === undefined || !isAllowedUgcRedirectUrl(target, network)) {
+    // Name only the host — the full target carries the download token.
+    let host = "<unparseable Location>";
+    if (target !== undefined) {
+      try {
+        host = new URL(target).host;
+      } catch {
+        // keep the placeholder
+      }
+    }
+    throw new DisallowedRedirectError(
+      `Download redirect refused: the Console answered ${first.status} pointing at ` +
+        `"${host}", which is not this network's user-content host. Refusing to follow.`,
+    );
+  }
+  // Single hop, credential-less: the token URL needs no Authorization, and a
+  // second redirect is off-policy by definition.
+  return fetch(target, { method: "GET", redirect: "error", signal });
 }
 
 /**
@@ -903,16 +978,20 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       const url = `${config.baseUrl}/api/v1/buckets/${bucketId}/files/${fileId}/download`;
       // Same as the upload above: the fiber's signal reaches fetch, so an aborted
       // request tears the connection down instead of streaming a file nobody wants.
+      // Redirect policy lives in `fetchDownloadFollowingUgcRedirect`: at most one
+      // hop, only to this network's UGC host, never carrying the key.
       const response = yield* Effect.tryPromise({
         try: (signal) =>
-          fetch(url, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${getRawApiKey(config)}`,
-            },
+          fetchDownloadFollowingUgcRedirect(
+            url,
+            getRawApiKey(config),
+            resolveSuiNetwork(config.baseUrl),
             signal,
-          }),
-        catch: () => new ConsoleApiError({ message: "Download failed" }),
+          ),
+        catch: (cause) =>
+          cause instanceof DisallowedRedirectError
+            ? new ConsoleApiError({ message: cause.message })
+            : new ConsoleApiError({ message: "Download failed" }),
       });
 
       // Same parsing as upload: a private download can also 403 with
