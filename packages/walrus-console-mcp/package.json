@@ -30,10 +30,10 @@
   "scripts": {
     "dev": "tsx bin/console-mcp.ts",
     "build": "tsdown",
-    "prepublishOnly": "pnpm build",
+    "prepublishOnly": "pnpm build && pnpm pack:check",
     "build:mcpb": "tsdown --config tsdown.mcpb.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && tsx scripts/check-shrinkwrap.mts",
     "test:watch": "vitest",
     "pack:check": "tsx scripts/pack-check.mts && tsx scripts/check-shrinkwrap.mts",
     "shrinkwrap:generate": "tsx scripts/generate-shrinkwrap.mts",

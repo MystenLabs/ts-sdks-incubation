@@ -19,15 +19,7 @@
  * the fresh-resolution tree npm computes for an end user's `npm install <spec>`.
  */
 import { execFileSync } from "node:child_process";
-import {
-  cpSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -44,40 +36,51 @@ function installedVersion(name: string): string {
 }
 
 /**
- * Exact versions of every TRANSITIVE `@mysten/*` package the workspace
- * resolved for our direct deps, gathered from the pnpm store next to each
- * direct dep's real location. Fed to npm as `overrides`: without this, npm
- * re-resolves transitives from the registry ranges, so a first-party
- * transitive (e.g. `@mysten/bcs`) can drift to a version the tests never ran
- * against even while every direct dep is pinned.
+ * Exact versions of the ENTIRE runtime closure as the pnpm workspace resolved
+ * it — the graph the tests actually ran against. Fed to npm as `overrides`:
+ * without this, npm re-resolves every transitive from its registry range, so
+ * any transitive (Noble, jose, `@mysten/bcs`, …) can drift to a newer
+ * in-range version the tests never exercised, even while every direct dep is
+ * pinned.
+ *
+ * A name the workspace resolves to MORE than one version (different majors
+ * required by different parents) cannot be expressed as a flat npm override;
+ * those are skipped with a warning and left to npm's per-range resolution —
+ * check-shrinkwrap.mts still verifies the outcome landed inside the
+ * workspace's version set.
  */
-function workspaceMystenTransitives(directDeps: string[]): Record<string, string> {
-  const pinned: Record<string, string> = {};
-  for (const dep of directDeps) {
-    const real = realpathSync(path.join(ROOT, "node_modules", dep));
-    // .pnpm/<pkg>@<v>/node_modules/<pkg> — siblings are its resolved deps.
-    const siblings = path.join(real, "..", "..");
-    const mysten = path.join(siblings, "@mysten");
-    let entries: string[];
-    try {
-      entries = readdirSync(mysten);
-    } catch {
-      continue;
-    }
-    for (const name of entries) {
-      const full = `@mysten/${name}`;
-      if (full === dep) continue;
-      const { version } = JSON.parse(
-        readFileSync(path.join(mysten, name, "package.json"), "utf8"),
-      ) as { version?: string };
-      if (typeof version !== "string") continue;
-      const prior = pinned[full];
-      if (prior !== undefined && prior !== version) {
-        throw new Error(
-          `workspace resolves ${full} to both ${prior} and ${version} — align the workspace first`,
-        );
+function workspaceRuntimeClosure(): Record<string, string> {
+  const out = execFileSync("pnpm", ["list", "--prod", "--depth", "Infinity", "--json"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  interface ListedDep {
+    version?: string;
+    dependencies?: Record<string, ListedDep>;
+  }
+  const [top] = JSON.parse(out) as { dependencies?: Record<string, ListedDep> }[];
+  const versions = new Map<string, Set<string>>();
+  const walk = (deps: Record<string, ListedDep> | undefined): void => {
+    for (const [name, info] of Object.entries(deps ?? {})) {
+      if (typeof info.version === "string") {
+        let set = versions.get(name);
+        if (set === undefined) versions.set(name, (set = new Set()));
+        set.add(info.version);
       }
-      pinned[full] = version;
+      walk(info.dependencies);
+    }
+  };
+  walk(top?.dependencies);
+  const pinned: Record<string, string> = {};
+  for (const [name, set] of versions) {
+    if (set.size === 1) {
+      pinned[name] = [...set][0]!;
+    } else {
+      console.warn(
+        `not overriding ${name}: workspace resolves it to ${[...set].sort().join(" and ")} ` +
+          `(per-parent majors) — left to npm's per-range resolution`,
+      );
     }
   }
   return pinned;
@@ -92,7 +95,7 @@ try {
   };
   const directDeps = Object.keys(pkg.dependencies ?? {});
   const dependencies = Object.fromEntries(directDeps.map((name) => [name, installedVersion(name)]));
-  const overrides = workspaceMystenTransitives(directDeps);
+  const overrides = workspaceRuntimeClosure();
   writeFileSync(
     path.join(tmp, "package.json"),
     JSON.stringify({ name: pkg.name, version: pkg.version, dependencies, overrides }),

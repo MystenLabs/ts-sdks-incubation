@@ -1,12 +1,16 @@
 /**
  * Supply-chain pinning guard: fails if npm-shrinkwrap.json is missing, no
- * longer agrees with package.json's `dependencies` ranges, or pins a direct
+ * longer agrees with package.json's `dependencies` ranges, pins a direct
  * dependency to a different version than the one installed under node_modules
- * (i.e. the one the workspace lockfile resolved and the tests ran against).
+ * (i.e. the one the workspace lockfile resolved and the tests ran against),
+ * or ships ANY package — transitives included — at a version the workspace's
+ * resolved runtime closure does not contain. The shipped graph must be the
+ * graph the tests ran against, all the way down.
  *
  * Regenerate with `pnpm shrinkwrap:generate` after any `dependencies` change,
  * and commit the result.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import { findStaleDependencies } from "./shrinkwrapStaleness.mjs";
@@ -90,6 +94,59 @@ if (drifted.length > 0) {
   );
 }
 
+// THE FULL-GRAPH CHECK. Every package the shrinkwrap ships, at any nesting
+// depth, must carry a version the workspace's resolved runtime closure
+// contains — a transitive the registry moved to a newer in-range version is
+// exactly the drift this guard exists to catch.
+function workspaceClosureVersions(): Map<string, Set<string>> {
+  const out = execFileSync("pnpm", ["list", "--prod", "--depth", "Infinity", "--json"], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  interface ListedDep {
+    version?: string;
+    dependencies?: Record<string, ListedDep>;
+  }
+  const [top] = JSON.parse(out) as { dependencies?: Record<string, ListedDep> }[];
+  const versions = new Map<string, Set<string>>();
+  const walk = (deps: Record<string, ListedDep> | undefined): void => {
+    for (const [name, info] of Object.entries(deps ?? {})) {
+      if (typeof info.version === "string") {
+        let set = versions.get(name);
+        if (set === undefined) versions.set(name, (set = new Set()));
+        set.add(info.version);
+      }
+      walk(info.dependencies);
+    }
+  };
+  walk(top?.dependencies);
+  return versions;
+}
+
+const closure = workspaceClosureVersions();
+const graphDrift: string[] = [];
+for (const [key, value] of Object.entries(shrinkwrap.packages ?? {})) {
+  if (key === "" || typeof value.version !== "string") continue;
+  const name = key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length);
+  const tested = closure.get(name);
+  // A name absent from the pnpm closure is npm-only graph shape (e.g. a
+  // platform-specific optional package pnpm skipped on this host) — the
+  // version-drift guard has nothing to compare it against.
+  if (tested === undefined) continue;
+  if (!tested.has(value.version)) {
+    graphDrift.push(
+      `${name}: shrinkwrap ships ${value.version}, workspace tested ${[...tested].sort().join(", ")}`,
+    );
+  }
+}
+if (graphDrift.length > 0) {
+  failures.push(
+    `npm-shrinkwrap.json ships packages at versions the tested workspace graph does not contain:\n  ` +
+      graphDrift.join("\n  ") +
+      `\n  The shipped graph must be the graph the tests ran against — transitives included.`,
+  );
+}
+
 if (failures.length > 0) {
   console.error(
     `\ncheck:shrinkwrap failed\n\n${failures.join("\n\n")}\n\n` +
@@ -99,5 +156,5 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `check:shrinkwrap passed — npm-shrinkwrap.json agrees with package.json's dependencies`,
+  `check:shrinkwrap passed — npm-shrinkwrap.json matches package.json and the tested runtime graph`,
 );
