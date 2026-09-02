@@ -4,6 +4,10 @@ Manage [Walrus Console](https://console.walrus.xyz/) files directly from Claude.
 
 Create buckets, upload files, retrieve documents, and manage data stored on Walrus using natural language. Files remain encrypted client-side and under your control.
 
+> **Closed beta.** Install with the `@beta` tag — every command below already
+> includes it. To update during the beta, re-run the install command; installs
+> are pinned to the version they fetched and never update themselves.
+
 ## Paste it to your agent and let it set it up for you
 
 Using a coding agent like **Claude Code**, **Codex**, **Cursor**, or **Gemini CLI**? Copy the block below verbatim into the agent and it will install, configure, and verify `@mysten-incubation/walrus-console-mcp` for you. (Have your two Console keys ready — see [Get your Console credentials](#1-get-your-walrus-console-credentials).)
@@ -11,7 +15,7 @@ Using a coding agent like **Claude Code**, **Codex**, **Cursor**, or **Gemini CL
 ```text
 Set up the @mysten-incubation/walrus-console-mcp MCP server for me by running these steps in order. Stop and ask me only if a step actually fails.
 
-1. Run the interactive installer from an empty directory (so it can't launch a same-named package the current project happens to ship): `cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install`. At the first prompt choose **Credential bundle** and paste the CONSOLE_CREDENTIAL_BUNDLE value from the Console key-mint screen — one paste carries the API key, the service key and the two addresses `create_bucket` needs pinned. If I only kept the individual values, choose **API key** instead: it asks for CONSOLE_API_KEY (starts with `hbr_`) and CONSOLE_SERVICE_PRIVATE_KEY (starts with `suiprivkey1`), then for the two addresses. Either way it validates and saves to a user-only config file. Don't print my keys back to me; the addresses are not secret and it will show them for me to confirm.
+1. Run the interactive installer from an empty directory (so it can't launch a same-named package the current project happens to ship): `cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp@beta && ./node_modules/.bin/walrus-console-mcp install`. At the first prompt choose **Credential bundle** and paste the CONSOLE_CREDENTIAL_BUNDLE value from the Console key-mint screen — one paste carries the API key, the service key and the two addresses `create_bucket` needs pinned. If I only kept the individual values, choose **API key** instead: it asks for CONSOLE_API_KEY (starts with `hbr_`) and CONSOLE_SERVICE_PRIVATE_KEY (starts with `suiprivkey1`), then for the two addresses. Either way it validates and saves to a user-only config file. Don't print my keys back to me; the addresses are not secret and it will show them for me to confirm.
 2. Let the same installer register the server — it offers a checklist of the agents it detects. That step installs the package into its own directory and writes the **absolute** path of the launcher into each config. Prefer it over registering by hand.
 3. Then tell me: restart the agent (or run `/mcp`), approve walrus-console-mcp when prompted, and test with the `ping_console` tool.
 
@@ -33,7 +37,7 @@ That's it — once the agent finishes and you've approved the MCP server, you ca
 ### Install from npm (recommended)
 
 ```bash
-cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp@beta && ./node_modules/.bin/walrus-console-mcp install
 ```
 
 This interactive CLI will:
@@ -72,7 +76,7 @@ command is an absolute path, not `npx`, for
 ### 2. Configure the server
 
 ```bash
-cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp@beta && ./node_modules/.bin/walrus-console-mcp install
 ```
 
 The installer saves credentials to `~/.config/walrus-console-mcp/config.json` (`%APPDATA%\walrus-console-mcp\config.json` on Windows) with user-only file permissions. MCP client config files only need to launch the server; they do not need to contain your API key or service private key.
@@ -155,7 +159,7 @@ Both are configured with the CLI and land in the same 0600 file:
 
 ```bash
 # Worker / everyday host — working key only, cannot mint
-cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install   # choose "API key"
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp@beta && ./node_modules/.bin/walrus-console-mcp install   # choose "API key"
 
 # Provisioning host — additionally loads the management key
 "${XDG_DATA_HOME:-$HOME/.local/share}/walrus-console-mcp/node_modules/.bin/walrus-console-mcp" config   # choose "Management key"
@@ -528,7 +532,7 @@ since the registered spec was version-pinned.
 command in this README now reads:
 
 ```bash
-cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp <verb>
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp@beta && ./node_modules/.bin/walrus-console-mcp <verb>
 ```
 
 `npx` and a bare `npm install` (no `--prefix`) both perform an ambient
@@ -640,7 +644,7 @@ pnpm mcpb:pack       # build the self-contained bundle, then pack -> walrus-cons
 
 On install, the client prompts for the `CONSOLE_API_KEY` (required), `CONSOLE_SERVICE_PRIVATE_KEY` (optional, sensitive), the optional Key-Admin pair `CONSOLE_ADMIN_KEY` / `CONSOLE_ADMIN_SERVICE_PRIVATE_KEY` (sensitive — provisioning host only; see [Headless key minting](#headless-key-minting-generate_api_key)), and an optional `CONSOLE_API_BASE_URL` override, wired in via `user_config` in `manifest.json`.
 
-`user_config` does **not** carry the two `create_bucket` address pins, so a bundle install cannot prompt for them. A `.mcpb` server reads the same `~/.config/walrus-console-mcp/config.json` as the CLI, so provision them once with `cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp config` — see [Who gets access to a new bucket](#who-gets-access-to-a-new-bucket-create_bucket). Until then `create_bucket` refuses; every other tool is unaffected.
+`user_config` does **not** carry the two `create_bucket` address pins, so a bundle install cannot prompt for them. A `.mcpb` server reads the same `~/.config/walrus-console-mcp/config.json` as the CLI, so provision them once with `cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp@beta && ./node_modules/.bin/walrus-console-mcp config` — see [Who gets access to a new bucket](#who-gets-access-to-a-new-bucket-create_bucket). Until then `create_bucket` refuses; every other tool is unaffected.
 
 ## Development
 
