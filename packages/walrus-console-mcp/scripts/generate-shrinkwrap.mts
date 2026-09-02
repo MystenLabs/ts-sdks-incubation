@@ -19,7 +19,15 @@
  * the fresh-resolution tree npm computes for an end user's `npm install <spec>`.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -34,6 +42,46 @@ function installedVersion(name: string): string {
   }
   return version;
 }
+
+/**
+ * Exact versions of every TRANSITIVE `@mysten/*` package the workspace
+ * resolved for our direct deps, gathered from the pnpm store next to each
+ * direct dep's real location. Fed to npm as `overrides`: without this, npm
+ * re-resolves transitives from the registry ranges, so a first-party
+ * transitive (e.g. `@mysten/bcs`) can drift to a version the tests never ran
+ * against even while every direct dep is pinned.
+ */
+function workspaceMystenTransitives(directDeps: string[]): Record<string, string> {
+  const pinned: Record<string, string> = {};
+  for (const dep of directDeps) {
+    const real = realpathSync(path.join(ROOT, "node_modules", dep));
+    // .pnpm/<pkg>@<v>/node_modules/<pkg> — siblings are its resolved deps.
+    const siblings = path.join(real, "..", "..");
+    const mysten = path.join(siblings, "@mysten");
+    let entries: string[];
+    try {
+      entries = readdirSync(mysten);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      const full = `@mysten/${name}`;
+      if (full === dep) continue;
+      const { version } = JSON.parse(
+        readFileSync(path.join(mysten, name, "package.json"), "utf8"),
+      ) as { version?: string };
+      if (typeof version !== "string") continue;
+      const prior = pinned[full];
+      if (prior !== undefined && prior !== version) {
+        throw new Error(
+          `workspace resolves ${full} to both ${prior} and ${version} — align the workspace first`,
+        );
+      }
+      pinned[full] = version;
+    }
+  }
+  return pinned;
+}
 const tmp = mkdtempSync(path.join(os.tmpdir(), "walrus-console-mcp-shrinkwrap-"));
 
 try {
@@ -42,12 +90,12 @@ try {
     version: string;
     dependencies?: Record<string, string>;
   };
-  const dependencies = Object.fromEntries(
-    Object.keys(pkg.dependencies ?? {}).map((name) => [name, installedVersion(name)]),
-  );
+  const directDeps = Object.keys(pkg.dependencies ?? {});
+  const dependencies = Object.fromEntries(directDeps.map((name) => [name, installedVersion(name)]));
+  const overrides = workspaceMystenTransitives(directDeps);
   writeFileSync(
     path.join(tmp, "package.json"),
-    JSON.stringify({ name: pkg.name, version: pkg.version, dependencies }),
+    JSON.stringify({ name: pkg.name, version: pkg.version, dependencies, overrides }),
   );
 
   execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts"], {
