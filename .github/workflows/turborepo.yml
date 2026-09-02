@@ -57,3 +57,5 @@ jobs:
         run: pnpm turbo build --filter "./packages/*" --filter "./apps/*" --concurrency=1
       - name: Test
         run: pnpm turbo test --filter "./packages/*" --filter "./apps/*" --concurrency=1
+      - name: Test release channels
+        run: pnpm test:release-channels

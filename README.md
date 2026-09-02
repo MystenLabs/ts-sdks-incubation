@@ -80,6 +80,17 @@ pnpm add https://pkg.pr.new/@mysten-incubation/dev-wallet@<commit-or-pr-sha>
 
 Use these to try a change in a downstream app before it lands on `main`.
 
+## Beta releases
+
+To release a package on its own beta channel, set `publishConfig.tag` to `beta` in its
+`package.json` and add changesets normally. The shared release PR versions stable and beta packages
+together, using independent prerelease versions such as `0.6.0-beta.0` for beta packages. When the
+release PR merges, each package is published to its configured npm tag.
+
+To promote a package to stable, remove `publishConfig.tag`, add a changeset describing the stable
+release, and merge the resulting release PR. Packages without an explicit tag continue to publish
+to `latest` throughout.
+
 ## Contributing
 
 The published packages use [changesets](https://github.com/changesets/changesets) for version
