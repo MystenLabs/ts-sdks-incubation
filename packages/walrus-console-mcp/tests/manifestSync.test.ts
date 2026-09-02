@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CONSOLE_API_BASE_URL } from "../src/baseUrl";
 
 // Guards against manifest.json drifting out of sync with the tools the server
 // actually registers — the .mcpb bundle advertises manifest.json's inventory,
@@ -64,5 +65,16 @@ describe("tool inventory", () => {
   it("has no duplicate tool names in the manifest", () => {
     const names = manifestToolNames();
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe("user_config defaults", () => {
+  // manifest.json cannot import baseUrl.ts, so its default is hand-edited —
+  // this is the assertion the baseUrl.ts header comment points at.
+  it("keeps the manifest base-URL default in sync with DEFAULT_CONSOLE_API_BASE_URL", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf-8")) as {
+      user_config: { console_api_base_url: { default: string } };
+    };
+    expect(manifest.user_config.console_api_base_url.default).toBe(DEFAULT_CONSOLE_API_BASE_URL);
   });
 });

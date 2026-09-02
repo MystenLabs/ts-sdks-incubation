@@ -5,7 +5,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { styleText } from "node:util";
-import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "../src/baseUrl.js";
+import {
+  CONSOLE_WEB_URLS,
+  DEFAULT_CONSOLE_API_BASE_URL,
+  isAllowedBaseUrl,
+} from "../src/baseUrl.js";
+import { resolveSuiNetwork } from "../src/console/packageConfig.js";
 import { SECRET_VALUE_FIELDS, parseArgs } from "../src/cliArgs.js";
 import { getClients, selectClients } from "../src/clients.js";
 import { installServer } from "../src/installDir.js";
@@ -47,16 +52,17 @@ import {
 export const PACKAGE_NAME = "@mysten-incubation/walrus-console-mcp";
 
 /**
- * Resolve the base URL as env override → saved config → testnet default, and
+ * Resolve the base URL as env override → saved config → mainnet default, and
  * reject an off-policy value. Not prompted for — power users override it with the
  * CONSOLE_API_BASE_URL env var.
  *
  * The order deliberately MIRRORS the server's own resolution (`resolvedBaseUrl`
  * in src/config.ts). It has to: this function picks the host the credential is
  * probed against and then persisted alongside, so an installer that skipped the
- * saved value would validate a rotated key against testnet while the config kept
- * pointing at a local or staging deployment — either rejecting a perfectly good
- * credential, or blessing one against a service it will never talk to.
+ * saved value would validate a rotated key against the default deployment while
+ * the config kept pointing at a local or staging deployment — either rejecting a
+ * perfectly good credential, or blessing one against a service it will never
+ * talk to.
  *
  * `loadConfigFile` already drops an off-policy saved `baseUrl`, so a hostile
  * config file falls through to the default rather than being adopted here; the
@@ -87,7 +93,7 @@ export function resolveInstallBaseUrl(): string {
  * when it is the default. The clear is the half that matters: persisting only
  * non-default values (the previous behaviour) left a stale staging/local URL in
  * the config whenever the resolved URL was the default, so the key was probed
- * against testnet and then used against the stale host.
+ * against the default deployment and then used against the stale host.
  *
  * Keeping the default implicit rather than pinning it is deliberate — a config
  * that hardcodes today's default would not follow `DEFAULT_CONSOLE_API_BASE_URL`
@@ -773,10 +779,20 @@ async function stepAuth(
   const rail = streamPanel("AUTHENTICATE", "2/4");
   const gutter = rail.prefix;
   rail.blank();
-  rail.line(`Get your key at ${accent("testnet.console.walrus.xyz")} → Integrations`);
-  rail.blank();
 
+  // Resolve BEFORE printing guidance: the "get your key" directions must name
+  // the Console deployment the key is about to be probed against, or a key
+  // minted on the wrong network dead-ends the install at validation.
   const baseUrl = resolveInstallBaseUrl();
+  const network = resolveSuiNetwork(baseUrl);
+  rail.line(`Get your key at ${accent(new URL(CONSOLE_WEB_URLS[network]).host)} → Integrations`);
+  if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) {
+    // Name the resolved URL rather than a knob: an env var, a saved config
+    // value, or a local stack can each be what put us off the default. The
+    // network tag says which Sui network (and Console web app) that implies.
+    rail.line(styleText("dim", `Console API: ${baseUrl} (${network})`));
+  }
+  rail.blank();
 
   const write = await collectCredentials(
     choice,

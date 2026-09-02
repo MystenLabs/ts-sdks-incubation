@@ -62,9 +62,9 @@
     "console_api_base_url": {
       "type": "string",
       "title": "Console API Base URL",
-      "description": "Override the Console API base URL (defaults to the public testnet endpoint).",
+      "description": "Override the Console API base URL (defaults to the public mainnet endpoint; use https://api.testnet.console.walrus.xyz for testnet).",
       "required": false,
-      "default": "https://api.testnet.console.walrus.xyz"
+      "default": "https://api.console.walrus.xyz"
     }
   },
   "compatibility": {

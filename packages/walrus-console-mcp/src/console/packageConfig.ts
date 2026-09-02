@@ -9,6 +9,8 @@
  * operation (COMG-601).
  */
 
+import { CONSOLE_API_BASE_URLS } from "../baseUrl.js";
+
 export type SuiNetwork = "testnet" | "mainnet";
 
 export interface BucketGroupPackageConfig {
@@ -38,19 +40,17 @@ export const TESTNET_PACKAGE_CONFIG: BucketGroupPackageConfig = {
 };
 
 /**
- * Placeholder, exactly as it is in the SDK: the mainnet `walrus_console::bucket_policy`
- * package has not shipped, so these are stand-in values. Do not treat mainnet as
- * verified until COMG-584's mainnet acceptance criterion closes.
+ * The mainnet `walrus_console` publish of 2026-09-01. Fresh v1 publish, so
+ * `originalPackageId` equals `packageId`.
  */
 export const MAINNET_PACKAGE_CONFIG: BucketGroupPackageConfig = {
-  packageId: "0x42e9f3b7d4ba898053835cbe8ff77bcd3580a1dc06820ae4e641fee11a455e9c",
-  originalPackageId: "0x42e9f3b7d4ba898053835cbe8ff77bcd3580a1dc06820ae4e641fee11a455e9c",
-  bucketRegistryId: "0x8fcff989d2f404b19e4a36c09add2166a76e7b1e73de3d3fb9afda003991270b",
-  // Placeholder like the rest of this block. Note the consequence for
-  // `txValidation`: a wrong id here does not weaken the check, it makes every
-  // mainnet create-bucket signature refuse. That is the correct direction to fail
-  // in, and it is another reason mainnet stays unverified until COMG-584 closes.
-  permissionedGroupPackageId: "0x0000000000000000000000000000000000000000000000000000000000000000",
+  packageId: "0xb8d5b1cade7917190c47b8abfc789f527389fc021a8963c22755bcc1b539786c",
+  originalPackageId: "0xb8d5b1cade7917190c47b8abfc789f527389fc021a8963c22755bcc1b539786c",
+  bucketRegistryId: "0x871f3d0341f36101ff0b30cd01dbe363f8d89d7f004df80e8084752d2f496958",
+  // The mainnet sui-groups framework package, verified via MVR. As everywhere
+  // else, a wrong id here does not weaken `txValidation` — it makes every
+  // mainnet create-bucket signature refuse, which is the direction to fail in.
+  permissionedGroupPackageId: "0x541840ae7df705d1c6329c22415ed61f9140a18b79b13c1c9dc7415b115c1ba8",
 };
 
 const PACKAGE_CONFIGS: Record<SuiNetwork, BucketGroupPackageConfig> = {
@@ -85,15 +85,37 @@ const FULLNODE_URLS: Record<SuiNetwork, string> = {
  *
  * The network is not configured separately on purpose: a standalone setting can
  * disagree with the API the MCP is actually talking to, and that disagreement is
- * invisible until a decrypt fails. Loopback and anything unrecognised fall back to
- * testnet, which is what local stacks run against.
+ * invisible until a decrypt fails.
+ *
+ * In normal use this is a lookup, not a guess: the two canonical deployments
+ * (`CONSOLE_API_BASE_URLS` — the only hosts a default or documented setup ever
+ * points at) are matched by exact host. The heuristic below only ever sees
+ * non-canonical hosts, i.e. local stacks and internal staging deploys:
+ * "testnet" in the hostname, loopback, and unparseable URLs resolve testnet;
+ * anything else resolves mainnet, matching the published package's mainnet
+ * default.
+ *
+ * A misnamed internal deploy (a testnet-backed Console on a host without
+ * "testnet" in its name — none exists, and the base-URL allowlist already
+ * confines hosts to company domains) would surface on that deploy as refused
+ * signatures (`txValidation` pins exact package ids) and undecryptable
+ * uploads. Give such a host an exact-match entry here rather than relying on
+ * its name.
  */
 export function resolveSuiNetwork(baseUrl: string): SuiNetwork {
+  let host: string;
   try {
-    return new URL(baseUrl).hostname.includes("mainnet") ? "mainnet" : "testnet";
+    host = new URL(baseUrl).hostname.toLowerCase();
   } catch {
     return "testnet";
   }
+  for (const network of ["mainnet", "testnet"] as const) {
+    if (host === new URL(CONSOLE_API_BASE_URLS[network]).hostname) return network;
+  }
+  // URL.hostname brackets IPv6, so "[::1]" is the only spelling that can occur.
+  const loopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  if (loopback || host.includes("testnet")) return "testnet";
+  return "mainnet";
 }
 
 export function resolvePackageConfig(network: SuiNetwork): BucketGroupPackageConfig {

@@ -18,7 +18,10 @@ const TestConfig = Layer.succeed(ConsoleConfigTag, {
   servicePrivateKey: Redacted.make(""),
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
-  baseUrl: "https://api.example.test",
+  // The canonical testnet URL, so the session resolves to testnet (the
+  // resolver treats unrecognised hosts as mainnet). fetch is mocked in every
+  // test, so nothing is ever sent to this host.
+  baseUrl: "https://api.testnet.console.walrus.xyz",
   webAccountAddress: "",
   keyAdminAddress: "",
 });
@@ -160,7 +163,7 @@ describe("downloadBucketFile size limits", () => {
 });
 
 describe("downloadBucketFile UGC redirect policy (COMG-817)", () => {
-  // TestConfig's baseUrl has no "mainnet" in its hostname, so the session
+  // TestConfig's baseUrl is the canonical testnet API, so the session
   // resolves to testnet and the one legal redirect target is the testnet host.
   const UGC = "https://testnet-files.walrususercontent.com/downloads/tok-123";
 
@@ -222,15 +225,26 @@ describe("downloadBucketFile UGC redirect policy (COMG-817)", () => {
   });
 
   it("refuses an explicit port even on the right host — token URLs never carry one", async () => {
+    // The second fetch, if the hop were followed, would SUCCEED — so the only
+    // thing that can fail this download is the redirect validator itself. (An
+    // always-redirect mock passes vacuously: the hop's redirect:"error" would
+    // reject any outcome.)
+    const calls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        redirectTo("https://testnet-files.walrususercontent.com:8080/downloads/tok-123"),
-      ),
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        if (calls.length === 1) {
+          return redirectTo("https://testnet-files.walrususercontent.com:8080/downloads/tok-123");
+        }
+        return streamed([new Uint8Array([1])], { "content-length": "1" });
+      }),
     );
 
-    const error = (await downloadError()) as { _tag: string };
+    const error = (await downloadError()) as { _tag: string; message: string };
     expect(error._tag).toBe("ConsoleApiError");
+    expect(error.message).toMatch(/redirect refused/i);
+    expect(calls).toHaveLength(1);
   });
 
   it("refuses an http (non-https) redirect even to the right host", async () => {

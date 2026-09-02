@@ -1,6 +1,6 @@
 # @mysten-incubation/walrus-console-mcp
 
-Manage [Walrus Console](https://testnet.console.walrus.xyz/) files directly from Claude.
+Manage [Walrus Console](https://console.walrus.xyz/) files directly from Claude.
 
 Create buckets, upload files, retrieve documents, and manage data stored on Walrus using natural language. Files remain encrypted client-side and under your control.
 
@@ -56,7 +56,7 @@ command is an absolute path, not `npx`, for
 
 ### 1. Get your Walrus Console credentials
 
-1. Go to https://testnet.console.walrus.xyz/
+1. Go to https://console.walrus.xyz/
 2. Sign in with Google
 3. Go to **Integrations → New API key**
 4. Choose **read_write** and tick **"Create"**
@@ -669,7 +669,6 @@ codex mcp add walrus-console-mcp-local -- node "$(pwd)/dist/console-mcp.js"
 ## Roadmap / Future Work
 
 - Team space member management tools
-- Mainnet support when Console launches it
 
 ## License
 

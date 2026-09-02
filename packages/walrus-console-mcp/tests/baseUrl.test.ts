@@ -1,8 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "../src/baseUrl";
+import {
+  CONSOLE_API_BASE_URLS,
+  CONSOLE_WEB_URLS,
+  DEFAULT_CONSOLE_API_BASE_URL,
+  isAllowedBaseUrl,
+} from "../src/baseUrl";
+
+describe("canonical Console URLs", () => {
+  // Literal pins, deliberately duplicating the constants: resolveSuiNetwork
+  // exact-matches against CONSOLE_API_BASE_URLS, so a test that feeds the
+  // constant back to itself proves nothing. A typo in any of these would ship
+  // every default-config user to the wrong host with a green suite.
+  it("pins the canonical API deployments", () => {
+    expect(CONSOLE_API_BASE_URLS.mainnet).toBe("https://api.console.walrus.xyz");
+    expect(CONSOLE_API_BASE_URLS.testnet).toBe("https://api.testnet.console.walrus.xyz");
+  });
+
+  it("pins the Console web apps the installer directs users to", () => {
+    expect(CONSOLE_WEB_URLS.mainnet).toBe("https://console.walrus.xyz");
+    expect(CONSOLE_WEB_URLS.testnet).toBe("https://testnet.console.walrus.xyz");
+  });
+
+  it("defaults to mainnet — the published package targets real users", () => {
+    expect(DEFAULT_CONSOLE_API_BASE_URL).toBe("https://api.console.walrus.xyz");
+  });
+});
 
 describe("isAllowedBaseUrl", () => {
-  it("allows the default testnet base URL", () => {
+  it("allows the default base URL", () => {
     expect(isAllowedBaseUrl(DEFAULT_CONSOLE_API_BASE_URL)).toBe(true);
   });
 

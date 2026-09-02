@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CONSOLE_API_BASE_URLS } from "../src/baseUrl";
 import {
   MAINNET_PACKAGE_CONFIG,
   resolveFullnodeUrl,
@@ -9,21 +10,34 @@ import {
 } from "../src/console/packageConfig";
 
 describe("resolveSuiNetwork", () => {
-  it("derives mainnet from a mainnet Console host", () => {
-    expect(resolveSuiNetwork("https://api.mainnet.harbor.walrus.xyz")).toBe("mainnet");
+  it("exact-matches the canonical Console hosts", () => {
+    // The mainnet host carries no "mainnet" substring, so the default
+    // configuration must never reach the heuristic.
+    expect(resolveSuiNetwork(CONSOLE_API_BASE_URLS.mainnet)).toBe("mainnet");
+    expect(resolveSuiNetwork(CONSOLE_API_BASE_URLS.testnet)).toBe("testnet");
   });
 
-  it("derives testnet from a testnet Console host", () => {
+  it("derives testnet from a testnet-named host", () => {
     expect(resolveSuiNetwork("https://api.testnet.harbor.walrus.xyz")).toBe("testnet");
   });
 
-  it("falls back to testnet for local development", () => {
+  it("resolves testnet for local development", () => {
     expect(resolveSuiNetwork("http://localhost:2024")).toBe("testnet");
     expect(resolveSuiNetwork("http://127.0.0.1:2024")).toBe("testnet");
+    // URL.hostname brackets IPv6 — "[::1]" is the only spelling that occurs.
+    expect(resolveSuiNetwork("http://[::1]:2024")).toBe("testnet");
   });
 
   it("falls back to testnet for an unparseable base URL", () => {
     expect(resolveSuiNetwork("not a url")).toBe("testnet");
+  });
+
+  it("treats any other host as mainnet", () => {
+    // The published package targets real users; testnet is opt-in. The
+    // heuristic only ever sees non-canonical hosts (local stacks, internal
+    // staging) — see the resolver's doc comment.
+    expect(resolveSuiNetwork("https://api.mainnet.harbor.walrus.xyz")).toBe("mainnet");
+    expect(resolveSuiNetwork("https://api.custom.walrus.xyz")).toBe("mainnet");
   });
 });
 
@@ -49,18 +63,17 @@ describe("resolvePackageConfig", () => {
     });
   });
 
-  // Pins the placeholder values, not verified mainnet ids (COMG-584 is still
-  // open). The point is that a re-sync cannot half-update the mainnet block
-  // without a deliberate test change.
-  it("pins the mainnet placeholder ids", () => {
+  // Pins the 2026-09-01 mainnet publish. The point is that a re-sync cannot
+  // half-update the mainnet block without a deliberate test change.
+  it("pins the mainnet deploy", () => {
     expect(MAINNET_PACKAGE_CONFIG).toEqual({
-      packageId: "0x42e9f3b7d4ba898053835cbe8ff77bcd3580a1dc06820ae4e641fee11a455e9c",
-      originalPackageId: "0x42e9f3b7d4ba898053835cbe8ff77bcd3580a1dc06820ae4e641fee11a455e9c",
-      bucketRegistryId: "0x8fcff989d2f404b19e4a36c09add2166a76e7b1e73de3d3fb9afda003991270b",
-      // Unknown, and deliberately left as the zero address: it makes a mainnet
-      // create-bucket signature REFUSE rather than sign against a guessed package.
+      packageId: "0xb8d5b1cade7917190c47b8abfc789f527389fc021a8963c22755bcc1b539786c",
+      // Fresh v1 publish, so the original id equals the package id.
+      originalPackageId: "0xb8d5b1cade7917190c47b8abfc789f527389fc021a8963c22755bcc1b539786c",
+      bucketRegistryId: "0x871f3d0341f36101ff0b30cd01dbe363f8d89d7f004df80e8084752d2f496958",
+      // The mainnet sui-groups framework package, verified via MVR.
       permissionedGroupPackageId:
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x541840ae7df705d1c6329c22415ed61f9140a18b79b13c1c9dc7415b115c1ba8",
     });
   });
 
@@ -80,10 +93,10 @@ describe("resolveFullnodeUrl", () => {
 
 describe("resolvePackageConfigForBaseUrl", () => {
   it("resolves each network's host to that network's package set", () => {
-    expect(resolvePackageConfigForBaseUrl("https://api.testnet.console.walrus.xyz")).toBe(
+    expect(resolvePackageConfigForBaseUrl(CONSOLE_API_BASE_URLS.testnet)).toBe(
       TESTNET_PACKAGE_CONFIG,
     );
-    expect(resolvePackageConfigForBaseUrl("https://api.mainnet.console.walrus.xyz")).toBe(
+    expect(resolvePackageConfigForBaseUrl(CONSOLE_API_BASE_URLS.mainnet)).toBe(
       MAINNET_PACKAGE_CONFIG,
     );
     expect(resolvePackageConfigForBaseUrl("http://localhost:2024")).toBe(TESTNET_PACKAGE_CONFIG);

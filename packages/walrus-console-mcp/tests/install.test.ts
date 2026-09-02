@@ -626,7 +626,7 @@ describe("resolveInstallBaseUrl", () => {
     process.env = envBackup;
   });
 
-  it("falls back to the testnet default when nothing is set", () => {
+  it("falls back to the mainnet default when nothing is set", () => {
     expect(resolveInstallBaseUrl()).toBe(DEFAULT_CONSOLE_API_BASE_URL);
   });
 
