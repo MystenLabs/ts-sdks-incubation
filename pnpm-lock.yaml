@@ -307,7 +307,7 @@ importers:
         version: 8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   examples/dashboard-demo:
     dependencies:
@@ -326,7 +326,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   examples/deepbook-trader:
     dependencies:
@@ -396,7 +396,7 @@ importers:
         version: 8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   examples/fork-greeting:
     dependencies:
@@ -491,7 +491,7 @@ importers:
         version: 8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   examples/token-studio:
     dependencies:
@@ -558,7 +558,7 @@ importers:
         version: 8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   packages/create-devstack-app:
     dependencies:
@@ -589,7 +589,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   packages/dev-wallet:
     dependencies:
@@ -662,7 +662,7 @@ importers:
         version: 8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   packages/dev-wallet/examples/demo:
     dependencies:
@@ -781,7 +781,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   packages/docs:
     dependencies:
@@ -6095,8 +6095,8 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  toml@4.1.1:
-    resolution: {integrity: sha512-EBJnVBr3dTXdA89WVFoAIPUqkBjxPMwRqsfuo1r240tKFHXv3zgca4+NJib/h6TyvGF7vOawz0jGuryJCdNHrw==}
+  toml@4.3.0:
+    resolution: {integrity: sha512-lVb8X9BsPVuH0M4BKeS91tXAmJvCjQ5UIyAbQFaxkKGyUFK2RPkhwaFSQH8vbpl1d23eu/IBH+dwVMHWaq9A5A==}
     engines: {node: '>=20'}
 
   totalist@3.0.1:
@@ -6405,6 +6405,7 @@ packages:
       '@vitest/ui': 4.1.11
       happy-dom: '*'
       jsdom: '*'
+      vite: ^8.0.16
     peerDependenciesMeta:
       '@edge-runtime/vm':
         optional: true
@@ -6873,7 +6874,7 @@ snapshots:
   '@effect/vitest@4.0.0-beta.65(effect@4.0.0-beta.65)(vitest@4.1.11)':
     dependencies:
       effect: 4.0.0-beta.65
-      vitest: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+      vitest: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
 
   '@emnapi/core@1.10.0':
     dependencies:
@@ -7609,7 +7610,7 @@ snapshots:
       '@types/node': 25.9.3
       cosmiconfig: 9.0.2(typescript@6.0.3)
       prettier: 3.8.4
-      toml: 4.1.1
+      toml: 4.3.0
       typescript: 6.0.3
       zod: 4.4.3
     transitivePeerDependencies:
@@ -8857,7 +8858,7 @@ snapshots:
       '@vitest/mocker': 4.1.11(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
       playwright: 1.60.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+      vitest: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -8873,7 +8874,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.1.0
-      vitest: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+      vitest: 4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
@@ -9522,7 +9523,7 @@ snapshots:
       kubernetes-types: 1.30.0
       msgpackr: 1.12.1
       multipasta: 0.2.7
-      toml: 4.1.1
+      toml: 4.3.0
       uuid: 13.0.2
       yaml: 2.9.0
 
@@ -12178,7 +12179,7 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  toml@4.1.1: {}
+  toml@4.3.0: {}
 
   totalist@3.0.1: {}
 
@@ -12497,7 +12498,7 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(esbuild@0.28.1)(happy-dom@20.10.3)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0):
+  vitest@4.1.11(@types/node@25.9.3)(@vitest/browser-playwright@4.1.11)(happy-dom@20.10.3)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.11
       '@vitest/mocker': 4.1.11(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
@@ -12524,18 +12525,7 @@ snapshots:
       '@vitest/browser-playwright': 4.1.11(playwright@1.60.0)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))(vitest@4.1.11)
       happy-dom: 20.10.3
     transitivePeerDependencies:
-      - '@vitejs/devtools'
-      - esbuild
-      - jiti
-      - less
       - msw
-      - sass
-      - sass-embedded
-      - stylus
-      - sugarss
-      - terser
-      - tsx
-      - yaml
 
   web-namespaces@2.0.1: {}
 
