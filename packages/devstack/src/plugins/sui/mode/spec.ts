@@ -29,10 +29,14 @@ export interface SuiCommonOptions {
 export interface SuiContainerOptions extends SuiCommonOptions {
 	/** `mysten/sui-tools` tag or commit SHA to base the validator image on
 	 *  (the per-arch `-arm64` suffix is added host-side). Wins over the
-	 *  `DEVSTACK_SUI_TOOLS_REF` env var; both win over the bundled pin.
-	 *  Fork mode: names a sui-tools build that ships `sui-fork` (892d777c
-	 *  or later) and skips the from-source compile. Not combinable with
-	 *  `image.pull` (which names a complete image) or fork `version`. */
+	 *  `DEVSTACK_SUI_TOOLS_REF` env var. What "unset" means is per mode:
+	 *  local mode falls back to devstack's bundled sui-tools pin; fork mode
+	 *  compiles `sui-fork` from source instead, because the bundled pin
+	 *  predates `sui-fork` shipping in sui-tools. Set it in fork mode to a
+	 *  build that has it (892d777c or later) and the compile is skipped.
+	 *  Also selects the CLI that stack-free `devstack codegen` runs `sui
+	 *  move summary` with. Not combinable with `image.pull` (which names a
+	 *  complete image) or fork `version`. */
 	readonly suiToolsRef?: string;
 	/** Image override — `{pull}` skips the build; `{build}` uses the
 	 *  caller's Dockerfile with devstack's build args + a content-hashed

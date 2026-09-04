@@ -359,20 +359,24 @@ const resolveDefaultSummaryImage = (
 	// `chain-build-container.ts:PER_APP_SHARED_STACK`), not per-stack;
 	// the build container that materialises it carries the labels, so
 	// `ensureImage` itself is intentionally label-free here.
-	// Stack-free codegen has no `sui()` options to read, so only the env
-	// var can move it off the bundled sui-tools pin.
-	runtime.ensureImage(suiCliImageBuildContext(configuredSuiToolsRef())).pipe(
-		Effect.mapError(
-			(cause) =>
-				new CodegenBindingsFailed({
-					package: input.packageName,
-					sourcePath: input.sourcePath,
-					reason: 'summary-failed',
-					hint: 'Unable to resolve the Sui CLI container image for Move bindings codegen.',
-					cause,
-				}),
-		),
-	);
+	// The stack's declared toolchain (threaded from the sui plugin's codegen
+	// decls via `selectMoveToolchain`) wins; else the env var; else the
+	// bundled pin — the same resolution the validator image uses, so the
+	// summary CLI matches the one that builds and publishes.
+	runtime
+		.ensureImage(suiCliImageBuildContext(configuredSuiToolsRef(input.moveToolchain?.suiToolsRef)))
+		.pipe(
+			Effect.mapError(
+				(cause) =>
+					new CodegenBindingsFailed({
+						package: input.packageName,
+						sourcePath: input.sourcePath,
+						reason: 'summary-failed',
+						hint: 'Unable to resolve the Sui CLI container image for Move bindings codegen.',
+						cause,
+					}),
+			),
+		);
 
 const ensureMoveHome = (
 	moveHome: string,

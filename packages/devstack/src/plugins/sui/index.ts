@@ -56,6 +56,7 @@ import {
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable, makeStaticCodegen } from './codegen.ts';
+import { suiMoveToolchain } from './move/index.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
@@ -429,14 +430,17 @@ const bootAndEmit = (
 			// sidecar into the captured containers; `indexer !== undefined`
 			// is the same gate `bootAndEmit`'s caller resolved GraphQL on.
 			makeSnapshotable(opts.mode, identity.app, identity.stack, realChainId, indexer !== undefined),
-			makeCodegenable({
-				mode: opts.mode,
-				chainId: realChainId,
-				rpc: value.rpcUrl,
-				source: 'default',
-				...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
-				...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
-			}),
+			makeCodegenable(
+				{
+					mode: opts.mode,
+					chainId: realChainId,
+					rpc: value.rpcUrl,
+					source: 'default',
+					...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
+					...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
+				},
+				suiMoveToolchain(opts),
+			),
 			{
 				kind: 'strategy-contributor',
 				capabilityKey: chainProbeCapabilityKey(realChainId),
@@ -473,7 +477,7 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		// expressions off the loaded deployment that resolve
 		// at app build/dev time via the injected `__DEVSTACK_DEPLOYMENT__` global —
 		// never literal values. No id-resolver input needed.
-		staticCodegen: makeStaticCodegen(),
+		staticCodegen: makeStaticCodegen(suiMoveToolchain(opts)),
 		// Zero-arg `start` (no `dependsOn`); the substrate supplies the
 		// container runtime + identity via the plugin runtime context.
 		start: () =>

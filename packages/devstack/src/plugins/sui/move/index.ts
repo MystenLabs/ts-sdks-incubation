@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { Effect, Schema, type Scope, Semaphore } from 'effect';
 
@@ -21,8 +22,9 @@ import { contentHash, type ContentHash } from '../../../substrate/brand.ts';
 import { mintRandomSuffix } from '../../../substrate/runtime/random-suffix.ts';
 import { decodeJsonTextSync } from '../../../substrate/runtime/runtime-decode.ts';
 import { readEnv } from '../../../substrate/runtime/typed-env.ts';
+import type { MoveToolchain } from '../../../contracts/codegenable.ts';
 import { suiConfigError, type SuiConfigError } from '../errors.ts';
-import type { SuiContainerOptions } from '../mode/spec.ts';
+import type { SuiContainerOptions, SuiOptions } from '../mode/spec.ts';
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
 
@@ -59,6 +61,20 @@ export const explicitSuiToolsRef = (opts: SuiContainerOptions): string | undefin
  *  back to the source build. */
 export const configuredSuiToolsRef = (explicit?: string): string | undefined =>
 	nonBlank(explicit) ?? nonBlank(readEnv(SUI_TOOLS_REF_ENV_VAR));
+
+/** The toolchain a sui member declares for Move codegen: its configured
+ *  `suiToolsRef`, when it has one. Only the container-backed modes carry a
+ *  toolchain; live / local-rpc wrap a chain devstack didn't build. The env
+ *  var is deliberately NOT folded in here — it is resolved where the image
+ *  is built (`configuredSuiToolsRef`), so config and env keep the same
+ *  precedence in codegen as everywhere else. */
+export const suiMoveToolchain = (opts: SuiOptions): MoveToolchain | undefined => {
+	if (opts.mode !== 'local' && opts.mode !== 'fork') {
+		return undefined;
+	}
+	const suiToolsRef = explicitSuiToolsRef(opts);
+	return suiToolsRef === undefined ? undefined : { suiToolsRef };
+};
 
 /** `suiToolsRef` and `image.pull` each name the whole image to run, so a
  *  config setting both is ambiguous in every container mode. Fork mode
@@ -98,7 +114,9 @@ export const SUI_IMAGE_FINGERPRINT_PATHS: ReadonlyArray<string> = [
 export const suiCliImageBuildContext = (
 	suiToolsRef: string = DEFAULT_SUI_TOOLS_REF,
 ): ContainerBuildContext => ({
-	contextPath: new URL('../../../../images/', import.meta.url).pathname,
+	// `fileURLToPath`, not `.pathname`: on Windows the latter yields
+	// `/C:/…`, which Docker rejects as a build context.
+	contextPath: fileURLToPath(new URL('../../../../images/', import.meta.url)),
 	dockerfile: 'sui/Dockerfile',
 	fingerprintPaths: SUI_IMAGE_FINGERPRINT_PATHS,
 	buildArgs: { SUI_TOOLS_IMAGE: suiToolsImage(suiToolsRef) },

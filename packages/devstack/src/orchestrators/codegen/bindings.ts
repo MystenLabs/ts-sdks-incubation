@@ -36,6 +36,7 @@ import { join, relative, sep } from 'node:path';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { Context, Effect, FileSystem, Layer } from 'effect';
 
+import type { MoveToolchain } from '../../contracts/codegenable.ts';
 import type { ImageRef } from '../../contracts/container-runtime.ts';
 
 import { emitOne } from './emit.ts';
@@ -61,6 +62,10 @@ export interface MoveSummaryInput {
 	readonly packageName: string;
 	readonly sourcePath: string;
 	readonly buildImage?: ImageRef | null;
+	/** Toolchain the stack declared (see `MoveToolchain`). The Docker
+	 *  runner bases its `sui move summary` image on it when no
+	 *  `buildImage` is supplied; the host runner uses the host CLI. */
+	readonly moveToolchain?: MoveToolchain;
 }
 
 /** Shape of the Move summary runner. Implementations live in
@@ -135,7 +140,37 @@ export interface EmitBindingsInput {
 	readonly bindingsDir: string;
 	readonly packages: ReadonlyArray<PackageBindings>;
 	readonly importExtension?: '.ts' | '.js' | '';
+	/** Toolchain every package's summary runs under; see `selectMoveToolchain`. */
+	readonly moveToolchain?: MoveToolchain;
 }
+
+/**
+ * Pick the stack's Move toolchain from the codegen decls that declare
+ * one. Name-blind, like the `PackageBindings` seam: whichever decl
+ * carries `moveToolchain` wins, first in the given order. A stack has one
+ * chain owner, so a disagreement is a config bug — it is logged and the
+ * first declaration is kept rather than failing codegen outright.
+ */
+export const selectMoveToolchain = (
+	decls: ReadonlyArray<{ readonly emitterName: string; readonly moveToolchain?: MoveToolchain }>,
+): Effect.Effect<MoveToolchain | undefined> =>
+	Effect.gen(function* () {
+		const declared = decls.filter((decl) => decl.moveToolchain !== undefined);
+		const first = declared[0];
+		if (first?.moveToolchain === undefined) {
+			return undefined;
+		}
+		for (const other of declared.slice(1)) {
+			if (other.moveToolchain?.suiToolsRef !== first.moveToolchain.suiToolsRef) {
+				yield* Effect.logWarning(
+					`codegen.bindings: '${other.emitterName}' declares sui-tools ref ` +
+						`'${other.moveToolchain?.suiToolsRef}' but '${first.emitterName}' declared ` +
+						`'${first.moveToolchain.suiToolsRef}'; keeping the first.`,
+				);
+			}
+		}
+		return first.moveToolchain;
+	});
 
 export interface EmitBindingsResult {
 	readonly packagesEmitted: ReadonlyArray<string>;
@@ -217,6 +252,7 @@ export const emitBindings = (
 			const summary = yield* runner.runSummary({
 				packageName: pkg.name,
 				sourcePath: pkg.sourcePath,
+				...(input.moveToolchain === undefined ? {} : { moveToolchain: input.moveToolchain }),
 			});
 			const files = yield* generator.generate({
 				packageName: pkg.name,

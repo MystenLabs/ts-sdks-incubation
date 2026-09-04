@@ -72,6 +72,7 @@ import {
 	MoveCodegenService,
 	MoveSummaryRunnerService,
 	type PackageBindings,
+	selectMoveToolchain,
 } from './bindings.ts';
 import { emitOne } from './emit.ts';
 import {
@@ -643,10 +644,14 @@ const runEmitCycleInner = (
 		// files + the returned summary.
 		let bindings: EmitBindingsResult | null = null;
 		if (packageContribs.length > 0) {
+			// The chain owner's decls say which sui-tools build the summary CLI
+			// must come from, so bindings match the toolchain that publishes.
+			const moveToolchain = yield* selectMoveToolchain(fileEmitters);
 			bindings = yield* emitBindings({
 				bindingsDir: paths.bindingsDir,
 				packages: packageContribs,
 				importExtension: input.bindingsImportExtension,
+				...(moveToolchain === undefined ? {} : { moveToolchain }),
 			});
 		} else {
 			yield* Effect.logInfo(

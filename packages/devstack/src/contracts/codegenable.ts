@@ -172,12 +172,29 @@ export interface AggregateContribution {
 export type StaticCodegenSource = () => ReadonlyArray<CodegenableDecl>;
 
 /**
+ * The Move toolchain a stack's bindings must be generated with. Declared
+ * by the plugin that owns the chain (its codegen decls carry it in both
+ * the live and the stack-free path); consumed by the Move-bindings
+ * emitter, which runs `sui move summary` in a container built on this
+ * ref so generated bindings match the CLI that builds and publishes.
+ * Absent means "devstack's default toolchain".
+ */
+export interface MoveToolchain {
+	/** `mysten/sui-tools` tag or commit SHA. */
+	readonly suiToolsRef: string;
+}
+
+/**
  * Codegen contribution. `Emitter` is a literal emitter name used
  * by the codegen orchestrator for attribution and grouping.
  */
 export interface CodegenableDecl<Emitter extends string = string> {
 	readonly kind: 'codegenable';
 	readonly emitterName: Emitter;
+	/** Optional toolchain declaration — see `MoveToolchain`. The
+	 *  orchestrator is name-blind: it takes it from whichever decl
+	 *  declares it. */
+	readonly moveToolchain?: MoveToolchain;
 	/** Relative path under the codegen staging dir. */
 	readonly outputPath: string;
 	/** When `true`, this decl contributes ONLY to its `aggregate`
