@@ -91,8 +91,8 @@ If a slow first build or a large upstream checkpoint trips the ready probe, rais
 
 Sui's `mysten/sui-tools` image ships `sui-fork` next to the `sui` CLI from commit `892d777c` onward
 (the first release tags to include it are the v1.80 line). Name one of those builds and devstack
-skips the compile entirely: it pulls the image, layers its entrypoint on top, and boots the fork in
-seconds. This is the same image local mode runs on.
+skips the compile entirely: it pulls the image once, layers its entrypoint on top, and from then on
+boots the fork in seconds. This is the same image local mode runs on.
 
 ```ts
 const forkedTestnet = sui({

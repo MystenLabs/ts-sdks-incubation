@@ -6,17 +6,20 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { Effect } from 'effect';
-import { afterEach, describe, expect, it, vi } from '@effect/vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from '@effect/vitest';
 
 import type { ContainerBuildContext } from '../../../src/contracts/container-runtime.ts';
 import {
 	DEFAULT_SUI_FORK_REV,
 	FORK_ENTRYPOINT,
 	FORK_IMAGE_ENV_VAR,
+	FORK_RUST_LOG,
 	forkBinaryVersion,
 	forkDataDirKey,
 	planForkImage,
 	resolveForkImage,
+	SUI_FORK_IMAGE_FINGERPRINT_PATHS,
+	suiForkImageBuildContext,
 	validateForkImageOptions,
 } from '../../../src/plugins/sui/mode/fork.ts';
 import type { SuiForkOptions } from '../../../src/plugins/sui/mode/spec.ts';
@@ -57,6 +60,13 @@ const recordingRuntime = () => {
 	return { runtime, builds, pulls };
 };
 
+// Both env vars are read by the planner; neutralise whatever the developer's
+// shell exports so the default-path assertions below are hermetic. Both
+// readers treat '' as absent.
+beforeEach(() => {
+	vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, '');
+	vi.stubEnv(FORK_IMAGE_ENV_VAR, '');
+});
 afterEach(() => {
 	vi.unstubAllEnvs();
 });
@@ -104,6 +114,13 @@ describe('fork image plan', () => {
 		expect(planForkImage(base)).toEqual({ kind: 'sui-tools', ref: 'from-env' });
 	});
 
+	it('treats a blank suiToolsRef as absent, in planning and validation alike', () => {
+		expect(planForkImage({ ...base, suiToolsRef: '  ' })).toEqual({
+			kind: 'source',
+			rev: DEFAULT_SUI_FORK_REV,
+		});
+	});
+
 	it('lets explicit image config win over every ref', () => {
 		vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, 'from-env');
 		expect(planForkImage({ ...base, image: { pull: 'me/sui-fork:1' } })).toEqual({
@@ -136,6 +153,17 @@ describe('fork binary identity', () => {
 		expect(new Set([source, r1, r2]).size).toBe(3);
 	});
 
+	it('keys a caller-built image by the sui-tools ref it was handed, and by the bare rev without one', () => {
+		const build = { image: { build: { context: '/c' } } } as const;
+		expect(forkBinaryVersion({ ...base, ...build })).toBe(DEFAULT_SUI_FORK_REV);
+		expect(forkBinaryVersion({ ...base, ...build, version: 'abc' })).toBe('abc');
+		const noRef = forkDataDirKey({ ...base, ...build });
+		const r1 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r1' });
+		const r2 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r2' });
+		expect(noRef).toBe(forkDataDirKey(base));
+		expect(new Set([noRef, r1, r2]).size).toBe(3);
+	});
+
 	it('keys fork state identically whether the ref came from config or env', () => {
 		const fromConfig = forkDataDirKey({ ...base, suiToolsRef: 'r1' });
 		vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, 'r1');
@@ -153,6 +181,12 @@ describe('fork image option validation', () => {
 				suiToolsRef: 'r',
 				image: { build: { context: '/c' } },
 			});
+		}),
+	);
+
+	it.effect('ignores a blank suiToolsRef when checking for conflicts', () =>
+		Effect.gen(function* () {
+			yield* validateForkImageOptions({ ...base, suiToolsRef: ' ', version: 'abc' });
 		}),
 	);
 
@@ -204,6 +238,7 @@ describe('resolveForkImage', () => {
 				expect(resolved).toEqual({
 					ref: { digest: 'sha256:built', tag: 'built' },
 					entrypoint: FORK_ENTRYPOINT,
+					env: { RUST_LOG: FORK_RUST_LOG },
 				});
 			}),
 	);
@@ -218,10 +253,13 @@ describe('resolveForkImage', () => {
 				expect(builds).toEqual([
 					expect.objectContaining({
 						dockerfile: 'sui-fork/Dockerfile',
+						fingerprintPaths: SUI_FORK_IMAGE_FINGERPRINT_PATHS,
 						buildArgs: expect.objectContaining({ SUI_FORK_REV: DEFAULT_SUI_FORK_REV }),
 					}),
 				]);
+				// A complete image keeps its own ENTRYPOINT and RUST_LOG.
 				expect(resolved.entrypoint).toBeUndefined();
+				expect(resolved.env).toBeUndefined();
 			}),
 	);
 
@@ -280,5 +318,27 @@ describe('shared sui image contract for fork mode', () => {
 		expect(forkEntrypoint).toContain('. /usr/local/lib/devstack/signal-forward.sh');
 		// The local-mode entrypoint stays the image default; fork mode overrides.
 		expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/devstack-entrypoint.sh"]');
+	});
+
+	it('pins FORK_RUST_LOG to what the source-build image bakes in', () => {
+		const forkDockerfile = readFileSync(resolve(imagesDir, 'sui-fork/Dockerfile'), 'utf8');
+		expect(forkDockerfile).toContain(`ENV RUST_LOG=${FORK_RUST_LOG}`);
+	});
+
+	it('fingerprints the source-build image on every file its Dockerfile copies', () => {
+		const forkDockerfile = readFileSync(resolve(imagesDir, 'sui-fork/Dockerfile'), 'utf8');
+		const copied = [...forkDockerfile.matchAll(/^COPY (?!--from)(\S+) /gm)].map((m) => m[1]);
+		expect(copied.length).toBeGreaterThan(0);
+		for (const path of copied) {
+			expect(SUI_FORK_IMAGE_FINGERPRINT_PATHS).toContain(path);
+		}
+		expect(suiForkImageBuildContext().fingerprintPaths).toBe(SUI_FORK_IMAGE_FINGERPRINT_PATHS);
+	});
+
+	it('fails fast with a readable cause when the sui-tools build predates sui-fork', () => {
+		const forkEntrypoint = readFileSync(resolve(imagesDir, 'sui-fork/entrypoint.sh'), 'utf8');
+		expect(forkEntrypoint).toContain('command -v sui-fork');
+		expect(forkEntrypoint).toContain('DEVSTACK_SUI_TOOLS_REF');
+		expect(forkEntrypoint).toContain('exit 127');
 	});
 });

@@ -5,6 +5,14 @@ set -eu
 # shellcheck disable=SC1091
 . /usr/local/lib/devstack/signal-forward.sh
 
+# Fail fast with a readable cause when this entrypoint is layered onto a
+# sui-tools build that predates `sui-fork` (MystenLabs/sui 892d777c); the
+# alternative is a bare exit 127 and a 180s ready-probe timeout.
+if ! command -v sui-fork >/dev/null 2>&1; then
+	echo 'devstack: `sui-fork` is not in this image. The configured sui-tools ref predates sui-fork landing in mysten/sui-tools (commit 892d777c, v1.80 tags); pick a newer suiToolsRef / DEVSTACK_SUI_TOOLS_REF.' >&2
+	exit 127
+fi
+
 DATA_DIR=/var/lib/sui-fork
 EXPECT_DATA_DIR=0
 for ARG in "$@"; do

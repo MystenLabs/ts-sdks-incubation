@@ -3,7 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@effect/vitest';
+import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { Effect } from 'effect';
 import { vi } from 'vitest';
@@ -15,8 +15,18 @@ import {
 	MoveSummaryRunnerService,
 } from '../../../src/orchestrators/codegen/bindings.ts';
 import { layerSuiMoveSummaryRunnerDocker } from '../../../src/plugins/sui/move-summary-runner.ts';
+import { SUI_TOOLS_REF_ENV_VAR } from '../../../src/plugins/sui/move/index.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/service.ts';
 import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
+
+// The summary image resolver reads DEVSTACK_SUI_TOOLS_REF; pin the bundled
+// sui-tools ref regardless of what the developer's shell exports.
+beforeEach(() => {
+	vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, '');
+});
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 // Replace the heavyweight `@mysten/codegen` renderer with a spy so the
 // `layerMystenMoveCodegen` tests below can assert exactly what reaches
