@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from '@effect/vitest'
 import { selectMoveToolchain } from '../../../src/orchestrators/codegen/bindings.ts';
 import { makeCodegenable, makeStaticCodegen } from '../../../src/plugins/sui/codegen.ts';
 import { FORK_IMAGE_ENV_VAR } from '../../../src/plugins/sui/mode/fork.ts';
+import { checkHostCliAgainstPin } from '../../../src/plugins/sui/move-summary-runner.ts';
 import { liveMoveToolchain, suiMoveToolchain } from '../../../src/plugins/sui/move-toolchain.ts';
 import {
 	DEFAULT_SUI_TOOLS_REF,
@@ -145,4 +146,57 @@ describe('selectMoveToolchain', () => {
 			expect(error.emitters).toEqual(['sui', 'other']);
 		}),
 	);
+});
+
+describe('checkHostCliAgainstPin (host summary runner)', () => {
+	const explicit = (suiToolsRef: string) =>
+		({ kind: 'sui-tools', suiToolsRef, explicit: true }) as const;
+
+	it("never questions the host CLI for devstack's own default pin or no toolchain", () => {
+		expect(checkHostCliAgainstPin('sui 1.77.2-homebrew', undefined)).toEqual({ outcome: 'ok' });
+		expect(
+			checkHostCliAgainstPin('sui 1.77.2-homebrew', {
+				kind: 'sui-tools',
+				suiToolsRef: 'x',
+				explicit: false,
+			}),
+		).toEqual({ outcome: 'ok' });
+	});
+
+	it('accepts a host CLI whose release matches an explicit release-tag pin', () => {
+		expect(checkHostCliAgainstPin('sui 1.80.0-abc123def456', explicit('testnet-v1.80.0'))).toEqual({
+			outcome: 'ok',
+		});
+		expect(checkHostCliAgainstPin('sui 1.78.1-homebrew\n', explicit('mainnet-v1.78.1'))).toEqual({
+			outcome: 'ok',
+		});
+	});
+
+	it('reports a verifiable release mismatch with both versions', () => {
+		expect(
+			checkHostCliAgainstPin('sui 1.77.2-homebrew', explicit('testnet-v1.80.0')),
+		).toMatchObject({
+			outcome: 'mismatch',
+			expected: '1.80.0',
+			host: '1.77.2',
+		});
+	});
+
+	it('cannot verify SHA or channel refs, exact images, or an unreadable host version', () => {
+		expect(
+			checkHostCliAgainstPin(
+				'sui 1.80.0-892d777c',
+				explicit('892d777ccdf414f13b9421641831fc57462a8c6e'),
+			),
+		).toMatchObject({ outcome: 'unverifiable' });
+		expect(checkHostCliAgainstPin('sui 1.80.0', explicit('testnet'))).toMatchObject({
+			outcome: 'unverifiable',
+		});
+		expect(checkHostCliAgainstPin('', explicit('testnet-v1.80.0'))).toMatchObject({
+			outcome: 'unverifiable',
+		});
+		expect(
+			checkHostCliAgainstPin('sui 1.80.0', { kind: 'image', image: { digest: 'sha256:x' } }),
+		).toMatchObject({ outcome: 'unverifiable', pinned: 'image sha256:x' });
+	});
 });

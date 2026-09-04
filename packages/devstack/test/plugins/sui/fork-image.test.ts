@@ -40,8 +40,6 @@ const IDENTITY: Identity = {
 };
 
 const base: SuiForkOptions = { mode: 'fork', upstream: 'testnet' };
-const IMAGE = { digest: 'sha256:test-image' } as const;
-
 const imagesDir = resolve(import.meta.dirname, '../../../images');
 
 const recordingRuntime = () => {
@@ -149,9 +147,9 @@ describe('fork binary identity', () => {
 
 	it('keys fork state by the sui-tools ref when one is in play', () => {
 		expect(forkBinaryVersion({ ...base, suiToolsRef: 'r1' })).toBe('sui-tools:r1');
-		const source = forkDataDirKey(base, IMAGE);
-		const r1 = forkDataDirKey({ ...base, suiToolsRef: 'r1' }, IMAGE);
-		const r2 = forkDataDirKey({ ...base, suiToolsRef: 'r2' }, IMAGE);
+		const source = forkDataDirKey(base);
+		const r1 = forkDataDirKey({ ...base, suiToolsRef: 'r1' });
+		const r2 = forkDataDirKey({ ...base, suiToolsRef: 'r2' });
 		expect(new Set([source, r1, r2]).size).toBe(3);
 	});
 
@@ -159,30 +157,17 @@ describe('fork binary identity', () => {
 		const build = { image: { build: { context: '/c' } } } as const;
 		expect(forkBinaryVersion({ ...base, ...build })).toBe(DEFAULT_SUI_FORK_REV);
 		expect(forkBinaryVersion({ ...base, ...build, version: 'abc' })).toBe('abc');
-		const noRef = forkDataDirKey({ ...base, ...build }, IMAGE);
-		const r1 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r1' }, IMAGE);
-		const r2 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r2' }, IMAGE);
-		expect(noRef).toBe(forkDataDirKey(base, IMAGE));
+		const noRef = forkDataDirKey({ ...base, ...build });
+		const r1 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r1' });
+		const r2 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r2' });
+		expect(noRef).toBe(forkDataDirKey(base));
 		expect(new Set([noRef, r1, r2]).size).toBe(3);
 	});
 
-	it('keys fork state by the resolved image digest, so a moved tag never resumes foreign state', () => {
-		const a = forkDataDirKey(
-			{ ...base, image: { pull: 'me/sui-fork:latest' } },
-			{ digest: 'sha256:a' },
-		);
-		const b = forkDataDirKey(
-			{ ...base, image: { pull: 'me/sui-fork:latest' } },
-			{ digest: 'sha256:b' },
-		);
-		expect(a).not.toBe(b);
-		expect(forkDataDirKey(base, IMAGE)).toBe(forkDataDirKey(base, { ...IMAGE, tag: 'any' }));
-	});
-
 	it('keys fork state identically whether the ref came from config or env', () => {
-		const fromConfig = forkDataDirKey({ ...base, suiToolsRef: 'r1' }, IMAGE);
+		const fromConfig = forkDataDirKey({ ...base, suiToolsRef: 'r1' });
 		vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, 'r1');
-		expect(forkDataDirKey(base, IMAGE)).toBe(fromConfig);
+		expect(forkDataDirKey(base)).toBe(fromConfig);
 	});
 });
 

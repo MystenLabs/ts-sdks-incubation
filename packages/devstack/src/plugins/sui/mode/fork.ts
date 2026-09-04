@@ -200,9 +200,8 @@ export const bootForkMode = (
 		// container config hash are derived, so enabling the faucet keys a
 		// distinct fork state rather than reusing a whale-less data dir.
 		const seededOpts = withForkFaucetSeed(opts);
-		// Image first: the data-dir key folds the resolved image digest.
 		const image = yield* prepareForkImage(runtime, identity, opts);
-		const dataDir = yield* ensureForkDataDir(paths, seededOpts, image.ref);
+		const dataDir = yield* ensureForkDataDir(paths, seededOpts);
 
 		const labels: ContainerLabelTuple = {
 			app: identity.app,
@@ -706,21 +705,20 @@ const portPublish = (containerPort: number, hostPort: number): ContainerPortPubl
 	hostIp: DOCKER_PUBLISH_HOST,
 });
 
-/** Key of the host directory a fork's state lives in. Folds the RESOLVED
- *  image digest as well as the declared binary identity: a mutable tag
- *  (`image.pull`, a moving sui-tools tag, a rebuilt custom context) can
- *  yield a different binary under the same declaration, and a different
- *  binary must never resume state another one wrote. The cost is a
- *  re-seed when the image genuinely changes; content-addressed builds
- *  keep the digest stable across ordinary boots. */
-export const forkDataDirKey = (opts: SuiForkOptions, image: ImageRef): string =>
+/** Key of the host directory a fork's state lives in: the declared fork
+ *  (upstream, checkpoint, seed) plus the declared binary identity
+ *  (`forkBinaryVersion`). Deliberately NOT the resolved image digest:
+ *  snapshot restore re-tags a committed container layer under the image's
+ *  original tag, so a digest-keyed dir would go empty after every restore.
+ *  Mutable refs (`image.pull` tags, sui-tools channel tags) therefore pin at
+ *  first build; the docs steer users to SHAs and versioned tags. */
+export const forkDataDirKey = (opts: SuiForkOptions): string =>
 	createHash('sha256')
 		.update(
 			JSON.stringify({
 				upstream: opts.upstream,
 				checkpoint: opts.checkpoint ?? null,
 				version: forkBinaryVersion(opts),
-				imageDigest: image.digest,
 				seed: normalizeForkSeed(opts),
 			}),
 		)
@@ -733,10 +731,9 @@ export const forkDataDirKey = (opts: SuiForkOptions, image: ImageRef): string =>
 const ensureForkDataDir = (
 	paths: StackPaths,
 	opts: SuiForkOptions,
-	image: ImageRef,
 ): Effect.Effect<string, SuiPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const dataDir = resolve(join(paths.stackRoot, 'sui-fork', forkDataDirKey(opts, image)));
+		const dataDir = resolve(join(paths.stackRoot, 'sui-fork', forkDataDirKey(opts)));
 		yield* Effect.tryPromise({
 			try: () => mkdir(dataDir, { recursive: true, mode: 0o700 }),
 			catch: (cause) =>

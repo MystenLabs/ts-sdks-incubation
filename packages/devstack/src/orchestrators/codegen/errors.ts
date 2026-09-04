@@ -38,13 +38,6 @@ export class CodegenEmitterCollision extends Schema.TaggedErrorClass<CodegenEmit
 	},
 ) {}
 
-/** Two `Codegenable` contributions target the SAME aggregate
- *  `bucket` but disagree on its `sensitive` metadata. The
- *  `AggregateContribution` contract requires all contributors to a
- *  bucket to agree; the orchestrator takes the FIRST contributor's
- *  sensitivity, so a silent disagreement could emit a secret with
- *  non-sensitive handling. Detected while folding contributions so the
- *  cycle fails fast. */
 /** Two codegen decls declared different Move toolchains. A stack has one
  *  chain owner, so this is a config bug; generating bindings with
  *  whichever declaration happened to sort first would make the output
@@ -60,8 +53,22 @@ export class CodegenToolchainConflict extends Schema.TaggedErrorClass<CodegenToo
 		 *  one that disagreed. */
 		emitters: Schema.Array(Schema.String),
 	},
-) {}
+) {
+	override get message(): string {
+		return (
+			`'${this.emitters[1]}' declares Move toolchain ${this.conflicting} but ` +
+			`'${this.emitters[0]}' declared ${this.established}; a stack has one toolchain.`
+		);
+	}
+}
 
+/** Two `Codegenable` contributions target the SAME aggregate
+ *  `bucket` but disagree on its `sensitive` metadata. The
+ *  `AggregateContribution` contract requires all contributors to a
+ *  bucket to agree; the orchestrator takes the FIRST contributor's
+ *  sensitivity, so a silent disagreement could emit a secret with
+ *  non-sensitive handling. Detected while folding contributions so the
+ *  cycle fails fast. */
 export class CodegenAggregateConflict extends Schema.TaggedErrorClass<CodegenAggregateConflict>()(
 	'CodegenAggregateConflict',
 	{
@@ -124,7 +131,14 @@ export class CodegenBindingsFailed extends Schema.TaggedErrorClass<CodegenBindin
 		hint: Schema.optional(Schema.String),
 		cause: Schema.optional(Schema.Defect),
 	},
-) {}
+) {
+	/** `Cause.pretty` prints `<tag>: <message>`; without this the CLI shows a
+	 *  bare tag and the actionable `hint` never reaches the user. */
+	override get message(): string {
+		const head = `${this.reason} for package '${this.package}'`;
+		return this.hint === undefined ? head : `${head}: ${this.hint}`;
+	}
+}
 
 /** The reader of the manifest envelope detected drift between
  *  what plugins contributed and what's on disk — e.g. a stale

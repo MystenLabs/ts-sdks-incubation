@@ -70,8 +70,9 @@ Other local-mode options:
   the same thing for a single run; config wins when both are present. Either way the choice also
   selects the CLI a stack boot runs `sui move summary` with, so generated bindings match the
   toolchain that publishes. (The stack-free `devstack codegen` verb uses the host `sui` CLI and
-  warns when the stack pins a different toolchain.) Not combinable with `image: { pull }`, which
-  names a complete image.
+  fails when the stack pins a release the host CLI does not match.) The config field cannot be
+  combined with `image: { pull }`, which names a complete image; the env var is simply ignored when
+  `image: { pull }` is set.
 - **`image`** — override the validator image: `{ pull: '<ref>' }` skips the build, or
   `{ build: { context, dockerfile? } }` builds your Dockerfile with devstack's build args (including
   the resolved `SUI_TOOLS_IMAGE`) and a content-hashed tag.

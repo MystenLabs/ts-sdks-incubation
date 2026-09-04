@@ -83,12 +83,6 @@ available — read balances through `ChainProbe`, and fund accounts through the 
 By default the first boot compiles `sui-fork` from a pinned Sui revision, which takes ten minutes or
 more on a cold machine; later boots reuse the cached image.
 
-Fork state lives in a data dir keyed by the exact image that wrote it, so a fork never resumes state
-written by a different `sui-fork` binary. A consequence worth knowing when you upgrade devstack: if
-the release changes the fork image (devstack 0.8.0 does, for every fork including the default source
-build), your existing fork re-seeds once from its checkpoint on the next boot. Nothing is deleted;
-the previous data dir stays on disk under `.devstack/stacks/<stack>/sui-fork/`.
-
 If a slow first build or a large upstream checkpoint trips the ready probe, raise `readyTimeout` (a
 `sui()` option, `Duration`; default 180s), or check the fork container logs with
 `docker logs <container>`.
@@ -113,9 +107,11 @@ Pass a tag or SHA, not a full image name. devstack composes `mysten/sui-tools:<r
 or to try a build without editing config, set the same value in the `DEVSTACK_SUI_TOOLS_REF`
 environment variable. Config wins over the environment.
 
-Fork state is keyed by the exact image that wrote it (its resolved digest, plus the declared
-binary), so switching between a sui-tools build and the source build, between two refs, or to a
-moved tag seeds a fresh fork data dir rather than resuming state written by a different binary.
+Fork state is keyed by the declared binary that wrote it, so switching between a sui-tools build and
+the source build, or between two refs, seeds a fresh fork data dir rather than resuming state
+written by a different binary. Use a commit SHA or a versioned release tag for the ref: a moving tag
+such as `testnet` is resolved once, when devstack first builds the image, and stays pinned until you
+change the ref.
 
 The `suiToolsRef` config field cannot be combined with `version` (which only pins the source build)
 or with `image: { pull }`; devstack rejects the config at boot. `DEVSTACK_SUI_TOOLS_REF` is a
