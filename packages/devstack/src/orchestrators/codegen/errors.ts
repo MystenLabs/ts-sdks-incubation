@@ -45,6 +45,23 @@ export class CodegenEmitterCollision extends Schema.TaggedErrorClass<CodegenEmit
  *  sensitivity, so a silent disagreement could emit a secret with
  *  non-sensitive handling. Detected while folding contributions so the
  *  cycle fails fast. */
+/** Two codegen decls declared different Move toolchains. A stack has one
+ *  chain owner, so this is a config bug; generating bindings with
+ *  whichever declaration happened to sort first would make the output
+ *  depend on member order, so the cycle fails instead. */
+export class CodegenToolchainConflict extends Schema.TaggedErrorClass<CodegenToolchainConflict>()(
+	'CodegenToolchainConflict',
+	{
+		/** `moveToolchainKey` of the first declaration seen. */
+		established: Schema.String,
+		/** `moveToolchainKey` of the disagreeing declaration. */
+		conflicting: Schema.String,
+		/** Emitter names: the decl that established the toolchain and the
+		 *  one that disagreed. */
+		emitters: Schema.Array(Schema.String),
+	},
+) {}
+
 export class CodegenAggregateConflict extends Schema.TaggedErrorClass<CodegenAggregateConflict>()(
 	'CodegenAggregateConflict',
 	{
@@ -123,6 +140,7 @@ export type CodegenError =
 	| CodegenPathConflict
 	| CodegenEmitterCollision
 	| CodegenAggregateConflict
+	| CodegenToolchainConflict
 	| CodegenRenderError
 	| CodegenEmitFailed
 	| CodegenWriteFailed

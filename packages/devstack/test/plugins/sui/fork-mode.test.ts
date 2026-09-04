@@ -22,6 +22,8 @@ import {
 	verifyForkImpersonationSender,
 } from '../../../src/plugins/sui/fork-transaction.ts';
 
+const IMAGE = { digest: 'sha256:test-image' } as const;
+
 const normalizedId = (id: string): string => `0x${id.replace(/^0x/i, '').padStart(64, '0')}`;
 
 describe('sui fork mode', () => {
@@ -67,36 +69,45 @@ describe('sui fork mode', () => {
 	});
 
 	it('keys fork data directories by upstream checkpoint revision and sorted seed set', () => {
-		const first = forkDataDirKey({
-			mode: 'fork',
-			upstream: 'testnet',
-			checkpoint: 123,
-			version: 'abc',
-			seed: {
-				addresses: ['0x2', '0x1'],
-				objects: ['0xb', '0xa'],
+		const first = forkDataDirKey(
+			{
+				mode: 'fork',
+				upstream: 'testnet',
+				checkpoint: 123,
+				version: 'abc',
+				seed: {
+					addresses: ['0x2', '0x1'],
+					objects: ['0xb', '0xa'],
+				},
 			},
-		});
-		const same = forkDataDirKey({
-			mode: 'fork',
-			upstream: 'testnet',
-			checkpoint: 123,
-			version: 'abc',
-			seed: {
-				addresses: ['0x1', '0x2'],
-				objects: ['0xa', '0xb'],
+			IMAGE,
+		);
+		const same = forkDataDirKey(
+			{
+				mode: 'fork',
+				upstream: 'testnet',
+				checkpoint: 123,
+				version: 'abc',
+				seed: {
+					addresses: ['0x1', '0x2'],
+					objects: ['0xa', '0xb'],
+				},
 			},
-		});
-		const changed = forkDataDirKey({
-			mode: 'fork',
-			upstream: 'testnet',
-			checkpoint: 124,
-			version: 'abc',
-			seed: {
-				addresses: ['0x1', '0x2'],
-				objects: ['0xa', '0xb'],
+			IMAGE,
+		);
+		const changed = forkDataDirKey(
+			{
+				mode: 'fork',
+				upstream: 'testnet',
+				checkpoint: 124,
+				version: 'abc',
+				seed: {
+					addresses: ['0x1', '0x2'],
+					objects: ['0xa', '0xb'],
+				},
 			},
-		});
+			IMAGE,
+		);
 
 		expect(first).toBe(same);
 		expect(first).not.toBe(changed);
@@ -124,7 +135,7 @@ describe('sui fork mode', () => {
 			},
 		} as const;
 
-		expect(forkDataDirKey(first)).toBe(forkDataDirKey(same));
+		expect(forkDataDirKey(first, IMAGE)).toBe(forkDataDirKey(same, IMAGE));
 		expect(forkStartCommand(first)).toEqual(forkStartCommand(same));
 		expect(forkStartCommand(first)).toEqual(
 			expect.arrayContaining([
@@ -276,9 +287,15 @@ describe('sui fork mode', () => {
 
 	it('keys a distinct fork data dir when the faucet whale changes', () => {
 		const base = { mode: 'fork', upstream: 'testnet', checkpoint: 1 } as const;
-		const withWhale = forkDataDirKey(withForkFaucetSeed({ ...base, faucet: { whale: '0xabc' } }));
-		const withOther = forkDataDirKey(withForkFaucetSeed({ ...base, faucet: { whale: '0xdef' } }));
-		const without = forkDataDirKey(base);
+		const withWhale = forkDataDirKey(
+			withForkFaucetSeed({ ...base, faucet: { whale: '0xabc' } }),
+			IMAGE,
+		);
+		const withOther = forkDataDirKey(
+			withForkFaucetSeed({ ...base, faucet: { whale: '0xdef' } }),
+			IMAGE,
+		);
+		const without = forkDataDirKey(base, IMAGE);
 		expect(withWhale).not.toBe(without);
 		expect(withWhale).not.toBe(withOther);
 	});

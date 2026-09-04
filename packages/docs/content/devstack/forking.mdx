@@ -107,13 +107,17 @@ Pass a tag or SHA, not a full image name. devstack composes `mysten/sui-tools:<r
 or to try a build without editing config, set the same value in the `DEVSTACK_SUI_TOOLS_REF`
 environment variable. Config wins over the environment.
 
-Fork state is keyed by the binary that wrote it, so switching between a sui-tools build and the
-source build (or between two sui-tools refs) seeds a fresh fork data dir rather than reusing one.
+Fork state is keyed by the exact image that wrote it (its resolved digest, plus the declared
+binary), so switching between a sui-tools build and the source build, between two refs, or to a
+moved tag seeds a fresh fork data dir rather than resuming state written by a different binary.
 
-`suiToolsRef` cannot be combined with `version` (which only pins the source build) or with
-`image: { pull }`. The other escape hatches still work: `image: { pull: '…' }` runs a complete
-prebuilt image you maintain, and `DEVSTACK_SUI_FORK_IMAGE` does the same for a single run, falling
-back to the source build if the pull fails.
+The `suiToolsRef` config field cannot be combined with `version` (which only pins the source build)
+or with `image: { pull }`; devstack rejects the config at boot. `DEVSTACK_SUI_TOOLS_REF` is a
+per-run override and behaves like `DEVSTACK_SUI_FORK_IMAGE` always has: it displaces a configured
+`version` without an error, so don't rely on `version` being honoured once the env var is set. The
+other escape hatches still work: `image: { pull: '…' }` runs a complete prebuilt image you maintain,
+and `DEVSTACK_SUI_FORK_IMAGE` does the same for a single run, falling back to the source build if
+the pull fails.
 
 ## Accounts: impersonate vs. ephemeral
 

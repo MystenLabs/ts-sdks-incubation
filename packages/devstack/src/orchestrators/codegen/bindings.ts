@@ -36,11 +36,10 @@ import { join, relative, sep } from 'node:path';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { Context, Effect, FileSystem, Layer } from 'effect';
 
-import type { MoveToolchain } from '../../contracts/codegenable.ts';
-import type { ImageRef } from '../../contracts/container-runtime.ts';
+import { type MoveToolchain, moveToolchainKey } from '../../contracts/codegenable.ts';
 
 import { emitOne } from './emit.ts';
-import { CodegenBindingsFailed } from './errors.ts';
+import { CodegenBindingsFailed, CodegenToolchainConflict } from './errors.ts';
 import { NON_SENSITIVE_DIR_MODE, NON_SENSITIVE_FILE_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
@@ -61,10 +60,11 @@ export interface MoveSummary {
 export interface MoveSummaryInput {
 	readonly packageName: string;
 	readonly sourcePath: string;
-	readonly buildImage?: ImageRef | null;
 	/** Toolchain the stack declared (see `MoveToolchain`). The Docker
-	 *  runner bases its `sui move summary` image on it when no
-	 *  `buildImage` is supplied; the host runner uses the host CLI. */
+	 *  runner runs `sui move summary` in exactly that image (or an image
+	 *  built on that sui-tools ref); absent means devstack's bundled
+	 *  toolchain. The host runner can only warn when it cannot honour an
+	 *  explicit pin. */
 	readonly moveToolchain?: MoveToolchain;
 }
 
@@ -146,26 +146,32 @@ export interface EmitBindingsInput {
 
 /**
  * Pick the stack's Move toolchain from the codegen decls that declare
- * one. Name-blind, like the `PackageBindings` seam: whichever decl
- * carries `moveToolchain` wins, first in the given order. A stack has one
- * chain owner, so a disagreement is a config bug — it is logged and the
- * first declaration is kept rather than failing codegen outright.
+ * one. Name-blind, like the `PackageBindings` seam: the orchestrator
+ * reads whichever decl carries `moveToolchain`. A stack has one chain
+ * owner, so every declaration must agree; a disagreement fails the cycle
+ * (`CodegenToolchainConflict`) rather than generating bindings with
+ * whichever member happened to sort first.
  */
 export const selectMoveToolchain = (
 	decls: ReadonlyArray<{ readonly emitterName: string; readonly moveToolchain?: MoveToolchain }>,
-): Effect.Effect<MoveToolchain | undefined> =>
+): Effect.Effect<MoveToolchain | undefined, CodegenToolchainConflict> =>
 	Effect.gen(function* () {
 		const declared = decls.filter((decl) => decl.moveToolchain !== undefined);
 		const first = declared[0];
 		if (first?.moveToolchain === undefined) {
 			return undefined;
 		}
+		const established = moveToolchainKey(first.moveToolchain);
 		for (const other of declared.slice(1)) {
-			if (other.moveToolchain?.suiToolsRef !== first.moveToolchain.suiToolsRef) {
-				yield* Effect.logWarning(
-					`codegen.bindings: '${other.emitterName}' declares sui-tools ref ` +
-						`'${other.moveToolchain?.suiToolsRef}' but '${first.emitterName}' declared ` +
-						`'${first.moveToolchain.suiToolsRef}'; keeping the first.`,
+			const conflicting =
+				other.moveToolchain === undefined ? undefined : moveToolchainKey(other.moveToolchain);
+			if (conflicting !== undefined && conflicting !== established) {
+				return yield* Effect.fail(
+					new CodegenToolchainConflict({
+						established,
+						conflicting,
+						emitters: [first.emitterName, other.emitterName],
+					}),
 				);
 			}
 		}

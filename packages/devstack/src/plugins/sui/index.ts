@@ -56,7 +56,7 @@ import {
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable, makeStaticCodegen } from './codegen.ts';
-import { suiMoveToolchain } from './move/index.ts';
+import { liveMoveToolchain, suiMoveToolchain } from './move-toolchain.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
@@ -439,7 +439,7 @@ const bootAndEmit = (
 					...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
 					...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
 				},
-				suiMoveToolchain(opts),
+				liveMoveToolchain(value.buildImage, opts),
 			),
 			{
 				kind: 'strategy-contributor',

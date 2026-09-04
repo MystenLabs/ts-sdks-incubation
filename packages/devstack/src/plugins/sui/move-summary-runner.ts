@@ -28,6 +28,7 @@ import { Effect, Layer } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
+import type { MoveToolchain } from '../../contracts/codegenable.ts';
 import {
 	type MoveSummary,
 	type MoveSummaryInput,
@@ -37,10 +38,11 @@ import { CodegenBindingsFailed } from '../../orchestrators/codegen/errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { capture } from '../../substrate/runtime/observability/subprocess-capture.ts';
 import {
-	configuredSuiToolsRef,
 	copyLocalMoveDeps,
+	DEFAULT_SUI_TOOLS_REF,
 	shellQuote,
 	suiCliImageBuildContext,
+	suiToolsImage,
 } from './move/index.ts';
 
 // -----------------------------------------------------------------------------
@@ -86,6 +88,26 @@ const disposableSuiClientConfig = (configDir: string): string =>
 		'',
 	].join('\n');
 
+/** The host runner runs whatever `sui` is on PATH, so it cannot honour a
+ *  toolchain the stack pinned. Say so — once per summary — when the pin was
+ *  explicit (config or env) or is an exact live image; devstack's own
+ *  default pin is not worth a warning. */
+const warnIfHostCannotHonour = (toolchain: MoveToolchain | undefined): Effect.Effect<void> => {
+	if (toolchain === undefined || (toolchain.kind === 'sui-tools' && !toolchain.explicit)) {
+		return Effect.void;
+	}
+	const pinned =
+		toolchain.kind === 'image'
+			? `image ${toolchain.image.tag ?? toolchain.image.digest}`
+			: suiToolsImage(toolchain.suiToolsRef);
+	return Effect.logWarning(
+		'codegen: running `sui move summary` with the host `sui` CLI, but the stack pins its ' +
+			`toolchain to ${pinned}, which this path cannot use. Bindings may differ from what the ` +
+			'stack publishes with; install a matching CLI (e.g. `suiup install sui@<version>`) ' +
+			'or run codegen through a stack boot.',
+	);
+};
+
 export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 	MoveSummaryRunnerService,
 	never,
@@ -95,8 +117,9 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		return MoveSummaryRunnerService.of({
-			runSummary: ({ packageName, sourcePath }) =>
+			runSummary: ({ packageName, sourcePath, moveToolchain }) =>
 				Effect.gen(function* () {
+					yield* warnIfHostCannotHonour(moveToolchain);
 					const scratchDir = yield* Effect.tryPromise({
 						try: () => mkdtemp(join(tmpdir(), 'devstack-move-summary-')),
 						catch: (cause) =>
@@ -214,7 +237,7 @@ const runSummaryViaDocker = (
 			).pipe(Effect.ignore);
 			const result = yield* Effect.gen(function* () {
 				yield* prepareSummaryPackage(summaryPath, input);
-				const image = input.buildImage ?? (yield* resolveDefaultSummaryImage(runtime, input));
+				const image = yield* resolveSummaryImage(runtime, input);
 				const moveHome = join(homedir(), '.move');
 				yield* ensureMoveHome(moveHome, input);
 				const packageDir = basename(input.sourcePath);
@@ -351,32 +374,39 @@ const stageSummarySource = (
 			}),
 	});
 
-const resolveDefaultSummaryImage = (
+/** The image `sui move summary` runs in. An `image` toolchain is used as
+ *  is — the very image the stack built/publishes with. A `sui-tools`
+ *  toolchain (stack-free codegen, derived from the mode's image plan)
+ *  builds the shared CLI image on that ref. No toolchain means devstack's
+ *  bundled pin. The env var is NOT consulted here: the sui plugin folds it
+ *  into the plan, so config and env keep one precedence everywhere. */
+const resolveSummaryImage = (
 	runtime: ContainerRuntime,
 	input: MoveSummaryInput,
-): Effect.Effect<ImageRef, CodegenBindingsFailed> =>
+): Effect.Effect<ImageRef, CodegenBindingsFailed> => {
+	const toolchain = input.moveToolchain;
+	if (toolchain?.kind === 'image') {
+		return Effect.succeed(toolchain.image);
+	}
+	const suiToolsRef =
+		toolchain?.kind === 'sui-tools' ? toolchain.suiToolsRef : DEFAULT_SUI_TOOLS_REF;
 	// Shared CLI image — owned at the daemon-level _per-app_ pin (see
 	// `chain-build-container.ts:PER_APP_SHARED_STACK`), not per-stack;
 	// the build container that materialises it carries the labels, so
 	// `ensureImage` itself is intentionally label-free here.
-	// The stack's declared toolchain (threaded from the sui plugin's codegen
-	// decls via `selectMoveToolchain`) wins; else the env var; else the
-	// bundled pin — the same resolution the validator image uses, so the
-	// summary CLI matches the one that builds and publishes.
-	runtime
-		.ensureImage(suiCliImageBuildContext(configuredSuiToolsRef(input.moveToolchain?.suiToolsRef)))
-		.pipe(
-			Effect.mapError(
-				(cause) =>
-					new CodegenBindingsFailed({
-						package: input.packageName,
-						sourcePath: input.sourcePath,
-						reason: 'summary-failed',
-						hint: 'Unable to resolve the Sui CLI container image for Move bindings codegen.',
-						cause,
-					}),
-			),
-		);
+	return runtime.ensureImage(suiCliImageBuildContext(suiToolsRef)).pipe(
+		Effect.mapError(
+			(cause) =>
+				new CodegenBindingsFailed({
+					package: input.packageName,
+					sourcePath: input.sourcePath,
+					reason: 'summary-failed',
+					hint: 'Unable to resolve the Sui CLI container image for Move bindings codegen.',
+					cause,
+				}),
+		),
+	);
+};
 
 const ensureMoveHome = (
 	moveHome: string,

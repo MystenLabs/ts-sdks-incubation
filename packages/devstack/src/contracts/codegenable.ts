@@ -8,6 +8,8 @@
 
 import type { Effect } from 'effect';
 
+import type { ImageRef } from './container-runtime.ts';
+
 // -----------------------------------------------------------------------------
 // Raw-expression escape hatch
 // -----------------------------------------------------------------------------
@@ -173,16 +175,29 @@ export type StaticCodegenSource = () => ReadonlyArray<CodegenableDecl>;
 
 /**
  * The Move toolchain a stack's bindings must be generated with. Declared
- * by the plugin that owns the chain (its codegen decls carry it in both
- * the live and the stack-free path); consumed by the Move-bindings
- * emitter, which runs `sui move summary` in a container built on this
- * ref so generated bindings match the CLI that builds and publishes.
- * Absent means "devstack's default toolchain".
+ * by the plugin that owns the chain on its codegen decls; consumed by the
+ * Move-bindings emitter so `sui move summary` runs the same CLI that
+ * builds and publishes. Two forms:
+ *   - `image`: the exact container image the stack resolved (live path —
+ *     nothing to re-derive, nothing to drift).
+ *   - `sui-tools`: a `mysten/sui-tools` tag or SHA derived from the same
+ *     image plan the mode boots with (stack-free path, where no image has
+ *     been resolved). `explicit` says whether config or env pinned it, as
+ *     opposed to devstack's bundled default — runners that cannot honour a
+ *     pin (the host-CLI runner) warn only when it was explicit.
+ * Absent means the stack runs a complete image devstack cannot reproduce
+ * stack-free (`image.pull`, a from-source fork); the emitter then falls
+ * back to devstack's bundled toolchain.
  */
-export interface MoveToolchain {
-	/** `mysten/sui-tools` tag or commit SHA. */
-	readonly suiToolsRef: string;
-}
+export type MoveToolchain =
+	| { readonly kind: 'image'; readonly image: ImageRef }
+	| { readonly kind: 'sui-tools'; readonly suiToolsRef: string; readonly explicit: boolean };
+
+/** Stable identity for equality checks across decls. */
+export const moveToolchainKey = (toolchain: MoveToolchain): string =>
+	toolchain.kind === 'image'
+		? `image:${toolchain.image.digest}`
+		: `sui-tools:${toolchain.suiToolsRef}`;
 
 /**
  * Codegen contribution. `Emitter` is a literal emitter name used

@@ -1,39 +1,109 @@
 // The sui member declares the Move toolchain its bindings must be generated
 // with, and the codegen orchestrator picks it up name-blind. Pins the seam
-// end to end at the pure layer: options → decl → selection → summary input.
+// at the pure layer: options → declaration → selection.
 
 import { Effect } from 'effect';
-import { describe, expect, it } from '@effect/vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from '@effect/vitest';
 
 import { selectMoveToolchain } from '../../../src/orchestrators/codegen/bindings.ts';
 import { makeCodegenable, makeStaticCodegen } from '../../../src/plugins/sui/codegen.ts';
-import { suiMoveToolchain } from '../../../src/plugins/sui/move/index.ts';
+import { FORK_IMAGE_ENV_VAR } from '../../../src/plugins/sui/mode/fork.ts';
+import { liveMoveToolchain, suiMoveToolchain } from '../../../src/plugins/sui/move-toolchain.ts';
+import {
+	DEFAULT_SUI_TOOLS_REF,
+	SUI_TOOLS_REF_ENV_VAR,
+} from '../../../src/plugins/sui/move/index.ts';
 
-describe('sui Move toolchain declaration', () => {
-	it('declares the configured suiToolsRef for the container-backed modes only', () => {
-		expect(suiMoveToolchain({ mode: 'local', suiToolsRef: 'r' })).toEqual({ suiToolsRef: 'r' });
-		expect(suiMoveToolchain({ mode: 'fork', upstream: 'testnet', suiToolsRef: 'r' })).toEqual({
-			suiToolsRef: 'r',
+beforeEach(() => {
+	vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, '');
+	vi.stubEnv(FORK_IMAGE_ENV_VAR, '');
+});
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
+
+describe('suiMoveToolchain (stack-free declaration)', () => {
+	it('follows the local image plan: bundled pin by default, config or env when set', () => {
+		expect(suiMoveToolchain({ mode: 'local' })).toEqual({
+			kind: 'sui-tools',
+			suiToolsRef: DEFAULT_SUI_TOOLS_REF,
+			explicit: false,
 		});
-		expect(suiMoveToolchain({ mode: 'local' })).toBeUndefined();
-		expect(suiMoveToolchain({ mode: 'local', suiToolsRef: '  ' })).toBeUndefined();
+		expect(suiMoveToolchain({ mode: 'local', suiToolsRef: 'r' })).toEqual({
+			kind: 'sui-tools',
+			suiToolsRef: 'r',
+			explicit: true,
+		});
+		vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, 'from-env');
+		expect(suiMoveToolchain({ mode: 'local' })).toEqual({
+			kind: 'sui-tools',
+			suiToolsRef: 'from-env',
+			explicit: true,
+		});
+		// A caller Dockerfile is fed the same SUI_TOOLS_IMAGE, so the ref still applies.
+		expect(suiMoveToolchain({ mode: 'local', image: { build: { context: '/c' } } })).toEqual({
+			kind: 'sui-tools',
+			suiToolsRef: 'from-env',
+			explicit: true,
+		});
+	});
+
+	it('declares nothing for a complete image devstack cannot reproduce stack-free', () => {
+		vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, 'from-env');
+		// image.pull wins over the env var in the plan, so the env var must not
+		// leak into codegen either.
+		expect(suiMoveToolchain({ mode: 'local', image: { pull: 'me/sui:1' } })).toBeUndefined();
+	});
+
+	it('follows the fork image plan', () => {
+		const fork = { mode: 'fork', upstream: 'testnet' } as const;
+		expect(suiMoveToolchain(fork)).toBeUndefined(); // source build
+		expect(suiMoveToolchain({ ...fork, suiToolsRef: 'r' })).toEqual({
+			kind: 'sui-tools',
+			suiToolsRef: 'r',
+			explicit: true,
+		});
+		expect(suiMoveToolchain({ ...fork, image: { pull: 'me/sui-fork:1' } })).toBeUndefined();
+		expect(
+			suiMoveToolchain({ ...fork, suiToolsRef: 'r', image: { build: { context: '/c' } } }),
+		).toEqual({ kind: 'sui-tools', suiToolsRef: 'r', explicit: true });
+	});
+
+	it('declares nothing for modes with no container', () => {
 		expect(suiMoveToolchain({ mode: 'live', network: 'testnet' })).toBeUndefined();
 		expect(
 			suiMoveToolchain({ mode: 'local-rpc', rpcUrl: 'http://127.0.0.1:9000' }),
 		).toBeUndefined();
 	});
+});
 
-	it('carries the toolchain on both the static and the live codegen decl', () => {
-		const [staticDecl] = makeStaticCodegen({ suiToolsRef: 'r' })();
-		expect(staticDecl?.moveToolchain).toEqual({ suiToolsRef: 'r' });
+describe('liveMoveToolchain', () => {
+	it('is the exact resolved image when the mode has one', () => {
+		const image = { digest: 'sha256:abc', tag: 'devstack-build:x' };
+		expect(liveMoveToolchain(image, { mode: 'local', suiToolsRef: 'r' })).toEqual({
+			kind: 'image',
+			image,
+		});
+	});
+
+	it('falls back to the stack-free derivation when there is no container image', () => {
+		expect(liveMoveToolchain(null, { mode: 'live', network: 'testnet' })).toBeUndefined();
+	});
+});
+
+describe('sui codegen decls', () => {
+	it('carry the toolchain on both the static and the live decl', () => {
+		const toolchain = { kind: 'sui-tools', suiToolsRef: 'r', explicit: true } as const;
+		const [staticDecl] = makeStaticCodegen(toolchain)();
+		expect(staticDecl?.moveToolchain).toEqual(toolchain);
 		const [plainStatic] = makeStaticCodegen(undefined)();
 		expect(plainStatic?.moveToolchain).toBeUndefined();
 
 		const live = makeCodegenable(
 			{ mode: 'local', chainId: 'abc', rpc: 'http://127.0.0.1:9000', source: 'default' },
-			{ suiToolsRef: 'r' },
+			{ kind: 'image', image: { digest: 'sha256:abc' } },
 		);
-		expect(live.moveToolchain).toEqual({ suiToolsRef: 'r' });
+		expect(live.moveToolchain).toEqual({ kind: 'image', image: { digest: 'sha256:abc' } });
 	});
 });
 
@@ -48,14 +118,31 @@ describe('selectMoveToolchain', () => {
 		}),
 	);
 
-	it.effect('takes the toolchain from whichever decl declares it, first wins', () =>
+	it.effect('takes the toolchain from whichever decl declares it, and tolerates agreement', () =>
 		Effect.gen(function* () {
+			const toolchain = { kind: 'sui-tools', suiToolsRef: 'r1', explicit: true } as const;
 			const picked = yield* selectMoveToolchain([
 				{ emitterName: 'package' },
-				{ emitterName: 'sui', moveToolchain: { suiToolsRef: 'r1' } },
-				{ emitterName: 'other', moveToolchain: { suiToolsRef: 'r2' } },
+				{ emitterName: 'sui', moveToolchain: toolchain },
+				{ emitterName: 'other', moveToolchain: { ...toolchain, explicit: false } },
 			]);
-			expect(picked).toEqual({ suiToolsRef: 'r1' });
+			expect(picked).toEqual(toolchain);
+		}),
+	);
+
+	it.effect('fails the cycle when two decls disagree, naming both', () =>
+		Effect.gen(function* () {
+			const error = yield* selectMoveToolchain([
+				{
+					emitterName: 'sui',
+					moveToolchain: { kind: 'sui-tools', suiToolsRef: 'r1', explicit: true },
+				},
+				{ emitterName: 'other', moveToolchain: { kind: 'image', image: { digest: 'sha256:x' } } },
+			]).pipe(Effect.flip);
+			expect(error._tag).toBe('CodegenToolchainConflict');
+			expect(error.established).toBe('sui-tools:r1');
+			expect(error.conflicting).toBe('image:sha256:x');
+			expect(error.emitters).toEqual(['sui', 'other']);
 		}),
 	);
 });
