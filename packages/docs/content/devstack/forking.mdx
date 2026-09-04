@@ -83,6 +83,12 @@ available — read balances through `ChainProbe`, and fund accounts through the 
 By default the first boot compiles `sui-fork` from a pinned Sui revision, which takes ten minutes or
 more on a cold machine; later boots reuse the cached image.
 
+Fork state lives in a data dir keyed by the exact image that wrote it, so a fork never resumes state
+written by a different `sui-fork` binary. A consequence worth knowing when you upgrade devstack: if
+the release changes the fork image (devstack 0.8.0 does, for every fork including the default source
+build), your existing fork re-seeds once from its checkpoint on the next boot. Nothing is deleted;
+the previous data dir stays on disk under `.devstack/stacks/<stack>/sui-fork/`.
+
 If a slow first build or a large upstream checkpoint trips the ready probe, raise `readyTimeout` (a
 `sui()` option, `Duration`; default 180s), or check the fork container logs with
 `docker logs <container>`.
