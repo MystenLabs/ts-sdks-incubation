@@ -30,7 +30,9 @@ Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--a
 
 Regenerate committed bindings from Move source (no stack boot). The generated tree is
 `src/generated`. Deterministic and stack-free: no Docker, no on-chain ids. Requires the `sui` CLI on
-`PATH` for the `sui move summary` step. Writes the generated tree only.
+`PATH` for the `sui move summary` step. When the stack pins an explicit `suiToolsRef`, the host CLI
+is checked against it and a verifiable release mismatch fails with a remediation hint (see
+[Sui config](/devstack/configure/sui#local-mode)). Writes the generated tree only.
 
 Lifecycle: one-shot. Side effects: write. Docker: no. Requires: host `sui` CLI. Options: `--json`,
 `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
