@@ -20,6 +20,15 @@ RUN apt-get update \
 COPY sui/entrypoint.sh /usr/local/bin/devstack-entrypoint.sh
 RUN chmod +x /usr/local/bin/devstack-entrypoint.sh
 
+# Fork mode shares this image when a sui-tools ref is configured
+# (sui-tools ≥ 892d777c ships `sui-fork` next to `sui`). It selects this
+# second entrypoint through the container spec's `entrypoint` override;
+# the local-mode ENTRYPOINT below stays the image default. The shim keeps
+# `sh` as PID 1 and forwards Docker's stop signal to `sui-fork`.
+COPY _shared/signal-forward.sh /usr/local/lib/devstack/signal-forward.sh
+COPY sui-fork/entrypoint.sh /usr/local/bin/devstack-sui-fork-entrypoint.sh
+RUN chmod +x /usr/local/bin/devstack-sui-fork-entrypoint.sh
+
 ENV RUST_LOG=info,sui=info
 
 # Stop with SIGINT, not SIGTERM. The entrypoint `exec sui …` makes sui

@@ -24,7 +24,7 @@
 // emits NO standalone `sui/network.ts`.
 
 import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
-import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+import type { CodegenableDecl, MoveToolchain } from '../../contracts/codegenable.ts';
 import { configCodegenable, type ConfigBindingSet } from '../../contracts/config-bindings.ts';
 import type { JsonValue } from '../../orchestrators/codegen/deployment.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
@@ -87,14 +87,28 @@ const suiConfigBindings = (): ConfigBindingSet<ResolvedSuiNetwork> => {
 /** The LIVE Codegenable contribution. Bakes the resolved network entry into
  *  the combined `config.ts` aggregate (chainId/rpc/faucet/graphql) — boot's
  *  `assembleDeployment` slices it back into the loadable deployment. */
-export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl =>
-	configCodegenable(suiConfigBindings(), { mode: 'live', state: resolved });
+export const makeCodegenable = (
+	resolved: ResolvedSuiNetwork,
+	toolchain: MoveToolchain | undefined,
+): CodegenableDecl =>
+	withToolchain(
+		configCodegenable(suiConfigBindings(), { mode: 'live', state: resolved }),
+		toolchain,
+	);
 
 /** The STATIC (stack-free) Codegenable contribution for the `codegen` verb.
  *  Emits `dep.network` / `Object.fromEntries(networkNames.map(forNetwork))`
  *  raw expressions off the loaded deployment — the
  *  committed `config.ts` carries no network name and no literal rpc URL. No
  *  id-resolver input needed (the values are injected, not config-derived). */
-export const makeStaticCodegen = (): (() => ReadonlyArray<CodegenableDecl>) => () => [
-	configCodegenable(suiConfigBindings(), 'static'),
-];
+export const makeStaticCodegen =
+	(toolchain: MoveToolchain | undefined): (() => ReadonlyArray<CodegenableDecl>) =>
+	() => [withToolchain(configCodegenable(suiConfigBindings(), 'static'), toolchain)];
+
+/** Both paths declare the same toolchain: the sui member owns the chain,
+ *  so its decls are where the Move-bindings emitter learns which sui-tools
+ *  build to run `sui move summary` in (see `MoveToolchain`). */
+const withToolchain = (
+	decl: CodegenableDecl,
+	toolchain: MoveToolchain | undefined,
+): CodegenableDecl => (toolchain === undefined ? decl : { ...decl, moveToolchain: toolchain });

@@ -29,7 +29,12 @@ import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import { extractExecuteDigest } from '../exec/index.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
-import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
+import {
+	suiConfigError,
+	suiPluginError,
+	type SuiConfigError,
+	type SuiPluginError,
+} from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT } from '../routable.ts';
 import { SuiLogAttr } from '../log-attrs.ts';
@@ -38,7 +43,15 @@ import {
 	FORK_IMPERSONATION_GAS_BUDGET,
 	verifyForkImpersonationSender,
 } from '../fork-transaction.ts';
-import { DEFAULT_SUI_CLI_VERSION } from '../move/index.ts';
+import {
+	configuredSuiToolsRef,
+	DEFAULT_SUI_CLI_VERSION,
+	explicitSuiToolsRef,
+	suiCliImageBuildContext,
+	suiToolsImage,
+	validateSuiToolsRefImage,
+} from '../move/index.ts';
+import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import type { ForkAdminSurface, SuiClient } from './shared.ts';
 import { toDockerHostGatewayUrl } from './shared.ts';
 import {
@@ -55,17 +68,28 @@ export const DEFAULT_FORK_READY_TIMEOUT = Duration.seconds(180);
 /** Default Sui repository revision used by the bundled `sui-fork` image build. */
 export const DEFAULT_SUI_FORK_REV = '62ee6ada958cd61b3c8a4466dd33c9aba3cdff8a';
 
-/** Env var that supplies a prebuilt `sui-fork` image to pull for a single
- *  run (e.g. `ghcr.io/mysten/sui-fork:<rev>`). When set and the runtime can
- *  pull, `resolveForkImage` tries it first and falls back to a source build,
- *  sparing users the ~10-minute cold compile. No prebuilt default ships
- *  today, so absent this env var the fork always builds from source. */
+/** Env var naming a COMPLETE prebuilt `sui-fork` image (devstack entrypoint
+ *  included) to pull for a single run, falling back to a source build on
+ *  miss. This is the per-run form of `image: { pull }` — for images you
+ *  build and host yourself. To run the `sui-fork` shipped in a stock
+ *  `mysten/sui-tools` build instead, set `DEVSTACK_SUI_TOOLS_REF` (see
+ *  `SUI_TOOLS_REF_ENV_VAR`), which needs no custom image. */
 export const FORK_IMAGE_ENV_VAR = 'DEVSTACK_SUI_FORK_IMAGE';
 
 const prebuiltForkImageRef = (): string | undefined => {
-	const fromEnv = process.env[FORK_IMAGE_ENV_VAR]?.trim();
+	const fromEnv = readEnv(FORK_IMAGE_ENV_VAR)?.trim();
 	return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : undefined;
 };
+
+/** Fork entrypoint inside the shared sui image (see images/sui/Dockerfile).
+ *  The image's default ENTRYPOINT boots a localnet, so fork containers
+ *  built on it pass this as the `--entrypoint` override. */
+export const FORK_ENTRYPOINT = '/usr/local/bin/devstack-sui-fork-entrypoint.sh';
+
+/** `RUST_LOG` for the fork container. Mirrors the source-build image's
+ *  baked-in ENV so the shared sui image (which only sets `sui=info`)
+ *  narrates `sui_fork` at the same level. */
+export const FORK_RUST_LOG = 'info,sui_fork=info,sui=info';
 
 export const DEFAULT_FORK_HOST_RPC_PORT = 51002;
 export const FORK_VALIDATOR_STOP_GRACE_SECONDS = 30;
@@ -176,7 +200,7 @@ export const bootForkMode = (
 		// container config hash are derived, so enabling the faucet keys a
 		// distinct fork state rather than reusing a whale-less data dir.
 		const seededOpts = withForkFaucetSeed(opts);
-		const image = yield* resolveForkImage(runtime, identity, opts);
+		const image = yield* prepareForkImage(runtime, identity, opts);
 		const dataDir = yield* ensureForkDataDir(paths, seededOpts);
 
 		const labels: ContainerLabelTuple = {
@@ -213,7 +237,7 @@ export const bootForkMode = (
 			chainId,
 			rpcUrl,
 			waitForTransactionsReady: noopWaitForTransactionsReady,
-			buildImage: image,
+			buildImage: image.ref,
 			hostGateway: {
 				rpcUrl: toDockerHostGatewayUrl(directRpcUrl),
 				faucetUrl: null,
@@ -244,14 +268,135 @@ export const bootForkMode = (
 		};
 	});
 
+/** Build context for the from-source `sui-fork` image. Fingerprinted on
+ *  its own inputs only, so edits to sibling images under `images/` (the
+ *  shared sui image, walrus, seal…) don't retag — and so don't rebuild —
+ *  the ten-minute source compile. */
 export const suiForkImageBuildContext = (rev = DEFAULT_SUI_FORK_REV) => ({
 	// `fileURLToPath` normalises the URL → host-path conversion across
 	// platforms (Windows `file:///C:/...` → `C:\...`). Reading
 	// `.pathname` directly leaves the leading `/` on Windows drive paths.
 	contextPath: fileURLToPath(new URL('../../../../images/', import.meta.url)),
 	dockerfile: 'sui-fork/Dockerfile',
+	fingerprintPaths: SUI_FORK_IMAGE_FINGERPRINT_PATHS,
 	buildArgs: { SUI_FORK_REV: rev, SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION },
 });
+
+/** Context-relative inputs of the from-source `sui-fork` image. */
+export const SUI_FORK_IMAGE_FINGERPRINT_PATHS: ReadonlyArray<string> = [
+	'sui-fork/Dockerfile',
+	'sui-fork/entrypoint.sh',
+	'_shared/signal-forward.sh',
+];
+
+/** The five ways fork mode can obtain its image; see `planForkImage`. */
+export type ForkImagePlan =
+	| { readonly kind: 'pull'; readonly ref: string }
+	| {
+			readonly kind: 'custom-build';
+			readonly context: string;
+			readonly dockerfile: string;
+			readonly rev: string;
+			readonly suiToolsRef: string | undefined;
+	  }
+	| { readonly kind: 'sui-tools'; readonly ref: string }
+	| { readonly kind: 'prebuilt-or-source'; readonly ref: string; readonly rev: string }
+	| { readonly kind: 'source'; readonly rev: string };
+
+/** Where fork mode gets its image. Pure — derived from options + env — so
+ *  it is unit-testable and can be folded into the data-dir key and the
+ *  container config hash. Precedence: explicit `image` config, then a
+ *  sui-tools ref (`suiToolsRef` option, then `DEVSTACK_SUI_TOOLS_REF`),
+ *  then the complete-image env var, then the source build. */
+export const planForkImage = (opts: SuiForkOptions): ForkImagePlan => {
+	const rev = opts.version ?? DEFAULT_SUI_FORK_REV;
+	if (opts.image && 'pull' in opts.image) {
+		return { kind: 'pull', ref: opts.image.pull };
+	}
+	const suiToolsRef = configuredSuiToolsRef(opts.suiToolsRef);
+	if (opts.image && 'build' in opts.image) {
+		return {
+			kind: 'custom-build',
+			context: opts.image.build.context,
+			dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
+			rev,
+			suiToolsRef,
+		};
+	}
+	if (suiToolsRef !== undefined) {
+		return { kind: 'sui-tools', ref: suiToolsRef };
+	}
+	const prebuilt = prebuiltForkImageRef();
+	if (prebuilt !== undefined) {
+		return { kind: 'prebuilt-or-source', ref: prebuilt, rev };
+	}
+	return { kind: 'source', rev };
+};
+
+/** Identity of the `sui-fork` binary a fork boots with — folded into the
+ *  data-dir key and container config hash so switching binaries never
+ *  reuses state written by a different one. The default source path keeps
+ *  the bare revision it always had, so existing data dirs stay addressable;
+ *  pulled and caller-built images are keyed by their declaration. */
+export const forkBinaryVersion = (opts: SuiForkOptions): string => {
+	const plan = planForkImage(opts);
+	switch (plan.kind) {
+		case 'sui-tools':
+			return `sui-tools:${plan.ref}`;
+		case 'pull':
+			// Two different pulled images must never share state.
+			return `pull:${plan.ref}`;
+		case 'custom-build':
+			// A caller Dockerfile: its context + args are the declaration. A
+			// consumed `SUI_TOOLS_IMAGE` ships a different binary per ref.
+			return (
+				`build:${plan.context}:${plan.dockerfile}:${plan.rev}` +
+				(plan.suiToolsRef === undefined ? '' : `+sui-tools:${plan.suiToolsRef}`)
+			);
+		case 'prebuilt-or-source':
+		case 'source':
+			// By contract the prebuilt image IS the source revision, so both
+			// outcomes share the identity — and the default path keeps the bare
+			// revision it always had, so existing data dirs stay addressable.
+			return plan.rev;
+	}
+};
+
+/** Reject option pairs that each name a different binary to run. Only
+ *  config-vs-config conflicts fail: the env vars are per-run overrides
+ *  and are allowed to displace `version`, matching how
+ *  `DEVSTACK_SUI_FORK_IMAGE` has always behaved. */
+export const validateForkImageOptions = (
+	opts: SuiForkOptions,
+): Effect.Effect<void, SuiConfigError> =>
+	Effect.gen(function* () {
+		yield* validateSuiToolsRefImage(opts);
+		if (explicitSuiToolsRef(opts) !== undefined && opts.version !== undefined) {
+			return yield* Effect.fail(
+				suiConfigError({
+					field: 'suiToolsRef',
+					message:
+						'sui fork mode: `version` pins a from-source sui-fork revision, which `suiToolsRef` replaces with a prebuilt binary; keep one.',
+					hint: 'Drop `version` to run the sui-fork shipped in that sui-tools build, or drop `suiToolsRef` to compile the pinned revision.',
+				}),
+			);
+		}
+	});
+
+/** A resolved fork image plus the container settings it needs. */
+export interface ResolvedForkImage {
+	readonly ref: ImageRef;
+	/** `--entrypoint` override. Set when the image is the shared sui image,
+	 *  whose default ENTRYPOINT boots a localnet rather than `sui-fork`. */
+	readonly entrypoint: string | undefined;
+	/** Container env. Set alongside `entrypoint` so the shared sui image
+	 *  (which bakes in only `sui=info`) narrates `sui_fork` like the
+	 *  source-build image does; complete images keep their own `RUST_LOG`. */
+	readonly env: Readonly<Record<string, string>> | undefined;
+}
+
+/** Settings for a fork container running a complete `sui-fork` image. */
+const IMAGE_DEFAULTS = { entrypoint: undefined, env: undefined } as const;
 
 /** Pull a prebuilt fork image, narrating progress on the supervisor row.
  *  Fails with a `SuiPluginError` if the runtime can't pull or the pull errors. */
@@ -281,16 +426,18 @@ const pullForkImage = (
 		);
 	});
 
-/** Build the bundled `sui-fork` image from source, narrating the cold
- *  compile so the row doesn't look hung for ~10 minutes on first run. */
+const SOURCE_BUILD_PHASE =
+	'building sui-fork image — first run compiles sui-fork from source (~10+ min); cached after';
+
+/** Build a fork image via `ensureImage`, narrating `phase` on the
+ *  supervisor row so a long build doesn't look hung. */
 const buildForkImage = (
 	runtime: ContainerRuntime,
 	buildCtx: Parameters<ContainerRuntime['ensureImage']>[0],
+	phase: string,
 ): Effect.Effect<ImageRef, SuiPluginError> =>
 	Effect.gen(function* () {
-		yield* setCurrentPluginPhase(
-			'building sui-fork image — first run compiles sui-fork from source (~10+ min); cached after',
-		);
+		yield* setCurrentPluginPhase(phase);
 		return yield* runtime.ensureImage(buildCtx).pipe(
 			Effect.mapError((cause) =>
 				suiPluginError(
@@ -307,44 +454,94 @@ export const resolveForkImage = (
 	runtime: ContainerRuntime,
 	identity: Identity,
 	opts: SuiForkOptions,
-): Effect.Effect<ImageRef, SuiPluginError> =>
+): Effect.Effect<ResolvedForkImage, SuiPluginError> =>
 	Effect.gen(function* () {
-		// Explicit image override always wins.
-		if (opts.image && 'pull' in opts.image) {
-			return yield* pullForkImage(runtime, opts.image.pull);
-		}
-		const rev = opts.version ?? DEFAULT_SUI_FORK_REV;
 		const owner = {
 			app: identity.app,
 			stack: identity.stack,
 			plugin: 'sui',
 			role: 'validator',
 		} as const;
-		if (opts.image && 'build' in opts.image) {
-			return yield* buildForkImage(runtime, {
-				contextPath: opts.image.build.context,
-				dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
-				buildArgs: { SUI_FORK_REV: rev, SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION },
-				owner,
-			});
+		const plan = planForkImage(opts);
+		switch (plan.kind) {
+			case 'pull':
+				return { ...IMAGE_DEFAULTS, ref: yield* pullForkImage(runtime, plan.ref) };
+			case 'custom-build':
+				return {
+					...IMAGE_DEFAULTS,
+					ref: yield* buildForkImage(
+						runtime,
+						{
+							contextPath: plan.context,
+							dockerfile: plan.dockerfile,
+							buildArgs: {
+								SUI_FORK_REV: plan.rev,
+								SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION,
+								...(plan.suiToolsRef === undefined
+									? {}
+									: { SUI_TOOLS_IMAGE: suiToolsImage(plan.suiToolsRef) }),
+							},
+							owner,
+						},
+						'building sui-fork image from the configured Dockerfile…',
+					),
+				};
+			case 'sui-tools':
+				// Same image local mode runs; only the entrypoint differs. One apt
+				// layer on top of a pulled sui-tools, not a source compile.
+				return {
+					ref: yield* buildForkImage(
+						runtime,
+						{ ...suiCliImageBuildContext(plan.ref), owner },
+						`layering devstack entrypoints onto ${suiToolsImage(plan.ref)}…`,
+					),
+					entrypoint: FORK_ENTRYPOINT,
+					env: { RUST_LOG: FORK_RUST_LOG },
+				};
+			case 'prebuilt-or-source': {
+				const source = buildForkImage(
+					runtime,
+					{ ...suiForkImageBuildContext(plan.rev), owner },
+					SOURCE_BUILD_PHASE,
+				);
+				// A runtime with no pull surface goes straight to source; only a
+				// pull that was attempted and failed is worth a warning.
+				const ref =
+					runtime.pullImage === undefined
+						? yield* source
+						: yield* pullForkImage(runtime, plan.ref).pipe(
+								Effect.catchTag('SuiPluginError', (cause) =>
+									Effect.gen(function* () {
+										yield* Effect.logWarning(
+											`sui fork mode: prebuilt image '${plan.ref}' unavailable (${cause.message}); building from source.`,
+										);
+										return yield* source;
+									}),
+								),
+							);
+				return { ...IMAGE_DEFAULTS, ref };
+			}
+			case 'source':
+				return {
+					...IMAGE_DEFAULTS,
+					ref: yield* buildForkImage(
+						runtime,
+						{ ...suiForkImageBuildContext(plan.rev), owner },
+						SOURCE_BUILD_PHASE,
+					),
+				};
 		}
-		// No explicit image: prefer a prebuilt ref (env / published default) to
-		// skip the cold source compile, falling back to building on any miss.
-		const prebuilt = prebuiltForkImageRef();
-		if (prebuilt !== undefined && runtime.pullImage !== undefined) {
-			return yield* pullForkImage(runtime, prebuilt).pipe(
-				Effect.catchTag('SuiPluginError', (cause) =>
-					Effect.gen(function* () {
-						yield* Effect.logWarning(
-							`sui fork mode: prebuilt image '${prebuilt}' unavailable (${cause.message}); building from source.`,
-						);
-						return yield* buildForkImage(runtime, { ...suiForkImageBuildContext(rev), owner });
-					}),
-				),
-			);
-		}
-		return yield* buildForkImage(runtime, { ...suiForkImageBuildContext(rev), owner });
 	});
+
+/** What boot runs: validate the option pairing, then resolve. Kept as one
+ *  exported step so the ordering (no pull or build before validation) is
+ *  pinned by a test, not by `bootForkMode`'s body. */
+export const prepareForkImage = (
+	runtime: ContainerRuntime,
+	identity: Identity,
+	opts: SuiForkOptions,
+): Effect.Effect<ResolvedForkImage, SuiPluginError | SuiConfigError> =>
+	validateForkImageOptions(opts).pipe(Effect.andThen(resolveForkImage(runtime, identity, opts)));
 
 interface ForkContainerResult {
 	readonly handle: ContainerHandle;
@@ -354,7 +551,7 @@ interface ForkContainerResult {
 const ensureForkContainer = (params: {
 	readonly runtime: ContainerRuntime;
 	readonly portBroker: PortBroker;
-	readonly image: ImageRef;
+	readonly image: ResolvedForkImage;
 	readonly labels: ContainerLabelTuple;
 	readonly containerName: string;
 	readonly dataDir: string;
@@ -377,13 +574,15 @@ const ensureForkContainer = (params: {
 			labels: params.labels,
 			spec: {
 				name: params.containerName,
-				image: params.image,
+				image: params.image.ref,
 				recreate: 'on-config-change',
 				configHash: forkContainerConfigHash(params.opts, params.dataDir, command),
 				stopGraceSeconds: FORK_VALIDATOR_STOP_GRACE_SECONDS,
 				ports,
 				portBindingReconciliation: reconciliation,
 				mounts: [{ source: params.dataDir, target: FORK_CONTAINER_DATA_DIR }],
+				entrypoint: params.image.entrypoint,
+				env: params.image.env,
 				command,
 			},
 			mapError: (cause) => cause,
@@ -431,7 +630,9 @@ const normalizeForkSeed = (opts: SuiForkOptions) => ({
 	].sort(),
 });
 
-const forkContainerConfigHash = (
+/** Exported so a test can pin that a changed binary identity recreates
+ *  the container (`recreate: 'on-config-change'` keys off this). */
+export const forkContainerConfigHash = (
 	opts: SuiForkOptions,
 	dataDir: string,
 	command: ReadonlyArray<string>,
@@ -441,7 +642,7 @@ const forkContainerConfigHash = (
 			JSON.stringify({
 				dataDir,
 				command,
-				version: opts.version ?? DEFAULT_SUI_FORK_REV,
+				version: forkBinaryVersion(opts),
 				ports: opts.ports ?? null,
 			}),
 		)
@@ -512,13 +713,20 @@ const portPublish = (containerPort: number, hostPort: number): ContainerPortPubl
 	hostIp: DOCKER_PUBLISH_HOST,
 });
 
+/** Key of the host directory a fork's state lives in: the declared fork
+ *  (upstream, checkpoint, seed) plus the declared binary identity
+ *  (`forkBinaryVersion`). Deliberately NOT the resolved image digest:
+ *  snapshot restore re-tags a committed container layer under the image's
+ *  original tag, so a digest-keyed dir would go empty after every restore.
+ *  Mutable refs (`image.pull` tags, sui-tools channel tags) therefore pin at
+ *  first build; the docs steer users to SHAs and versioned tags. */
 export const forkDataDirKey = (opts: SuiForkOptions): string =>
 	createHash('sha256')
 		.update(
 			JSON.stringify({
 				upstream: opts.upstream,
 				checkpoint: opts.checkpoint ?? null,
-				version: opts.version ?? DEFAULT_SUI_FORK_REV,
+				version: forkBinaryVersion(opts),
 				seed: normalizeForkSeed(opts),
 			}),
 		)

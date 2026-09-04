@@ -59,7 +59,9 @@ The fork-specific knobs are:
   `{ intervalMs }` for a custom interval.
 - `faucet` — configure the impersonation faucet (see
   [Funding test accounts](#funding-test-accounts)).
-- `version` — pin the Git revision of the Sui repository used to build `sui-fork`.
+- `suiToolsRef` — a `mysten/sui-tools` tag or commit SHA that ships `sui-fork`, so devstack pulls
+  the binary instead of compiling it (see [Skipping the source build](#skipping-the-source-build)).
+- `version` — pin the Git revision of the Sui repository used to build `sui-fork` from source.
 - `image` — point at a prebuilt image to skip the build.
 
 ```ts
@@ -78,13 +80,46 @@ A fork serves a gRPC endpoint (not legacy JSON-RPC) on the usual devstack Sui RP
 GraphQL endpoint, and the balance APIs (`getBalance` / `listBalances` / `getCoinInfo`) aren't
 available — read balances through `ChainProbe`, and fund accounts through the fork faucet (below).
 
-First boot builds the fork image from a pinned Sui revision, which takes a few minutes; later boots
-reuse the cached image. To skip the build, point at a prebuilt image with `image: { pull: '…' }` or
-set the `DEVSTACK_SUI_FORK_IMAGE` environment variable.
+By default the first boot compiles `sui-fork` from a pinned Sui revision, which takes ten minutes or
+more on a cold machine; later boots reuse the cached image.
 
 If a slow first build or a large upstream checkpoint trips the ready probe, raise `readyTimeout` (a
 `sui()` option, `Duration`; default 180s), or check the fork container logs with
 `docker logs <container>`.
+
+## Skipping the source build
+
+Sui's `mysten/sui-tools` image ships `sui-fork` next to the `sui` CLI from commit `892d777c` onward
+(the first release tags to include it are the v1.80 line). Name one of those builds and devstack
+skips the compile entirely: it pulls the image once, layers its entrypoint on top, and from then on
+boots the fork in seconds. This is the same image local mode runs on.
+
+```ts
+const forkedTestnet = sui({
+	mode: 'fork',
+	upstream: 'testnet',
+	suiToolsRef: '892d777ccdf414f13b9421641831fc57462a8c6e', // any sui-tools tag or SHA with sui-fork
+});
+```
+
+Pass a tag or SHA, not a full image name. devstack composes `mysten/sui-tools:<ref>` and appends the
+`-arm64` suffix on Apple Silicon, because the sui-tools tags are not multi-arch manifests. For CI,
+or to try a build without editing config, set the same value in the `DEVSTACK_SUI_TOOLS_REF`
+environment variable. Config wins over the environment.
+
+Fork state is keyed by the declared binary that wrote it, so switching between a sui-tools build and
+the source build, or between two refs, seeds a fresh fork data dir rather than resuming state
+written by a different binary. Use a commit SHA or a versioned release tag for the ref: a moving tag
+such as `testnet` is resolved once, when devstack first builds the image, and stays pinned until you
+change the ref.
+
+The `suiToolsRef` config field cannot be combined with `version` (which only pins the source build)
+or with `image: { pull }`; devstack rejects the config at boot. `DEVSTACK_SUI_TOOLS_REF` is a
+per-run override and behaves like `DEVSTACK_SUI_FORK_IMAGE` always has: it displaces a configured
+`version` without an error, so don't rely on `version` being honoured once the env var is set. If
+both env vars are set, `DEVSTACK_SUI_TOOLS_REF` wins. The other escape hatches still work:
+`image: { pull: '…' }` runs a complete prebuilt image you maintain, and `DEVSTACK_SUI_FORK_IMAGE`
+does the same for a single run, falling back to the source build if the pull fails.
 
 ## Accounts: impersonate vs. ephemeral
 

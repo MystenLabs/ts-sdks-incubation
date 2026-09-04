@@ -24,6 +24,28 @@ export interface SuiCommonOptions {
 	readonly readyTimeout?: Duration.Duration;
 }
 
+/** Options shared by the two container-backed modes (local + fork), which
+ *  both derive their validator image from `mysten/sui-tools`. */
+export interface SuiContainerOptions extends SuiCommonOptions {
+	/** `mysten/sui-tools` tag or commit SHA to base the validator image on
+	 *  (the per-arch `-arm64` suffix is added host-side). Wins over the
+	 *  `DEVSTACK_SUI_TOOLS_REF` env var. What "unset" means is per mode:
+	 *  local mode falls back to devstack's bundled sui-tools pin; fork mode
+	 *  compiles `sui-fork` from source instead, because the bundled pin
+	 *  predates `sui-fork` shipping in sui-tools. Set it in fork mode to a
+	 *  build that has it (892d777c or later) and the compile is skipped.
+	 *  Also selects the CLI that stack-free `devstack codegen` runs `sui
+	 *  move summary` with. Not combinable with `image.pull` (which names a
+	 *  complete image) or fork `version`. */
+	readonly suiToolsRef?: string;
+	/** Image override — `{pull}` skips the build; `{build}` uses the
+	 *  caller's Dockerfile with devstack's build args + a content-hashed
+	 *  tag. */
+	readonly image?:
+		| { readonly pull: string }
+		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
+}
+
 /** Local container mode — in-stack validator + faucet + GraphQL. GraphQL,
  *  its indexer, and a Postgres are ON BY DEFAULT: the sui plugin OWNS a
  *  postgres sidecar container (labelled under sui) and auto-creates its
@@ -31,13 +53,8 @@ export interface SuiCommonOptions {
  *  no cross-plugin wiring. Two escape hatches: `indexer: false` opts out
  *  (RPC + faucet only, no sidecar), and `indexerDb` points GraphQL at a
  *  Postgres the caller already runs (no sidecar). */
-export interface SuiLocalOptions extends SuiCommonOptions {
+export interface SuiLocalOptions extends SuiContainerOptions {
 	readonly mode: 'local';
-	/** Image override — `{pull}` skips the build; `{build}` uses
-	 *  the bundled Dockerfile + a content-hashed tag. */
-	readonly image?:
-		| { readonly pull: string }
-		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
 	/** GraphQL/indexer/Postgres on-off. Default `true` — sui owns a
 	 *  postgres sidecar and runs `--with-graphql` against it. `false` ⇒
 	 *  RPC + faucet only, no sidecar, no GraphQL. */
@@ -106,14 +123,13 @@ export interface SuiForkFaucetOptions {
 
 /** Fork mode — sui-fork binary mirroring a real chain at a
  *  checkpoint. */
-export interface SuiForkOptions extends SuiCommonOptions {
+export interface SuiForkOptions extends SuiContainerOptions {
 	readonly mode: 'fork';
 	readonly upstream: 'mainnet' | 'testnet' | 'devnet';
 	readonly checkpoint?: number;
-	readonly image?:
-		| { readonly pull: string }
-		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
-	/** Pinned Git revision of the Sui repository used to build `sui-fork`. */
+	/** Pinned Git revision of the Sui repository used to compile `sui-fork`
+	 *  from source. Only meaningful on the source-build path — set
+	 *  `suiToolsRef` instead to use a prebuilt sui-tools binary. */
 	readonly version?: string;
 	/** Optional direct host port mapping keyed by container port. */
 	readonly ports?: Readonly<Record<number, number>>;

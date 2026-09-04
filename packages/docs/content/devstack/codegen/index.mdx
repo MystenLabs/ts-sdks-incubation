@@ -8,7 +8,9 @@ Import generated bindings for your Move packages and the services in your stack 
 deterministic — running it twice on the same source produces the same files — and needs no running
 stack, Docker, or on-chain ids. It does require the
 [Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install) (`sui`) on your `PATH`
-for the `sui move summary` step.
+for the `sui move summary` step. If your stack pins a `suiToolsRef`, codegen checks that CLI against
+the pin and fails with a remediation hint when the releases verifiably differ, so committed bindings
+match the toolchain that publishes (see [Sui config](/devstack/configure/sui#local-mode)).
 
 The tree lives at one fixed location, shared across every stack:
 

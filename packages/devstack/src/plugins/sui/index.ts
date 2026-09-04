@@ -56,6 +56,8 @@ import {
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable, makeStaticCodegen } from './codegen.ts';
+import { liveMoveToolchain, suiMoveToolchain } from './move-toolchain.ts';
+import { configuredSuiToolsRef } from './move/index.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
@@ -180,12 +182,26 @@ const DEFAULT_INDEXER_DATABASE = 'sui_indexer';
 /** In-network DNS alias siblings dial the indexer-db sidecar by. */
 const SUI_INDEXER_DB_ALIAS = 'sui-indexer-db';
 
-const suiInputIdentity = (opts: SuiOptions): unknown => {
+export const suiInputIdentity = (opts: SuiOptions): unknown => {
 	const { readyTimeout: _readyTimeout, ...authored } = opts;
-	if (authored.mode !== 'local') return { plugin: 'sui', ...authored };
+	if (authored.mode === 'live' || authored.mode === 'local-rpc') {
+		return { plugin: 'sui', ...authored };
+	}
+	// The EFFECTIVE sui-tools ref (config, then env) is part of the identity
+	// so flipping DEVSTACK_SUI_TOOLS_REF marks snapshots stale instead of
+	// letting a restore resume state built by another binary. `image.pull`
+	// names the whole image, so no ref applies there (matches planning).
+	const suiToolsRef =
+		authored.image !== undefined && 'pull' in authored.image
+			? undefined
+			: configuredSuiToolsRef(authored.suiToolsRef);
+	if (authored.mode === 'fork') {
+		return { plugin: 'sui', ...authored, suiToolsRef };
+	}
 	return {
 		plugin: 'sui',
 		...authored,
+		suiToolsRef,
 		indexer: authored.indexer !== false,
 		indexerDb:
 			authored.indexerDb === undefined
@@ -429,14 +445,17 @@ const bootAndEmit = (
 			// sidecar into the captured containers; `indexer !== undefined`
 			// is the same gate `bootAndEmit`'s caller resolved GraphQL on.
 			makeSnapshotable(opts.mode, identity.app, identity.stack, realChainId, indexer !== undefined),
-			makeCodegenable({
-				mode: opts.mode,
-				chainId: realChainId,
-				rpc: value.rpcUrl,
-				source: 'default',
-				...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
-				...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
-			}),
+			makeCodegenable(
+				{
+					mode: opts.mode,
+					chainId: realChainId,
+					rpc: value.rpcUrl,
+					source: 'default',
+					...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
+					...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
+				},
+				liveMoveToolchain(value.buildImage, opts),
+			),
 			{
 				kind: 'strategy-contributor',
 				capabilityKey: chainProbeCapabilityKey(realChainId),
@@ -473,7 +492,7 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		// expressions off the loaded deployment that resolve
 		// at app build/dev time via the injected `__DEVSTACK_DEPLOYMENT__` global —
 		// never literal values. No id-resolver input needed.
-		staticCodegen: makeStaticCodegen(),
+		staticCodegen: makeStaticCodegen(suiMoveToolchain(opts)),
 		// Zero-arg `start` (no `dependsOn`); the substrate supplies the
 		// container runtime + identity via the plugin runtime context.
 		start: () =>

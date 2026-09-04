@@ -20,9 +20,12 @@ pnpm test         # typecheck
 
 First boot compiles the bundled `sui-fork` image from source (~10+ min, one
 time; the content-addressed image is cached afterward, and the supervisor row
-narrates progress). The fork faucet then funds the ephemeral `publisher`
-from the default testnet whale and publishes `greeting`, capturing the shared
-`Board` id.
+narrates progress). To skip the compile, name a `mysten/sui-tools` build that
+ships `sui-fork` (commit `892d777c` or later) with `suiToolsRef: '<tag-or-sha>'`
+on the `sui({ mode: 'fork' })` member, or `DEVSTACK_SUI_TOOLS_REF=<tag-or-sha>`
+in the environment; devstack then pulls the binary instead. The fork faucet
+funds the ephemeral `publisher` from the default testnet whale and publishes
+`greeting`, capturing the shared `Board` id.
 
 To use your own funding source instead of the default whale, set
 `faucet: { whale: '0x…' }` on the `sui({ mode: 'fork' })` member. To drive a

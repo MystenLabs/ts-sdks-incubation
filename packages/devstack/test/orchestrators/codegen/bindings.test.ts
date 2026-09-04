@@ -2,12 +2,14 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from '@effect/vitest';
+import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { Effect } from 'effect';
 import { vi } from 'vitest';
 
+import type { MoveToolchain } from '../../../src/contracts/codegenable.ts';
 import type { ContainerRuntime, OneShotSpec } from '../../../src/contracts/container-runtime.ts';
 import {
 	layerMystenMoveCodegen,
@@ -15,8 +17,18 @@ import {
 	MoveSummaryRunnerService,
 } from '../../../src/orchestrators/codegen/bindings.ts';
 import { layerSuiMoveSummaryRunnerDocker } from '../../../src/plugins/sui/move-summary-runner.ts';
+import { SUI_TOOLS_REF_ENV_VAR, suiToolsImage } from '../../../src/plugins/sui/move/index.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/service.ts';
 import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
+
+// The summary image resolver reads DEVSTACK_SUI_TOOLS_REF; pin the bundled
+// sui-tools ref regardless of what the developer's shell exports.
+beforeEach(() => {
+	vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, '');
+});
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 // Replace the heavyweight `@mysten/codegen` renderer with a spy so the
 // `layerMystenMoveCodegen` tests below can assert exactly what reaches
@@ -50,6 +62,7 @@ describe('codegen Move summary runner', () => {
 				writeFileSync(join(sourcePath, 'Move.lock'), sourceLock);
 
 				const capturedSpecs: OneShotSpec[] = [];
+				let expectedImage = { digest: 'sha256:default-sui' };
 				const buildContexts: Parameters<ContainerRuntime['ensureImage']>[0][] = [];
 				const runtime: ContainerRuntime = {
 					...oneShotRuntime((spec) =>
@@ -69,7 +82,7 @@ describe('codegen Move summary runner', () => {
 							expect(moveMount).toBeDefined();
 							expect(moveMount!.source).toBe(join(home, '.move'));
 							expect(existsSync(moveMount!.source)).toBe(true);
-							expect(spec.image).toEqual({ digest: 'sha256:default-sui' });
+							expect(spec.image).toEqual(expectedImage);
 							expect(spec.entrypoint).toBe('sh');
 							expect(spec.argv?.[1]).toContain('sui move summary');
 							expect(spec.argv?.[1]).toContain("/workspace/'hello'");
@@ -118,9 +131,14 @@ describe('codegen Move summary runner', () => {
 				expect(capturedSpecs).toHaveLength(1);
 				expect(buildContexts).toEqual([
 					{
-						contextPath: new URL('../../../images/', import.meta.url).pathname,
+						contextPath: fileURLToPath(new URL('../../../images/', import.meta.url)),
 						dockerfile: 'sui/Dockerfile',
-						fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh'],
+						fingerprintPaths: [
+							'sui/Dockerfile',
+							'sui/entrypoint.sh',
+							'sui-fork/entrypoint.sh',
+							'_shared/signal-forward.sh',
+						],
 						buildArgs: {
 							SUI_TOOLS_IMAGE: `mysten/sui-tools:eced02468444d429a4e9a2b9622b7bd30a1710d4${
 								process.arch === 'arm64' ? '-arm64' : ''
@@ -128,6 +146,35 @@ describe('codegen Move summary runner', () => {
 						},
 					},
 				]);
+
+				const runWith = (moveToolchain: MoveToolchain) =>
+					Effect.gen(function* () {
+						const runner = yield* MoveSummaryRunnerService;
+						const out = yield* runner.runSummary({
+							packageName: 'hello',
+							sourcePath,
+							moveToolchain,
+						});
+						if (out.cleanupPath !== undefined) {
+							rmSync(out.cleanupPath, { recursive: true, force: true });
+						}
+					}).pipe(
+						Effect.provide(layerSuiMoveSummaryRunnerDocker),
+						Effect.provideService(ContainerRuntimeService, runtime),
+					);
+
+				// A sui-tools toolchain (stack-free codegen) moves the summary CLI off
+				// the bundled pin onto the ref the stack's image plan resolved to.
+				yield* runWith({ kind: 'sui-tools', suiToolsRef: 'testnet-v1.80.0', explicit: true });
+				expect(buildContexts[1]?.buildArgs).toEqual({
+					SUI_TOOLS_IMAGE: suiToolsImage('testnet-v1.80.0'),
+				});
+
+				// An exact image toolchain (live boot) is used as is: no build at all.
+				expectedImage = { digest: 'sha256:the-stacks-build-image' };
+				yield* runWith({ kind: 'image', image: expectedImage });
+				expect(buildContexts).toHaveLength(2);
+				expect(capturedSpecs[2]?.image).toEqual(expectedImage);
 			} finally {
 				if (previousHome === undefined) {
 					delete process.env.HOME;

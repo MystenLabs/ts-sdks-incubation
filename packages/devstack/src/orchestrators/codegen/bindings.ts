@@ -36,10 +36,10 @@ import { join, relative, sep } from 'node:path';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { Context, Effect, FileSystem, Layer } from 'effect';
 
-import type { ImageRef } from '../../contracts/container-runtime.ts';
+import { type MoveToolchain, moveToolchainKey } from '../../contracts/codegenable.ts';
 
 import { emitOne } from './emit.ts';
-import { CodegenBindingsFailed } from './errors.ts';
+import { CodegenBindingsFailed, CodegenToolchainConflict } from './errors.ts';
 import { NON_SENSITIVE_DIR_MODE, NON_SENSITIVE_FILE_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
@@ -60,7 +60,12 @@ export interface MoveSummary {
 export interface MoveSummaryInput {
 	readonly packageName: string;
 	readonly sourcePath: string;
-	readonly buildImage?: ImageRef | null;
+	/** Toolchain the stack declared (see `MoveToolchain`). The Docker
+	 *  runner runs `sui move summary` in exactly that image (or an image
+	 *  built on that sui-tools ref); absent means devstack's bundled
+	 *  toolchain. The host runner can only warn when it cannot honour an
+	 *  explicit pin. */
+	readonly moveToolchain?: MoveToolchain;
 }
 
 /** Shape of the Move summary runner. Implementations live in
@@ -135,7 +140,43 @@ export interface EmitBindingsInput {
 	readonly bindingsDir: string;
 	readonly packages: ReadonlyArray<PackageBindings>;
 	readonly importExtension?: '.ts' | '.js' | '';
+	/** Toolchain every package's summary runs under; see `selectMoveToolchain`. */
+	readonly moveToolchain?: MoveToolchain;
 }
+
+/**
+ * Pick the stack's Move toolchain from the codegen decls that declare
+ * one. Name-blind, like the `PackageBindings` seam: the orchestrator
+ * reads whichever decl carries `moveToolchain`. A stack has one chain
+ * owner, so every declaration must agree; a disagreement fails the cycle
+ * (`CodegenToolchainConflict`) rather than generating bindings with
+ * whichever member happened to sort first.
+ */
+export const selectMoveToolchain = (
+	decls: ReadonlyArray<{ readonly emitterName: string; readonly moveToolchain?: MoveToolchain }>,
+): Effect.Effect<MoveToolchain | undefined, CodegenToolchainConflict> =>
+	Effect.gen(function* () {
+		const declared = decls.filter((decl) => decl.moveToolchain !== undefined);
+		const first = declared[0];
+		if (first?.moveToolchain === undefined) {
+			return undefined;
+		}
+		const established = moveToolchainKey(first.moveToolchain);
+		for (const other of declared.slice(1)) {
+			const conflicting =
+				other.moveToolchain === undefined ? undefined : moveToolchainKey(other.moveToolchain);
+			if (conflicting !== undefined && conflicting !== established) {
+				return yield* Effect.fail(
+					new CodegenToolchainConflict({
+						established,
+						conflicting,
+						emitters: [first.emitterName, other.emitterName],
+					}),
+				);
+			}
+		}
+		return first.moveToolchain;
+	});
 
 export interface EmitBindingsResult {
 	readonly packagesEmitted: ReadonlyArray<string>;
@@ -217,6 +258,7 @@ export const emitBindings = (
 			const summary = yield* runner.runSummary({
 				packageName: pkg.name,
 				sourcePath: pkg.sourcePath,
+				...(input.moveToolchain === undefined ? {} : { moveToolchain: input.moveToolchain }),
 			});
 			const files = yield* generator.generate({
 				packageName: pkg.name,
