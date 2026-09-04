@@ -23,23 +23,59 @@ import { decodeJsonTextSync } from '../../../substrate/runtime/runtime-decode.ts
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
 
-// Sui-fork image still builds the CLI from a release tarball at this
-// version (see mode/fork.ts); local mode now bases on sui-tools.
+// The fork-mode SOURCE build still installs the CLI from a release tarball
+// at this version (see mode/fork.ts); every other image bases on sui-tools.
 export const DEFAULT_SUI_CLI_VERSION = 'devnet-v1.71.0';
 
-// Per-arch sui-tools pin. The tag is NOT a multi-arch manifest list, so
-// the `-arm64` suffix is chosen host-side from `process.arch`.
-const DEFAULT_SUI_TOOLS_REF = 'eced02468444d429a4e9a2b9622b7bd30a1710d4';
+/** Env var naming a `mysten/sui-tools` tag or commit SHA for a single run
+ *  (CI, one-off experiments). The `suiToolsRef` option wins over this; this
+ *  wins over the bundled pin. In fork mode, naming a sui-tools build that
+ *  ships `sui-fork` skips the from-source compile entirely. */
+export const SUI_TOOLS_REF_ENV_VAR = 'DEVSTACK_SUI_TOOLS_REF';
 
-export const suiCliImageBuildContext = (): ContainerBuildContext => {
-	const suffix = process.arch === 'arm64' ? '-arm64' : '';
-	return {
-		contextPath: new URL('../../../../images/', import.meta.url).pathname,
-		dockerfile: 'sui/Dockerfile',
-		fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh'],
-		buildArgs: { SUI_TOOLS_IMAGE: `mysten/sui-tools:${DEFAULT_SUI_TOOLS_REF}${suffix}` },
-	};
+/** Bundled `mysten/sui-tools` pin, used when neither config nor env names
+ *  one. Predates `sui-fork` landing in sui-tools (892d777c), so fork mode
+ *  never falls back to this — it compiles from source instead. */
+export const DEFAULT_SUI_TOOLS_REF = 'eced02468444d429a4e9a2b9622b7bd30a1710d4';
+
+/** The sui-tools ref a caller asked for: the `suiToolsRef` option, else the
+ *  env var, else `undefined` (nothing requested). Modes decide what an
+ *  absent request means — local falls back to the bundled pin, fork falls
+ *  back to the source build. */
+export const configuredSuiToolsRef = (explicit?: string): string | undefined => {
+	const fromConfig = explicit?.trim();
+	if (fromConfig !== undefined && fromConfig.length > 0) {
+		return fromConfig;
+	}
+	const fromEnv = process.env[SUI_TOOLS_REF_ENV_VAR]?.trim();
+	return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : undefined;
 };
+
+/** Per-arch `mysten/sui-tools` image for a tag or SHA. The tag is NOT a
+ *  multi-arch manifest list, so the `-arm64` suffix is chosen host-side
+ *  from `process.arch`. */
+export const suiToolsImage = (ref: string): string =>
+	`mysten/sui-tools:${ref}${process.arch === 'arm64' ? '-arm64' : ''}`;
+
+/** Context-relative inputs that define the shared sui image's cache
+ *  identity. The fork entrypoint + signal shim ride along because fork
+ *  mode reuses this image (with an `entrypoint` override) when a
+ *  sui-tools ref is configured. */
+export const SUI_IMAGE_FINGERPRINT_PATHS: ReadonlyArray<string> = [
+	'sui/Dockerfile',
+	'sui/entrypoint.sh',
+	'sui-fork/entrypoint.sh',
+	'_shared/signal-forward.sh',
+];
+
+export const suiCliImageBuildContext = (
+	suiToolsRef: string = DEFAULT_SUI_TOOLS_REF,
+): ContainerBuildContext => ({
+	contextPath: new URL('../../../../images/', import.meta.url).pathname,
+	dockerfile: 'sui/Dockerfile',
+	fingerprintPaths: SUI_IMAGE_FINGERPRINT_PATHS,
+	buildArgs: { SUI_TOOLS_IMAGE: suiToolsImage(suiToolsRef) },
+});
 
 export class MoveBuildError extends Schema.TaggedErrorClass<MoveBuildError>()('MoveBuildError', {
 	phase: Schema.Literals(['hash', 'scrub', 'build', 'parse']),

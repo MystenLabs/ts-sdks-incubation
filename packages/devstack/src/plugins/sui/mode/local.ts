@@ -69,7 +69,7 @@ import { waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
-import { suiCliImageBuildContext } from '../move/index.ts';
+import { configuredSuiToolsRef, suiCliImageBuildContext } from '../move/index.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -342,7 +342,7 @@ export const resolveImage = (
 			plugin: 'sui',
 			role: 'validator',
 		} as const;
-		const vendored = suiCliImageBuildContext();
+		const vendored = suiCliImageBuildContext(configuredSuiToolsRef(opts.suiToolsRef));
 		const buildCtx =
 			opts.image && 'build' in opts.image
 				? {

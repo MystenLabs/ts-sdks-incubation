@@ -36,7 +36,12 @@ import {
 import { CodegenBindingsFailed } from '../../orchestrators/codegen/errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { capture } from '../../substrate/runtime/observability/subprocess-capture.ts';
-import { copyLocalMoveDeps, shellQuote, suiCliImageBuildContext } from './move/index.ts';
+import {
+	configuredSuiToolsRef,
+	copyLocalMoveDeps,
+	shellQuote,
+	suiCliImageBuildContext,
+} from './move/index.ts';
 
 // -----------------------------------------------------------------------------
 // Docker variant — `sui move summary` inside the Sui CLI container image.
@@ -354,7 +359,9 @@ const resolveDefaultSummaryImage = (
 	// `chain-build-container.ts:PER_APP_SHARED_STACK`), not per-stack;
 	// the build container that materialises it carries the labels, so
 	// `ensureImage` itself is intentionally label-free here.
-	runtime.ensureImage(suiCliImageBuildContext()).pipe(
+	// Stack-free codegen has no `sui()` options to read, so only the env
+	// var can move it off the bundled sui-tools pin.
+	runtime.ensureImage(suiCliImageBuildContext(configuredSuiToolsRef())).pipe(
 		Effect.mapError(
 			(cause) =>
 				new CodegenBindingsFailed({
