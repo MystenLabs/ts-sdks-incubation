@@ -339,15 +339,29 @@ Interactively, with the installed launcher (`install` offers the same choices):
 - **Credential bundle** (the first choice) — paste the `CONSOLE_CREDENTIAL_BUNDLE` value from the
   Console key-mint screen. The paste is masked, the API key is validated against Console first, and
   then both addresses are printed **in full** and nothing is written until you answer `y`; a bare
-  Enter declines and the config file is not rewritten at all. An address the bundle carries as
-  `null` **clears** any pin already saved — the bundle is the account's own answer for that key —
-  and a bundle with no owner address warns that `create_bucket` will refuse until one is pinned.
+  Enter declines and the config file is not rewritten at all. In a **working-key** bundle an
+  address carried as `null` **clears** any pin already saved — that bundle is the account's own
+  answer for both pins — and a bundle with no owner address warns that `create_bucket` will refuse
+  until one is pinned. A **management** bundle clears neither: it never calls `create_bucket`, so
+  it says nothing about the owner and leaves a saved owner pin alone, and its own signer derives
+  the Key-Admin, so `null` there means "not supplied" and the derived address is saved.
 - **API key** (or **Both**) — for keys minted before the bundle format existed. After the key
   prompts it asks for each address separately, re-prompts on an invalid one (never echoing what you
   typed), and confirms the exact value before saving it. Enter skips, keeping whatever is already
   saved; this path never clears a pin.
-- **Management key** is not asked for the pins at all: a provisioning-only host never calls
-  `create_bucket`.
+- **Management key** is not _asked_ for the pins: there is nothing to ask a provisioning-only
+  host, which never calls `create_bucket`. That is about the prompts only — an address you pass
+  explicitly on the command line is still saved (see the seeded form below), because a host
+  provisioned with a management key may later gain a working one. Its Key-Admin pin is not a
+  question either: it is derived from the signer you paste, printed in full, and saved.
+- **Seeded from the command line.** `install --owner-address 0x… --key-admin-address 0x…` — the
+  command the Console's **Connect MCP** panel hands you — does not skip the prompts; it answers the
+  address ones. Each seeded pin is printed in full and the set is confirmed with one `[y/N]`;
+  declining writes nothing, not even the key you just verified. A seed that disagrees with a pasted
+  bundle, or with the address a management signer derives, refuses and names both addresses.
+  Unlike the prompts, the seeds are not restricted by which credential you chose: a flag is an
+  explicit instruction, and dropping one silently would be worse than saving a pin the host has
+  no immediate use for.
 
 Scripted / CI:
 
@@ -357,13 +371,20 @@ Scripted / CI:
 … config --credential-bundle '{"v":1,"apiKey":"hbr_…","servicePrivateKey":"suiprivkey1…","webAccountAddress":"0x…","keyAdminAddress":null}'
 
 # Or the pins alone — validated locally, no Console probe, and neither flag touches the other pin.
-… config --owner-address 0x… --key-admin-address 0x…
+# `--silent` is required here: without it the address flags seed the interactive prompts instead.
+… config --silent --owner-address 0x… --key-admin-address 0x…
 ```
 
 `CONSOLE_CREDENTIAL_BUNDLE` is read from the environment only under an explicit `--silent`.
-Combining `--credential-bundle` with `--api-key`, `--service-key`, `--owner-address` or
-`--key-admin-address` is an error — the bundle already carries those — while `--admin-key` /
-`--admin-signer` compose with it, since they are a different credential.
+Combining `--credential-bundle` with the flags of its own pair is an error — the bundle already
+carries those. A working bundle refuses `--api-key` / `--service-key`, a management bundle refuses
+`--admin-key` / `--admin-signer`, and each composes with the other pair, since that is a different
+credential. The two address flags are not a conflict but a second statement of the same pin: one
+that matches the bundle proceeds, and one that differs refuses and names both addresses. Against a
+**working** bundle, `null` is an answer too — "this key has no such address" — so a flag naming one
+is a disagreement and is refused. A **management** bundle's `null` `keyAdminAddress` is not: it
+means "not supplied", the bundle's own signer derives the address, and `--key-admin-address` is
+checked against that derivation instead — equal proceeds, different refuses naming both.
 
 `CONSOLE_WEB_ACCOUNT_ADDRESS` and `CONSOLE_KEY_ADMIN_ADDRESS` are read by the **server** at
 runtime and win over the saved file there, but the CLI deliberately does not persist them: exporting
@@ -605,7 +626,13 @@ After registering, restart the agent (or reload the window if using it inside VS
 
 **About file paths in `upload_file` / `download_file`:** relative paths (and `~`) are resolved against **your current workspace**, not the server's install location — so "upload `report.pdf`" and "download to `~/Downloads/x.pdf`" do what you'd expect from whatever project you're working in. Paths are sandboxed to your allowed roots (see [Security Model](#security-model)).
 
-> **Note for clients that don't advertise MCP roots** (e.g. Grok, Claude Desktop): file access **fails closed**. The installer asks for folders during setup; to change them later:
+> **Note for clients that don't advertise MCP roots** (e.g. Grok, Claude Desktop): file access **fails closed**. The installer asks for folders during setup — or you can name them on the command line, including alongside the address pins the Console's **Connect MCP** panel copies, and the **File access** step is skipped:
+>
+> ```bash
+> walrus-console-mcp install --allowed-dirs ~/Documents --owner-address 0x…
+> ```
+>
+> Run that one at a terminal: carrying a pin keeps the run interactive, so it goes on to prompt for the credentials, and outside a TTY it cancels and writes nothing. A folder that does not exist is refused before anything is written, naming every bad path. To change the folders later:
 >
 > ```bash
 > walrus-console-mcp config --allowed-dirs ~/Documents --allowed-dirs ~/Downloads
