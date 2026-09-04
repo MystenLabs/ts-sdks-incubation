@@ -1,81 +1,81 @@
 {
-  "name": "@mysten-incubation/walrus-console-mcp",
-  "version": "0.0.0",
-  "description": "MCP server for Walrus Console — ggdrive-style decentralized, Seal-encrypted storage on Walrus + Sui",
-  "type": "module",
-  "bin": {
-    "walrus-console-mcp": "dist/console-mcp.js"
-  },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE",
-    "npm-shrinkwrap.json"
-  ],
-  "engines": {
-    "node": ">=24"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
-    "directory": "packages/walrus-console-mcp"
-  },
-  "homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/walrus-console-mcp#readme",
-  "bugs": {
-    "url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
-  },
-  "publishConfig": {
-    "access": "public",
-    "tag": "beta"
-  },
-  "scripts": {
-    "dev": "tsx bin/console-mcp.ts",
-    "build": "tsdown",
-    "prepublishOnly": "pnpm build && pnpm pack:check",
-    "build:mcpb": "tsdown --config tsdown.mcpb.config.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run && tsx scripts/check-shrinkwrap.mts",
-    "test:watch": "vitest",
-    "pack:check": "tsx scripts/pack-check.mts && tsx scripts/check-shrinkwrap.mts",
-    "shrinkwrap:generate": "tsx scripts/generate-shrinkwrap.mts",
-    "prettier:check": "prettier -c --ignore-unknown .",
-    "prettier:fix": "prettier -w --ignore-unknown .",
-    "oxlint:check": "oxlint --deny-warnings .",
-    "oxlint:fix": "oxlint --fix .",
-    "lint": "pnpm run oxlint:check && pnpm run prettier:check",
-    "lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
-    "mcpb:validate": "mcpb validate manifest.json",
-    "mcpb:pack": "pnpm build:mcpb && mcpb pack . walrus-console-mcp.mcpb"
-  },
-  "keywords": [
-    "mcp",
-    "modelcontextprotocol",
-    "walrus",
-    "console",
-    "sui",
-    "seal",
-    "decentralized-storage",
-    "effect"
-  ],
-  "license": "MIT",
-  "packageManager": "pnpm@10.17.0",
-  "dependencies": {
-    "@effect/platform": "^0.97.1",
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@mysten/seal": "^1.2.0",
-    "@mysten/sui": "^2.18.0",
-    "effect": "^3.22.1",
-    "zod": "^3.24.4"
-  },
-  "devDependencies": {
-    "@anthropic-ai/mcpb": "^2.1.2",
-    "@effect/language-service": "^0.87.2",
-    "@types/node": "^25.9.3",
-    "oxlint": "1.47.0",
-    "prettier": "^3.8.4",
-    "tsdown": "^0.22.2",
-    "tsx": "^4.22.4",
-    "typescript": "^5.8.3",
-    "vitest": "^3.1.3"
-  }
+	"name": "@mysten-incubation/walrus-console-mcp",
+	"version": "0.1.0-beta.0",
+	"description": "MCP server for Walrus Console — ggdrive-style decentralized, Seal-encrypted storage on Walrus + Sui",
+	"type": "module",
+	"bin": {
+		"walrus-console-mcp": "dist/console-mcp.js"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE",
+		"npm-shrinkwrap.json"
+	],
+	"engines": {
+		"node": ">=24"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/walrus-console-mcp"
+	},
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/walrus-console-mcp#readme",
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"publishConfig": {
+		"access": "public",
+		"tag": "beta"
+	},
+	"scripts": {
+		"dev": "tsx bin/console-mcp.ts",
+		"build": "tsdown",
+		"prepublishOnly": "pnpm build && pnpm pack:check",
+		"build:mcpb": "tsdown --config tsdown.mcpb.config.ts",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run && tsx scripts/check-shrinkwrap.mts",
+		"test:watch": "vitest",
+		"pack:check": "tsx scripts/pack-check.mts && tsx scripts/check-shrinkwrap.mts",
+		"shrinkwrap:generate": "tsx scripts/generate-shrinkwrap.mts",
+		"prettier:check": "prettier -c --ignore-unknown .",
+		"prettier:fix": "prettier -w --ignore-unknown .",
+		"oxlint:check": "oxlint --deny-warnings .",
+		"oxlint:fix": "oxlint --fix .",
+		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
+		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
+		"mcpb:validate": "mcpb validate manifest.json",
+		"mcpb:pack": "pnpm build:mcpb && mcpb pack . walrus-console-mcp.mcpb"
+	},
+	"keywords": [
+		"mcp",
+		"modelcontextprotocol",
+		"walrus",
+		"console",
+		"sui",
+		"seal",
+		"decentralized-storage",
+		"effect"
+	],
+	"license": "MIT",
+	"packageManager": "pnpm@10.17.0",
+	"dependencies": {
+		"@effect/platform": "^0.97.1",
+		"@modelcontextprotocol/sdk": "^1.30.0",
+		"@mysten/seal": "^1.2.0",
+		"@mysten/sui": "^2.18.0",
+		"effect": "^3.22.1",
+		"zod": "^3.24.4"
+	},
+	"devDependencies": {
+		"@anthropic-ai/mcpb": "^2.1.2",
+		"@effect/language-service": "^0.87.2",
+		"@types/node": "^25.9.3",
+		"oxlint": "1.47.0",
+		"prettier": "^3.8.4",
+		"tsdown": "^0.22.2",
+		"tsx": "^4.22.4",
+		"typescript": "^5.8.3",
+		"vitest": "^3.1.3"
+	}
 }
