@@ -335,24 +335,30 @@ export const planForkImage = (opts: SuiForkOptions): ForkImagePlan => {
 
 /** Identity of the `sui-fork` binary a fork boots with — folded into the
  *  data-dir key and container config hash so switching binaries never
- *  reuses state written by a different one. Every non-sui-tools plan keeps
- *  the bare source revision it always had, so existing data dirs stay
- *  addressable. */
+ *  reuses state written by a different one. The default source path keeps
+ *  the bare revision it always had, so existing data dirs stay addressable;
+ *  pulled and caller-built images are keyed by their declaration. */
 export const forkBinaryVersion = (opts: SuiForkOptions): string => {
 	const plan = planForkImage(opts);
 	switch (plan.kind) {
 		case 'sui-tools':
 			return `sui-tools:${plan.ref}`;
-		case 'custom-build':
-			// A caller Dockerfile that consumes `SUI_TOOLS_IMAGE` ships a
-			// different binary per ref, so the ref is part of the identity.
-			return plan.suiToolsRef === undefined
-				? plan.rev
-				: `${plan.rev}+sui-tools:${plan.suiToolsRef}`;
 		case 'pull':
+			// Two different pulled images must never share state.
+			return `pull:${plan.ref}`;
+		case 'custom-build':
+			// A caller Dockerfile: its context + args are the declaration. A
+			// consumed `SUI_TOOLS_IMAGE` ships a different binary per ref.
+			return (
+				`build:${plan.context}:${plan.dockerfile}:${plan.rev}` +
+				(plan.suiToolsRef === undefined ? '' : `+sui-tools:${plan.suiToolsRef}`)
+			);
 		case 'prebuilt-or-source':
 		case 'source':
-			return opts.version ?? DEFAULT_SUI_FORK_REV;
+			// By contract the prebuilt image IS the source revision, so both
+			// outcomes share the identity — and the default path keeps the bare
+			// revision it always had, so existing data dirs stay addressable.
+			return plan.rev;
 	}
 };
 

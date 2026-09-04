@@ -57,6 +57,7 @@ import {
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable, makeStaticCodegen } from './codegen.ts';
 import { liveMoveToolchain, suiMoveToolchain } from './move-toolchain.ts';
+import { configuredSuiToolsRef } from './move/index.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
@@ -181,12 +182,26 @@ const DEFAULT_INDEXER_DATABASE = 'sui_indexer';
 /** In-network DNS alias siblings dial the indexer-db sidecar by. */
 const SUI_INDEXER_DB_ALIAS = 'sui-indexer-db';
 
-const suiInputIdentity = (opts: SuiOptions): unknown => {
+export const suiInputIdentity = (opts: SuiOptions): unknown => {
 	const { readyTimeout: _readyTimeout, ...authored } = opts;
-	if (authored.mode !== 'local') return { plugin: 'sui', ...authored };
+	if (authored.mode === 'live' || authored.mode === 'local-rpc') {
+		return { plugin: 'sui', ...authored };
+	}
+	// The EFFECTIVE sui-tools ref (config, then env) is part of the identity
+	// so flipping DEVSTACK_SUI_TOOLS_REF marks snapshots stale instead of
+	// letting a restore resume state built by another binary. `image.pull`
+	// names the whole image, so no ref applies there (matches planning).
+	const suiToolsRef =
+		authored.image !== undefined && 'pull' in authored.image
+			? undefined
+			: configuredSuiToolsRef(authored.suiToolsRef);
+	if (authored.mode === 'fork') {
+		return { plugin: 'sui', ...authored, suiToolsRef };
+	}
 	return {
 		plugin: 'sui',
 		...authored,
+		suiToolsRef,
 		indexer: authored.indexer !== false,
 		indexerDb:
 			authored.indexerDb === undefined

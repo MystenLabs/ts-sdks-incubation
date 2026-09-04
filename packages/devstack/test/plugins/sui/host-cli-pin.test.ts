@@ -13,7 +13,10 @@ import { Effect, Layer } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { afterEach, beforeEach, describe, expect, it, vi } from '@effect/vitest';
 
-import { ensureHostCliHonoursPin } from '../../../src/plugins/sui/move-summary-runner.ts';
+import {
+	ensureHostCliHonoursPin,
+	hostSuiVersion,
+} from '../../../src/plugins/sui/move-summary-runner.ts';
 
 const PKG = { packageName: 'hello', sourcePath: '/tmp/hello' };
 const explicit = (suiToolsRef: string) =>
@@ -40,7 +43,7 @@ const fakeSui = (versionLine: string | null) => {
 const gate = (toolchain: Parameters<typeof ensureHostCliHonoursPin>[1]) =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-		return yield* ensureHostCliHonoursPin(spawner, toolchain, PKG);
+		return yield* ensureHostCliHonoursPin(hostSuiVersion(spawner), toolchain, PKG);
 	}).pipe(Effect.provide(spawnerLayer));
 
 beforeEach(() => {
@@ -52,6 +55,19 @@ afterEach(() => {
 });
 
 describe('ensureHostCliHonoursPin', () => {
+	it.effect('probes the host CLI once when the probe is cached, however many packages run', () =>
+		Effect.gen(function* () {
+			let probes = 0;
+			const probe = yield* Effect.cached(Effect.sync(() => ((probes += 1), 'sui 1.80.0-abc')));
+			yield* ensureHostCliHonoursPin(probe, explicit('testnet-v1.80.0'), PKG);
+			yield* ensureHostCliHonoursPin(probe, explicit('testnet-v1.80.0'), {
+				...PKG,
+				packageName: 'other',
+			});
+			expect(probes).toBe(1);
+		}),
+	);
+
 	it.effect('never probes the host CLI when no explicit toolchain is pinned', () =>
 		Effect.gen(function* () {
 			fakeSui(null); // no `sui` anywhere on PATH: a probe would fail loudly

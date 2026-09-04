@@ -16,15 +16,18 @@ import type { SuiOptions } from './mode/spec.ts';
 import { configuredSuiToolsRef, DEFAULT_SUI_TOOLS_REF } from './move/index.ts';
 
 /** Stack-free declaration, derived from the mode's image plan. `undefined`
- *  when the plan is a complete image devstack cannot reproduce without a
- *  stack (`image.pull`, a from-source or prebuilt fork). */
+ *  when the plan is an image whose CLI devstack cannot know without a
+ *  stack: a complete image, a caller Dockerfile, a from-source or prebuilt
+ *  fork. */
 export const suiMoveToolchain = (opts: SuiOptions): MoveToolchain | undefined => {
 	switch (opts.mode) {
 		case 'local': {
-			if (opts.image !== undefined && 'pull' in opts.image) {
+			// A complete image (`pull`) or a caller Dockerfile (`build`) is opaque:
+			// nothing guarantees the Dockerfile consumes SUI_TOOLS_IMAGE, so no
+			// CLI identity can be inferred for either.
+			if (opts.image !== undefined) {
 				return undefined;
 			}
-			// Bundled image, or a caller Dockerfile fed the same SUI_TOOLS_IMAGE.
 			const configured = configuredSuiToolsRef(opts.suiToolsRef);
 			return {
 				kind: 'sui-tools',
@@ -34,13 +37,11 @@ export const suiMoveToolchain = (opts: SuiOptions): MoveToolchain | undefined =>
 		}
 		case 'fork': {
 			const plan = planForkImage(opts);
-			if (plan.kind === 'sui-tools') {
-				return { kind: 'sui-tools', suiToolsRef: plan.ref, explicit: true };
-			}
-			if (plan.kind === 'custom-build' && plan.suiToolsRef !== undefined) {
-				return { kind: 'sui-tools', suiToolsRef: plan.suiToolsRef, explicit: true };
-			}
-			return undefined;
+			// Only the shared-image plan has a knowable CLI; pull, custom build,
+			// prebuilt and source images are opaque here.
+			return plan.kind === 'sui-tools'
+				? { kind: 'sui-tools', suiToolsRef: plan.ref, explicit: true }
+				: undefined;
 		}
 		case 'live':
 		case 'local-rpc':

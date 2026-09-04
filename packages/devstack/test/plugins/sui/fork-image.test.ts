@@ -155,15 +155,28 @@ describe('fork binary identity', () => {
 		expect(new Set([source, r1, r2]).size).toBe(3);
 	});
 
-	it('keys a caller-built image by the sui-tools ref it was handed, and by the bare rev without one', () => {
+	it('keys a caller-built image by its declaration, including a sui-tools ref it was handed', () => {
 		const build = { image: { build: { context: '/c' } } } as const;
-		expect(forkBinaryVersion({ ...base, ...build })).toBe(DEFAULT_SUI_FORK_REV);
-		expect(forkBinaryVersion({ ...base, ...build, version: 'abc' })).toBe('abc');
+		expect(forkBinaryVersion({ ...base, ...build })).toBe(
+			`build:/c:Dockerfile:${DEFAULT_SUI_FORK_REV}`,
+		);
+		expect(forkBinaryVersion({ ...base, ...build, version: 'abc' })).toBe(
+			'build:/c:Dockerfile:abc',
+		);
 		const noRef = forkDataDirKey({ ...base, ...build });
 		const r1 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r1' });
 		const r2 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r2' });
-		expect(noRef).toBe(forkDataDirKey(base));
-		expect(new Set([noRef, r1, r2]).size).toBe(3);
+		const otherContext = forkDataDirKey({ ...base, image: { build: { context: '/d' } } });
+		expect(new Set([forkDataDirKey(base), noRef, r1, r2, otherContext]).size).toBe(5);
+	});
+
+	it('keys pulled images by their ref, so two pulls never share state', () => {
+		expect(forkBinaryVersion({ ...base, image: { pull: 'me/sui-fork:1' } })).toBe(
+			'pull:me/sui-fork:1',
+		);
+		expect(forkDataDirKey({ ...base, image: { pull: 'me/sui-fork:1' } })).not.toBe(
+			forkDataDirKey({ ...base, image: { pull: 'me/sui-fork:2' } }),
+		);
 	});
 
 	it('recreates the fork container when the binary identity changes (config hash)', () => {

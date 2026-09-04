@@ -41,12 +41,10 @@ describe('suiMoveToolchain (stack-free declaration)', () => {
 			suiToolsRef: 'from-env',
 			explicit: true,
 		});
-		// A caller Dockerfile is fed the same SUI_TOOLS_IMAGE, so the ref still applies.
-		expect(suiMoveToolchain({ mode: 'local', image: { build: { context: '/c' } } })).toEqual({
-			kind: 'sui-tools',
-			suiToolsRef: 'from-env',
-			explicit: true,
-		});
+		// A caller Dockerfile is opaque: nothing guarantees it consumes SUI_TOOLS_IMAGE.
+		expect(
+			suiMoveToolchain({ mode: 'local', image: { build: { context: '/c' } } }),
+		).toBeUndefined();
 	});
 
 	it('declares nothing for a complete image devstack cannot reproduce stack-free', () => {
@@ -67,7 +65,7 @@ describe('suiMoveToolchain (stack-free declaration)', () => {
 		expect(suiMoveToolchain({ ...fork, image: { pull: 'me/sui-fork:1' } })).toBeUndefined();
 		expect(
 			suiMoveToolchain({ ...fork, suiToolsRef: 'r', image: { build: { context: '/c' } } }),
-		).toEqual({ kind: 'sui-tools', suiToolsRef: 'r', explicit: true });
+		).toBeUndefined();
 	});
 
 	it('declares nothing for modes with no container', () => {
