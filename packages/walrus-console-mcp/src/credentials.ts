@@ -12,7 +12,8 @@
  */
 
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
-import { isValidSuiAddress } from "@mysten/sui/utils";
+import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import type { CredentialValues } from "./cliArgs.js";
 import type { ConfigFileData } from "./configFile.js";
 import { validateAllowedDirectory } from "./pathSandbox.js";
@@ -33,20 +34,42 @@ export const SERVICE_KEY_PREFIX = "suiprivkey1";
  */
 const PROBE_KEY_ID = "00000000-0000-0000-0000-000000000000";
 
+/**
+ * Console mints `hbr_` / `hbradm_` plus 32 url-safe base64 chars (`A-Za-z0-9_-`).
+ * Tests and older pastes are shorter; a 64-char body is the ceiling. Control
+ * characters (CRLF, NUL, BEL) and a megabyte paste used to pass a prefix+length
+ * check and then go out as an `Authorization` header.
+ */
+const KEY_BODY_MIN = 5;
+const KEY_BODY_MAX = 64;
+const KEY_BODY = /^[A-Za-z0-9_-]+$/;
+
+function isValidPrefixedSecret(key: string, prefix: string): boolean {
+  if (!key.startsWith(prefix)) return false;
+  const body = key.slice(prefix.length);
+  return body.length >= KEY_BODY_MIN && body.length <= KEY_BODY_MAX && KEY_BODY.test(body);
+}
+
 /** A working (data-plane) key. `hbradm_` does NOT match `hbr_`, so this is exact. */
 export function isValidApiKeyFormat(key: string): boolean {
-  return key.startsWith(API_KEY_PREFIX) && key.length > 8;
+  return isValidPrefixedSecret(key, API_KEY_PREFIX);
 }
 
 /** A management (Key-Admin) key. */
 export function isValidAdminKeyFormat(key: string): boolean {
-  return key.startsWith(ADMIN_KEY_PREFIX) && key.length > 11;
+  return isValidPrefixedSecret(key, ADMIN_KEY_PREFIX);
 }
 
 /**
  * A Sui private key, checked by actually decoding it (Bech32 + checksum +
  * flag byte), not just eyeballing the `suiprivkey1…` prefix and a minimum
  * length. This catches garbled, truncated, and wrong-thing pastes.
+ *
+ * ED25519 only. Every signer this server uses goes through
+ * `Ed25519Keypair.fromSecretKey` (see SealCryptoService.getKeypair), which would
+ * happily build a keypair from secp256k1 bytes and sign under an address nobody
+ * registered — so a decodable key of another scheme is a rejection here, where
+ * the operator can still read the message, not a plausible wrong pin later.
  *
  * It does NOT catch a structurally valid key that belongs to something else —
  * a different-but-real signer decodes cleanly and is indistinguishable from
@@ -55,11 +78,25 @@ export function isValidAdminKeyFormat(key: string): boolean {
  */
 export function isValidServiceKeyFormat(key: string): boolean {
   try {
-    decodeSuiPrivateKey(key);
-    return true;
+    return decodeSuiPrivateKey(key).scheme === "ED25519";
   } catch {
     return false;
   }
+}
+
+/**
+ * Same generator as `SealCryptoService.getKeypair` — decode, then Ed25519
+ * address. Refuses a non-ED25519 key for the reason on `isValidServiceKeyFormat`:
+ * deriving from the wrong scheme returns an address that looks fine and matches
+ * nothing. Callers validate with `isValidServiceKeyFormat` first; the throw is
+ * the guard for the one that does not.
+ */
+export function suiAddressFromServiceKey(key: string): string {
+  const { scheme, secretKey } = decodeSuiPrivateKey(key);
+  if (scheme !== "ED25519") {
+    throw new Error(`The service signer must be an ED25519 key; this one is ${scheme}.`);
+  }
+  return Ed25519Keypair.fromSecretKey(secretKey).toSuiAddress();
 }
 
 /** Which kind of key this is, by prefix, or null if it is neither. */
@@ -80,19 +117,30 @@ const CREDENTIAL_BUNDLE_VERSION = 1;
  * The one-time `CONSOLE_CREDENTIAL_BUNDLE` the Console key-mint UI reveals.
  *
  * Field names are the same as `ConfigFileData` so a saved `config.json` (or a
- * reveal JSON) can be pasted without renaming: `apiKey`, `servicePrivateKey`,
- * `webAccountAddress`, `keyAdminAddress`. Extra config keys (`adminKey`,
- * `baseUrl`, …) are ignored. `v` is optional; if present it must be `1`.
+ * reveal JSON) can be pasted without renaming. A working-key bundle carries
+ * `apiKey` / `servicePrivateKey`; a management-key bundle carries `adminKey` /
+ * `adminServicePrivateKey`. Extra keys of the other kind are ignored on a
+ * working bundle (a saved config.json may hold both). `v` is optional; if
+ * present it must be `1`.
  *
  * Both addresses may legitimately be `null` — a later step (not this parser)
  * warns that `create_bucket` refuses until `webAccountAddress` is pinned.
  */
-export interface CredentialBundle {
-  readonly apiKey: string;
-  readonly servicePrivateKey: string;
-  readonly webAccountAddress: string | null;
-  readonly keyAdminAddress: string | null;
-}
+export type CredentialBundle =
+  | {
+      readonly kind: "api";
+      readonly apiKey: string;
+      readonly servicePrivateKey: string;
+      readonly webAccountAddress: string | null;
+      readonly keyAdminAddress: string | null;
+    }
+  | {
+      readonly kind: "admin";
+      readonly adminKey: string;
+      readonly adminServicePrivateKey: string;
+      readonly webAccountAddress: string | null;
+      readonly keyAdminAddress: string | null;
+    };
 
 export type ParseCredentialBundleResult = { bundle: CredentialBundle } | { error: string };
 
@@ -103,19 +151,65 @@ export type ParseCredentialBundleResult = { bundle: CredentialBundle } | { error
  */
 function parseNullableAddress(
   value: unknown,
-  fieldName: "webAccountAddress" | "keyAdminAddress",
+  fieldName: "webAccountAddress" | "keyAdminAddress" | "ownerAddress",
 ): { address: string | null } | { error: string } {
   if (value === null || value === undefined) return { address: null };
   if (typeof value === "string" && isValidSuiAddress(value)) return { address: value };
   return { error: `bundle ${fieldName} is not null or a valid Sui address` };
 }
 
-/** First own-key among `keys` that is present on `obj` (legacy aliases included). */
+function addressesAgree(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  return normalizeSuiAddress(a) === normalizeSuiAddress(b);
+}
+
+/**
+ * The spellings a working-key signer arrives under. `servicePrivateKey` is the
+ * stored name; `serviceSecret` is what the Console emits today (see the note in
+ * `parseCredentialBundle`). Named once so the parser and `registerBundleSecrets`
+ * cannot drift apart about which field holds that secret.
+ */
+const SERVICE_KEY_FIELDS = ["servicePrivateKey", "serviceSecret"] as const;
+
+/**
+ * First own-key among `keys` that is present on `obj`. The alternatives are
+ * live alternate SPELLINGS of one field, not a legacy fallback — the Console
+ * emits some of them today (see `parseCredentialBundle`), so order here decides
+ * which spelling wins, never which era of paste is still supported.
+ */
 function pickField(obj: Record<string, unknown>, keys: readonly string[]): unknown {
   for (const key of keys) {
     if (Object.hasOwn(obj, key)) return obj[key];
   }
   return undefined;
+}
+
+/**
+ * Owner pin from a bundle. `webAccountAddress` is the stored name;
+ * `ownerAddress` is the Console reveal alias. One field is a rename; both,
+ * with different values, is two instructions — refuse rather than let the
+ * alias silently lose (or win).
+ */
+function pickOwnerAddress(
+  obj: Record<string, unknown>,
+): { address: string | null } | { error: string } {
+  const hasCanonical = Object.hasOwn(obj, "webAccountAddress");
+  const hasAlias = Object.hasOwn(obj, "ownerAddress");
+  if (hasCanonical && hasAlias) {
+    const canonical = parseNullableAddress(obj["webAccountAddress"], "webAccountAddress");
+    if ("error" in canonical) return canonical;
+    const alias = parseNullableAddress(obj["ownerAddress"], "ownerAddress");
+    if ("error" in alias) return alias;
+    if (!addressesAgree(canonical.address, alias.address)) {
+      return {
+        error: "bundle has both webAccountAddress and ownerAddress with different values",
+      };
+    }
+    return canonical;
+  }
+  if (hasCanonical) return parseNullableAddress(obj["webAccountAddress"], "webAccountAddress");
+  if (hasAlias) return parseNullableAddress(obj["ownerAddress"], "ownerAddress");
+  return { address: null };
 }
 
 /**
@@ -135,7 +229,16 @@ function pickField(obj: Record<string, unknown>, keys: readonly string[]): unkno
  * a terminal scrollback. See the no-echo precedent in `cliArgs.ts` for a
  * possibly-secret token in an argument-parsing error.
  */
-export function parseCredentialBundle(raw: string): ParseCredentialBundleResult {
+/**
+ * The parsed bundle PLUS the object it came from. Narrowing to a
+ * `CredentialBundle` throws away every field of the other credential pair, and
+ * `registerBundleSecrets` needs those, so the two internal callers take this
+ * shape and `parseCredentialBundle` narrows it for everyone else — the source
+ * object never escapes this module.
+ */
+type ParsedBundleWithSource = { bundle: CredentialBundle; source: Record<string, unknown> };
+
+function parseBundleWithSource(raw: string): ParsedBundleWithSource | { error: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -154,35 +257,111 @@ export function parseCredentialBundle(raw: string): ParseCredentialBundleResult 
     return { error: "unsupported bundle version" };
   }
 
-  const apiKey = obj["apiKey"];
-  if (typeof apiKey !== "string" || !isValidApiKeyFormat(apiKey)) {
-    return { error: "bundle apiKey is not a Console API key" };
-  }
-
-  // Also accept `serviceSecret` so already-copied Harbor reveals still parse.
-  const servicePrivateKey = pickField(obj, ["servicePrivateKey", "serviceSecret"]);
-  if (typeof servicePrivateKey !== "string" || !isValidServiceKeyFormat(servicePrivateKey)) {
-    return { error: "bundle servicePrivateKey is not a valid Sui private key" };
-  }
-
-  const owner = parseNullableAddress(
-    pickField(obj, ["webAccountAddress", "ownerAddress"]),
-    "webAccountAddress",
-  );
+  const owner = pickOwnerAddress(obj);
   if ("error" in owner) return owner;
 
   const keyAdmin = parseNullableAddress(obj["keyAdminAddress"], "keyAdminAddress");
   if ("error" in keyAdmin) return keyAdmin;
 
-  return {
-    bundle: {
-      apiKey,
-      servicePrivateKey,
-      webAccountAddress: owner.address,
-      keyAdminAddress: keyAdmin.address,
-    },
-  };
+  const apiKey = obj["apiKey"];
+  if (apiKey !== undefined) {
+    if (typeof apiKey !== "string") {
+      return { error: "bundle apiKey is not a Console API key" };
+    }
+    // Not `mismatchMessage`: its copy tells the operator to re-run and pick a
+    // different chooser entry, which is advice about a prompt nobody is standing
+    // at. A bundle is JSON, so the fix is the field it should have used.
+    if (mismatchMessage("api", apiKey) !== null) {
+      return {
+        error:
+          "bundle apiKey holds a management key (hbradm_…); a management bundle carries it as adminKey",
+      };
+    }
+    if (!isValidApiKeyFormat(apiKey)) {
+      return { error: "bundle apiKey is not a Console API key" };
+    }
+
+    // `serviceSecret` is not a legacy spelling: at the companion Console PR
+    // head, `buildCredentialBundle` emits it (alongside `ownerAddress`) as the
+    // CURRENT shape of every working-key reveal, so it is the spelling most
+    // fresh pastes arrive in. A one-sided cleanup that deleted it here would
+    // break every one of them; aligning the two spellings has to be coordinated
+    // with the Console emitter, not done in this file alone.
+    const servicePrivateKey = pickField(obj, SERVICE_KEY_FIELDS);
+    if (typeof servicePrivateKey !== "string" || !isValidServiceKeyFormat(servicePrivateKey)) {
+      return { error: "bundle servicePrivateKey is not a valid Sui private key" };
+    }
+
+    return {
+      bundle: {
+        kind: "api",
+        apiKey,
+        servicePrivateKey,
+        webAccountAddress: owner.address,
+        keyAdminAddress: keyAdmin.address,
+      },
+      source: obj,
+    };
+  }
+
+  const adminKey = obj["adminKey"];
+  if (adminKey !== undefined) {
+    if (typeof adminKey !== "string") {
+      return { error: "bundle adminKey is not a Console management key" };
+    }
+    if (mismatchMessage("admin", adminKey) !== null) {
+      return {
+        error:
+          "bundle adminKey holds an everyday API key (hbr_…); a working bundle carries it as apiKey",
+      };
+    }
+    if (!isValidAdminKeyFormat(adminKey)) {
+      return { error: "bundle adminKey is not a Console management key" };
+    }
+
+    const adminServicePrivateKey = obj["adminServicePrivateKey"];
+    if (
+      typeof adminServicePrivateKey !== "string" ||
+      !isValidServiceKeyFormat(adminServicePrivateKey)
+    ) {
+      return { error: "bundle adminServicePrivateKey is not a valid Sui private key" };
+    }
+
+    return {
+      bundle: {
+        kind: "admin",
+        adminKey,
+        adminServicePrivateKey,
+        webAccountAddress: owner.address,
+        keyAdminAddress: keyAdmin.address,
+      },
+      source: obj,
+    };
+  }
+
+  return { error: "bundle apiKey is not a Console API key" };
 }
+
+/**
+ * Parse and validate a pasted `CONSOLE_CREDENTIAL_BUNDLE`. See
+ * `parseBundleWithSource` above for the rules; this drops the source object so
+ * no caller outside this module holds the unnarrowed paste.
+ */
+export function parseCredentialBundle(raw: string): ParseCredentialBundleResult {
+  const result = parseBundleWithSource(raw);
+  return "error" in result ? result : { bundle: result.bundle };
+}
+
+/** Every field of a pasted bundle that can hold a credential, and its validator. */
+const BUNDLE_SECRET_FIELDS: readonly {
+  keys: readonly string[];
+  wellFormed: (value: string) => boolean;
+}[] = [
+  { keys: ["apiKey"], wellFormed: isValidApiKeyFormat },
+  { keys: SERVICE_KEY_FIELDS, wellFormed: isValidServiceKeyFormat },
+  { keys: ["adminKey"], wellFormed: isValidAdminKeyFormat },
+  { keys: ["adminServicePrivateKey"], wellFormed: isValidServiceKeyFormat },
+];
 
 /**
  * Register the two credentials a parsed bundle carries, so redaction knows about
@@ -198,10 +377,50 @@ export function parseCredentialBundle(raw: string): ParseCredentialBundleResult 
  * and it is deliberate: it MUST happen between the parse and the probe, and a
  * caller cannot do it — only this module has seen inside the bundle. The probe's
  * fetch error is exactly the thing that would otherwise carry the key out.
+ *
+ * `source` is the object the bundle was parsed FROM, because the parsed bundle
+ * is not the whole story: a pasted `config.json` can hold both credential pairs,
+ * `apiKey` is tested first, and the narrowing to `kind: "api"` therefore throws
+ * `adminKey`/`adminServicePrivateKey` away before this function would ever see
+ * them. Registering the bundle string does not cover them either — `redactString`
+ * looks for whole registered values inside output, not the other way round.
+ * Defense in depth: no current path echoes the discarded pair, but the probe
+ * error is one string away from doing so.
  */
-function registerBundleSecrets(bundle: CredentialBundle): void {
-  registerSecret(bundle.apiKey);
-  registerSecret(bundle.servicePrivateKey);
+function registerBundleSecrets(bundle: CredentialBundle, source: Record<string, unknown>): void {
+  // The pair that decided the kind, anchored to the typed bundle so it cannot
+  // drift if the field names below ever change.
+  if (bundle.kind === "api") {
+    registerSecret(bundle.apiKey);
+    registerSecret(bundle.servicePrivateKey);
+  } else {
+    registerSecret(bundle.adminKey);
+    registerSecret(bundle.adminServicePrivateKey);
+  }
+
+  // Every OTHER secret-shaped field the paste carried. Gated on the same format
+  // checks the parser uses, because registering a non-credential is not free:
+  // `redactString` matches substrings, so a junk value would scrub that run of
+  // text out of every later line of output. `registerSecret` is backed by a Set
+  // and no-ops on non-strings, so the overlap with the pair above is harmless.
+  //
+  // EVERY spelling, not `pickField`: that returns the first key present and
+  // never looks at the rest, so a paste carrying both `servicePrivateKey` and
+  // `serviceSecret` would leave the second value unregistered — the same leak
+  // this sweep closes for the other pair. Redaction is not parsing: here the
+  // question is "could this string reach an output channel", and both can.
+  // `parseCredentialBundle` still takes the first spelling and is unchanged.
+  for (const { keys, wellFormed } of BUNDLE_SECRET_FIELDS) {
+    for (const key of keys) {
+      const value = source[key];
+      if (typeof value === "string" && wellFormed(value)) registerSecret(value);
+    }
+  }
+}
+
+/** The bearer the probe sends for this bundle. */
+function bundleKey(bundle: CredentialBundle): string {
+  return bundle.kind === "api" ? bundle.apiKey : bundle.adminKey;
 }
 
 /**
@@ -300,6 +519,7 @@ const PROMPTS = {
   keepSigner: "Keep the previous signer? [y/N]: ",
   bundle: "CONSOLE_CREDENTIAL_BUNDLE (paste the whole JSON): ",
   confirmBundle: "Save this key and pin the addresses above? [y/N]: ",
+  confirmSeeds: "Pin these addresses? [y/N]: ",
 } as const;
 
 /**
@@ -501,6 +721,9 @@ async function collectAddressPins(
   ] as const;
 
   for (const { title, label, field, saved, warning } of pins) {
+    // Already decided this run — seeded from argv (and confirmed), or derived
+    // from an admin signer. Asking again would invite a second answer.
+    if (updates[field] !== undefined) continue;
     const entered = await askForAddressPin(addressPrompt(title, saved), label, deps);
     if (entered) {
       updates[field] = entered;
@@ -539,34 +762,110 @@ export function isEmptyWrite(write: CredentialWrite): boolean {
 }
 
 /**
+ * Every write of an admin signer also writes the Key-Admin pin it derives.
+ *
+ * Runtime already falls back to this derivation when no pin is saved; persisting
+ * it at config time is what lets a management-only host provision and a worker
+ * host inherit a pin it can check. A pin supplied alongside (a seed flag, or a
+ * bundle's `keyAdminAddress`) must agree — the same rule `create_bucket`
+ * applies — because the two disagreeing means one of them belongs to a
+ * different signer, and quietly preferring either would hide a swap. Rotation
+ * is the one overwrite: the new derivation replaces whatever was saved, since
+ * the old pin belonged to the old signer.
+ */
+function applyDerivedAdminPin(
+  updates: Partial<ConfigFileData>,
+  signer: string,
+  pin: string | undefined,
+): { derived: string } | { error: string } {
+  const derived = suiAddressFromServiceKey(signer);
+  if (pin !== undefined && normalizeSuiAddress(pin) !== normalizeSuiAddress(derived)) {
+    return {
+      error:
+        `Key-Admin pin ${normalizeSuiAddress(pin)} does not match the address this admin signer ` +
+        `derives (${normalizeSuiAddress(derived)}). One of them is stale — nothing was saved.`,
+    };
+  }
+  updates.adminServicePrivateKey = signer;
+  updates.keyAdminAddress = derived;
+  return { derived };
+}
+
+/**
  * Map a confirmed bundle onto the fields to write and the fields to remove.
  *
- * **The bundle is authoritative for both pins.** An address it carries as `null`
- * means this key has no such address, so any value saved for a PREVIOUS key is
- * cleared rather than left in place: a stale pin is not a harmless leftover, it
- * is the exact mismatch that makes every future `create_bucket` refuse with a
- * message about an address the operator has never seen.
+ * **A WORKING bundle is authoritative for both pins.** An address it carries as
+ * `null` means this key has no such address, so any value saved for a PREVIOUS
+ * key is cleared rather than left in place: a stale pin is not a harmless
+ * leftover, it is the exact mismatch that makes every future `create_bucket`
+ * refuse with a message about an address the operator has never seen.
  *
  * That is the opposite of the manual path (`collectAddressPins`), which merges —
  * skipping a prompt there means "leave it alone", because a bare Enter is an
- * absence of instruction, not a statement that no address exists. The bundle IS
- * that statement.
+ * absence of instruction, not a statement that no address exists. A working
+ * bundle IS that statement.
+ *
+ * A MANAGEMENT bundle is not, for either pin, so it clears neither:
+ * - it never calls `create_bucket`, so it has nothing to say about the owner —
+ *   deleting a saved owner pin here is how a split-credential host (management
+ *   bundle for provisioning, `--api-key`/`--service-key` for everyday use) ends
+ *   up refusing every create;
+ * - its own signer derives the Key-Admin, so `null` there is "not supplied" and
+ *   `applyDerivedAdminPin` fills it.
+ *
+ * Which is why `seeds` reaches this far: an `--owner-address` beside a
+ * management bundle is not a second opinion to reconcile, it is the ONLY
+ * statement of the owner in the whole invocation, so it is written. Accepting
+ * it in `seedDisagreement` and dropping it here would be the worse of the two
+ * failures the refusal was guarding against — a silent discard instead of a
+ * loud refusal. The Key-Admin seed is deliberately NOT applied here: only the
+ * signer can answer that one, and `applyDerivedAdminPin` does it.
+ *
+ * Deciding all of this here, from the kind, is what keeps the callers from each
+ * re-deriving the rule and drifting.
  */
-function bundleWrite(bundle: CredentialBundle): CredentialWrite {
+function bundleWrite(bundle: CredentialBundle, seeds: PinSeeds): CredentialWrite {
   // Same keys as config.json — no rename. A pasted config file writes through.
-  const updates: Partial<ConfigFileData> = {
-    apiKey: bundle.apiKey,
-    servicePrivateKey: bundle.servicePrivateKey,
-  };
+  const updates: Partial<ConfigFileData> = {};
   const clear: (keyof ConfigFileData)[] = [];
 
+  if (bundle.kind === "api") {
+    updates.apiKey = bundle.apiKey;
+    updates.servicePrivateKey = bundle.servicePrivateKey;
+  } else {
+    updates.adminKey = bundle.adminKey;
+    updates.adminServicePrivateKey = bundle.adminServicePrivateKey;
+  }
+
   if (bundle.webAccountAddress !== null) updates.webAccountAddress = bundle.webAccountAddress;
-  else clear.push("webAccountAddress");
+  else if (bundle.kind === "api") clear.push("webAccountAddress");
+  else if (seeds.ownerAddress !== undefined) {
+    updates.webAccountAddress = normalizeSuiAddress(seeds.ownerAddress);
+  }
 
   if (bundle.keyAdminAddress !== null) updates.keyAdminAddress = bundle.keyAdminAddress;
-  else clear.push("keyAdminAddress");
+  else if (bundle.kind === "api") clear.push("keyAdminAddress");
 
   return { updates, clear };
+}
+
+/**
+ * Does a pin still exist once this write lands — because the write sets it, or
+ * because the write leaves the saved one alone?
+ *
+ * The `NO_*_PIN_WARNING`s are statements about the resulting config, not about
+ * the bundle, and the two stopped agreeing once a management bundle was allowed
+ * to leave a pin it does not own untouched. Warning "create_bucket will REFUSE
+ * every request" at a host whose saved owner pin just survived is the same class
+ * of false statement as clearing a pin the write had already derived.
+ */
+function pinSurvives(
+  field: "webAccountAddress" | "keyAdminAddress",
+  write: CredentialWrite,
+  existing: ConfigFileData,
+): boolean {
+  if (write.updates[field] !== undefined) return true;
+  return existing[field] !== undefined && !write.clear.includes(field);
 }
 
 /**
@@ -582,7 +881,11 @@ function bundleWrite(bundle: CredentialBundle): CredentialWrite {
  * said they do not recognise this account, and half-saving it would leave a
  * credential whose pins never arrived.
  */
-async function collectBundle(deps: CollectDeps): Promise<CredentialWrite> {
+async function collectBundle(
+  deps: CollectDeps,
+  seeds: PinSeeds,
+  existing: ConfigFileData,
+): Promise<CredentialWrite> {
   while (true) {
     const raw = (await deps.ask(PROMPTS.bundle, { masked: true })).trim();
     if (!raw) {
@@ -590,7 +893,7 @@ async function collectBundle(deps: CollectDeps): Promise<CredentialWrite> {
       continue;
     }
 
-    const parsed = parseCredentialBundle(raw);
+    const parsed = parseBundleWithSource(raw);
     if ("error" in parsed) {
       // parseCredentialBundle's messages name the field, never the value.
       deps.fail(
@@ -599,31 +902,133 @@ async function collectBundle(deps: CollectDeps): Promise<CredentialWrite> {
       continue;
     }
 
+    // Before the probe, so a bundle for the wrong account costs no round trip:
+    // the operator's next act is to paste a different one either way.
+    const disagreement = seedDisagreement(parsed.bundle, seeds);
+    if (disagreement) {
+      deps.fail(disagreement);
+      continue;
+    }
+
     // Before the probe: its fetch error can embed the Bearer header.
-    registerBundleSecrets(parsed.bundle);
-    const problem = verdictMessage(await deps.probe("api", parsed.bundle.apiKey), "api");
+    registerBundleSecrets(parsed.bundle, parsed.source);
+    const bundle = parsed.bundle;
+    const probeKind = bundle.kind;
+    // Same warning the Management key prompt gives, for the same reason: this
+    // paste configures a host that can mint credentials.
+    if (probeKind === "admin") deps.warn(ADMIN_WARNING);
+    const problem = verdictMessage(await deps.probe(probeKind, bundleKey(bundle)), probeKind);
     if (problem) {
       deps.fail(problem);
       continue;
     }
-    deps.ok("API key verified");
+    deps.ok(probeKind === "api" ? "API key verified" : "Management key verified");
 
-    const { webAccountAddress, keyAdminAddress } = parsed.bundle;
+    const write = bundleWrite(bundle, seeds);
+    if (bundle.kind === "admin") {
+      const pinned = applyDerivedAdminPin(
+        write.updates,
+        bundle.adminServicePrivateKey,
+        // The bundle's own pin when it has one; otherwise the seed, which
+        // `seedDisagreement` deliberately left for this comparison because only
+        // the signer can answer it.
+        bundle.keyAdminAddress ?? seeds.keyAdminAddress,
+      );
+      // A bundle that disagrees with its own signer cannot be fixed by pasting
+      // it again, so this refuses outright rather than re-prompting.
+      if ("error" in pinned) {
+        deps.fail(pinned.error);
+        return { updates: {}, clear: [] };
+      }
+    }
+
     deps.warn("Check these — they decide who ends up owning a bucket this host creates.");
     deps.info("bucket owner (webAccountAddress):");
-    deps.show(webAccountAddress ?? "(none in this bundle)");
+    // The RESOLVED value, matching the Key-Admin line below: an `--owner-address`
+    // seeding an owner-less management bundle is written, so showing the bundle's
+    // own empty field would make the `[y/N]` confirm a value it never displayed.
+    deps.show(write.updates.webAccountAddress ?? "(none in this bundle)");
     deps.info("Key-Admin (keyAdminAddress):");
-    deps.show(keyAdminAddress ?? "(none in this bundle)");
+    deps.show(write.updates.keyAdminAddress ?? "(none in this bundle)");
 
     if (!isAffirmative(await deps.ask(PROMPTS.confirmBundle, { masked: false }))) {
       deps.info("Nothing was saved. Re-run and paste the bundle for this account.");
       return { updates: {}, clear: [] };
     }
 
-    if (webAccountAddress === null) deps.warn(NO_OWNER_PIN_WARNING);
-    if (keyAdminAddress === null) deps.warn(NO_KEY_ADMIN_PIN_WARNING);
-    return bundleWrite(parsed.bundle);
+    if (!pinSurvives("webAccountAddress", write, existing)) deps.warn(NO_OWNER_PIN_WARNING);
+    if (!pinSurvives("keyAdminAddress", write, existing)) deps.warn(NO_KEY_ADMIN_PIN_WARNING);
+    return write;
   }
+}
+
+/** Address pins that arrived on the command line (`--owner-address`, `--key-admin-address`). */
+export type PinSeeds = {
+  ownerAddress?: string | undefined;
+  keyAdminAddress?: string | undefined;
+};
+
+/**
+ * Every complaint about the seed flags, in flag order.
+ *
+ * A list, not the first problem: two bad flags are two things to fix, and
+ * reporting one at a time makes the operator re-run to discover the next. The
+ * non-bundle silent branch already names both, and this is what lets the bundle
+ * branch match it.
+ */
+function seedFlagErrors(seeds: PinSeeds): string[] {
+  return [
+    addressFlagError(seeds.ownerAddress, "--owner-address"),
+    addressFlagError(seeds.keyAdminAddress, "--key-admin-address"),
+  ].filter((problem): problem is string => problem !== undefined);
+}
+
+/**
+ * A seed flag and a bundle both name a pin. Equal is one instruction said
+ * twice; anything else is two instructions, and choosing one silently would
+ * hide exactly the swap the pins exist to catch. The bundle's `null` counts as
+ * an answer here: "this key has no Key-Admin" disagrees with a
+ * `--key-admin-address`. No seed means the bundle is authoritative, as before.
+ */
+function seedDisagreement(bundle: CredentialBundle, seeds: PinSeeds): string | undefined {
+  const checks = [
+    {
+      flag: "--owner-address",
+      seed: seeds.ownerAddress,
+      bundled: bundle.webAccountAddress,
+      // Same shape as the Key-Admin case below, for the same reason. A
+      // management bundle never calls `create_bucket`, so it makes no claim
+      // about the owner (`bundleWrite`'s docblock says so): its `null` is "not
+      // supplied", and answering a `--owner-address` with "this key has no such
+      // address" states something the bundle never said — then loops on a
+      // `continue` that no re-paste of the same bundle can escape. The seed IS
+      // the answer here, and `bundleWrite` writes it. A WORKING bundle is still
+      // authoritative for the owner, so its `null` remains a real disagreement.
+      derivable: bundle.kind === "admin",
+    },
+    {
+      flag: "--key-admin-address",
+      seed: seeds.keyAdminAddress,
+      bundled: bundle.keyAdminAddress,
+      // A management bundle's `null` Key-Admin is "not supplied", not "there is
+      // none" — its signer derives the address (see `bundleWrite`). Refusing the
+      // seed against that absence rejected the Console's own Connect MCP command,
+      // and did it with a `continue` that no paste of the same bundle could
+      // escape. `applyDerivedAdminPin` makes the real comparison instead.
+      derivable: bundle.kind === "admin",
+    },
+  ];
+  for (const { flag, seed, bundled, derivable } of checks) {
+    if (seed === undefined) continue;
+    if (bundled === null && derivable) continue;
+    if (bundled !== null && normalizeSuiAddress(seed) === normalizeSuiAddress(bundled)) continue;
+    return (
+      `${flag} is ${normalizeSuiAddress(seed)}, but the bundle says ` +
+      `${bundled === null ? "this key has no such address" : normalizeSuiAddress(bundled)}. ` +
+      `One of them is stale — nothing was saved.`
+    );
+  }
+  return undefined;
 }
 
 /**
@@ -633,16 +1038,33 @@ async function collectBundle(deps: CollectDeps): Promise<CredentialWrite> {
  * handler exits).
  *
  * `existing` is the currently-saved config, needed only to notice that replacing
- * the API key would strand the signer registered for the OLD key.
+ * the API key would strand the signer registered for the OLD key. `seeds` are
+ * the two address flags: they skip their own prompt but not the confirmation.
  */
 export async function collectCredentials(
   choice: CredentialChoice,
   deps: CollectDeps,
   existing: ConfigFileData = {},
+  seeds: PinSeeds = {},
 ): Promise<CredentialWrite> {
+  // Before anything is asked, and for EVERY choice: a malformed seed is a bad
+  // command line, and no answer to any prompt can fix it — re-prompting would be
+  // the inescapable loop C1 removed. Both write paths persist the seed
+  // (`bundleWrite` for the bundle choice, the confirmed `seeded` list below for
+  // the others) and `normalizeSuiAddress` pads junk rather than refusing it, so
+  // an unvalidated seed reaches the config file and is silently dropped on the
+  // next read — or, when empty, kept as the zero address. `parseArgs` already
+  // checks the real CLI; this keeps the exported function honest on its own,
+  // which is the whole reason the bundle path stopped trusting its caller.
+  const seedProblems = seedFlagErrors(seeds);
+  if (seedProblems.length > 0) {
+    for (const problem of seedProblems) deps.fail(problem);
+    return { updates: {}, clear: [] };
+  }
+
   // One paste carries the key, its signer and both pins, so this flow shares
   // nothing with the field-by-field prompts below.
-  if (choice === "bundle") return collectBundle(deps);
+  if (choice === "bundle") return collectBundle(deps, seeds, existing);
 
   const updates: Partial<ConfigFileData> = {};
   const clear: (keyof ConfigFileData)[] = [];
@@ -675,13 +1097,55 @@ export async function collectCredentials(
   if (choice === "admin" || choice === "both") {
     deps.warn(ADMIN_WARNING);
     updates.adminKey = await askForKey("admin", deps);
-    updates.adminServicePrivateKey = await askForSigner("admin", deps);
+    const signer = await askForSigner("admin", deps);
+    const pinned = applyDerivedAdminPin(updates, signer, seeds.keyAdminAddress);
+    if ("error" in pinned) {
+      deps.fail(pinned.error);
+      return { updates: {}, clear: [] };
+    }
+    deps.info("Key-Admin (derived from the signer just entered):");
+    deps.show(pinned.derived);
+  }
+
+  // Seeds: pins that arrived on the command line, validated as addresses at the
+  // top of this function. Shown in full and confirmed as a set — the same
+  // trust step a pasted bundle gets — because argv came over the same clipboard
+  // a bundle would. A Key-Admin seed that a derivation has already checked equal
+  // is not asked about again: it was computed, not read.
+  const seeded: { label: string; field: "webAccountAddress" | "keyAdminAddress"; value: string }[] =
+    [];
+  // Deliberately NOT gated on api/both the way `collectAddressPins` is below.
+  // That gate exists because there is nothing to ASK a provisioning-only host —
+  // it never calls `create_bucket`. A flag is not a question: the operator typed
+  // this address, and a host provisioned with a management key may later gain a
+  // working one. The cost of saving it is a pin that may sit unused; the cost of
+  // gating it is discarding an explicit instruction with no message. The second
+  // is worse, so the seed is written whatever the choice.
+  if (seeds.ownerAddress !== undefined) {
+    seeded.push({ label: "Bucket owner", field: "webAccountAddress", value: seeds.ownerAddress });
+  }
+  if (seeds.keyAdminAddress !== undefined && updates.keyAdminAddress === undefined) {
+    seeded.push({ label: "Key-Admin", field: "keyAdminAddress", value: seeds.keyAdminAddress });
+  }
+  if (seeded.length > 0) {
+    deps.warn(
+      "Check these — they came from the install command and decide who ends up owning a bucket this host creates.",
+    );
+    for (const { label, value } of seeded) {
+      deps.info(`${label}:`);
+      deps.show(value);
+    }
+    if (!isAffirmative(await deps.ask(PROMPTS.confirmSeeds, { masked: false }))) {
+      deps.info("Nothing was saved. Re-run without the address flags to enter the pins by hand.");
+      return { updates: {}, clear: [] };
+    }
+    for (const { field, value } of seeded) updates[field] = value;
   }
 
   // Last, after both credential pairs, so the key/signer prompts stay contiguous
   // and the pins read as their own section. Only offered where a working key was
   // configured: the pins govern `create_bucket`, which a management-only
-  // provisioning host never calls.
+  // provisioning host never calls. Seeded/derived pins skip their prompt.
   if (choice === "api" || choice === "both") {
     await collectAddressPins(updates, deps, existing);
   }
@@ -689,13 +1153,53 @@ export async function collectCredentials(
   return { updates, clear };
 }
 
-/** The flags whose fields a `--credential-bundle` also supplies. */
-const BUNDLE_CONFLICTS: { field: keyof CredentialValues; flag: string }[] = [
-  { field: "apiKey", flag: "--api-key" },
-  { field: "serviceKey", flag: "--service-key" },
-  { field: "ownerAddress", flag: "--owner-address" },
-  { field: "keyAdminAddress", flag: "--key-admin-address" },
-];
+/**
+ * The flags a `--credential-bundle` of each kind also supplies. A bundle
+ * REPLACES the flags of its own pair and composes with the other pair — a
+ * working bundle next to `--admin-key`/`--admin-signer` is the split-credential
+ * provisioning host, an admin bundle next to `--api-key`/`--service-key` is the
+ * same host set up the other way round. Address flags are not conflicts:
+ * `seedDisagreement` decides them.
+ */
+const BUNDLE_CONFLICTS: Record<
+  CredentialBundle["kind"],
+  { field: keyof CredentialValues; flag: string }[]
+> = {
+  api: [
+    { field: "apiKey", flag: "--api-key" },
+    { field: "serviceKey", flag: "--service-key" },
+  ],
+  admin: [
+    { field: "adminKey", flag: "--admin-key" },
+    { field: "adminSigner", flag: "--admin-signer" },
+  ],
+};
+
+/**
+ * The complaint about a flag-supplied address, or undefined when it is absent or
+ * valid.
+ *
+ * Split out of `validateAddressFlag` so the BUNDLE path can run the same check
+ * without also writing the value — there the write goes through `bundleWrite`,
+ * not straight into `updates`. That path needs it: `normalizeSuiAddress` does
+ * not reject junk, it zero-pads it (`0x0000…totally-not-an-address`), and
+ * `loadConfigFile` then re-checks `isValidSuiAddress` and silently DROPS the
+ * pin. The operator is told an address was saved and every later `create_bucket`
+ * refuses — the silent discard this whole flow exists to prevent.
+ *
+ * Names the flag but never the value (see the no-echo precedent in cliArgs.ts):
+ * this flag is a plausible place for a mis-pasted secret to land.
+ */
+function addressFlagError(value: string | undefined, flag: string): string | undefined {
+  // `undefined` is "not supplied"; EMPTY is not. `normalizeSuiAddress("")` is
+  // the zero address, and unlike zero-padded junk `isValidSuiAddress` ACCEPTS
+  // that, so `loadConfigFile` keeps it — an empty seed would persist as a wrong
+  // pin that nothing downstream ever rejects. Refusing is the only reading that
+  // does not silently invent an owner. (`isValidSuiAddress("")` is false, so
+  // dropping the truthiness check is all this takes.)
+  if (value === undefined || isValidSuiAddress(value)) return undefined;
+  return `${flag} is not a valid Sui address (expected 0x followed by 64 hex characters).`;
+}
 
 /**
  * Validate one flag-supplied address pin into `updates`.
@@ -703,9 +1207,6 @@ const BUNDLE_CONFLICTS: { field: keyof CredentialValues; flag: string }[] = [
  * Merge semantics, like the interactive manual path: an address flag SETS its
  * own field and never touches the other pin. Only a bundle is authoritative
  * enough to remove a pin it did not supply.
- *
- * The error names the flag but never the value (see the no-echo precedent in
- * cliArgs.ts): this flag is a plausible place for a mis-pasted secret to land.
  */
 function validateAddressFlag(
   value: string | undefined,
@@ -714,9 +1215,12 @@ function validateAddressFlag(
   updates: Partial<ConfigFileData>,
   errors: string[],
 ): void {
-  if (!value) return;
-  if (!isValidSuiAddress(value)) {
-    errors.push(`${flag} is not a valid Sui address (expected 0x followed by 64 hex characters).`);
+  // `undefined`, not falsy: an empty flag is refused by `addressFlagError`
+  // rather than treated as absent, so every path answers `""` the same way.
+  if (value === undefined) return;
+  const problem = addressFlagError(value, flag);
+  if (problem !== undefined) {
+    errors.push(problem);
     return;
   }
   updates[field] = value;
@@ -749,9 +1253,9 @@ export async function validateSilent(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CredentialWrite & { errors: string[]; warnings: string[] }> {
   const updates: Partial<ConfigFileData> = {};
-  const clear: (keyof ConfigFileData)[] = [];
+  let clear: (keyof ConfigFileData)[] = [];
   const errors: string[] = [];
-  const warnings: string[] = [];
+  let warnings: string[] = [];
 
   if (
     !values.apiKey &&
@@ -767,70 +1271,125 @@ export async function validateSilent(
       updates,
       clear,
       warnings,
+      // This list is exactly what the installer reads under `--silent`, in both
+      // directions. `CONSOLE_*` was not: `ENV_FLAGS` (src/cliArgs.ts) folds in
+      // the five credential variables below, and `parseArgs` folds in
+      // CONSOLE_MCP_ALLOWED_DIRS (`ALLOWED_DIRS_ENV`, src/pathSandbox.ts) —
+      // which satisfies this same guard on its own, so leaving it out would
+      // misdescribe the CLI just as the wildcard did, only in the other
+      // direction. CONSOLE_WEB_ACCOUNT_ADDRESS / CONSOLE_KEY_ADMIN_ADDRESS stay
+      // absent on purpose: the SERVER reads those at runtime and the installer
+      // must not persist them, so the address pins are offered by their flag
+      // spelling, which is the only one that reaches this code.
       errors: [
-        "No credentials given. Pass --credential-bundle/--api-key/--admin-key, " +
-          "--allowed-dirs, or set CONSOLE_* and use --silent.",
+        "No credentials given. Pass --credential-bundle, --api-key/--service-key, " +
+          "--admin-key/--admin-signer, --owner-address/--key-admin-address or " +
+          "--allowed-dirs — or, with --silent, set CONSOLE_CREDENTIAL_BUNDLE, " +
+          "CONSOLE_API_KEY, CONSOLE_SERVICE_PRIVATE_KEY, CONSOLE_ADMIN_KEY, " +
+          "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY or CONSOLE_MCP_ALLOWED_DIRS.",
       ],
     };
   }
 
-  // The bundle REPLACES the working-credential flags — it supplies the same
-  // fields — but composes with the management pair below, which it says nothing
-  // about. Dropping `--admin-key` silently because a bundle was also passed
-  // would be the worst of the three options.
+  // A bundle REPLACES the flags of its own pair — it supplies the same fields —
+  // and composes with the other pair, which it says nothing about. Dropping
+  // `--admin-key` silently because a working bundle was also passed would be the
+  // worst of the three options. The conflict set therefore cannot be chosen
+  // until the bundle has been parsed and its kind is known.
+  let bundleKind: CredentialBundle["kind"] | null = null;
   if (values.bundle) {
-    // Two sources of truth for the same fields is not a merge problem, it is an
-    // ambiguity: whichever won, the operator asked for something else. Refuse.
-    const conflicts = BUNDLE_CONFLICTS.filter(({ field }) => values[field]).map(({ flag }) => flag);
-    if (conflicts.length > 0) {
-      // The bundle may have been passed by nobody. `parseArgs` folds
-      // CONSOLE_CREDENTIAL_BUNDLE into this field whenever `--silent` is in
-      // effect, so an operator who exported it during install and later runs
-      // `config --api-key hbr_… --silent` to swap keys reaches this refusal
-      // having typed no `--credential-bundle` — and a message naming that flag
-      // sends them searching their own command line for it. The remedy is to
-      // unset the variable, which the message can only say if it knows the
-      // variable is what supplied the value. `env` is the same snapshot
-      // `parseArgs` read, so this is that read repeated rather than a guess.
-      //
-      // The refusal itself stays: it is tempting to let explicit flags simply
-      // beat an env-sourced bundle, but the branch below is all-or-nothing —
-      // a bundle takes the whole write and the individual flags are not
-      // consulted at all — so "exempting" the env bundle would silently discard
-      // the `--api-key` the operator did type and save the bundle's old key
-      // instead. A refusal that names the right knob is the smaller failure.
-      const fromEnv = (env["CONSOLE_CREDENTIAL_BUNDLE"] ?? "").trim() === values.bundle;
-      errors.push(
-        fromEnv
-          ? `CONSOLE_CREDENTIAL_BUNDLE is set in this environment, and \`--silent\` reads it as ` +
-              `--credential-bundle — which already carries the values ${conflicts.join(", ")} ` +
-              `supplies. Unset CONSOLE_CREDENTIAL_BUNDLE, or drop ${conflicts.join(", ")}: one ` +
-              `source or the other, not both.`
-          : `--credential-bundle already carries the values ${conflicts.join(", ")} supplies. ` +
-              `Pass one or the other, not both.`,
-      );
+    const parsed = parseBundleWithSource(values.bundle);
+    if ("error" in parsed) {
+      // Prefixed with the flag, not the value — the bundle is a live credential.
+      errors.push(`--credential-bundle: ${parsed.error}.`);
     } else {
-      const parsed = parseCredentialBundle(values.bundle);
-      if ("error" in parsed) {
-        // Prefixed with the flag, not the value — the bundle is a live credential.
-        errors.push(`--credential-bundle: ${parsed.error}.`);
+      bundleKind = parsed.bundle.kind;
+      // Two sources of truth for the same fields is not a merge problem, it is an
+      // ambiguity: whichever won, the operator asked for something else. Refuse.
+      const conflicts = BUNDLE_CONFLICTS[bundleKind]
+        .filter(({ field }) => values[field])
+        .map(({ flag }) => flag);
+      if (conflicts.length > 0) {
+        // The bundle may have been passed by nobody. `parseArgs` folds
+        // CONSOLE_CREDENTIAL_BUNDLE into this field whenever `--silent` is in
+        // effect, so an operator who exported it during install and later runs
+        // `config --api-key hbr_… --silent` to swap keys reaches this refusal
+        // having typed no `--credential-bundle` — and a message naming that flag
+        // sends them searching their own command line for it. The remedy is to
+        // unset the variable, which the message can only say if it knows the
+        // variable is what supplied the value. `env` is the same snapshot
+        // `parseArgs` read, so this is that read repeated rather than a guess.
+        //
+        // The refusal itself stays: it is tempting to let explicit flags simply
+        // beat an env-sourced bundle, but the branch below is all-or-nothing —
+        // a bundle takes the whole write and the individual flags are not
+        // consulted at all — so "exempting" the env bundle would silently discard
+        // the `--api-key` the operator did type and save the bundle's old key
+        // instead. A refusal that names the right knob is the smaller failure.
+        const fromEnv = (env["CONSOLE_CREDENTIAL_BUNDLE"] ?? "").trim() === values.bundle;
+        errors.push(
+          fromEnv
+            ? `CONSOLE_CREDENTIAL_BUNDLE is set in this environment, and \`--silent\` reads it as ` +
+                `--credential-bundle — which already carries the values ${conflicts.join(", ")} ` +
+                `supplies. Unset CONSOLE_CREDENTIAL_BUNDLE, or drop ${conflicts.join(", ")}: one ` +
+                `source or the other, not both.`
+            : `--credential-bundle already carries the values ${conflicts.join(", ")} supplies. ` +
+                `Pass one or the other, not both.`,
+        );
       } else {
-        // Before the probe, whose fetch error can embed the Bearer header.
-        registerBundleSecrets(parsed.bundle);
-        const problem = verdictMessage(await probe("api", parsed.bundle.apiKey), "api");
-        if (problem) errors.push(problem);
+        // An address flag beside a bundle is a second statement of the same pin,
+        // not a conflict: equal proceeds, anything else refuses (see
+        // `seedDisagreement`).
+        // One seeds object for both the check and the write: `bundleWrite`
+        // applies the owner seed a management bundle cannot answer for itself,
+        // so the two must be looking at the same values.
+        const seeds: PinSeeds = {
+          ownerAddress: values.ownerAddress,
+          keyAdminAddress: values.keyAdminAddress,
+        };
+        // Validated with the same check the non-bundle branch uses, and BEFORE
+        // the comparison: `seedDisagreement` normalizes both sides, so a junk
+        // seed would otherwise be reported (and, for an owner-less management
+        // bundle, written) as zero-padded nonsense. Both flags are reported,
+        // matching the non-bundle branch — the comparison only runs once both
+        // are well-formed, because there is nothing meaningful to compare
+        // against a malformed one.
+        const seedProblems = seedFlagErrors(seeds);
+        if (seedProblems.length === 0) {
+          const disagreement = seedDisagreement(parsed.bundle, seeds);
+          if (disagreement) seedProblems.push(disagreement);
+        }
+        if (seedProblems.length > 0) errors.push(...seedProblems);
         else {
-          // No confirmation step here, and none is missing: passing the bundle on
-          // the command line (or exporting it and asking for --silent) IS the
-          // deliberate, explicit act the interactive `[y/N]` exists to obtain.
-          const write = bundleWrite(parsed.bundle);
-          Object.assign(updates, write.updates);
-          clear.push(...write.clear);
-          // The interactive path says these out loud at exactly this point; a
-          // scripted run has no prompt to say them on, so they ride back on the
-          // result instead of being dropped.
-          if (parsed.bundle.webAccountAddress === null) warnings.push(NO_OWNER_PIN_WARNING);
-          if (parsed.bundle.keyAdminAddress === null) warnings.push(NO_KEY_ADMIN_PIN_WARNING);
+          // Before the probe, whose fetch error can embed the Bearer header.
+          registerBundleSecrets(parsed.bundle, parsed.source);
+          const probeKind = parsed.bundle.kind;
+          const problem = verdictMessage(
+            await probe(probeKind, bundleKey(parsed.bundle)),
+            probeKind,
+          );
+          if (problem) errors.push(problem);
+          else {
+            const write = bundleWrite(parsed.bundle, seeds);
+            if (parsed.bundle.kind === "admin") {
+              const pinned = applyDerivedAdminPin(
+                write.updates,
+                parsed.bundle.adminServicePrivateKey,
+                // Bundle first, then the flag `seedDisagreement` left for the
+                // signer to answer — see `collectBundle`.
+                parsed.bundle.keyAdminAddress ?? values.keyAdminAddress,
+              );
+              if ("error" in pinned) errors.push(pinned.error);
+            }
+            Object.assign(updates, write.updates);
+            clear.push(...write.clear);
+            if (!pinSurvives("webAccountAddress", write, existing)) {
+              warnings.push(NO_OWNER_PIN_WARNING);
+            }
+            if (!pinSurvives("keyAdminAddress", write, existing)) {
+              warnings.push(NO_KEY_ADMIN_PIN_WARNING);
+            }
+          }
         }
       }
     }
@@ -849,7 +1408,12 @@ export async function validateSilent(
       updates,
       errors,
     );
+  }
 
+  // The working pair: from flags when there is no bundle, or beside an ADMIN
+  // bundle, which says nothing about the working key. A working bundle already
+  // refused these flags as a conflict.
+  if (bundleKind !== "api") {
     if (values.apiKey) {
       const mismatch = mismatchMessage("api", values.apiKey);
       if (mismatch) errors.push(mismatch);
@@ -874,7 +1438,8 @@ export async function validateSilent(
     }
   }
 
-  if (values.adminKey || values.adminSigner) {
+  // The management pair, symmetric: never beside an admin bundle (refused above).
+  if (bundleKind !== "admin" && (values.adminKey || values.adminSigner)) {
     const beforeAdminErrors = errors.length;
 
     // Check the key's own type/format first, independent of whether its pair
@@ -903,7 +1468,23 @@ export async function validateSilent(
       if (problem) errors.push(problem);
       else {
         updates.adminKey = values.adminKey;
-        updates.adminServicePrivateKey = values.adminSigner;
+        // The pin to check is whatever THIS write has already resolved, not the
+        // flag: `validateAddressFlag` puts `--key-admin-address` there, and a
+        // working bundle beside this pair puts the bundle's own pin there. Both
+        // are a second source naming the same address, and both must agree —
+        // reading the flag alone let a bundle's pin be replaced by the
+        // derivation with no comparison and no message.
+        const pinned = applyDerivedAdminPin(updates, values.adminSigner, updates.keyAdminAddress);
+        if ("error" in pinned) errors.push(pinned.error);
+        // The bundle branch queued both of these for a `null` pin, and this block
+        // has just answered it. `mergeConfigFile` applies `clear` after
+        // `updates`, so the queued clear would delete the address just derived;
+        // the queued warning would tell the operator this host has no Key-Admin
+        // immediately after saving one.
+        else {
+          clear = clear.filter((field) => field !== "keyAdminAddress");
+          warnings = warnings.filter((warning) => warning !== NO_KEY_ADMIN_PIN_WARNING);
+        }
       }
     }
   }

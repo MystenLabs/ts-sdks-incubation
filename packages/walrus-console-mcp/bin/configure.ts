@@ -20,6 +20,7 @@ import {
   savedLabel,
   showRow,
   stepAllowedDirs,
+  validateSeedDirs,
 } from "./install.js";
 
 /**
@@ -45,6 +46,13 @@ const fail = (msg: string) => `${styleText("red", "✖")} ${msg}`;
 const warn = (msg: string) => `${styleText("yellow", "!")} ${msg}`;
 const info = (msg: string) => styleText("dim", `· ${msg}`);
 
+/**
+ * POSIX single-quoting for a path printed inside a copy-pasteable command. A
+ * single quote cannot appear inside single quotes, so an embedded one closes
+ * the string, escapes itself, and reopens it — the shape `'\''`.
+ */
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
 /** Kept in sync by hand with the copy in bin/install.ts — see the note there. */
 type ConfigureChoice = CredentialChoice | "paths";
 
@@ -64,7 +72,22 @@ const CHOICES: { choice: ConfigureChoice; label: string; hint: string }[] = [
   },
 ];
 
-export async function runConfigure(argv: string[] = []): Promise<number> {
+/**
+ * Injectable seam for the credential chooser, so the menu's branches — in
+ * particular "File access folders", which is the only interactive consumer of
+ * `--allowed-dirs` — are testable without a terminal.
+ */
+export interface RunConfigureDeps {
+  select?: typeof selectOne;
+  /** The readline interface the prompts read from — pipes, under test. */
+  createReadline?: () => readline.Interface;
+}
+
+export async function runConfigure(
+  argv: string[] = [],
+  deps: RunConfigureDeps = {},
+): Promise<number> {
+  const select = deps.select ?? selectOne;
   const args = parseArgs(argv, process.env);
   if (args.errors.length > 0) {
     for (const err of args.errors) print(fail(err));
@@ -109,13 +132,36 @@ export async function runConfigure(argv: string[] = []): Promise<number> {
     return 0;
   }
 
+  // Refuse a bad --allowed-dirs before the menu is shown, rather than per
+  // branch. Validating inside the branches gave the SAME typo three different
+  // answers: `install` exits 1, the "File access folders" row exits 1, and a
+  // credential row exited 0 while printing a remedy command that could not run.
+  // One check up front collapses them into one answer, guarantees the notice on
+  // the credential branches can only name folders that already validated, and
+  // refuses the typo before the operator navigates a menu at all.
+  //
+  // Interactive path only: `--silent` returned above, where validateSilent
+  // collects this error alongside every other one rather than stopping here.
+  const seededDirs = args.values.allowedDirs ?? [];
+  if (seededDirs.length > 0) {
+    const { errors } = validateSeedDirs(seededDirs);
+    if (errors.length > 0) {
+      // Unindented and unwrapped, like the flag refusals above: a clamped path
+      // is not a named path. stepAllowedDirs keeps its own check as a guard, but
+      // it can no longer be reached with a bad seed, so nothing prints twice.
+      for (const err of errors) print(fail(err));
+      print(info("Nothing was saved. Fix the folder (or drop the flag) and re-run."));
+      return 1;
+    }
+  }
+
   const { NO_COLOR, FORCE_COLOR } = process.env;
   if (process.stdout.isTTY && !NO_COLOR && !FORCE_COLOR) {
     Object.assign(process.env, { FORCE_COLOR: "3" });
   }
 
   print("");
-  const index = await selectOne(
+  const index = await select(
     CHOICES.map(({ label, hint }) => ({ label, hint })),
     {
       title: "CHOOSE CREDENTIALS",
@@ -131,9 +177,52 @@ export async function runConfigure(argv: string[] = []): Promise<number> {
   const choice = CHOICES[index]?.choice ?? "api";
   if (choice === "paths") {
     gap();
-    await stepAllowedDirs({ step: "2/2" });
+    // This branch never reaches the credential step, which is the only consumer
+    // of the two address seeds. Say so: silently discarding a `--owner-address`
+    // the operator typed is how a pin goes missing and every create_bucket
+    // refuses later, far from the command that dropped it.
+    const seeded: [flag: string, value: string][] = [];
+    const { ownerAddress, keyAdminAddress } = args.values;
+    if (ownerAddress) seeded.push(["--owner-address", ownerAddress]);
+    if (keyAdminAddress) seeded.push(["--key-admin-address", keyAdminAddress]);
+    if (seeded.length > 0) {
+      const names = seeded.map(([flag]) => flag).join(" and ");
+      print(warn(`${names} not applied — "File access folders" changes folders only.`));
+      print(
+        info(
+          `Apply ${seeded.length === 1 ? "it" : "them"} with: walrus-console-mcp config --silent ` +
+            seeded.map(([flag, value]) => `${flag} ${value}`).join(" "),
+        ),
+      );
+      print("");
+    }
+    // `--allowed-dirs` beside an address seed is deliberately NOT silent (see
+    // ParsedArgs.silent), so this call is the only thing that can honour it.
+    const write = await stepAllowedDirs({ step: "2/2", seed: args.values.allowedDirs });
     gap();
-    return 0;
+    // A refused folder is a failed run, not a quiet no-op.
+    return write.seedRejected ? 1 : 0;
+  }
+
+  // The mirror image of the notice above. Every branch from here on is a
+  // credential branch, and none of them reaches stepAllowedDirs — so a
+  // `--allowed-dirs` typed alongside an address seed (which is what keeps this
+  // argv interactive in the first place) would be discarded in silence under a
+  // green "Configuration saved". Report it; do not quietly widen what the row
+  // the operator picked is supposed to do.
+  if (seededDirs.length > 0) {
+    print("");
+    print(warn("--allowed-dirs not applied — this row changes credentials only."));
+    print(
+      info(
+        "Apply it with: walrus-console-mcp config " +
+          // Single-quoted, because a folder with a space in it would otherwise
+          // come back from the shell as two argv entries — parseArgs then reads
+          // the first word as the folder and rejects the rest, so the remedy
+          // this notice promises would truncate the very path it names.
+          seededDirs.map((dir) => `--allowed-dirs ${shellQuote(dir)}`).join(" "),
+      ),
+    );
   }
 
   gap();
@@ -166,7 +255,9 @@ export async function runConfigure(argv: string[] = []): Promise<number> {
   const shown = (msg: string) => print(showRow(msg, width));
   railed("");
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl =
+    deps.createReadline?.() ??
+    readline.createInterface({ input: process.stdin, output: process.stdout });
 
   // Tracks whether the prompts have completed, so a stdin close/SIGINT before
   // that point (Ctrl-D, an empty pipe, a script that forgot a flag) is treated
@@ -218,6 +309,10 @@ export async function runConfigure(argv: string[] = []): Promise<number> {
         // Read fresh: this CLI exists to change credentials, so the saved signer it
         // must reason about is whatever is on disk right now.
         loadConfigFile(),
+        {
+          ownerAddress: args.values.ownerAddress,
+          keyAdminAddress: args.values.keyAdminAddress,
+        },
       ).then((write) => ({ cancelled: false as const, write })),
       cancelled.then(() => ({ cancelled: true as const, write: undefined })),
     ]);

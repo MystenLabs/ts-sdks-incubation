@@ -46,11 +46,6 @@ export const CONSOLE_WEB_URLS = {
 export const DEFAULT_CONSOLE_API_BASE_URL = CONSOLE_API_BASE_URLS.mainnet;
 
 /**
- * True if `raw` is an allowed Console base URL: https to `walrus.xyz` /
- * `*.walrus.xyz` (boundary-safe suffix), or http(s) to loopback
- * (localhost / 127.0.0.1 / ::1). Anything unparseable or off-policy is rejected.
- */
-/**
  * User-content download hosts (COMG-817).
  *
  * Once the Console activates `UGC_HOST`, the Bearer download endpoint stops
@@ -88,6 +83,11 @@ export function isAllowedUgcRedirectUrl(
   return url.hostname.toLowerCase() === UGC_DOWNLOAD_HOSTS[network];
 }
 
+/**
+ * True if `raw` is an allowed Console base URL: https to `walrus.xyz` /
+ * `*.walrus.xyz` (boundary-safe suffix), or http(s) to loopback
+ * (localhost / 127.0.0.1 / ::1). Anything unparseable or off-policy is rejected.
+ */
 export function isAllowedBaseUrl(raw: string): boolean {
   let url: URL;
   try {

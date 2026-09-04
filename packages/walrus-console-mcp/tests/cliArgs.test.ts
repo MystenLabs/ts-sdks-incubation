@@ -1,6 +1,7 @@
 import { delimiter } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SECRET_VALUE_FIELDS, parseArgs } from "../src/cliArgs.js";
+import type { CredentialValues } from "../src/cliArgs.js";
 
 const noEnv = {} as NodeJS.ProcessEnv;
 
@@ -154,7 +155,7 @@ describe("parseArgs — credential bundle", () => {
 });
 
 describe("parseArgs — allowed dirs", () => {
-  it("treats a repeated --allowed-dirs as one list and implies silent", () => {
+  it("treats a repeated --allowed-dirs as one list and still implies silent when it is the only value flag", () => {
     const parsed = parseArgs(["--allowed-dirs", "/a", "--allowed-dirs", "/b"], noEnv);
     expect(parsed.values.allowedDirs).toEqual(["/a", "/b"]);
     expect(parsed.silent).toBe(true);
@@ -200,20 +201,234 @@ describe("parseArgs — allowed dirs", () => {
 });
 
 describe("parseArgs — address pins", () => {
-  it("reads --owner-address and --key-admin-address", () => {
+  it("reads --owner-address and --key-admin-address without forcing silent", () => {
     const parsed = parseArgs(
       ["--owner-address", OWNER_ADDRESS, "--key-admin-address", KEY_ADMIN_ADDRESS],
       noEnv,
     );
     expect(parsed.values.ownerAddress).toBe(OWNER_ADDRESS);
     expect(parsed.values.keyAdminAddress).toBe(KEY_ADMIN_ADDRESS);
-    expect(parsed.silent).toBe(true);
+    expect(parsed.silent).toBe(false);
     expect(parsed.errors).toEqual([]);
+  });
+
+  it("address flags plus a secret flag are still silent", () => {
+    const parsed = parseArgs(["--owner-address", OWNER_ADDRESS, "--api-key", "hbr_x"], noEnv);
+    expect(parsed.silent).toBe(true);
+    expect(parsed.values.ownerAddress).toBe(OWNER_ADDRESS);
+    expect(parsed.values.apiKey).toBe("hbr_x");
+  });
+
+  it("address flags next to --allowed-dirs stay interactive", () => {
+    const parsed = parseArgs(["--allowed-dirs", "/tmp", "--owner-address", OWNER_ADDRESS], noEnv);
+    expect(parsed.silent).toBe(false);
+    expect(parsed.values.allowedDirs).toEqual(["/tmp"]);
+    expect(parsed.values.ownerAddress).toBe(OWNER_ADDRESS);
+  });
+
+  it("key-admin seed next to --allowed-dirs stays interactive", () => {
+    const parsed = parseArgs(
+      ["--allowed-dirs", "/tmp", "--key-admin-address", KEY_ADMIN_ADDRESS],
+      noEnv,
+    );
+    expect(parsed.silent).toBe(false);
+    expect(parsed.values.allowedDirs).toEqual(["/tmp"]);
+    expect(parsed.values.keyAdminAddress).toBe(KEY_ADMIN_ADDRESS);
   });
 
   it("reads the --flag=value form too", () => {
     const parsed = parseArgs([`--owner-address=${OWNER_ADDRESS}`], noEnv);
     expect(parsed.values.ownerAddress).toBe(OWNER_ADDRESS);
+  });
+
+  it("rejects a malformed address at parse time, naming the flag and never the value", () => {
+    const parsed = parseArgs(["--owner-address", "suiprivkey1MISPASTEDSECRET"], noEnv);
+    expect(parsed.errors).toEqual([
+      "--owner-address is not a valid Sui address (expected 0x followed by 64 hex characters).",
+    ]);
+    expect(parsed.values.ownerAddress).toBeUndefined();
+    expect(JSON.stringify(parsed)).not.toContain("MISPASTEDSECRET");
+  });
+
+  it("rejects a malformed --key-admin-address the same way", () => {
+    const parsed = parseArgs(["--key-admin-address", "0xNOT_AN_ADDRESS"], noEnv);
+    expect(parsed.errors).toEqual([
+      "--key-admin-address is not a valid Sui address (expected 0x followed by 64 hex characters).",
+    ]);
+    expect(parsed.values.keyAdminAddress).toBeUndefined();
+  });
+});
+
+describe("parseArgs — duplicate value flags", () => {
+  // Every VALUE_FLAGS entry, secret and address alike, must refuse a repeat
+  // with a *different* value instead of silently taking the last one.
+  const DUPLICATE_CASES: Array<{
+    flag: string;
+    field: Exclude<keyof CredentialValues, "allowedDirs">;
+    first: string;
+    second: string;
+    secret: boolean;
+  }> = [
+    {
+      flag: "--api-key",
+      field: "apiKey",
+      first: "hbr_first_value",
+      second: "hbr_second_value",
+      secret: true,
+    },
+    {
+      flag: "--service-key",
+      field: "serviceKey",
+      first: "suiprivkey1_svc_first",
+      second: "suiprivkey1_svc_second",
+      secret: true,
+    },
+    {
+      flag: "--admin-key",
+      field: "adminKey",
+      first: "hbradm_first",
+      second: "hbradm_second",
+      secret: true,
+    },
+    {
+      flag: "--admin-signer",
+      field: "adminSigner",
+      first: "suiprivkey1_adm_first",
+      second: "suiprivkey1_adm_second",
+      secret: true,
+    },
+    {
+      flag: "--credential-bundle",
+      field: "bundle",
+      first: JSON.stringify({ v: 1, apiKey: "hbr_bundle_first" }),
+      second: JSON.stringify({ v: 1, apiKey: "hbr_bundle_second" }),
+      secret: true,
+    },
+    {
+      flag: "--owner-address",
+      field: "ownerAddress",
+      first: OWNER_ADDRESS,
+      second: KEY_ADMIN_ADDRESS,
+      secret: false,
+    },
+    {
+      flag: "--key-admin-address",
+      field: "keyAdminAddress",
+      first: KEY_ADMIN_ADDRESS,
+      second: OWNER_ADDRESS,
+      secret: false,
+    },
+  ];
+
+  for (const { flag, field, first, second, secret } of DUPLICATE_CASES) {
+    it(`refuses ${flag} given twice with different values`, () => {
+      const parsed = parseArgs([flag, first, flag, second], noEnv);
+      expect(parsed.errors).toHaveLength(1);
+      expect(parsed.errors[0]).toContain(flag);
+      expect(parsed.errors[0]).toContain("more than once");
+      // The first (earlier) value stays put — only the disagreeing repeat is
+      // refused, so first-set-wins-and-is-kept, not last-wins-silently.
+      expect(parsed.values[field]).toBe(first);
+
+      if (secret) {
+        // Secret flags never echo a value — old or new — in the message.
+        expect(parsed.errors.join(" ")).not.toContain(first);
+        expect(parsed.errors.join(" ")).not.toContain(second);
+        expect(JSON.stringify(parsed)).not.toContain(second);
+      } else {
+        // Address flags are public trust anchors: the message may name both
+        // normalized values so the operator can see what disagreed.
+        expect(parsed.errors.join(" ")).toContain(first);
+        expect(parsed.errors.join(" ")).toContain(second);
+      }
+    });
+
+    it(`passes silently when ${flag} is repeated with the same value`, () => {
+      const parsed = parseArgs([flag, first, flag, first], noEnv);
+      expect(parsed.errors).toEqual([]);
+      expect(parsed.values[field]).toBe(first);
+    });
+  }
+
+  it("names both normalized addresses when --owner-address disagrees with itself", () => {
+    const parsed = parseArgs(
+      ["--owner-address", OWNER_ADDRESS, "--owner-address", KEY_ADMIN_ADDRESS],
+      noEnv,
+    );
+    expect(parsed.errors).toEqual([
+      `--owner-address was given more than once with different values: ${OWNER_ADDRESS} and ${KEY_ADMIN_ADDRESS}.`,
+    ]);
+  });
+
+  it("never echoes either value when a secret flag disagrees with itself", () => {
+    const parsed = parseArgs(
+      ["--admin-key", "hbradm_REAL_FIRST", "--admin-key", "hbradm_REAL_SECOND"],
+      noEnv,
+    );
+    expect(parsed.errors).toEqual(["--admin-key was given more than once with different values."]);
+    expect(parsed.errors.join(" ")).not.toContain("hbradm_REAL_FIRST");
+    expect(parsed.errors.join(" ")).not.toContain("hbradm_REAL_SECOND");
+    expect(JSON.stringify(parsed)).not.toContain("hbradm_REAL_SECOND");
+  });
+
+  it("--allowed-dirs stays exempt and keeps accumulating across repeats", () => {
+    const parsed = parseArgs(["--allowed-dirs", "/a", "--allowed-dirs", "/a"], noEnv);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.values.allowedDirs).toEqual(["/a", "/a"]);
+  });
+
+  // isValidSuiAddress accepts more than one spelling of the same 64-hex
+  // address — differing case, and an optional "0x" prefix — so the duplicate
+  // check must compare normalized addresses, not raw strings, or two
+  // spellings of one instruction get refused as if they disagreed.
+  it("treats a case-differing repeat of the same --owner-address as an equal repeat", () => {
+    const upper = `0x${"A".repeat(64)}`;
+    const parsed = parseArgs(["--owner-address", OWNER_ADDRESS, "--owner-address", upper], noEnv);
+    expect(parsed.errors).toEqual([]);
+    // The raw first-seen spelling is kept, not a normalized form.
+    expect(parsed.values.ownerAddress).toBe(OWNER_ADDRESS);
+  });
+
+  it("treats a case-differing repeat of the same --key-admin-address as an equal repeat", () => {
+    const upper = `0x${"B".repeat(64)}`;
+    const parsed = parseArgs(
+      ["--key-admin-address", KEY_ADMIN_ADDRESS, "--key-admin-address", upper],
+      noEnv,
+    );
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.values.keyAdminAddress).toBe(KEY_ADMIN_ADDRESS);
+  });
+
+  it("treats a bare-hex repeat of an 0x-prefixed --owner-address as an equal repeat", () => {
+    const bareHex = "a".repeat(64);
+    const parsed = parseArgs(["--owner-address", OWNER_ADDRESS, "--owner-address", bareHex], noEnv);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.values.ownerAddress).toBe(OWNER_ADDRESS);
+  });
+
+  it("still refuses two case-normalized addresses that are genuinely different", () => {
+    // OWNER_ADDRESS (all "a") and KEY_ADMIN_ADDRESS (all "b") normalize to
+    // different canonical forms, so this must still refuse — normalizing the
+    // comparison must not paper over a real disagreement.
+    const upperKeyAdmin = `0x${"B".repeat(64)}`;
+    const parsed = parseArgs(
+      ["--owner-address", OWNER_ADDRESS, "--owner-address", upperKeyAdmin],
+      noEnv,
+    );
+    expect(parsed.errors).toEqual([
+      `--owner-address was given more than once with different values: ${OWNER_ADDRESS} and ${KEY_ADMIN_ADDRESS}.`,
+    ]);
+  });
+
+  // isValidSuiAddress rejects short (unpadded) forms like "0x2" outright — it
+  // requires exactly 64 hex characters — so a short-vs-padded repeat never
+  // reaches the duplicate check at all; the first occurrence already fails
+  // address validation with "not a valid Sui address".
+  it("rejects a short unpadded address before duplicate-checking can even apply", () => {
+    const parsed = parseArgs(["--owner-address", "0x2"], noEnv);
+    expect(parsed.errors).toEqual([
+      "--owner-address is not a valid Sui address (expected 0x followed by 64 hex characters).",
+    ]);
   });
 });
 

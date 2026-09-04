@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getPackageVersion,
   isValidServiceKeyFormat,
@@ -14,21 +14,25 @@ import {
   maskedLine,
   maskedPanelLine,
   packageSpec,
+  promptEcho,
   promptMasked,
   registerExitCode,
   resolveInstallBaseUrl,
+  runInstall,
   savedLabel,
   showRow,
   allowedDirChoices,
   HOME_DIR_WARNING,
   stepAllowedDirs,
+  stepAuth,
   stepRegister,
   streamPanel,
   visibleWidth,
 } from "../bin/install.js";
 import { DEFAULT_CONSOLE_API_BASE_URL } from "../src/baseUrl.js";
 import type { Client } from "../src/clients.js";
-import { saveConfigFile } from "../src/configFile.js";
+import { loadConfigFile, saveConfigFile } from "../src/configFile.js";
+import type { PinSeeds } from "../src/credentials.js";
 import { toRealPath } from "../src/pathSandbox.js";
 import { panelWidth, wrapVisible } from "../src/tui.js";
 
@@ -302,6 +306,240 @@ describe("promptMasked", () => {
     const result = await pending;
     rl.close();
     expect(result).toBe(secret);
+  });
+
+  // Readline sizes the cursor from prompt + the REAL line. A 400-character
+  // bundle paste wraps to several terminal rows, but we only paint 16 bullets
+  // on one row. Delete then sends CSI nA for the phantom wrap, walking the
+  // cursor out of the AUTHENTICATE box. TERM must not be "dumb" or readline
+  // skips that refresh entirely.
+  it("does not walk the cursor up when a wrapping paste is deleted", async () => {
+    const prevTerm = process.env["TERM"];
+    process.env["TERM"] = "xterm-256color";
+
+    const input = new PassThrough() as PassThrough & {
+      isTTY: boolean;
+      setRawMode: (m: boolean) => void;
+    };
+    input.isTTY = true;
+    input.setRawMode = () => {};
+
+    const output = new PassThrough() as PassThrough & {
+      isTTY: boolean;
+      columns: number;
+    };
+    output.isTTY = true;
+    output.columns = 80;
+    let echoed = "";
+    output.on("data", (chunk) => {
+      echoed += chunk.toString();
+    });
+
+    const originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+
+    const rl = readline.createInterface({ input, output, terminal: true });
+    try {
+      const pending = promptMasked(rl, "│  BUNDLE: ", 72);
+      input.write("x".repeat(400));
+      input.write("\x7f");
+      input.write("\x7f");
+      input.write("\r");
+      const result = await pending;
+
+      expect(result.length).toBe(398);
+      // Paint still reached the real stream — a silent discard of everything
+      // would also have no cursor-up, and a blank prompt row.
+      expect(echoed).toContain("•");
+      const esc = String.fromCharCode(27);
+      expect(echoed).toContain(`${esc}[2K`);
+      expect(echoed).not.toMatch(new RegExp(`${esc}\\[\\d*A`));
+      // _refreshLine always emits clearScreenDown + CHA; those must not hit the TTY.
+      expect(echoed).not.toMatch(new RegExp(`${esc}\\[\\d*J`));
+      expect(echoed).not.toMatch(new RegExp(`${esc}\\[(?:[1-9]\\d*)G`));
+    } finally {
+      rl.close();
+      if (prevTerm === undefined) delete process.env["TERM"];
+      else process.env["TERM"] = prevTerm;
+      if (originalIsTTY === undefined) {
+        Object.defineProperty(process.stdout, "isTTY", {
+          value: undefined,
+          configurable: true,
+        });
+      } else {
+        Object.defineProperty(process.stdout, "isTTY", {
+          value: originalIsTTY,
+          configurable: true,
+        });
+      }
+    }
+  });
+});
+
+/**
+ * Cursor row the terminal ends on after replaying `bytes` at `columns` wide.
+ * Only vertical position matters here, so this tracks the cursor rather than
+ * the screen — with the deferred wrap real terminals use (filling the last
+ * column parks the cursor there until the next character), because an eager
+ * wrap reports damage that no terminal actually shows.
+ */
+function finalRow(bytes: string, columns: number): number {
+  // Built, not a literal: an ESC in a regex literal trips no-control-regex.
+  const csiPattern = new RegExp(`^${String.fromCharCode(27)}\\[([0-9;]*)([A-Za-z])`);
+  let row = 0;
+  let col = 0;
+  let pending = false;
+  let i = 0;
+  while (i < bytes.length) {
+    const csi = csiPattern.exec(bytes.slice(i));
+    if (csi) {
+      const arg = csi[1] ?? "";
+      const n = arg === "" ? 0 : Number.parseInt(arg.split(";")[0] ?? "0", 10);
+      if (csi[2] !== "m") pending = false;
+      if (csi[2] === "A") row = Math.max(0, row - (n || 1));
+      else if (csi[2] === "B") row += n || 1;
+      else if (csi[2] === "G") col = Math.max(0, (n || 1) - 1);
+      else if (csi[2] === "D") col = Math.max(0, col - (n || 1));
+      else if (csi[2] === "C") col = Math.min(columns - 1, col + (n || 1));
+      i += csi[0].length;
+      continue;
+    }
+    const ch = bytes[i];
+    if (ch === "\n") {
+      row++;
+      col = 0;
+      pending = false;
+    } else if (ch === "\r") {
+      col = 0;
+      pending = false;
+    } else {
+      if (pending) {
+        row++;
+        col = 0;
+        pending = false;
+      }
+      if (col === columns - 1) pending = true;
+      else col++;
+    }
+    i++;
+  }
+  return row;
+}
+
+describe("promptEcho", () => {
+  // A 66-character Sui address must never be truncated (see `echoPanelLine`),
+  // so on a narrow terminal the painted row is wider than the terminal and
+  // wraps. `\x1b[2K\x1b[0G` at the head of each paint only clears the row the
+  // cursor is on — the continuation row, once wrapped — so without an explicit
+  // walk back to the top of the block every keystroke redraws one row lower and
+  // the address smears down the screen.
+  it("repaints in place when the value is wider than the terminal", async () => {
+    const prevTerm = process.env["TERM"];
+    process.env["TERM"] = "xterm-256color";
+    const columns = 60;
+    const address = `0x${"a".repeat(64)}`;
+
+    const input = new PassThrough() as PassThrough & {
+      isTTY: boolean;
+      setRawMode: (m: boolean) => void;
+    };
+    input.isTTY = true;
+    input.setRawMode = () => {};
+
+    const output = new PassThrough() as PassThrough & {
+      isTTY: boolean;
+      columns: number;
+    };
+    output.isTTY = true;
+    output.columns = columns;
+    let echoed = "";
+    output.on("data", (chunk) => {
+      echoed += chunk.toString();
+    });
+
+    const originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+
+    const rl = readline.createInterface({ input, output, terminal: true });
+    try {
+      // panelWidth(60) — the panel still fits, it is the value that does not.
+      const pending = promptEcho(rl, "\u001b[2m│\u001b[22m  ", 58);
+      for (const ch of address) input.write(ch);
+      input.write("\r");
+      const result = await pending;
+
+      expect(result).toBe(address);
+      // 3-column gutter + 66 = 69 columns, so the block is exactly two rows;
+      // the trailing newline lands us on the third. Anything more is smear.
+      expect(finalRow(echoed, columns)).toBe(2);
+    } finally {
+      rl.close();
+      if (prevTerm === undefined) delete process.env["TERM"];
+      else process.env["TERM"] = prevTerm;
+      Object.defineProperty(process.stdout, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+  });
+
+  // `[kMoveCursor]` writes Left/Right movement straight to the interface's
+  // output, which is the discard stream while we own the row — so the caret
+  // only follows the insertion point if the paint puts it there.
+  it("walks the caret back to the insertion point", async () => {
+    const prevTerm = process.env["TERM"];
+    process.env["TERM"] = "xterm-256color";
+
+    const input = new PassThrough() as PassThrough & {
+      isTTY: boolean;
+      setRawMode: (m: boolean) => void;
+    };
+    input.isTTY = true;
+    input.setRawMode = () => {};
+
+    const output = new PassThrough() as PassThrough & {
+      isTTY: boolean;
+      columns: number;
+    };
+    output.isTTY = true;
+    output.columns = 80;
+    let echoed = "";
+    output.on("data", (chunk) => {
+      echoed += chunk.toString();
+    });
+
+    const originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+
+    const rl = readline.createInterface({ input, output, terminal: true });
+    try {
+      const pending = promptEcho(rl, "│  ", 72);
+      input.write("abcdef");
+      await new Promise((r) => setTimeout(r, 10));
+      const beforeArrows = echoed.length;
+      input.write("\u001b[D");
+      input.write("\u001b[D");
+      await new Promise((r) => setTimeout(r, 10));
+      // The arrows must have produced a repaint of their own; without one the
+      // caret is stranded at the end of the echoed value.
+      const onArrows = echoed.slice(beforeArrows);
+      expect(onArrows).toContain("\u001b[2K");
+      expect(onArrows.endsWith("\u001b[2D")).toBe(true);
+
+      input.write("\r");
+      expect(await pending).toBe("abcdef");
+    } finally {
+      rl.close();
+      if (prevTerm === undefined) delete process.env["TERM"];
+      else process.env["TERM"] = prevTerm;
+      Object.defineProperty(process.stdout, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
   });
 });
 
@@ -662,5 +900,517 @@ describe("resolveInstallBaseUrl", () => {
     process.env["CONSOLE_API_BASE_URL"] = "https://evil.example.com";
 
     expect(() => resolveInstallBaseUrl()).toThrow(/not an allowed Console endpoint/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Seeded file access and the runInstall wiring.
+//
+// `--allowed-dirs` typed next to an address seed deliberately does NOT force
+// silent mode (see ParsedArgs.silent), so the only thing that can honour it is
+// the interactive path. These tests pin that it is honoured — and that the
+// entry point actually hands the flags to the steps that consume them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const OWNER_ADDRESS = `0x${"a".repeat(64)}`;
+const KEY_ADMIN_ADDRESS = `0x${"b".repeat(64)}`;
+
+/** Collect everything written to stdout so a panel does not pollute the report. */
+function captureStdout(): { text: () => string; restore: () => void } {
+  const chunks: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string) => {
+    chunks.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  return {
+    text: () => chunks.join(""),
+    restore: () => {
+      process.stdout.write = original;
+    },
+  };
+}
+
+describe("stepAllowedDirs — --allowed-dirs seed", () => {
+  it("saves every seeded directory and never opens the picker", async () => {
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-seed-dir-"));
+    const capture = captureStdout();
+    try {
+      const merged: unknown[] = [];
+      let selectCalls = 0;
+      const write = await stepAllowedDirs({
+        cwd: tmpDir,
+        home: tmpDir,
+        seed: [tmpDir, extra],
+        select: async () => {
+          selectCalls++;
+          return 0;
+        },
+        ask: async () => {
+          throw new Error("must not prompt for a folder when the flag supplied one");
+        },
+        merge: (updates) => {
+          merged.push(updates);
+          return { ...updates };
+        },
+      });
+      expect(write.updates.allowedDirs).toEqual([toRealPath(tmpDir), toRealPath(extra)]);
+      expect(merged).toEqual([{ allowedDirs: [toRealPath(tmpDir), toRealPath(extra)] }]);
+      expect(selectCalls).toBe(0);
+      // The operator must be able to see what was saved, and that the flag is
+      // why the picker never appeared.
+      const out = capture.text();
+      expect(out).toContain(toRealPath(extra));
+      expect(out).toContain("--allowed-dirs");
+    } finally {
+      capture.restore();
+      fs.rmSync(extra, { recursive: true, force: true });
+    }
+  });
+
+  it("dedupes a directory the seed names twice", async () => {
+    const capture = captureStdout();
+    try {
+      const write = await stepAllowedDirs({
+        cwd: tmpDir,
+        home: tmpDir,
+        seed: [tmpDir, tmpDir],
+        select: async () => {
+          throw new Error("must not open the picker");
+        },
+        merge: (updates) => ({ ...updates }),
+      });
+      expect(write.updates.allowedDirs).toEqual([toRealPath(tmpDir)]);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  // The load-bearing refusal: a bad folder must NOT fall through to the picker,
+  // or the operator answers a question they already answered on the command
+  // line and never learns the flag was wrong.
+  it("refuses a seeded directory that does not exist and names it", async () => {
+    const missing = path.join(tmpDir, "not-a-folder");
+    const capture = captureStdout();
+    let selectCalls = 0;
+    try {
+      const write = await stepAllowedDirs({
+        cwd: tmpDir,
+        home: tmpDir,
+        seed: [missing],
+        select: async () => {
+          selectCalls++;
+          return 0;
+        },
+        merge: () => {
+          throw new Error("must not persist a rejected seed");
+        },
+      });
+      expect(write.updates).toEqual({});
+      expect(write.seedRejected).toBe(true);
+      expect(selectCalls).toBe(0);
+      expect(capture.text()).toContain(missing);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("reports every bad entry, not just the first", async () => {
+    const missingA = path.join(tmpDir, "missing-a");
+    const missingB = path.join(tmpDir, "missing-b");
+    const capture = captureStdout();
+    try {
+      const write = await stepAllowedDirs({
+        cwd: tmpDir,
+        home: tmpDir,
+        seed: [missingA, missingB],
+        select: async () => {
+          throw new Error("must not open the picker");
+        },
+        merge: () => {
+          throw new Error("must not persist a rejected seed");
+        },
+      });
+      expect(write.seedRejected).toBe(true);
+      const out = capture.text();
+      expect(out).toContain(missingA);
+      expect(out).toContain(missingB);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("still opens the picker when the seed is empty", async () => {
+    const capture = captureStdout();
+    try {
+      let selectCalls = 0;
+      const write = await stepAllowedDirs({
+        cwd: tmpDir,
+        home: tmpDir,
+        seed: [],
+        select: async () => {
+          selectCalls++;
+          return 5; // skip
+        },
+        merge: () => ({}),
+      });
+      expect(selectCalls).toBe(1);
+      expect(write.updates).toEqual({});
+    } finally {
+      capture.restore();
+    }
+  });
+});
+
+describe("stepAuth", () => {
+  let envBackup: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    envBackup = { ...process.env };
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    delete process.env["CONSOLE_API_BASE_URL"];
+  });
+
+  afterEach(() => {
+    process.env = envBackup;
+  });
+
+  // stepAuth is the only consumer of the two address seeds on the interactive
+  // path; if it stops forwarding them the pins are silently dropped.
+  it("forwards both address seeds to the credential collector", async () => {
+    const seen: PinSeeds[] = [];
+    const rl = readline.createInterface({
+      input: new PassThrough(),
+      output: new PassThrough(),
+    });
+    const capture = captureStdout();
+    try {
+      await stepAuth(
+        rl,
+        "api",
+        { ownerAddress: OWNER_ADDRESS, keyAdminAddress: KEY_ADMIN_ADDRESS },
+        {
+          collect: async (_choice, _deps, _existing, seeds) => {
+            seen.push(seeds ?? {});
+            return { updates: {}, clear: [] };
+          },
+        },
+      );
+    } finally {
+      capture.restore();
+      rl.close();
+    }
+    expect(seen).toEqual([{ ownerAddress: OWNER_ADDRESS, keyAdminAddress: KEY_ADMIN_ADDRESS }]);
+  });
+});
+
+describe("runInstall", () => {
+  /** `runInstall` exits rather than returning a code; make that observable. */
+  class ExitSignal extends Error {
+    constructor(readonly code: number) {
+      super(`process.exit(${code})`);
+    }
+  }
+
+  let envBackup: NodeJS.ProcessEnv;
+  let exitBackup: typeof process.exit;
+
+  beforeEach(() => {
+    envBackup = { ...process.env };
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("CONSOLE_")) delete process.env[key];
+    }
+    exitBackup = process.exit;
+    process.exit = ((code?: number) => {
+      throw new ExitSignal(code ?? 0);
+    }) as typeof process.exit;
+    // Every probe reports a management key unless a test overrides it.
+    vi.stubGlobal("fetch", async () => new Response("", { status: 404 }));
+  });
+
+  afterEach(() => {
+    process.env = envBackup;
+    process.exit = exitBackup;
+    vi.unstubAllGlobals();
+  });
+
+  /** Run the silent path and report the exit code it asked for. */
+  async function runSilent(argv: string[]): Promise<{ code: number; out: string }> {
+    const capture = captureStdout();
+    try {
+      await runInstall(argv);
+    } catch (err) {
+      if (err instanceof ExitSignal) return { code: err.code, out: capture.text() };
+      throw err;
+    } finally {
+      capture.restore();
+    }
+    throw new Error("runInstall returned without exiting");
+  }
+
+  describe("silent mode", () => {
+    it("writes the management pair and exits 0", async () => {
+      const { code } = await runSilent([
+        "--admin-key",
+        "hbradm_management_key",
+        "--admin-signer",
+        VALID_SIGNER,
+      ]);
+      expect(code).toBe(0);
+      const saved = loadConfigFile();
+      expect(saved.adminKey).toBe("hbradm_management_key");
+      expect(saved.adminServicePrivateKey).toBe(VALID_SIGNER);
+    });
+
+    it("writes both address pins from the flags", async () => {
+      const { code } = await runSilent([
+        "--silent",
+        "--owner-address",
+        OWNER_ADDRESS,
+        "--key-admin-address",
+        KEY_ADMIN_ADDRESS,
+      ]);
+      expect(code).toBe(0);
+      expect(loadConfigFile()).toMatchObject({
+        webAccountAddress: OWNER_ADDRESS,
+        keyAdminAddress: KEY_ADMIN_ADDRESS,
+      });
+    });
+
+    // The warning is the whole point of the silent working-key path: without a
+    // pin every create_bucket refuses, and a scripted install would otherwise
+    // report success and leave that to be discovered at runtime.
+    it("prints the owner warning for a working key with no pin", async () => {
+      vi.stubGlobal("fetch", async () => new Response("", { status: 200 }));
+      const { code, out } = await runSilent(["--api-key", "hbr_working_key_value"]);
+      expect(code).toBe(0);
+      expect(out).toContain("Credentials saved");
+      expect(out).toContain("create_bucket will REFUSE");
+      expect(out).toContain("CONSOLE_WEB_ACCOUNT_ADDRESS");
+    });
+
+    it("writes nothing and exits 1 when the probe rejects the key", async () => {
+      vi.stubGlobal("fetch", async () => new Response("", { status: 401 }));
+      const { code } = await runSilent([
+        "--admin-key",
+        "hbradm_management_key",
+        "--admin-signer",
+        VALID_SIGNER,
+      ]);
+      expect(code).toBe(1);
+      expect(loadConfigFile()).toEqual({});
+    });
+
+    it("writes nothing and exits 1 on a bad flag", async () => {
+      const { code } = await runSilent(["--owner-address", "0xNOT_AN_ADDRESS"]);
+      expect(code).toBe(1);
+      expect(loadConfigFile()).toEqual({});
+    });
+
+    it("persists a seeded --allowed-dirs without credentials", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-install-dirs-"));
+      try {
+        const { code } = await runSilent(["--allowed-dirs", dir]);
+        expect(code).toBe(0);
+        expect(loadConfigFile().allowedDirs).toEqual([toRealPath(dir)]);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("interactive wiring", () => {
+    /** A readline over detached pipes: the wiring test must not touch a TTY. */
+    const pipeReadline = () =>
+      readline.createInterface({ input: new PassThrough(), output: new PassThrough() });
+
+    it("forwards both address seeds to the auth step and the folder seed to file access", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-install-seed-"));
+      const seedsSeen: PinSeeds[] = [];
+      const dirSeeds: (readonly string[] | undefined)[] = [];
+      const capture = captureStdout();
+      try {
+        await runInstall(
+          [
+            "--owner-address",
+            OWNER_ADDRESS,
+            "--key-admin-address",
+            KEY_ADMIN_ADDRESS,
+            "--allowed-dirs",
+            dir,
+            "--no-register",
+          ],
+          {
+            choose: async () => "api",
+            createReadline: pipeReadline,
+            auth: async (_rl, _choice, seeds) => {
+              seedsSeen.push(seeds);
+              return { updates: {}, clear: [] };
+            },
+            allowedDirs: async (deps) => {
+              dirSeeds.push(deps.seed);
+              return { updates: {}, clear: [] };
+            },
+          },
+        );
+      } finally {
+        capture.restore();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+      expect(seedsSeen).toEqual([
+        { ownerAddress: OWNER_ADDRESS, keyAdminAddress: KEY_ADMIN_ADDRESS },
+      ]);
+      expect(dirSeeds).toEqual([[dir]]);
+    });
+
+    // The acceptance check: `install --allowed-dirs /does/not/exist
+    // --owner-address 0x…` must refuse before anything is written. The auth step
+    // persists as soon as a key is confirmed, so a folder checked at step 3
+    // leaves a key and a pin on disk and refuses afterwards.
+    it("refuses a bad --allowed-dirs before the chooser and writes nothing", async () => {
+      const missing = path.join(tmpDir, "no-such-folder");
+      const exitCodeBackup = process.exitCode;
+      const capture = captureStdout();
+      let seenExitCode: typeof process.exitCode;
+      let chooseCalls = 0;
+      let authCalls = 0;
+      try {
+        await runInstall(["--allowed-dirs", missing, "--owner-address", OWNER_ADDRESS], {
+          choose: async () => {
+            chooseCalls++;
+            return "api";
+          },
+          createReadline: pipeReadline,
+          auth: async () => {
+            authCalls++;
+            return { updates: { apiKey: "hbr_x" }, clear: [] };
+          },
+          allowedDirs: async () => ({ updates: {}, clear: [] }),
+        });
+        seenExitCode = process.exitCode;
+      } finally {
+        capture.restore();
+        process.exitCode = exitCodeBackup;
+      }
+      expect(seenExitCode).toBe(1);
+      expect(chooseCalls).toBe(0);
+      expect(authCalls).toBe(0);
+      // Nothing on disk: not the key, not the pin the seed carried.
+      expect(loadConfigFile()).toEqual({});
+      // The whole path, not a clamped prefix, and only once.
+      const out = capture.text();
+      expect(out).toContain(missing);
+      expect(out.split(missing).length - 1).toBe(1);
+    });
+
+    // An address seed is what keeps a --allowed-dirs argv interactive; without
+    // one it is a silent run, which validateSilent already covers.
+    it("names every bad folder in the preflight, not just the first", async () => {
+      const missingA = path.join(tmpDir, "missing-a");
+      const missingB = path.join(tmpDir, "missing-b");
+      const exitCodeBackup = process.exitCode;
+      const capture = captureStdout();
+      let seenExitCode: typeof process.exitCode;
+      let chooseCalls = 0;
+      try {
+        await runInstall(
+          [
+            "--allowed-dirs",
+            missingA,
+            "--allowed-dirs",
+            missingB,
+            "--owner-address",
+            OWNER_ADDRESS,
+          ],
+          {
+            choose: async () => {
+              chooseCalls++;
+              return "api";
+            },
+            createReadline: pipeReadline,
+          },
+        );
+        seenExitCode = process.exitCode;
+      } finally {
+        capture.restore();
+        process.exitCode = exitCodeBackup;
+      }
+      const out = capture.text();
+      expect(out).toContain(missingA);
+      expect(out).toContain(missingB);
+      // The refusal is the point, not just the text of it.
+      expect(seenExitCode).toBe(1);
+      expect(chooseCalls).toBe(0);
+      expect(loadConfigFile()).toEqual({});
+    });
+
+    it("registers nothing and skips the auth step when the chooser is cancelled", async () => {
+      let authCalls = 0;
+      let registerCalls = 0;
+      const capture = captureStdout();
+      try {
+        await runInstall([], {
+          choose: async () => null,
+          createReadline: pipeReadline,
+          auth: async () => {
+            authCalls++;
+            return { updates: {}, clear: [] };
+          },
+          register: async () => {
+            registerCalls++;
+            return { outcome: "none-selected", configured: 0 };
+          },
+        });
+      } finally {
+        capture.restore();
+      }
+      expect(authCalls).toBe(0);
+      expect(registerCalls).toBe(0);
+    });
+
+    // The credentials really were saved, so this is not a FAILED run — but the
+    // summary must not imply the folders were saved when they were refused.
+    it("says in the summary that a refused folder seed was not saved", async () => {
+      const exitCodeBackup = process.exitCode;
+      const capture = captureStdout();
+      let seenExitCode: typeof process.exitCode;
+      try {
+        await runInstall(["--no-register"], {
+          choose: async () => "api",
+          createReadline: pipeReadline,
+          auth: async () => ({ updates: { apiKey: "hbr_x" }, clear: [] }),
+          allowedDirs: async () => ({ updates: {}, clear: [], seedRejected: true }),
+        });
+        seenExitCode = process.exitCode;
+      } finally {
+        capture.restore();
+        process.exitCode = exitCodeBackup;
+      }
+      const out = capture.text();
+      expect(out).toContain("File access folders NOT saved");
+      expect(out).not.toContain("\u2714 File access folders saved");
+      // The summary row and the exit code must not contradict each other.
+      expect(seenExitCode).toBe(1);
+    });
+
+    it("reports a failed server install with a non-zero exit code", async () => {
+      const exitCodeBackup = process.exitCode;
+      const capture = captureStdout();
+      try {
+        await runInstall([], {
+          choose: async () => "api",
+          createReadline: pipeReadline,
+          auth: async () => ({ updates: {}, clear: [] }),
+          allowedDirs: async () => ({ updates: {}, clear: [] }),
+          register: async () => ({ outcome: "install-failed", configured: 0 }),
+        });
+        expect(process.exitCode).toBe(1);
+        expect(capture.text()).toContain("Server install failed");
+      } finally {
+        capture.restore();
+        process.exitCode = exitCodeBackup;
+      }
+    });
   });
 });

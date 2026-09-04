@@ -1,9 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as readline from "node:readline";
+import { PassThrough } from "node:stream";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runConfigure } from "../bin/configure.js";
+import { parseArgs } from "../src/cliArgs.js";
 import { loadConfigFile, saveConfigFile } from "../src/configFile.js";
 import { toRealPath } from "../src/pathSandbox.js";
 
@@ -299,11 +302,15 @@ describe("runConfigure — silent mode, credential bundle", () => {
   });
 });
 
-describe("runConfigure — silent mode, address pins", () => {
+// Address flags are seeds, not a silent trigger (see the `silent` comment on
+// ParsedArgs): a scripted pins-only write has to say `--silent`. Without it the
+// same argv seeds the interactive prompts instead, which these tests have no
+// terminal to answer.
+describe("runConfigure — silent mode, address pins (--silent required)", () => {
   it("persists a bare --owner-address without touching the credentials", async () => {
     saveConfigFile({ apiKey: "hbr_existing", servicePrivateKey: VALID_SIGNER });
 
-    const code = await runConfigure(["--owner-address", OWNER_ADDRESS]);
+    const code = await runConfigure(["--silent", "--owner-address", OWNER_ADDRESS]);
 
     expect(code).toBe(0);
     expect(loadConfigFile()).toMatchObject({
@@ -315,6 +322,7 @@ describe("runConfigure — silent mode, address pins", () => {
 
   it("persists both address flags together", async () => {
     const code = await runConfigure([
+      "--silent",
       "--owner-address",
       OWNER_ADDRESS,
       "--key-admin-address",
@@ -333,5 +341,274 @@ describe("runConfigure — silent mode, address pins", () => {
 
     expect(code).toBe(1);
     expect(loadConfigFile()).toEqual({});
+  });
+});
+
+// The "File access folders" menu branch. `--allowed-dirs` beside an address seed
+// stays interactive on purpose (see ParsedArgs.silent), so this branch is the
+// only thing that can honour the flag — and it must not silently swallow the
+// address seeds that came with it.
+describe("runConfigure — File access folders branch", () => {
+  /** The index of the `paths` row in the chooser. */
+  const PATHS_ROW = 4;
+
+  /** Collect stdout so a panel does not pollute the test report. */
+  function captureStdout(): { text: () => string; restore: () => void } {
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    return {
+      text: () => chunks.join(""),
+      restore: () => {
+        process.stdout.write = original;
+      },
+    };
+  }
+
+  it("saves the seeded folders without opening the picker", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-cfg-seed-"));
+    const capture = captureStdout();
+    let code: number;
+    try {
+      code = await runConfigure(["--allowed-dirs", dir, "--owner-address", OWNER_ADDRESS], {
+        select: async () => PATHS_ROW,
+      });
+    } finally {
+      capture.restore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    expect(code).toBe(0);
+    expect(loadConfigFile().allowedDirs).toEqual([toRealPath(dir)]);
+  });
+
+  // The address seeds are a credential-step input; this branch never reaches
+  // that step. Dropping them silently is what made the flag look honoured.
+  it("says the address seeds were not applied and how to apply them", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-cfg-seed-"));
+    const capture = captureStdout();
+    let code: number;
+    try {
+      code = await runConfigure(
+        [
+          "--allowed-dirs",
+          dir,
+          "--owner-address",
+          OWNER_ADDRESS,
+          "--key-admin-address",
+          KEY_ADMIN_ADDRESS,
+        ],
+        { select: async () => PATHS_ROW },
+      );
+    } finally {
+      capture.restore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    expect(code).toBe(0);
+    const out = capture.text();
+    expect(out).toContain("--owner-address");
+    expect(out).toContain("--key-admin-address");
+    // The remedy has to be runnable as printed: `--silent`, both flags, both
+    // addresses.
+    expect(out).toContain(
+      `--silent --owner-address ${OWNER_ADDRESS} --key-admin-address ${KEY_ADMIN_ADDRESS}`,
+    );
+  });
+
+  it("names only the address seeds that were actually given", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-cfg-seed-"));
+    const capture = captureStdout();
+    try {
+      await runConfigure(["--allowed-dirs", dir, "--owner-address", OWNER_ADDRESS], {
+        select: async () => PATHS_ROW,
+      });
+    } finally {
+      capture.restore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    const out = capture.text();
+    expect(out).toContain("--owner-address");
+    expect(out).not.toContain("--key-admin-address");
+  });
+
+  it("returns 1 and writes nothing for a seeded folder that does not exist", async () => {
+    const missing = path.join(tmpDir, "no-such-folder");
+    const capture = captureStdout();
+    let selectCalls = 0;
+    let code: number;
+    try {
+      code = await runConfigure(["--allowed-dirs", missing, "--owner-address", OWNER_ADDRESS], {
+        select: async () => {
+          selectCalls++;
+          return PATHS_ROW;
+        },
+      });
+    } finally {
+      capture.restore();
+    }
+    expect(code).toBe(1);
+    expect(loadConfigFile()).toEqual({});
+    const out = capture.text();
+    expect(out).toContain(missing);
+    // Refused before the menu, and refused once — stepAllowedDirs' own guard
+    // is still there but is no longer reachable with a bad seed.
+    expect(selectCalls).toBe(0);
+    expect(out.split(missing).length - 1).toBe(1);
+  });
+
+  it("returns 0 without writing when the chooser is cancelled", async () => {
+    const capture = captureStdout();
+    let code: number;
+    try {
+      code = await runConfigure(["--allowed-dirs", tmpDir, "--owner-address", OWNER_ADDRESS], {
+        select: async () => null,
+      });
+    } finally {
+      capture.restore();
+    }
+    expect(code).toBe(0);
+    expect(loadConfigFile()).toEqual({});
+  });
+});
+
+// The mirror of the branch above: a credential row never reaches
+// stepAllowedDirs, so `config --allowed-dirs /data --owner-address 0x…` used to
+// discard the folder flag under a green "Configuration saved".
+describe("runConfigure — credential branch with a folder seed", () => {
+  /** The index of the `api` row in the chooser. */
+  const API_ROW = 1;
+
+  /**
+   * A readline over an already-ended pipe: runConfigure treats the close as a
+   * cancel (its documented Ctrl-D path), which returns before any prompt — the
+   * notice under test is printed before that point.
+   */
+  const closedReadline = () => {
+    const input = new PassThrough();
+    input.end();
+    return readline.createInterface({ input, output: new PassThrough() });
+  };
+
+  it("says --allowed-dirs was not applied and names the command that applies it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-cfg-drop-"));
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    let code: number;
+    try {
+      code = await runConfigure(["--allowed-dirs", dir, "--owner-address", OWNER_ADDRESS], {
+        select: async () => API_ROW,
+        createReadline: closedReadline,
+      });
+    } finally {
+      process.stdout.write = original;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    expect(code).toBe(0);
+    const out = chunks.join("");
+    expect(out).toContain("--allowed-dirs not applied");
+    expect(out).toContain(`walrus-console-mcp config --allowed-dirs '${dir}'`);
+  });
+
+  // The notice above promises a command that runs. A folder with a space in it
+  // is the case where an unquoted remedy silently truncates: the shell splits
+  // it, parseArgs takes the first word as the folder and rejects the rest with
+  // "Unexpected argument", and the operator gets exit 1 on a path they never
+  // typed. Round-trip the printed line through a real shell to prove it.
+  it.skipIf(process.platform === "win32")(
+    "quotes a folder with a space so the printed remedy round-trips",
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus cfg space-"));
+      const chunks: string[] = [];
+      const original = process.stdout.write.bind(process.stdout);
+      process.stdout.write = ((chunk: string) => {
+        chunks.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      try {
+        await runConfigure(["--allowed-dirs", dir, "--owner-address", OWNER_ADDRESS], {
+          select: async () => API_ROW,
+          createReadline: closedReadline,
+        });
+      } finally {
+        process.stdout.write = original;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+      const marker = "walrus-console-mcp config --allowed-dirs ";
+      const line = chunks
+        .join("")
+        .split("\n")
+        .find((l) => l.includes(marker));
+      expect(line).toBeDefined();
+      const printedArgs = (line as string).slice((line as string).indexOf("--allowed-dirs"));
+
+      // What the shell hands back is the argv the operator would actually get.
+      const { execFileSync } = await import("node:child_process");
+      const argv = execFileSync("/bin/sh", ["-c", `printf '%s\\n' ${printedArgs}`])
+        .toString()
+        .split("\n")
+        .slice(0, -1);
+
+      const parsed = parseArgs(argv, {} as NodeJS.ProcessEnv);
+      expect(parsed.errors).toEqual([]);
+      expect(parsed.values.allowedDirs).toEqual([dir]);
+    },
+  );
+
+  // The remedy this branch prints has to be runnable, which is only true if the
+  // folder was validated before the menu. Before that hoist the same typo got
+  // three different answers: 1 from install, 1 from the paths row, and 0 here
+  // plus a `config --allowed-dirs /dta` that fails when the operator runs it.
+  it("refuses a bad folder before the menu instead of printing a remedy that fails", async () => {
+    const missing = path.join(tmpDir, "no-such-folder");
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    let selectCalls = 0;
+    let code: number;
+    try {
+      code = await runConfigure(["--allowed-dirs", missing, "--owner-address", OWNER_ADDRESS], {
+        select: async () => {
+          selectCalls++;
+          return API_ROW;
+        },
+        createReadline: closedReadline,
+      });
+    } finally {
+      process.stdout.write = original;
+    }
+    expect(code).toBe(1);
+    expect(selectCalls).toBe(0);
+    expect(loadConfigFile()).toEqual({});
+    const out = chunks.join("");
+    expect(out).toContain(missing);
+    // No un-runnable remedy: the notice can only name folders that validated.
+    expect(out).not.toContain("Apply it with");
+  });
+
+  it("stays quiet when no folder seed was given", async () => {
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await runConfigure(["--owner-address", OWNER_ADDRESS], {
+        select: async () => API_ROW,
+        createReadline: closedReadline,
+      });
+    } finally {
+      process.stdout.write = original;
+    }
+    expect(chunks.join("")).not.toContain("--allowed-dirs");
   });
 });

@@ -5,6 +5,7 @@
  * access, no I/O — so silent mode is fully unit-testable.
  */
 
+import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { ALLOWED_DIRS_ENV, splitAllowedDirList } from "./pathSandbox.js";
 
 export interface CredentialValues {
@@ -49,7 +50,15 @@ export const SECRET_VALUE_FIELDS = [
 ] as const satisfies readonly (keyof CredentialValues)[];
 
 export interface ParsedArgs {
-  /** True when any value flag was given, or --silent was passed. */
+  /**
+   * True when --silent was passed, a secret flag was given, or `--allowed-dirs`
+   * was given *without* an address seed. Address flags are seeds for the
+   * interactive prompts and do NOT force silent mode — and `--allowed-dirs`
+   * next to a seed must not either, or adding a folder to the Console's copied
+   * install command turns it into "No credentials given." A dirs-only scripted
+   * write (`config --allowed-dirs /tmp`) still implies silent. A pins-only
+   * write still says `--silent`.
+   */
   silent: boolean;
   /** `install` only; --no-register turns it off. */
   register: boolean;
@@ -66,6 +75,19 @@ const VALUE_FLAGS: Record<string, Exclude<keyof CredentialValues, "allowedDirs">
   "--owner-address": "ownerAddress",
   "--key-admin-address": "keyAdminAddress",
 };
+
+/**
+ * Validated here, once, so both modes fail the same way. A malformed address is
+ * refused before any prompt or probe, and the message names the flag but never
+ * the value — this flag is a plausible landing spot for a mis-pasted secret.
+ */
+const ADDRESS_FIELDS = new Set<keyof CredentialValues>(["ownerAddress", "keyAdminAddress"]);
+
+/**
+ * Mirrors `SECRET_VALUE_FIELDS` as a Set for the duplicate-flag check below,
+ * matching the `ADDRESS_FIELDS` convention just above.
+ */
+const SECRET_VALUE_FIELD_SET = new Set<keyof CredentialValues>(SECRET_VALUE_FIELDS);
 
 const ENV_FLAGS: Record<string, keyof CredentialValues> = {
   CONSOLE_API_KEY: "apiKey",
@@ -86,7 +108,6 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
   const errors: string[] = [];
   let explicitSilent = false;
   let register = true;
-  let sawValueFlag = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] ?? "";
@@ -133,7 +154,6 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
         continue;
       }
       values.allowedDirs = [...(values.allowedDirs ?? []), ...parts];
-      sawValueFlag = true;
       continue;
     }
 
@@ -158,8 +178,46 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
       errors.push(`${name} needs a value`);
       continue;
     }
-    values[field] = value.trim();
-    sawValueFlag = true;
+    const trimmed = value.trim();
+    if (ADDRESS_FIELDS.has(field) && !isValidSuiAddress(trimmed)) {
+      errors.push(
+        `${name} is not a valid Sui address (expected 0x followed by 64 hex characters).`,
+      );
+      continue;
+    }
+    // A repeated flag with a *different* value is refused rather than
+    // silently taking the last one — everywhere else in this parser two
+    // disagreeing instructions refuse and name both. An equal repeat is
+    // harmless and is simply left alone: the field keeps whatever spelling
+    // it was first set to, and only the very first occurrence ever assigns.
+    // `--allowed-dirs` is handled in its own branch above and deliberately
+    // stays exempt; boolean flags (`--silent`, `--no-register`) are
+    // idempotent and never reach this path at all.
+    //
+    // Address fields compare (and are reported) by their *normalized* form:
+    // `isValidSuiAddress` already accepted `trimmed` as-is, but it accepts
+    // more than one spelling of the same address (case, and an optional `0x`
+    // prefix) — two spellings of the same address are one instruction said
+    // twice, not a disagreement. Secret fields have no such normalization
+    // and keep the exact-string comparison. Either way, `values[field]`
+    // stores whichever raw `trimmed` text was seen first — never the
+    // normalized form, and never a later repeat's spelling — normalizing
+    // here is only for comparing and for the message.
+    const existing = values[field];
+    if (existing !== undefined) {
+      const isAddress = ADDRESS_FIELDS.has(field);
+      const existingCanon = isAddress ? normalizeSuiAddress(existing) : existing;
+      const trimmedCanon = isAddress ? normalizeSuiAddress(trimmed) : trimmed;
+      if (existingCanon !== trimmedCanon) {
+        errors.push(
+          SECRET_VALUE_FIELD_SET.has(field)
+            ? `${name} was given more than once with different values.`
+            : `${name} was given more than once with different values: ${existingCanon} and ${trimmedCanon}.`,
+        );
+      }
+      continue;
+    }
+    values[field] = trimmed;
   }
 
   // --silent with no value flags means "take the credentials from the
@@ -186,5 +244,13 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
     }
   }
 
-  return { silent: explicitSilent || sawValueFlag, register, values, errors };
+  const hasSecret = SECRET_VALUE_FIELDS.some((field) => values[field] !== undefined);
+  const hasDirs = values.allowedDirs !== undefined;
+  const hasSeed = values.ownerAddress !== undefined || values.keyAdminAddress !== undefined;
+  return {
+    silent: explicitSilent || hasSecret || (hasDirs && !hasSeed),
+    register,
+    values,
+    errors,
+  };
 }

@@ -3,8 +3,9 @@ import * as fs from "node:fs";
 import * as readline from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { styleText } from "node:util";
+import { stripVTControlCharacters, styleText } from "node:util";
 import {
   CONSOLE_WEB_URLS,
   DEFAULT_CONSOLE_API_BASE_URL,
@@ -23,6 +24,7 @@ import {
   isEmptyWrite,
   probeKey,
   validateSilent,
+  type PinSeeds,
 } from "../src/credentials.js";
 import { registerSecret } from "../src/redaction.js";
 import {
@@ -179,6 +181,8 @@ export function prompt(rl: readline.Interface, question: string): Promise<string
 /** readline.Interface exposes these at runtime but not in its public types. */
 type MaskableInterface = readline.Interface & {
   line: string;
+  cursor?: number;
+  input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
   _writeToOutput?: (stringToWrite: string) => void;
 };
@@ -279,16 +283,77 @@ export function echoPanelLine(
  * Hijack readline's echo and repaint the row ourselves. Used by both the
  * masked field and the echoing panel prompt: native echo cannot draw a trailing
  * border, and a wrapped row would leave fragments that `\x1b[2K` cannot clear.
+ *
+ * Readline still sizes the cursor from prompt + the real line, so a long paste
+ * looks to it like several wrapped rows. Delete then emits CSI nA / CHA / erase
+ * against that phantom height, walking the cursor out of the panel. While we
+ * own the row, those sequences go to a discard stream; only `paint` writes to
+ * the terminal.
  */
 function promptWithRedraw(
   rl: readline.Interface,
   question: string,
-  paint: (typed: string) => string,
+  paint: (typed: string, cursor: number) => string,
 ): Promise<string> {
   const rli = rl as MaskableInterface;
   const output = rli.output ?? process.stdout;
   const original = rli._writeToOutput?.bind(rli);
   let muted = false;
+  // Copy columns so readline still wraps. A discard with no `columns` makes
+  // Interface.columns return Infinity, Delete never emits CSI nA, and the
+  // swallow is untested.
+  const tty = output as { columns?: number; isTTY?: boolean };
+  const discard = new Writable({
+    write(_chunk, _enc, cb) {
+      cb();
+    },
+  }) as Writable & { columns?: number; isTTY?: boolean };
+  if (typeof tty.columns === "number") discard.columns = tty.columns;
+  if (typeof tty.isTTY === "boolean") discard.isTTY = tty.isTTY;
+
+  // Rows the previous paint spilled onto below its first one. `paint` normally
+  // draws a single row, and its leading `\x1b[2K\x1b[0G` clears that row on its
+  // own — but a value that must not be truncated (`echoPanelLine`'s no-border
+  // fallback, `maskedPanelLine` with no room for bullets) can be wider than the
+  // terminal. Then `\x1b[0G` homes the *continuation* row, the rows above keep
+  // their stale copy, and each repaint walks one row further down the screen.
+  // Readline's own refresh clears that, but it is sized from prompt + the real
+  // line and so cannot be trusted here; redo it against what we actually drew.
+  let prevRows = 0;
+  let paintedCursor = -1;
+  const repaint = () => {
+    const cursor = rli.cursor ?? rli.line.length;
+    paintedCursor = cursor;
+    const painted = paint(rli.line, cursor);
+    const columns = tty.columns || 80;
+    const prefix = prevRows > 0 ? `\x1b[${prevRows}A\x1b[0G\x1b[0J` : "";
+    // stripVTControlCharacters, not tui's stripAnsi: the paint carries cursor
+    // and erase sequences too, and only printable columns drive the wrap.
+    const visible = stripVTControlCharacters(painted).length;
+    prevRows = visible === 0 ? 0 : Math.floor((visible - 1) / columns);
+    output.write(prefix + painted);
+  };
+
+  // Both hijacks must come back off the interface even when the prompt never
+  // settles — bin/configure.ts's SIGINT/close `cancel` resolves its own race
+  // and leaves this `rl.question` pending forever, which would otherwise leave
+  // the interface writing into the discard stream for the rest of its life.
+  let onClose: (() => void) | undefined;
+  let onKeypress: (() => void) | undefined;
+  const restore = () => {
+    muted = false;
+    rli.output = output;
+    if (original) rli._writeToOutput = original;
+    else delete rli._writeToOutput;
+    if (onClose) {
+      rl.removeListener("close", onClose);
+      onClose = undefined;
+    }
+    if (onKeypress) {
+      rli.input?.removeListener("keypress", onKeypress);
+      onKeypress = undefined;
+    }
+  };
 
   return new Promise((resolve) => {
     rli._writeToOutput = (stringToWrite) => {
@@ -296,16 +361,30 @@ function promptWithRedraw(
         output.write(stringToWrite);
         return;
       }
-      output.write(paint(rli.line));
+      repaint();
     };
+
+    onClose = restore;
+    rl.once("close", onClose);
+
+    // A bare Left/Right/Ctrl-A moves readline's cursor without editing, so it
+    // never reaches `_writeToOutput` — and its own `[kMoveCursor]` write lands
+    // in the discard stream. Repaint from the keypress instead, once readline
+    // has applied the key. Registered after readline's own listener, so
+    // `rli.cursor` is already current; an edit has repainted from
+    // `_writeToOutput` by now and is skipped by the position check.
+    onKeypress = () => {
+      if (!muted) return; // the Enter that resolved this prompt
+      if ((rli.cursor ?? -1) !== paintedCursor) repaint();
+    };
+    rli.input?.on("keypress", onKeypress);
 
     // Mute first so the prompt write itself goes through `paint` — otherwise
     // the right border is missing until the first keystroke.
     muted = true;
+    rli.output = discard;
     rl.question(question, (answer) => {
-      muted = false;
-      if (original) rli._writeToOutput = original;
-      else delete rli._writeToOutput;
+      restore();
       output.write("\n");
       resolve(answer.trim());
     });
@@ -346,7 +425,17 @@ export function promptEcho(
   panelWidth?: number,
 ): Promise<string> {
   if (!process.stdout.isTTY || panelWidth === undefined) return prompt(rl, question);
-  return promptWithRedraw(rl, question, (typed) => echoPanelLine(question, typed, panelWidth));
+  return promptWithRedraw(rl, question, (typed, cursor) => {
+    // `paint` always leaves the caret after the last character, and readline's
+    // own `cursorTo` — the thing that used to move it back for Left/Right,
+    // Ctrl-A/Ctrl-E — now goes to the discard stream. Walk it back here so the
+    // caret sits at the insertion point the next keystroke will actually use.
+    // The masked field deliberately keeps its caret parked after the bullets:
+    // their count is fixed, so no position among them means anything.
+    const back = typed.length - cursor;
+    const line = echoPanelLine(question, typed, panelWidth);
+    return back > 0 ? `${line}\x1b[${back}D` : line;
+  });
 }
 
 function print(msg: string) {
@@ -590,9 +679,9 @@ export { isValidServiceKeyFormat } from "../src/credentials.js";
  * The one-line summary of what a write actually persisted.
  *
  * "Credentials saved" is a claim, and two flows can now make it false: a
- * declined bundle confirmation writes nothing at all, and an address-pin-only
- * run (`--owner-address`) writes no credential. Shared with bin/configure.ts so
- * both commands report the same truth.
+ * declined bundle confirmation writes nothing at all, and a pins-only run
+ * (`config --silent --owner-address 0x…`) writes no credential. Shared with
+ * bin/configure.ts so both commands report the same truth.
  */
 export function savedLabel(write: CredentialWrite): string {
   if (isEmptyWrite(write)) return "Nothing saved — the config file is unchanged";
@@ -660,6 +749,95 @@ export interface StepAllowedDirsDeps {
   home?: string;
   step?: string;
   merge?: typeof mergeConfigFile;
+  /**
+   * `--allowed-dirs` values from the command line. A dirs-only argv goes silent
+   * (see `ParsedArgs.silent`), so this is the case where the flag arrived beside
+   * an address seed — the one path where nothing else reads it. When it is
+   * non-empty the picker never runs: the operator already answered the question
+   * the picker asks, and asking it again is what made the flag look ignored.
+   */
+  seed?: readonly string[] | undefined;
+}
+
+/**
+ * What the File access step wrote, plus whether a `--allowed-dirs` seed was
+ * refused.
+ *
+ * A refused seed is not the same as "nothing to save": the operator named
+ * folders that could not be used, so a scripted `config` run must end non-zero
+ * rather than report a clean pass. Structurally still a `CredentialWrite`, so
+ * every existing consumer keeps working unchanged.
+ */
+export interface AllowedDirsWrite extends CredentialWrite {
+  seedRejected?: boolean;
+}
+
+/**
+ * Validate a `--allowed-dirs` seed: the deduped canonical list, plus a message
+ * for EVERY bad entry rather than only the first.
+ *
+ * One home for the rule, shared by the `runInstall` and `runConfigure`
+ * preflights (which must refuse before anything is written, and before the
+ * operator is walked through a chooser) and by `stepAllowedDirs`, which still
+ * guards its own write.
+ */
+export function validateSeedDirs(seed: readonly string[]): { dirs: string[]; errors: string[] } {
+  const dirs: string[] = [];
+  const errors: string[] = [];
+  for (const raw of seed) {
+    const result = validateAllowedDirectory(raw);
+    // Same prefix the silent path uses, so both modes read alike.
+    if ("error" in result) errors.push(`--allowed-dirs: ${result.error}`);
+    else if (!dirs.includes(result.dir)) dirs.push(result.dir);
+  }
+  return { dirs, errors };
+}
+
+/**
+ * Honour a `--allowed-dirs` seed instead of running the picker.
+ *
+ * Validation goes through `validateSeedDirs` — the same `validateAllowedDirectory`
+ * the silent path uses (see `validateSilent`) — so a folder `config
+ * --allowed-dirs` refuses is refused here too, with the same message, and EVERY
+ * bad entry is named rather than only the first. A refusal writes nothing and
+ * deliberately does not fall through to the picker: re-asking a question the
+ * command line already answered hides the fact that the answer was wrong.
+ *
+ * `mergeConfigFile` replaces `allowedDirs` wholesale, so the flag is the whole
+ * list — exactly as it is under `--silent`.
+ */
+function applySeededAllowedDirs(
+  seed: readonly string[],
+  merge: typeof mergeConfigFile,
+  step: string,
+): AllowedDirsWrite {
+  const rail = streamPanel("FILE ACCESS", step);
+  rail.blank();
+
+  const { dirs, errors } = validateSeedDirs(seed);
+
+  if (errors.length > 0) {
+    // `show`, not `line`: a panel row CLAMPS, and a refusal that names the bad
+    // folder as `/Users/…/pro…` has not named it. showRow drops the border
+    // rather than the value.
+    for (const err of errors) rail.show(fail(err));
+    rail.line(info("Nothing saved — file access is unchanged."));
+    rail.blank();
+    rail.close();
+    gap();
+    return { updates: {}, clear: [], seedRejected: true };
+  }
+
+  merge({ allowedDirs: dirs });
+  rail.line(info("Folders from --allowed-dirs:"));
+  // `show`, not `line`: a long path must be confirmed in full rather than
+  // clamped to a prefix (see showRow).
+  for (const dir of dirs) rail.show(ok(dir));
+  rail.line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+  rail.blank();
+  rail.close();
+  gap();
+  return { updates: { allowedDirs: dirs }, clear: [] };
 }
 
 /**
@@ -668,13 +846,20 @@ export interface StepAllowedDirsDeps {
  * each agent's launch env — so `config` can change them without re-registering.
  *
  * A skip or cancel writes nothing (credentials from the previous step stay).
+ *
+ * `deps.seed` short-circuits the whole picker — see `applySeededAllowedDirs`.
  */
-export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<CredentialWrite> {
+export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<AllowedDirsWrite> {
   const select = deps.select ?? selectOne;
   const cwd = deps.cwd ?? process.cwd();
   const home = deps.home ?? homedir();
   const merge = deps.merge ?? mergeConfigFile;
   const step = deps.step ?? "3/4";
+
+  // The flag wins outright: it is a decision already made, in writing.
+  const seed = deps.seed ?? [];
+  if (seed.length > 0) return applySeededAllowedDirs(seed, merge, step);
+
   const choices = allowedDirChoices(cwd, home);
 
   const index = await select(
@@ -772,10 +957,23 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<C
   return { updates: { allowedDirs: dirs }, clear: [] };
 }
 
-async function stepAuth(
+/**
+ * Injectable seam so the auth step is testable without a terminal — the same
+ * shape `StepAllowedDirsDeps` and `StepRegisterDeps` already use in this file.
+ * `collect` is the only dependency worth faking: everything else here is
+ * rendering.
+ */
+export interface StepAuthDeps {
+  collect?: typeof collectCredentials;
+}
+
+export async function stepAuth(
   rl: readline.Interface,
   choice: CredentialChoice,
+  seeds: PinSeeds = {},
+  deps: StepAuthDeps = {},
 ): Promise<CredentialWrite> {
+  const collect = deps.collect ?? collectCredentials;
   const rail = streamPanel("AUTHENTICATE", "2/4");
   const gutter = rail.prefix;
   rail.blank();
@@ -794,7 +992,7 @@ async function stepAuth(
   }
   rail.blank();
 
-  const write = await collectCredentials(
+  const write = await collect(
     choice,
     {
       ask: async (question, opts) => {
@@ -824,6 +1022,7 @@ async function stepAuth(
     // Read fresh rather than reusing an earlier snapshot: `config` may have been
     // run in between, and a stale view would clear a signer that is no longer stale.
     loadConfigFile(),
+    seeds,
   );
 
   rail.blank();
@@ -954,7 +1153,32 @@ function stepRegisterSilentNote(): void {
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-export async function runInstall(argv: string[] = []): Promise<void> {
+/**
+ * Injectable seams for the interactive branch.
+ *
+ * Everything between the parsed flags and the steps that consume them — which
+ * is exactly where a dropped `--owner-address` or an ignored `--allowed-dirs`
+ * hides — is otherwise unreachable without a TTY, so it went untested while the
+ * bug it hides is the one this file exists to fix.
+ */
+export interface RunInstallDeps {
+  choose?: (notice?: string) => Promise<CredentialChoice | null>;
+  auth?: (
+    rl: readline.Interface,
+    choice: CredentialChoice,
+    seeds: PinSeeds,
+  ) => Promise<CredentialWrite>;
+  allowedDirs?: (deps: StepAllowedDirsDeps) => Promise<AllowedDirsWrite>;
+  register?: (spec: string) => Promise<RegisterResult>;
+  /** The readline interface the auth prompts read from — pipes, under test. */
+  createReadline?: () => readline.Interface;
+}
+
+export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {}): Promise<void> {
+  const choose = deps.choose ?? chooseCredentials;
+  const auth = deps.auth ?? stepAuth;
+  const allowedDirs = deps.allowedDirs ?? stepAllowedDirs;
+  const runRegister = deps.register ?? stepRegister;
   const args = parseArgs(argv, process.env);
   if (args.errors.length > 0) {
     for (const err of args.errors) print(fail(err));
@@ -992,6 +1216,28 @@ export async function runInstall(argv: string[] = []): Promise<void> {
     process.exit(0);
   }
 
+  // Fail fast on a bad --allowed-dirs, BEFORE the chooser and before the auth
+  // step. Auth persists the moment a key is confirmed (stepAuth's
+  // mergeConfigFile), so validating the folders only at step 3 would make the
+  // operator paste a credential, write it and the address pins to disk, and
+  // only then be told a flag they typed at the very start was wrong. They have
+  // to re-run either way. `--silent` already has exactly this discipline —
+  // validateSilent collects every error before any write happens.
+  //
+  // No panel and no indented row: a panel row CLAMPS, and a refusal that renders
+  // the folder as `/Users/…/pro…` has not named it. This matches how the other
+  // flag refusals above are printed.
+  const seededDirs = args.values.allowedDirs ?? [];
+  if (seededDirs.length > 0) {
+    const { errors } = validateSeedDirs(seededDirs);
+    if (errors.length > 0) {
+      for (const err of errors) print(fail(err));
+      print(info("Nothing was saved. Fix the folder (or drop the flag) and re-run."));
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   // util.styleText strips ANSI unless it detects a color-capable stream; some
   // terminals under-report, leaving the whole TUI monochrome while the raw-code
   // banner still shows. Force color when we're interactive (respecting NO_COLOR).
@@ -1015,17 +1261,19 @@ export async function runInstall(argv: string[] = []): Promise<void> {
   // The chooser needs raw keypresses, the prompts need readline — so the
   // readline interface is created only after the chooser has resolved and
   // released stdin.
-  const choice = await chooseCredentials(notice);
+  const choice = await choose(notice);
   if (choice === null) {
     print("");
     print(info("Installation cancelled."));
     return;
   }
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const rl =
+    deps.createReadline?.() ??
+    readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
 
   // Tracks which step we're in so the readline `close` handler only treats an
   // early stdin end as a cancel *during auth* — we deliberately close `rl` after
@@ -1047,15 +1295,20 @@ export async function runInstall(argv: string[] = []): Promise<void> {
 
   let register: RegisterResult | null = null;
   let authWrite: CredentialWrite = { updates: {}, clear: [] };
-  let allowedWrite: CredentialWrite = { updates: {}, clear: [] };
+  let allowedWrite: AllowedDirsWrite = { updates: {}, clear: [] };
   try {
-    authWrite = await stepAuth(rl, choice);
+    authWrite = await auth(rl, choice, {
+      ownerAddress: args.values.ownerAddress,
+      keyAdminAddress: args.values.keyAdminAddress,
+    });
     // Free stdin from readline so the File access radio and the Register
     // tickbox can take raw keypresses.
     phase = "register";
     rl.close();
-    allowedWrite = await stepAllowedDirs();
-    if (args.register) register = await stepRegister(packageSpec());
+    // The folder flag is honoured here or nowhere: `--allowed-dirs` beside an
+    // address seed stays interactive on purpose, so this is its only consumer.
+    allowedWrite = await allowedDirs({ seed: args.values.allowedDirs });
+    if (args.register) register = await runRegister(packageSpec());
     phase = "done";
   } finally {
     rl.close();
@@ -1079,9 +1332,24 @@ export async function runInstall(argv: string[] = []): Promise<void> {
   }
 
   const configured = register?.configured ?? 0;
+  // The preflight above means a seeded folder is normally validated long before
+  // this point, but the step re-checks at write time (the folder can be removed
+  // in between, and `config` reaches the step by another route). If it refused,
+  // the exit code has to say so too — a summary row that contradicts a zero exit
+  // is how a scripted caller misses the refusal.
+  if (allowedWrite.seedRejected) process.exitCode = 1;
   printSummaryPanel("DONE", [
     savedRow(authWrite),
-    ...(isEmptyWrite(allowedWrite) ? [] : [ok("File access folders saved")]),
+    // A refused --allowed-dirs must survive into the summary. The credentials
+    // really were saved, so the panel is not FAILED — but a green panel that
+    // says nothing about the folders reads as though the flag was honoured,
+    // which is the whole complaint this step exists to answer. The non-zero
+    // exit set just above is the machine-readable half of the same statement.
+    ...(allowedWrite.seedRejected
+      ? [warn("File access folders NOT saved — see the error above")]
+      : isEmptyWrite(allowedWrite)
+        ? []
+        : [ok("File access folders saved")]),
     ...(args.register
       ? [ok(`${configured} ${configured === 1 ? "agent" : "agents"} configured`)]
       : []),

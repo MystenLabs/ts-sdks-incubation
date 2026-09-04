@@ -25,7 +25,8 @@
     "url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "tag": "beta"
   },
   "scripts": {
     "dev": "tsx bin/console-mcp.ts",
