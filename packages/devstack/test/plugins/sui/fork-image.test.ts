@@ -15,7 +15,9 @@ import {
 	FORK_IMAGE_ENV_VAR,
 	FORK_RUST_LOG,
 	forkBinaryVersion,
+	forkContainerConfigHash,
 	forkDataDirKey,
+	forkStartCommand,
 	planForkImage,
 	prepareForkImage,
 	resolveForkImage,
@@ -162,6 +164,18 @@ describe('fork binary identity', () => {
 		const r2 = forkDataDirKey({ ...base, ...build, suiToolsRef: 'r2' });
 		expect(noRef).toBe(forkDataDirKey(base));
 		expect(new Set([noRef, r1, r2]).size).toBe(3);
+	});
+
+	it('recreates the fork container when the binary identity changes (config hash)', () => {
+		const hashFor = (opts: SuiForkOptions) =>
+			forkContainerConfigHash(opts, '/data/fork', forkStartCommand(opts));
+		expect(hashFor(base)).toBe(hashFor(base));
+		expect(hashFor({ ...base, suiToolsRef: 'r1' })).not.toBe(hashFor(base));
+		expect(hashFor({ ...base, suiToolsRef: 'r1' })).not.toBe(
+			hashFor({ ...base, suiToolsRef: 'r2' }),
+		);
+		vi.stubEnv(SUI_TOOLS_REF_ENV_VAR, 'r1');
+		expect(hashFor(base)).toBe(hashFor({ ...base, suiToolsRef: 'r1' }));
 	});
 
 	it('keys fork state identically whether the ref came from config or env', () => {

@@ -624,7 +624,9 @@ const normalizeForkSeed = (opts: SuiForkOptions) => ({
 	].sort(),
 });
 
-const forkContainerConfigHash = (
+/** Exported so a test can pin that a changed binary identity recreates
+ *  the container (`recreate: 'on-config-change'` keys off this). */
+export const forkContainerConfigHash = (
 	opts: SuiForkOptions,
 	dataDir: string,
 	command: ReadonlyArray<string>,

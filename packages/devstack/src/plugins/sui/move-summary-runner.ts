@@ -136,7 +136,7 @@ export const checkHostCliAgainstPin = (
  *  verifiably a different release — bindings would otherwise be generated
  *  by one version and published by another. A pin that cannot be verified
  *  only warns; the default pin is silent. */
-const ensureHostCliHonoursPin = (
+export const ensureHostCliHonoursPin = (
 	spawner: Parameters<typeof capture>[0],
 	toolchain: MoveToolchain | undefined,
 	pkg: { readonly packageName: string; readonly sourcePath: string },

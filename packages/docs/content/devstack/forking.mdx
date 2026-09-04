@@ -116,10 +116,10 @@ change the ref.
 The `suiToolsRef` config field cannot be combined with `version` (which only pins the source build)
 or with `image: { pull }`; devstack rejects the config at boot. `DEVSTACK_SUI_TOOLS_REF` is a
 per-run override and behaves like `DEVSTACK_SUI_FORK_IMAGE` always has: it displaces a configured
-`version` without an error, so don't rely on `version` being honoured once the env var is set. The
-other escape hatches still work: `image: { pull: '…' }` runs a complete prebuilt image you maintain,
-and `DEVSTACK_SUI_FORK_IMAGE` does the same for a single run, falling back to the source build if
-the pull fails.
+`version` without an error, so don't rely on `version` being honoured once the env var is set. If
+both env vars are set, `DEVSTACK_SUI_TOOLS_REF` wins. The other escape hatches still work:
+`image: { pull: '…' }` runs a complete prebuilt image you maintain, and `DEVSTACK_SUI_FORK_IMAGE`
+does the same for a single run, falling back to the source build if the pull fails.
 
 ## Accounts: impersonate vs. ephemeral
 
