@@ -1,0 +1,241 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  clearSecrets,
+  formatToolError,
+  installLogRedaction,
+  REDACTION_PLACEHOLDER,
+  redactString,
+  redactValue,
+  registerConfigFileSecrets,
+  registerSecret,
+  registerSecretsFromEnv,
+  SECRET_ENV_VARS,
+} from "../src/redaction.js";
+
+// Realistic-shaped fakes — never real credentials, just long enough to register.
+const API_KEY = "hbr_test_0123456789abcdef0123456789abcdef";
+const SERVICE_KEY = "suiprivkey1q" + "z".repeat(40);
+
+beforeEach(() => {
+  clearSecrets();
+});
+afterEach(() => {
+  clearSecrets();
+});
+
+describe("registerSecret", () => {
+  it("redacts a registered value wherever it appears", () => {
+    registerSecret(API_KEY);
+    expect(redactString(`token=${API_KEY} done`)).toBe(`token=${REDACTION_PLACEHOLDER} done`);
+  });
+
+  it("replaces every occurrence, not just the first", () => {
+    registerSecret(API_KEY);
+    const out = redactString(`${API_KEY} and again ${API_KEY}`);
+    expect(out).not.toContain(API_KEY);
+    expect(out).toBe(`${REDACTION_PLACEHOLDER} and again ${REDACTION_PLACEHOLDER}`);
+  });
+
+  it("ignores empty and too-short values so common substrings survive", () => {
+    registerSecret("");
+    registerSecret("abc"); // below MIN_SECRET_LENGTH
+    expect(redactString("abc and an empty string")).toBe("abc and an empty string");
+  });
+
+  it("leaves text without any secret untouched", () => {
+    registerSecret(API_KEY);
+    expect(redactString("nothing secret here")).toBe("nothing secret here");
+  });
+
+  // Regression: config.ts trims the credential before it becomes a Bearer header,
+  // but the env var and the config file are read untrimmed. Registering the padded
+  // form would watch for a string that never appears on the wire.
+  it("registers the trimmed form, which is what reaches the wire", () => {
+    registerSecret(`  ${API_KEY}\n`);
+    expect(redactString(`token=${API_KEY} done`)).toBe(`token=${REDACTION_PLACEHOLDER} done`);
+  });
+
+  // Regression: the length check runs after trimming, so a run of spaces cannot
+  // register and scrub whitespace out of every line of output. The indented line
+  // below is the giveaway — an unset var defaulting to blank padding would turn
+  // every aligned log line into a placeholder.
+  it("ignores a whitespace-only value even when it is long enough untrimmed", () => {
+    registerSecret(" ".repeat(12));
+    const aligned = `key:${" ".repeat(12)}value`;
+    expect(redactString(aligned)).toBe(aligned);
+  });
+});
+
+describe("registerSecretsFromEnv", () => {
+  it("registers the WC API key and the service private key from the environment", () => {
+    registerSecretsFromEnv({
+      CONSOLE_API_KEY: API_KEY,
+      CONSOLE_SERVICE_PRIVATE_KEY: SERVICE_KEY,
+    } as NodeJS.ProcessEnv);
+
+    const out = redactString(`api=${API_KEY} svc=${SERVICE_KEY}`);
+    expect(out).not.toContain(API_KEY);
+    expect(out).not.toContain(SERVICE_KEY);
+  });
+});
+
+describe("redactValue", () => {
+  it("scrubs a secret embedded in an Error's stack", () => {
+    registerSecret(API_KEY);
+    const err = new Error(`request failed with Authorization: Bearer ${API_KEY}`);
+    const out = redactValue(err);
+    expect(out).not.toContain(API_KEY);
+    expect(out).toContain(REDACTION_PLACEHOLDER);
+  });
+
+  it("scrubs a secret nested inside an object (the HTTP-request leak shape)", () => {
+    registerSecret(API_KEY);
+    const requestLike = { method: "GET", headers: { Authorization: `Bearer ${API_KEY}` } };
+    expect(redactValue(requestLike)).not.toContain(API_KEY);
+  });
+});
+
+describe("formatToolError", () => {
+  it("never reproduces a credential surfaced through an error message", () => {
+    registerSecret(SERVICE_KEY);
+    const err = new Error(`failed to decode key ${SERVICE_KEY}`);
+    const out = formatToolError("upload_file", err);
+    expect(out).not.toContain(SERVICE_KEY);
+    expect(out).toContain("**Error in upload_file**");
+  });
+});
+
+describe("installLogRedaction", () => {
+  it("redacts secrets from every console method before they are written", () => {
+    registerSecret(API_KEY);
+    const written: string[] = [];
+    // Console-shaped fake whose methods record what they would print.
+    const fake = {
+      log: (...a: unknown[]) => written.push(String(a[0])),
+      error: (...a: unknown[]) => written.push(String(a[0])),
+      warn: (...a: unknown[]) => written.push(String(a[0])),
+      info: (...a: unknown[]) => written.push(String(a[0])),
+      debug: (...a: unknown[]) => written.push(String(a[0])),
+    } as unknown as Console;
+
+    installLogRedaction(fake);
+    fake.error("leaking", { headers: { Authorization: `Bearer ${API_KEY}` } });
+    fake.log(`plain ${API_KEY}`);
+
+    expect(written).toHaveLength(2);
+    for (const line of written) {
+      expect(line).not.toContain(API_KEY);
+      expect(line).toContain(REDACTION_PLACEHOLDER);
+    }
+  });
+
+  it("is idempotent — installing twice does not double-wrap", () => {
+    registerSecret(API_KEY);
+    const written: string[] = [];
+    const fake = {
+      log: (...a: unknown[]) => written.push(String(a[0])),
+      error: (...a: unknown[]) => written.push(String(a[0])),
+      warn: (...a: unknown[]) => written.push(String(a[0])),
+      info: (...a: unknown[]) => written.push(String(a[0])),
+      debug: (...a: unknown[]) => written.push(String(a[0])),
+    } as unknown as Console;
+
+    installLogRedaction(fake);
+    installLogRedaction(fake);
+    fake.log(`plain ${API_KEY}`);
+
+    expect(written).toEqual([`plain ${REDACTION_PLACEHOLDER}`]);
+  });
+});
+
+describe("registerConfigFileSecrets", () => {
+  const ADMIN_KEY = "hbradm_test_0123456789abcdef0123456789";
+  const ADMIN_SIGNER = "suiprivkey1a" + "q".repeat(40);
+
+  it("registers every secret field from a loaded config file", () => {
+    registerConfigFileSecrets({
+      apiKey: API_KEY,
+      servicePrivateKey: SERVICE_KEY,
+      adminKey: ADMIN_KEY,
+      adminServicePrivateKey: ADMIN_SIGNER,
+      baseUrl: "https://api.testnet.console.walrus.xyz",
+    });
+
+    for (const secret of [API_KEY, SERVICE_KEY, ADMIN_KEY, ADMIN_SIGNER]) {
+      expect(redactString(`value=${secret}`)).toBe(`value=${REDACTION_PLACEHOLDER}`);
+    }
+  });
+
+  it("leaves the non-secret baseUrl alone", () => {
+    const baseUrl = "https://api.testnet.console.walrus.xyz";
+    registerConfigFileSecrets({ adminKey: ADMIN_KEY, baseUrl });
+    expect(redactString(`url=${baseUrl}`)).toBe(`url=${baseUrl}`);
+  });
+
+  it("tolerates an empty config object", () => {
+    expect(() => registerConfigFileSecrets({})).not.toThrow();
+  });
+});
+
+// The two Sui-address config pins (webAccountAddress/keyAdminAddress) are new,
+// non-secret trust anchors — unlike the other ConfigFileData fields above, they
+// must NOT be scrubbed from tool output or logs, since an operator needs to be
+// able to see what they are pinned to.
+describe("address pins are not registered as secrets", () => {
+  const WEB_ACCOUNT_ADDRESS = `0x${"4".repeat(64)}`;
+  const KEY_ADMIN_ADDRESS = `0x${"5".repeat(64)}`;
+
+  it("SECRET_ENV_VARS does not include the address pin env vars", () => {
+    expect(SECRET_ENV_VARS).not.toContain("CONSOLE_WEB_ACCOUNT_ADDRESS");
+    expect(SECRET_ENV_VARS).not.toContain("CONSOLE_KEY_ADMIN_ADDRESS");
+  });
+
+  it("registerConfigFileSecrets does not scrub webAccountAddress or keyAdminAddress", () => {
+    registerConfigFileSecrets({
+      webAccountAddress: WEB_ACCOUNT_ADDRESS,
+      keyAdminAddress: KEY_ADMIN_ADDRESS,
+    });
+    const text = `web=${WEB_ACCOUNT_ADDRESS} admin=${KEY_ADMIN_ADDRESS}`;
+    expect(redactString(text)).toBe(text);
+  });
+});
+
+// The one-time CONSOLE_CREDENTIAL_BUNDLE carries a live API key AND its signer
+// secret in one string, so the whole value is a secret — while the two addresses
+// it also carries are not.
+describe("CONSOLE_CREDENTIAL_BUNDLE", () => {
+  const OWNER_ADDRESS = `0x${"6".repeat(64)}`;
+  const KEY_ADMIN_ADDRESS = `0x${"7".repeat(64)}`;
+  const BUNDLE = JSON.stringify({
+    v: 1,
+    apiKey: API_KEY,
+    servicePrivateKey: SERVICE_KEY,
+    webAccountAddress: OWNER_ADDRESS,
+    keyAdminAddress: KEY_ADMIN_ADDRESS,
+  });
+
+  it("is a registered secret env var", () => {
+    expect(SECRET_ENV_VARS).toContain("CONSOLE_CREDENTIAL_BUNDLE");
+  });
+
+  it("redacts a bundle supplied through the environment", () => {
+    registerSecretsFromEnv({ CONSOLE_CREDENTIAL_BUNDLE: BUNDLE } as NodeJS.ProcessEnv);
+    expect(redactString(`bundle=${BUNDLE}`)).toBe(`bundle=${REDACTION_PLACEHOLDER}`);
+  });
+
+  // Both directions in one assertion: the bundle string is scrubbed, and the
+  // addresses it happens to contain still print on their own. If an address were
+  // ever registered as a secret, the second half of this fails — and the
+  // create_bucket disclosure would show «redacted» where the owner should be.
+  it("scrubs the bundle without scrubbing the addresses it carries", () => {
+    registerSecretsFromEnv({
+      CONSOLE_CREDENTIAL_BUNDLE: BUNDLE,
+      CONSOLE_WEB_ACCOUNT_ADDRESS: OWNER_ADDRESS,
+      CONSOLE_KEY_ADMIN_ADDRESS: KEY_ADMIN_ADDRESS,
+    } as NodeJS.ProcessEnv);
+
+    expect(redactString(`bundle=${BUNDLE}`)).not.toContain(API_KEY);
+    const disclosure = `owner=${OWNER_ADDRESS} manager=${KEY_ADMIN_ADDRESS}`;
+    expect(redactString(disclosure)).toBe(disclosure);
+  });
+});

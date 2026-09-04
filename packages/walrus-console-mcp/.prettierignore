@@ -1,0 +1,19 @@
+dist/
+coverage/
+node_modules/
+pnpm-lock.yaml
+# Generated verbatim from npm's output by scripts/generate-shrinkwrap.mts;
+# reformatting it is undone by the next regeneration.
+npm-shrinkwrap.json
+package.json
+CHANGELOG.md
+*.mcpb
+.remember/
+.claude/
+
+# Agent scratch: specs and reports live here but are never committed, so CI
+# never sees them. Without these entries `pnpm lint` fails locally for anyone
+# holding scratch files while passing in CI — the divergence that makes a
+# local gate untrustworthy.
+docs/
+.superpowers/

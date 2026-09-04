@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.mcpb
+
+# Environment / secrets (keep .env.example tracked)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# OS / editor cruft
+.DS_Store
+
+# Test coverage
+coverage/
+
+# Machine-specific MCP registration. Each clone registers its own ABSOLUTE path
+# via `claude mcp add` (see README) — these would bake in a local path, so they
+# must never be committed.
+.mcp.json
+.claude/
+/temp
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/

@@ -1,0 +1,4 @@
+{
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "node", "promise"],
+  "ignorePatterns": ["node_modules", "dist", "coverage", "vitest.config.*"]
+}
