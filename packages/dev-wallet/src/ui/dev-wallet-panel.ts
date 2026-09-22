@@ -193,14 +193,6 @@ export class DevWalletPanel extends LitElement {
 				text-overflow: ellipsis;
 			}
 
-			.version {
-				font-family: var(--dev-wallet-font-mono);
-				font-size: 9px;
-				letter-spacing: 0.12em;
-				text-transform: uppercase;
-				color: var(--dev-wallet-text-3);
-			}
-
 			.header-spacer {
 				flex: 1;
 				min-width: 8px;
@@ -363,7 +355,6 @@ export class DevWalletPanel extends LitElement {
 						<span class="logo-mark">${this.#walletIcon}</span>
 						<span class="title-stack">
 							<span class="sidebar-title">${this.wallet?.name ?? 'Dev Wallet'}</span>
-							<span class="version">v0.1.0</span>
 						</span>
 					</div>
 					<span class="header-spacer"></span>

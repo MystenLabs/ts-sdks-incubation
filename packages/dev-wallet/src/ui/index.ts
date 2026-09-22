@@ -5,6 +5,8 @@ export { DevWalletPanel } from './dev-wallet-panel.js';
 export { DevWalletAccounts } from './dev-wallet-accounts.js';
 export { DevWalletBalances } from './dev-wallet-balances.js';
 export { DevWalletConnect } from './dev-wallet-connect.js';
+export { DevWalletConnectGuide } from './dev-wallet-connect-guide.js';
+export { DevWalletConnectedApps } from './dev-wallet-connected-apps.js';
 export { DevWalletNewAccount } from './dev-wallet-new-account.js';
 export { DevWalletObjects } from './dev-wallet-objects.js';
 export { DevWalletPopup } from './dev-wallet-popup.js';

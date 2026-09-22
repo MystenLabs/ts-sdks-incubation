@@ -6,6 +6,12 @@ description: Run the dev wallet as a separate web app shared across dApps via po
 Run the dev wallet as a separate web application. Your dApp communicates with it via popup windows
 and PostMessage.
 
+<Callout type="info">
+	A copy of this wallet is hosted at `https://sui-dev-wallet.vercel.app`. Use that origin wherever
+	this page shows `http://localhost:5174`. The CLI signer isn't available there. See [Hosted
+	wallet](/dev-wallet/guides/hosted-wallet).
+</Callout>
+
 ## Starting the server
 
 ```bash
@@ -62,8 +68,8 @@ If you can't modify the dApp source, use the bookmarklet to inject the wallet in
 standalone server serves a script at `/bookmarklet.js` that registers the wallet via the
 wallet-standard window event protocol.
 
-Drag the bookmarklet link from the wallet's Settings tab into your browser bookmarks bar, or paste
-this in your browser console:
+Drag the **Dev Wallet** button from the wallet page (or its Settings tab on small screens) into your
+browser bookmarks bar, or paste this in your browser console:
 
 ```javascript
 var s = document.createElement('script');
@@ -71,7 +77,8 @@ s.src = 'http://localhost:5174/bookmarklet.js';
 document.head.appendChild(s);
 ```
 
-The bookmarklet automatically detects the wallet server origin from the script URL.
+The bookmarklet reads the wallet origin from its own script URL. It only stays in effect until the
+page reloads.
 
 ## How popup signing works
 

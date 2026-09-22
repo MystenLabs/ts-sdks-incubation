@@ -223,7 +223,8 @@ export class DevWalletClient implements Wallet {
 
 	#createChannel(): DappPostMessageChannel {
 		return new DappPostMessageChannel({
-			appName: this.#name,
+			// Identifies the requesting dApp in the wallet's approval popup.
+			appName: globalThis.document?.title || globalThis.location?.host || this.#name,
 			hostOrigin: this.#origin,
 		});
 	}

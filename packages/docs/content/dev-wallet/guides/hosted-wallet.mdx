@@ -1,0 +1,70 @@
+---
+title: Hosted Wallet
+description: Use the dev wallet at sui-dev-wallet.vercel.app without installing anything
+---
+
+A hosted copy of the [standalone wallet](/dev-wallet/reference/standalone-mode) runs at
+[sui-dev-wallet.vercel.app](https://sui-dev-wallet.vercel.app). The first time you open it, it
+creates a dev account in your browser. It works like `dev-wallet serve`, except it can't use your
+`sui` CLI keystore.
+
+## Connect your dApp
+
+Register the wallet with dApp Kit, passing the hosted origin:
+
+```ts
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { devWalletClientInitializer } from '@mysten-incubation/dev-wallet/client';
+
+const dAppKit = createDAppKit({
+	networks: ['devnet'],
+	walletInitializers: [devWalletClientInitializer({ origin: 'https://sui-dev-wallet.vercel.app' })],
+});
+```
+
+**Dev Wallet (Web)** then appears in your wallet picker. Approving a connection or signing a
+transaction opens a popup from the hosted wallet. Without dApp Kit, call
+`DevWalletClient.register({ origin: 'https://sui-dev-wallet.vercel.app' })` instead.
+
+Apps you approve appear under **Connected apps** on the wallet page. Disconnecting one there makes
+the wallet reject its requests until it connects again.
+
+### Connecting a dApp you can't change
+
+To add the wallet to any page without editing its code, use the bookmarklet from the wallet page:
+
+1. Show your browser's bookmarks bar (<kbd>⌘ Shift B</kbd> on macOS, <kbd>Ctrl Shift B</kbd>
+   elsewhere).
+2. On the wallet page, drag the **Dev Wallet** button from the **Bookmarklet** tab onto the
+   bookmarks bar. On small screens it's under the **Settings** tab.
+3. Open the dApp, click the bookmark, and choose **Dev Wallet (Web)** in the dApp's wallet picker.
+
+On a phone you can't drag bookmarks, so the wallet page shows a **Copy bookmarklet code** button and
+steps for your browser instead. On iOS, you save the code as a bookmark and run it from Bookmarks.
+On Chrome for Android, you run it by typing the bookmark's name in the address bar. Firefox for
+Android doesn't support bookmarklets.
+
+The bookmark only lasts until the page reloads, so click it again after a reload. If you can't use
+bookmarks, the wallet page also has a script you can copy into the dApp's browser console. Pages
+whose Content-Security-Policy blocks third-party scripts won't load either one.
+
+## Accounts, networks, and funds
+
+- The account key is stored in IndexedDB for `sui-dev-wallet.vercel.app`, and each browser profile
+  gets its own. Clearing that site's data deletes the account. Don't use this wallet for real funds.
+- The wallet starts on devnet. Networks you add, the active network, and the selected account are
+  saved in the browser across reloads.
+- The **Faucet** button on the Home tab funds the active account on devnet and on localnet (assuming
+  the default faucet at `127.0.0.1:9123`). When you add a network in Settings, you can also give it
+  a faucet URL. For testnet, use [faucet.sui.io](https://faucet.sui.io).
+
+Localnet works from the hosted wallet in Chrome, which lets HTTPS pages call `http://127.0.0.1`.
+Other browsers may block those requests. If yours does, or you want to sign with your CLI keystore,
+run the wallet locally with `pnpm dlx @mysten-incubation/dev-wallet serve`.
+
+## Hosting your own copy
+
+The hosted wallet is `apps/dev-wallet` in this repo. To deploy it to Vercel, create a project with
+**Root Directory** set to `apps/dev-wallet`; `vercel.json` handles the build. Also turn off
+Deployment Protection, because other sites load the popup and `bookmarklet.js` cross-origin. Then
+point dApps at your own origin.

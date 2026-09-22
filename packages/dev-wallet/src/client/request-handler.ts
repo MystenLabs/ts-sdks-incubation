@@ -6,6 +6,7 @@ import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import { createJwtSession, WalletPostMessageChannel } from '@mysten/window-wallet-core';
 
 import type { SignerAdapter } from '../types.js';
+import type { ConnectedAppsStore } from './connected-apps.js';
 import { getNetworkFromChain } from '../wallet/constants.js';
 import { executeSigning } from '../wallet/signing.js';
 
@@ -41,6 +42,12 @@ export interface HandleRequestOptions {
 	getClient?: (network: string) => ClientWithCoreApi | undefined;
 	/** URL hash containing the encoded request. Defaults to window.location.hash. */
 	hash?: string;
+	/**
+	 * Tracks connected dApps. When set, approved connects are recorded here and
+	 * signing requests from an origin that isn't in the store are rejected, so
+	 * removing an app disconnects it.
+	 */
+	connectedApps?: ConnectedAppsStore;
 }
 
 export function parseWalletRequest(options: HandleRequestOptions): PendingWalletRequest {
@@ -53,6 +60,7 @@ export function parseWalletRequest(options: HandleRequestOptions): PendingWallet
 	const channel = WalletPostMessageChannel.fromUrlHash(hash);
 	const requestData = channel.getRequestData();
 	const payload = requestData.payload;
+	const appOrigin = new URL(requestData.appUrl).origin;
 
 	if (payload.type === 'connect') {
 		return {
@@ -78,9 +86,16 @@ export function parseWalletRequest(options: HandleRequestOptions): PendingWallet
 						secretKey: options.jwtSecretKey,
 						expirationTime: '7d',
 						issuer: 'dev-wallet',
-						audience: new URL(requestData.appUrl).origin,
+						audience: appOrigin,
 					},
 				);
+
+				options.connectedApps?.record({
+					origin: appOrigin,
+					name: requestData.appName,
+					accounts: accounts.map((a) => a.address),
+					connectedAt: Date.now(),
+				});
 
 				channel.sendMessage({
 					type: 'resolve',
@@ -112,6 +127,14 @@ export function parseWalletRequest(options: HandleRequestOptions): PendingWallet
 				channel.sendMessage({
 					type: 'reject',
 					reason: `Session verification failed: ${error instanceof Error ? error.message : String(error)}`,
+				});
+				return;
+			}
+
+			if (options.connectedApps && !options.connectedApps.has(appOrigin)) {
+				channel.sendMessage({
+					type: 'reject',
+					reason: `${appOrigin} was disconnected from the wallet. Reconnect to continue.`,
 				});
 				return;
 			}

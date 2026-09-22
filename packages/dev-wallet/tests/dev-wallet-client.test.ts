@@ -3,7 +3,7 @@
 
 // @vitest-environment happy-dom
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSend = vi.fn();
 
@@ -24,12 +24,15 @@ vi.mock('@mysten/window-wallet-core', () => {
 			constructor(opts: any) {
 				this.appName = opts.appName;
 				this.hostOrigin = opts.hostOrigin;
+				channelAppNames.push(opts.appName);
 			}
 			send = mockSend;
 		},
 		decodeJwtSession: mockDecodeJwtSession,
 	};
 });
+
+const channelAppNames: string[] = [];
 
 const mockRegister = vi.fn(() => vi.fn());
 vi.mock('@mysten/wallet-standard', async (importOriginal) => {
@@ -129,6 +132,30 @@ describe('DevWalletClient', () => {
 			expect(localStorage.getItem('dev-wallet:session:http://localhost:5174')).toBe(
 				'new-session-token',
 			);
+		});
+	});
+
+	describe('appName', () => {
+		afterEach(() => {
+			document.title = '';
+		});
+
+		it('identifies the requesting dApp by its document title', async () => {
+			mockSend.mockResolvedValue({ session: 'new-session-token' });
+			document.title = 'My dApp';
+
+			await new DevWalletClient().features['standard:connect'].connect();
+
+			expect(channelAppNames.at(-1)).toBe('My dApp');
+		});
+
+		it('falls back to the page host when the document has no title', async () => {
+			mockSend.mockResolvedValue({ session: 'new-session-token' });
+			document.title = '';
+
+			await new DevWalletClient().features['standard:connect'].connect();
+
+			expect(channelAppNames.at(-1)).toBe(location.host);
 		});
 	});
 

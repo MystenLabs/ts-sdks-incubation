@@ -1,6 +1,6 @@
 {
 	"installCommand": "cd ../.. && pnpm install --frozen-lockfile && pnpm turbo build --filter=@mysten-incubation/dev-wallet",
-	"buildCommand": "vite build && cp ../../packages/dev-wallet/dist/standalone/bookmarklet.js dist/bookmarklet.js",
+	"buildCommand": "vite build",
 	"outputDirectory": "dist",
 	"headers": [
 		{

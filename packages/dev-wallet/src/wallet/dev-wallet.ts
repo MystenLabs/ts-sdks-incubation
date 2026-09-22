@@ -24,10 +24,75 @@ import { getWallets, ReadonlyWalletAccount } from '@mysten/wallet-standard';
 import { chainsForNetworks } from '../adapters/build-managed-account.js';
 import type { SignerAdapter } from '../types.js';
 import { DEFAULT_WALLET_ICON, getNetworkFromChain, type WalletEventsMap } from './constants.js';
+import { readPersisted } from './persisted.js';
 import { type SigningResult, executeSigning } from './signing.js';
 
 const DEFAULT_WALLET_NAME = 'Dev Wallet';
-const NETWORK_STORAGE_KEY = 'dev-wallet:networks';
+/** localStorage key for {@link PersistedStateV1}. Bump the suffix on shape changes. */
+export const STATE_STORAGE_KEY = 'dev-wallet:state:v1';
+
+/** Wallet state persisted across reloads when `persistState` is enabled. */
+interface PersistedStateV1 {
+	version: 1;
+	networks: Record<string, string>;
+	faucets?: Record<string, string>;
+	activeNetwork?: string;
+	activeAccount?: string;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		!Array.isArray(value) &&
+		Object.values(value).every((v) => typeof v === 'string')
+	);
+}
+
+/** Throws unless `url` is an http(s) URL. `what` names it in the error, e.g. `network "localnet"`. */
+function assertHttpUrl(url: string, what: string): void {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		throw new Error(`Invalid URL for ${what}: ${url}`);
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		throw new Error(`Invalid URL for ${what}: must use http or https (got ${parsed.protocol})`);
+	}
+}
+
+/** Config faucets overlaid with persisted ones; `''` marks a removed faucet. */
+function mergeFaucets(
+	config: Record<string, string>,
+	persisted: Record<string, string> | undefined,
+): Record<string, string> {
+	const merged = { ...config, ...persisted };
+	for (const [name, url] of Object.entries(merged)) {
+		if (url === '') delete merged[name];
+	}
+	return merged;
+}
+
+function decodePersistedState(parsed: unknown): PersistedStateV1 | null {
+	if (typeof parsed !== 'object' || parsed === null) return null;
+	const { version, networks, faucets, activeNetwork, activeAccount } = parsed as Record<
+		string,
+		unknown
+	>;
+	if (version !== 1) return null;
+	if (!isStringRecord(networks)) return null;
+	if (faucets !== undefined && !isStringRecord(faucets)) return null;
+	if (activeNetwork !== undefined && typeof activeNetwork !== 'string') return null;
+	if (activeAccount !== undefined && typeof activeAccount !== 'string') return null;
+	return {
+		version,
+		networks,
+		faucets,
+		activeNetwork,
+		activeAccount,
+	};
+}
 
 /**
  * Default gRPC endpoint URLs for standard Sui networks (devnet, testnet, localnet).
@@ -100,10 +165,11 @@ export interface DevWalletConfig {
 	/** Factory to create a client for a given network. Defaults to SuiGrpcClient. */
 	clientFactory?: (network: string, url: string) => ClientWithCoreApi;
 	/**
-	 * Persist network URLs to localStorage so custom configurations survive page reloads
-	 * and are shared with popup windows.
+	 * Persist network URLs, the active network, and the UI's active account to
+	 * localStorage so they survive page reloads and are shared with popup windows.
+	 * Persisted values take precedence over `networks` and `activeNetwork`.
 	 */
-	persistNetworks?: boolean;
+	persistState?: boolean;
 }
 
 /**
@@ -114,6 +180,8 @@ export class DevWallet implements Wallet {
 	readonly #adapters: SignerAdapter[];
 	#networkUrls: Record<string, string>;
 	#faucetUrls: Record<string, string>;
+	/** Faucets from config; persisted faucets layer over these. */
+	readonly #configFaucets: Record<string, string>;
 	#clients: Record<string, ClientWithCoreApi>;
 	#activeNetwork: string;
 	readonly #name: string;
@@ -121,7 +189,8 @@ export class DevWallet implements Wallet {
 	readonly #autoApprove: AutoApprovePolicy;
 	readonly #autoConnect: boolean;
 	readonly #clientFactory: (network: string, url: string) => ClientWithCoreApi;
-	readonly #persistNetworks: boolean;
+	readonly #persistState: boolean;
+	#activeAccount: string | null;
 	#accounts: ReadonlyWalletAccount[];
 	#selectedAddress: string | null = null;
 	#events: Emitter<WalletEventsMap>;
@@ -143,11 +212,17 @@ export class DevWallet implements Wallet {
 			console.warn('[dev-wallet] No adapters provided. The wallet will have no accounts.');
 		}
 		this.#adapters = config.adapters;
-		this.#persistNetworks = config.persistNetworks ?? false;
-		this.#networkUrls = this.#loadNetworkUrls(config.networks ?? DEFAULT_NETWORK_URLS);
-		this.#faucetUrls = { ...config.faucets };
+		this.#persistState = config.persistState ?? false;
+		const persisted = this.#loadState();
+		this.#networkUrls = persisted?.networks ?? { ...(config.networks ?? DEFAULT_NETWORK_URLS) };
+		this.#configFaucets = { ...config.faucets };
+		this.#faucetUrls = mergeFaucets(this.#configFaucets, persisted?.faucets);
 		this.#clients = {};
-		this.#activeNetwork = config.activeNetwork ?? Object.keys(this.#networkUrls)[0] ?? '';
+		this.#activeNetwork =
+			persisted?.activeNetwork && persisted.activeNetwork in this.#networkUrls
+				? persisted.activeNetwork
+				: (config.activeNetwork ?? Object.keys(this.#networkUrls)[0] ?? '');
+		this.#activeAccount = persisted?.activeAccount ?? null;
 		this.#name = config.name ?? DEFAULT_WALLET_NAME;
 		this.#icon = config.icon ?? DEFAULT_WALLET_ICON;
 		this.#autoApprove = config.autoApprove ?? false;
@@ -330,25 +405,37 @@ export class DevWallet implements Wallet {
 			);
 		}
 		this.#activeNetwork = network;
+		this.#saveState();
 		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
+	/** Address the wallet UI shows as active, or `null` when unset. Persisted
+	 *  with `persistState`. Unlike {@link setSelectedAccount}, this doesn't
+	 *  change which accounts dApps see. */
+	get activeAccount(): string | null {
+		return this.#activeAccount;
+	}
+
+	setActiveAccount(address: string | null): void {
+		this.#activeAccount = address;
+		this.#saveState();
+	}
+
+	/**
+	 * Add a network or replace its URL. `faucet` sets the network's faucet
+	 * endpoint; pass `null` to remove it, or omit it to leave it unchanged.
+	 */
 	addNetwork(name: string, url: string, faucet?: string | null): void {
-		let parsed: URL;
-		try {
-			parsed = new URL(url);
-		} catch {
-			throw new Error(`Invalid URL: ${url}`);
-		}
-		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-			throw new Error(`Invalid URL: must use http or https (got ${parsed.protocol})`);
-		}
+		assertHttpUrl(url, `network "${name}"`);
+		if (faucet) assertHttpUrl(faucet, `the faucet of network "${name}"`);
 		this.#networkUrls[name] = url;
 		this.#clients[name] = this.#clientFactory(name, url);
-		if (faucet !== undefined && faucet !== null) {
+		if (faucet) {
 			this.#faucetUrls[name] = faucet;
+		} else if (faucet === null) {
+			delete this.#faucetUrls[name];
 		}
-		this.#saveNetworkUrls();
+		this.#saveState();
 		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
@@ -359,7 +446,7 @@ export class DevWallet implements Wallet {
 		if (this.#activeNetwork === name) {
 			this.#activeNetwork = Object.keys(this.#networkUrls)[0] ?? '';
 		}
-		this.#saveNetworkUrls();
+		this.#saveState();
 		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
@@ -576,27 +663,31 @@ export class DevWallet implements Wallet {
 		return this.#ensureClient(network);
 	}
 
-	#loadNetworkUrls(defaults: Record<string, string>): Record<string, string> {
-		if (!this.#persistNetworks || typeof localStorage === 'undefined') {
-			return { ...defaults };
-		}
-		try {
-			const raw = localStorage.getItem(NETWORK_STORAGE_KEY);
-			if (raw) {
-				const parsed = JSON.parse(raw);
-				if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-					return parsed as Record<string, string>;
-				}
-			}
-		} catch {
-			// Corrupted data — fall through to defaults
-		}
-		return { ...defaults };
+	#loadState(): PersistedStateV1 | null {
+		if (!this.#persistState || typeof localStorage === 'undefined') return null;
+		return readPersisted(localStorage, STATE_STORAGE_KEY, decodePersistedState);
 	}
 
-	#saveNetworkUrls(): void {
-		if (!this.#persistNetworks || typeof localStorage === 'undefined') return;
-		localStorage.setItem(NETWORK_STORAGE_KEY, JSON.stringify(this.#networkUrls));
+	/** Current faucets plus an empty-string marker for each config faucet the
+	 *  user removed, so the removal survives a reload. */
+	#persistableFaucets(): Record<string, string> {
+		const faucets = { ...this.#faucetUrls };
+		for (const name of Object.keys(this.#configFaucets)) {
+			if (!(name in faucets)) faucets[name] = '';
+		}
+		return faucets;
+	}
+
+	#saveState(): void {
+		if (!this.#persistState || typeof localStorage === 'undefined') return;
+		const state: PersistedStateV1 = {
+			version: 1,
+			networks: this.#networkUrls,
+			faucets: this.#persistableFaucets(),
+			activeNetwork: this.#activeNetwork,
+			...(this.#activeAccount ? { activeAccount: this.#activeAccount } : {}),
+		};
+		localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state));
 	}
 
 	#ensureClient(network: string): ClientWithCoreApi {

@@ -7,6 +7,7 @@ import { html, nothing } from 'lit';
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 
 import type { ForkRelay } from '../adapters/fork-relay.js';
+import type { ConnectedAppsStore } from '../client/connected-apps.js';
 import { getNetworkFromChain } from '../wallet/constants.js';
 import type {
 	DevWallet,
@@ -41,7 +42,11 @@ export class WalletController implements ReactiveController {
 	activeAccountIndex = 0;
 	pendingRequest: PendingSigningRequest | null = null;
 	pendingConnect: PendingConnectRequest | null = null;
-	bookmarkletOrigin = '';
+	/** Origin of a standalone/hosted wallet. When set, Settings leads with the
+	 *  connect guide (bookmarklet + dApp Kit snippet). */
+	walletOrigin = '';
+	/** Connected-dApps store for a standalone wallet; listed in Settings. */
+	connectedApps: ConnectedAppsStore | null = null;
 	/** Pre-seeded coin metadata (typically the generated `coins` constant from
 	 *  devstack codegen). Forwarded to `<dev-wallet-balances>` and the
 	 *  signing modal so they can skip per-coin RPC waterfalls. */
@@ -58,6 +63,7 @@ export class WalletController implements ReactiveController {
 	forkUpstream = '';
 
 	#wallet: DevWallet | null = null;
+	#networkKey = '';
 	#unsubscribeEvents: (() => void) | null = null;
 	#unsubscribeRequests: (() => void) | null = null;
 	#unsubscribeConnect: (() => void) | null = null;
@@ -103,11 +109,23 @@ export class WalletController implements ReactiveController {
 			newAccounts.length !== this.accounts.length ||
 			newAccounts.some((a, i) => a.address !== this.accounts[i]?.address);
 		const pendingChanged = newPending !== this.pendingRequest;
+		// Network switches and network add/remove only emit `change`; without
+		// this the badge, balances client, and faucet stay on the old network.
+		const networkKey = `${this.#wallet.activeNetwork}|${this.#wallet.availableNetworks.join(',')}`;
+		const networkChanged = networkKey !== this.#networkKey;
+		this.#networkKey = networkKey;
 
-		if (!accountsChanged && !pendingChanged) return;
+		if (!accountsChanged && !pendingChanged && !networkChanged) return;
 
 		if (accountsChanged) {
+			const hadAccounts = this.accounts.length > 0;
 			this.accounts = [...newAccounts];
+			// Restore the persisted active account once accounts first load.
+			const persisted = this.#wallet.activeAccount;
+			const restored = persisted ? newAccounts.findIndex((a) => a.address === persisted) : -1;
+			if (!hadAccounts && restored !== -1) {
+				this.activeAccountIndex = restored;
+			}
 			// Clamp activeAccountIndex when accounts shrink
 			if (this.activeAccountIndex >= newAccounts.length && newAccounts.length > 0) {
 				this.activeAccountIndex = newAccounts.length - 1;
@@ -177,6 +195,7 @@ export class WalletController implements ReactiveController {
 		const index = this.accounts.findIndex((a) => a.address === e.detail.account.address);
 		if (index !== -1) {
 			this.activeAccountIndex = index;
+			this.#wallet?.setActiveAccount(e.detail.account.address);
 			this.host.requestUpdate();
 		}
 	}
@@ -263,7 +282,8 @@ export class WalletController implements ReactiveController {
 				.accounts=${this.accounts}
 				.adapters=${this.#wallet ? [...this.#wallet.adapters] : []}
 				.activeAddress=${this.activeAddress}
-				.bookmarkletOrigin=${this.bookmarkletOrigin}
+				.walletOrigin=${this.walletOrigin}
+				.connectedApps=${this.connectedApps}
 				@account-selected=${(e: CustomEvent) => this.handleAccountSelected(e)}
 			></dev-wallet-settings>
 		`;

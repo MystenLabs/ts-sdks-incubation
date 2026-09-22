@@ -117,7 +117,6 @@ export class DevWalletBalances extends LitElement {
 				margin-bottom: 0;
 			}
 
-			.manage-btn,
 			.action-btn {
 				height: 30px;
 				padding: 0 10px;
@@ -129,16 +128,10 @@ export class DevWalletBalances extends LitElement {
 				font-weight: var(--dev-wallet-font-weight-medium);
 			}
 
-			.manage-btn:hover,
 			.action-btn:hover:not(:disabled) {
 				background: var(--dev-wallet-bg-hover);
 				border-color: var(--dev-wallet-border-strong);
 				color: var(--dev-wallet-foreground);
-			}
-
-			.manage-btn:disabled {
-				opacity: 0.48;
-				cursor: not-allowed;
 			}
 
 			.balance-hero {
@@ -210,6 +203,10 @@ export class DevWalletBalances extends LitElement {
 				color: var(--dev-wallet-foreground);
 			}
 
+			.empty-copy a {
+				color: var(--dev-wallet-foreground);
+			}
+
 			.empty-copy {
 				margin-top: 6px;
 				font-size: 12px;
@@ -271,14 +268,25 @@ export class DevWalletBalances extends LitElement {
 	}
 
 	/** Request SUI from the active network's faucet for the active address,
-	 *  then refresh balances. No-op when no `faucetHost` is configured (live
-	 *  mainnet / fork stacks have none). */
+	 *  wait for the faucet's transfers to land, then refresh balances. No-op
+	 *  when no `faucetHost` is configured (live mainnet / fork stacks have none). */
 	async #requestFromFaucet() {
 		if (!this.faucetHost || !this.address || this._funding) return;
 		this._funding = true;
 		this._fundError = null;
 		try {
-			await requestSuiFromFaucetV2({ host: this.faucetHost, recipient: this.address });
+			const result = await requestSuiFromFaucetV2({
+				host: this.faucetHost,
+				recipient: this.address,
+			});
+			const client = this.client;
+			if (client) {
+				const digests = new Set(result.coins_sent?.map((c) => c.transferTxDigest) ?? []);
+				// Best effort: the funds were sent even if waiting times out.
+				await Promise.allSettled(
+					[...digests].map((digest) => client.core.waitForTransaction({ digest, timeout: 30_000 })),
+				);
+			}
 			this.refresh();
 		} catch (error) {
 			this._fundError =
@@ -346,7 +354,6 @@ export class DevWalletBalances extends LitElement {
 				: nothing}
 			<div class="coins-header">
 				<h3 class="section-header">Coins · ${this._balances.length}</h3>
-				<button class="manage-btn" disabled>Manage</button>
 			</div>
 			${this._loading
 				? html`<div class="loading" part="loading" aria-live="polite">Loading...</div>`
@@ -361,8 +368,13 @@ export class DevWalletBalances extends LitElement {
 									${this.faucetHost
 										? html`Use the Faucet button above to fund ${formatAddress(this.address)} on
 											${networkLabel}, then refresh.`
-										: html`Fund ${formatAddress(this.address)} from your local faucet or devstack
-											seed, then refresh balances here.`}
+										: this.network === 'testnet'
+											? html`Get testnet SUI for ${formatAddress(this.address)} at
+													<a href="https://faucet.sui.io" target="_blank" rel="noopener noreferrer"
+														>faucet.sui.io</a
+													>, then refresh.`
+											: html`Fund ${formatAddress(this.address)} from your local faucet or devstack
+												seed, then refresh balances here.`}
 								</div>
 							</div>`
 						: html`

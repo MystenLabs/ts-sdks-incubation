@@ -8,14 +8,19 @@
  * Handles both standalone UI and popup signing requests.
  */
 
+import { getFaucetHost } from '@mysten/sui/faucet';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
 import type { SignerAdapter } from '@mysten-incubation/dev-wallet';
 import { DevWallet } from '@mysten-incubation/dev-wallet';
-import { parseWalletRequest } from '@mysten-incubation/dev-wallet/client';
+import { ConnectedAppsStore, parseWalletRequest } from '@mysten-incubation/dev-wallet/client';
 
 // Import UI components to register custom elements (side-effect imports)
 import '@mysten-incubation/dev-wallet/ui';
+import type { DevWalletConnect } from '@mysten-incubation/dev-wallet/ui';
+
+// NOTE: JWT secret is stored in localStorage (readable by any JS on the same origin).
+// This is acceptable for a dev-only tool but should not be used in production wallets.
 
 function getJwtSecretKey(): Uint8Array {
 	const stored = localStorage.getItem('dev-wallet:jwt-secret');
@@ -80,7 +85,8 @@ async function createWallet(): Promise<DevWallet> {
 	return new DevWallet({
 		adapters,
 		activeNetwork: 'devnet',
-		persistNetworks: true,
+		persistState: true,
+		faucets: { devnet: getFaucetHost('devnet'), localnet: getFaucetHost('localnet') },
 	});
 }
 
@@ -112,6 +118,7 @@ async function handlePopupRequest(hash: string) {
 		const request = parseWalletRequest({
 			adapters: [...wallet.adapters],
 			jwtSecretKey,
+			connectedApps: new ConnectedAppsStore(),
 			getClient: (network) => {
 				try {
 					return wallet.getClient(network);
@@ -129,8 +136,8 @@ async function handlePopupRequest(hash: string) {
 			? (wallet.getClient(network) ?? wallet.activeClient)
 			: wallet.activeClient;
 
-		const popup = document.createElement('dev-wallet-popup') as any;
-		popup.walletName = 'Sui Dev Wallet';
+		const popup = document.createElement('dev-wallet-popup');
+		popup.walletName = 'Dev Wallet (Web)';
 		popup.requestType = request.type;
 		popup.appName = request.appName;
 		popup.appUrl = request.appUrl;
@@ -157,17 +164,23 @@ async function handlePopupRequest(hash: string) {
 
 		let handling = false;
 
-		popup.addEventListener('approve', async (e: CustomEvent) => {
+		popup.addEventListener('approve', async (e) => {
 			if (handling) return;
 			handling = true;
 			try {
-				const detail = e.detail;
+				const detail = (e as CustomEvent).detail;
 				await request.approve(
 					detail?.selectedAddresses ? { selectedAddresses: detail.selectedAddresses } : undefined,
 				);
 				window.close();
-			} catch {
+			} catch (error) {
 				handling = false;
+				const connectEl = popup.shadowRoot?.querySelector(
+					'dev-wallet-connect',
+				) as DevWalletConnect | null;
+				if (connectEl) {
+					connectEl.showError(error instanceof Error ? error.message : String(error));
+				}
 			}
 		});
 
@@ -193,9 +206,9 @@ async function showStandaloneUI() {
 
 		app.innerHTML = '';
 
-		const el = document.createElement('dev-wallet-standalone') as any;
+		const el = document.createElement('dev-wallet-standalone');
 		el.wallet = wallet;
-		el.bookmarkletOrigin = window.location.origin;
+		el.connectedApps = new ConnectedAppsStore();
 		app.appendChild(el);
 	} catch (error) {
 		showErrorMessage(app, 'Failed to initialize wallet', error);

@@ -227,10 +227,13 @@ signature with that address, the transaction bytes are sent to the local `sui ke
 
 ### Bookmarklet
 
-The standalone wallet also serves a bookmarklet for quick injection into any dApp. You can find it
-in the **Settings** tab — drag it to your bookmarks bar, or copy the console snippet from the
-terminal output. Clicking the bookmarklet on any page registers the standalone wallet without
-needing to modify the dApp's source code.
+The standalone wallet also serves a bookmarklet that adds it to any dApp without code changes. Drag
+the **Dev Wallet** button from the wallet page (or its Settings tab on small screens) to your
+bookmarks bar, or copy the console script shown next to it.
+
+A hosted copy of the standalone wallet, without CLI signing, runs at
+<https://sui-dev-wallet.vercel.app>. See the
+[Hosted wallet guide](https://ts-sdks-incubation.vercel.app/dev-wallet/guides/hosted-wallet).
 
 ## Imports
 
