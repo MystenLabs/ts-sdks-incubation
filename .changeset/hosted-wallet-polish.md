@@ -18,7 +18,7 @@ Standalone wallet and hosted-wallet fixes.
   steps, console script, dApp Kit snippet) and connected apps on the right. On narrow screens both
   move to the top of the Settings tab. New elements: `<dev-wallet-connect-guide>` and
   `<dev-wallet-connected-apps>`. The page drops the embed snippet, the stale `v0.1.0` badge, and the
-  "Running" indicator.
+  "Running" indicator. On phones, the bookmarklet tab shows copy-and-edit steps for iOS or Android.
 - The `serve` wallet configures the devnet and localnet faucets, so the Faucet button works there.
   After a faucet request, the balance refreshes once the transfer lands, not before.
 - Custom networks in Settings take an optional faucet URL. `addNetwork(name, url, null)` now clears

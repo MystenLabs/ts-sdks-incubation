@@ -12,6 +12,20 @@ import { CopyController } from './copy-controller.js';
  * the wallet's `origin`. Rendered beside the standalone wallet on wide
  * screens and at the top of its Settings tab.
  */
+type Platform = 'ios' | 'android' | 'android-firefox' | 'desktop';
+
+function detectPlatform(): Platform {
+	const nav = globalThis.navigator;
+	if (!nav) return 'desktop';
+	const ua = nav.userAgent;
+	if (/Android/.test(ua)) return /Firefox/.test(ua) ? 'android-firefox' : 'android';
+	// iPadOS reports itself as a Mac; touch support gives it away.
+	if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && nav.maxTouchPoints > 1)) {
+		return 'ios';
+	}
+	return 'desktop';
+}
+
 const BOOKMARKS_BAR_SHORTCUT = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? '')
 	? '⌘ Shift B'
 	: 'Ctrl Shift B';
@@ -175,6 +189,10 @@ export class DevWalletConnectGuide extends LitElement {
 			cursor: pointer;
 		}
 
+		.link-btn.inline {
+			display: inline;
+		}
+
 		.link-btn:hover {
 			color: var(--dev-wallet-foreground);
 		}
@@ -235,6 +253,10 @@ export class DevWalletConnectGuide extends LitElement {
 	@state()
 	private _tab: TabId = 'bookmarklet';
 
+	/** Phones can't drag bookmarklets, so they get copy-and-edit steps instead. */
+	@property({ attribute: false })
+	platform: Platform = detectPlatform();
+
 	#copy = new CopyController(this);
 
 	override render() {
@@ -272,7 +294,9 @@ createDAppKit({
 			</div>
 			<div role="tabpanel" class="panel">
 				${this._tab === 'bookmarklet'
-					? this.#renderBookmarklet(bookmarkletHref, consoleScript)
+					? this.platform === 'desktop'
+						? this.#renderBookmarklet(bookmarkletHref, consoleScript)
+						: this.#renderMobileBookmarklet(bookmarkletHref)
 					: this.#renderDappKit(dappKitSnippet)}
 			</div>
 		`;
@@ -311,6 +335,54 @@ createDAppKit({
 					? 'Copied. Paste it into the dApp’s browser console.'
 					: 'Can’t use bookmarks? Copy a script for the dApp’s console instead.'}
 			</button>
+		`;
+	}
+
+	#renderMobileBookmarklet(bookmarkletHref: string) {
+		if (this.platform === 'android-firefox') {
+			return html`
+				<p>
+					Firefox for Android doesn't run bookmarklets. Open the dApp in Chrome, or use the
+					<button class="link-btn inline" type="button" @click=${() => (this._tab = 'dapp-kit')}>
+						dApp Kit
+					</button>
+					option if you're building the app.
+				</p>
+			`;
+		}
+		const copied = this.#copy.isCopied(bookmarkletHref);
+		return html`
+			<p>Add this wallet to any dApp without changing its code. Phones can't drag bookmarks, so:</p>
+			<ol class="steps">
+				<li>
+					<button class="btn-copy" type="button" @click=${() => this.#copy.copy(bookmarkletHref)}>
+						${copied ? 'Copied' : 'Copy bookmarklet code'}
+					</button>
+				</li>
+				${this.platform === 'ios'
+					? html`
+							<li>Bookmark this page, then open Bookmarks and edit the new bookmark.</li>
+							<li>Replace its address with the copied code and tap Done.</li>
+							<li>
+								On your dApp, open Bookmarks and tap the bookmark. Then choose
+								<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
+							</li>
+						`
+					: html`
+							<li>
+								Bookmark this page, then edit the bookmark: name it "Dev Wallet" and replace its URL
+								with the copied code.
+							</li>
+							<li>
+								On your dApp, type "Dev Wallet" in the address bar and tap the bookmark suggestion
+								(opening it from the bookmarks list won't work). Then choose
+								<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
+							</li>
+						`}
+			</ol>
+			<p class="hint">
+				The bookmark only lasts until the page reloads. After a reload, run it again.
+			</p>
 		`;
 	}
 
