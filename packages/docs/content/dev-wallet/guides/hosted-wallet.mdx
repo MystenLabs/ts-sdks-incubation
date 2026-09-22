@@ -1,0 +1,61 @@
+---
+title: Hosted Wallet
+description: Use the dev wallet at sui-dev-wallet.vercel.app without installing anything
+---
+
+A hosted copy of the [standalone wallet](/dev-wallet/reference/standalone-mode) runs at
+[sui-dev-wallet.vercel.app](https://sui-dev-wallet.vercel.app). The first time you open it, it
+creates a dev account in your browser. It works like `dev-wallet serve`, except it can't use your
+`sui` CLI keystore.
+
+## Connect your dApp
+
+Register the wallet with dApp Kit, passing the hosted origin:
+
+```ts
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { devWalletClientInitializer } from '@mysten-incubation/dev-wallet/client';
+
+const dAppKit = createDAppKit({
+	networks: ['devnet'],
+	walletInitializers: [devWalletClientInitializer({ origin: 'https://sui-dev-wallet.vercel.app' })],
+});
+```
+
+**Dev Wallet (Web)** then appears in your wallet picker. Approving a connection or signing a
+transaction opens a popup from the hosted wallet. Without dApp Kit, call
+`DevWalletClient.register({ origin: 'https://sui-dev-wallet.vercel.app' })` instead.
+
+### Connecting a dApp you can't change
+
+To add the wallet to any page without editing its code, use the bookmarklet from the wallet page:
+
+1. Show your browser's bookmarks bar (<kbd>⌘ Shift B</kbd> on macOS, <kbd>Ctrl Shift B</kbd>
+   elsewhere).
+2. Drag the **Dev Wallet** button from the wallet page onto the bookmarks bar. On small screens it's
+   under the **Settings** tab.
+3. Open the dApp, click the bookmark, and choose **Dev Wallet (Web)** in the dApp's wallet picker.
+
+The bookmark only lasts until the page reloads, so click it again after a reload. If you can't use
+bookmarks, the wallet page also has a script you can copy into the dApp's browser console. Pages
+whose Content-Security-Policy blocks third-party scripts won't load either one.
+
+## Accounts, networks, and funds
+
+- The account key is stored in IndexedDB for `sui-dev-wallet.vercel.app`, and each browser profile
+  gets its own. Clearing that site's data deletes the account. Don't use this wallet for real funds.
+- The wallet starts on devnet. Networks you add, the active network, and the selected account are
+  saved in the browser across reloads.
+- On devnet, the **Faucet** button on the Home tab funds the active account. For testnet, use
+  [faucet.sui.io](https://faucet.sui.io).
+
+For localnet or your CLI keystore, run the wallet locally with
+`pnpm dlx @mysten-incubation/dev-wallet serve`. A page served over HTTPS can't reliably reach
+`http://localhost`.
+
+## Hosting your own copy
+
+The hosted wallet is `apps/dev-wallet` in this repo. To deploy it to Vercel, create a project with
+**Root Directory** set to `apps/dev-wallet`; `vercel.json` handles the build. Also turn off
+Deployment Protection, because other sites load the popup and `bookmarklet.js` cross-origin. Then
+point dApps at your own origin.

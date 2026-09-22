@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { getFaucetHost } from '@mysten/sui/faucet';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
 import { RemoteCliAdapter } from '../adapters/remote-cli-adapter.js';
@@ -97,7 +98,8 @@ async function createWallet(): Promise<DevWallet> {
 	return new DevWallet({
 		adapters,
 		activeNetwork: 'devnet',
-		persistNetworks: true,
+		persistState: true,
+		faucets: { devnet: getFaucetHost('devnet'), localnet: getFaucetHost('localnet') },
 	});
 }
 
@@ -201,7 +203,6 @@ async function showStandaloneUI() {
 
 		const el = document.createElement('dev-wallet-standalone') as DevWalletStandalone;
 		el.wallet = wallet;
-		el.bookmarkletOrigin = window.location.origin;
 		app.appendChild(el);
 	} catch (error) {
 		showErrorMessage(app, 'Failed to initialize wallet', error);

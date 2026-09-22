@@ -24,7 +24,11 @@ function forceSideEffects(): Plugin {
 	};
 }
 
-/** Copy bookmarklet.js from dev-wallet package build output after build. */
+/**
+ * Copy bookmarklet.js from the dev-wallet package build output into dist/.
+ * Fails the build if it's missing — a deploy without it silently breaks the
+ * Settings-tab bookmarklet.
+ */
 function copyBookmarklet(): Plugin {
 	const src = resolve(
 		import.meta.dirname,
@@ -32,12 +36,16 @@ function copyBookmarklet(): Plugin {
 	);
 	return {
 		name: 'copy-bookmarklet',
+		apply: 'build',
 		closeBundle() {
-			if (existsSync(src)) {
-				const dest = resolve(import.meta.dirname, 'dist/bookmarklet.js');
-				mkdirSync(resolve(import.meta.dirname, 'dist'), { recursive: true });
-				copyFileSync(src, dest);
+			if (!existsSync(src)) {
+				throw new Error(
+					`Missing ${src}. Build the package first: pnpm turbo build --filter=@mysten-incubation/dev-wallet`,
+				);
 			}
+			const dest = resolve(import.meta.dirname, 'dist/bookmarklet.js');
+			mkdirSync(resolve(import.meta.dirname, 'dist'), { recursive: true });
+			copyFileSync(src, dest);
 		},
 	};
 }

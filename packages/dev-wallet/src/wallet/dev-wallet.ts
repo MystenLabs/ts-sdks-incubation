@@ -27,7 +27,33 @@ import { DEFAULT_WALLET_ICON, getNetworkFromChain, type WalletEventsMap } from '
 import { type SigningResult, executeSigning } from './signing.js';
 
 const DEFAULT_WALLET_NAME = 'Dev Wallet';
-const NETWORK_STORAGE_KEY = 'dev-wallet:networks';
+/** localStorage key for {@link PersistedStateV1}. Bump the suffix on shape changes. */
+export const STATE_STORAGE_KEY = 'dev-wallet:state:v1';
+
+/** Wallet state persisted across reloads when `persistState` is enabled. */
+interface PersistedStateV1 {
+	version: 1;
+	networks: Record<string, string>;
+	activeNetwork?: string;
+	activeAccount?: string;
+}
+
+function decodePersistedState(raw: string): PersistedStateV1 | null {
+	const parsed: unknown = JSON.parse(raw);
+	if (typeof parsed !== 'object' || parsed === null) return null;
+	const { version, networks, activeNetwork, activeAccount } = parsed as Record<string, unknown>;
+	if (version !== 1) return null;
+	if (typeof networks !== 'object' || networks === null || Array.isArray(networks)) return null;
+	if (!Object.values(networks).every((url) => typeof url === 'string')) return null;
+	if (activeNetwork !== undefined && typeof activeNetwork !== 'string') return null;
+	if (activeAccount !== undefined && typeof activeAccount !== 'string') return null;
+	return {
+		version,
+		networks: networks as Record<string, string>,
+		activeNetwork,
+		activeAccount,
+	};
+}
 
 /**
  * Default gRPC endpoint URLs for standard Sui networks (devnet, testnet, localnet).
@@ -100,10 +126,11 @@ export interface DevWalletConfig {
 	/** Factory to create a client for a given network. Defaults to SuiGrpcClient. */
 	clientFactory?: (network: string, url: string) => ClientWithCoreApi;
 	/**
-	 * Persist network URLs to localStorage so custom configurations survive page reloads
-	 * and are shared with popup windows.
+	 * Persist network URLs, the active network, and the UI's active account to
+	 * localStorage so they survive page reloads and are shared with popup windows.
+	 * Persisted values take precedence over `networks` and `activeNetwork`.
 	 */
-	persistNetworks?: boolean;
+	persistState?: boolean;
 }
 
 /**
@@ -121,7 +148,8 @@ export class DevWallet implements Wallet {
 	readonly #autoApprove: AutoApprovePolicy;
 	readonly #autoConnect: boolean;
 	readonly #clientFactory: (network: string, url: string) => ClientWithCoreApi;
-	readonly #persistNetworks: boolean;
+	readonly #persistState: boolean;
+	#activeAccount: string | null;
 	#accounts: ReadonlyWalletAccount[];
 	#selectedAddress: string | null = null;
 	#events: Emitter<WalletEventsMap>;
@@ -143,11 +171,16 @@ export class DevWallet implements Wallet {
 			console.warn('[dev-wallet] No adapters provided. The wallet will have no accounts.');
 		}
 		this.#adapters = config.adapters;
-		this.#persistNetworks = config.persistNetworks ?? false;
-		this.#networkUrls = this.#loadNetworkUrls(config.networks ?? DEFAULT_NETWORK_URLS);
+		this.#persistState = config.persistState ?? false;
+		const persisted = this.#loadState();
+		this.#networkUrls = persisted?.networks ?? { ...(config.networks ?? DEFAULT_NETWORK_URLS) };
 		this.#faucetUrls = { ...config.faucets };
 		this.#clients = {};
-		this.#activeNetwork = config.activeNetwork ?? Object.keys(this.#networkUrls)[0] ?? '';
+		this.#activeNetwork =
+			persisted?.activeNetwork && persisted.activeNetwork in this.#networkUrls
+				? persisted.activeNetwork
+				: (config.activeNetwork ?? Object.keys(this.#networkUrls)[0] ?? '');
+		this.#activeAccount = persisted?.activeAccount ?? null;
 		this.#name = config.name ?? DEFAULT_WALLET_NAME;
 		this.#icon = config.icon ?? DEFAULT_WALLET_ICON;
 		this.#autoApprove = config.autoApprove ?? false;
@@ -330,7 +363,20 @@ export class DevWallet implements Wallet {
 			);
 		}
 		this.#activeNetwork = network;
+		this.#saveState();
 		this.#events.emit('change', { accounts: this.#exposedAccounts() });
+	}
+
+	/** Address the wallet UI shows as active, or `null` when unset. Persisted
+	 *  with `persistState`. Unlike {@link setSelectedAccount}, this doesn't
+	 *  change which accounts dApps see. */
+	get activeAccount(): string | null {
+		return this.#activeAccount;
+	}
+
+	setActiveAccount(address: string | null): void {
+		this.#activeAccount = address;
+		this.#saveState();
 	}
 
 	addNetwork(name: string, url: string, faucet?: string | null): void {
@@ -348,7 +394,7 @@ export class DevWallet implements Wallet {
 		if (faucet !== undefined && faucet !== null) {
 			this.#faucetUrls[name] = faucet;
 		}
-		this.#saveNetworkUrls();
+		this.#saveState();
 		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
@@ -359,7 +405,7 @@ export class DevWallet implements Wallet {
 		if (this.#activeNetwork === name) {
 			this.#activeNetwork = Object.keys(this.#networkUrls)[0] ?? '';
 		}
-		this.#saveNetworkUrls();
+		this.#saveState();
 		this.#events.emit('change', { accounts: this.#exposedAccounts() });
 	}
 
@@ -576,27 +622,31 @@ export class DevWallet implements Wallet {
 		return this.#ensureClient(network);
 	}
 
-	#loadNetworkUrls(defaults: Record<string, string>): Record<string, string> {
-		if (!this.#persistNetworks || typeof localStorage === 'undefined') {
-			return { ...defaults };
-		}
+	#loadState(): PersistedStateV1 | null {
+		if (!this.#persistState || typeof localStorage === 'undefined') return null;
+		const raw = localStorage.getItem(STATE_STORAGE_KEY);
+		if (raw === null) return null;
+		let state: PersistedStateV1 | null = null;
 		try {
-			const raw = localStorage.getItem(NETWORK_STORAGE_KEY);
-			if (raw) {
-				const parsed = JSON.parse(raw);
-				if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-					return parsed as Record<string, string>;
-				}
-			}
+			state = decodePersistedState(raw);
 		} catch {
-			// Corrupted data — fall through to defaults
+			// Invalid JSON — handled below.
 		}
-		return { ...defaults };
+		if (!state) {
+			console.warn(`[dev-wallet] Ignoring invalid persisted state in "${STATE_STORAGE_KEY}".`);
+		}
+		return state;
 	}
 
-	#saveNetworkUrls(): void {
-		if (!this.#persistNetworks || typeof localStorage === 'undefined') return;
-		localStorage.setItem(NETWORK_STORAGE_KEY, JSON.stringify(this.#networkUrls));
+	#saveState(): void {
+		if (!this.#persistState || typeof localStorage === 'undefined') return;
+		const state: PersistedStateV1 = {
+			version: 1,
+			networks: this.#networkUrls,
+			activeNetwork: this.#activeNetwork,
+			...(this.#activeAccount ? { activeAccount: this.#activeAccount } : {}),
+		};
+		localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state));
 	}
 
 	#ensureClient(network: string): ClientWithCoreApi {

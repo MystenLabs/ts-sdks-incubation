@@ -67,6 +67,7 @@ Beyond the embedded happy path, the dev wallet covers a few more workflows:
 | **Test my dApp end-to-end** without click-through approvals    | Set `autoApprove: true`                                                                            | [e2e testing](/dev-wallet/guides/e2e-testing)                 |
 | Keep a **persistent dev wallet** that survives page reloads    | Use `WebCryptoSignerAdapter` — keys stored in IndexedDB, survive refresh and restart               | [WebCrypto adapter](/dev-wallet/reference/adapters/webcrypto) |
 | Sign with the **same address I published contracts from**      | Use the standalone wallet + `RemoteCliAdapter`                                                     | [CLI signing](/dev-wallet/guides/cli-signing)                 |
+| Try a dApp **without installing anything**                     | Use the hosted wallet at `sui-dev-wallet.vercel.app`                                               | [Hosted wallet](/dev-wallet/guides/hosted-wallet)             |
 | **Share one wallet** across multiple dApps                     | Run the standalone wallet, register it in each dApp                                                | [Standalone mode](/dev-wallet/reference/standalone-mode)      |
 | Build a **demo app** users can try without installing a wallet | Set `autoConnect: true`, `mountUI: true` — wallet embeds directly, no extension needed             | [Getting started](/dev-wallet/getting-started)                |
 | Keep dev keys **separate from mainnet credentials**            | All adapters are isolated from production wallets by design — keys are ephemeral or browser-scoped | [Adapters](/dev-wallet/reference/adapters)                    |
@@ -96,6 +97,7 @@ terminal output. See [Standalone mode](/dev-wallet/reference/standalone-mode) fo
 ## Guides
 
 - [Getting started](/dev-wallet/getting-started) — installation and first setup
+- [Hosted wallet](/dev-wallet/guides/hosted-wallet) — the standalone wallet, already deployed
 - [e2e testing](/dev-wallet/guides/e2e-testing) — automated testing with auto-approval
 - [CLI signing](/dev-wallet/guides/cli-signing) — sign with your contract publish address
 - [Standalone mode](/dev-wallet/reference/standalone-mode) — one wallet across multiple dApps

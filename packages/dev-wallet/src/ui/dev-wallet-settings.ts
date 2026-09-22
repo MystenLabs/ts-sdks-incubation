@@ -20,6 +20,7 @@ import {
 } from './styles.js';
 import { emitEvent, formatAddress, getErrorMessage, NETWORK_COLORS } from './utils.js';
 import './dev-wallet-accounts.js';
+import './dev-wallet-connect-guide.js';
 
 @customElement('dev-wallet-settings')
 export class DevWalletSettings extends LitElement {
@@ -252,105 +253,6 @@ export class DevWalletSettings extends LitElement {
 				margin-top: 4px;
 			}
 
-			.bookmarklet-link-wrapper {
-				margin-top: 8px;
-			}
-
-			.bookmarklet-link {
-				display: inline-flex;
-				align-items: center;
-				gap: 6px;
-				padding: 8px 14px;
-				border-radius: var(--dev-wallet-radius-sm);
-				background: var(--dev-wallet-primary);
-				color: var(--dev-wallet-primary-foreground);
-				font-size: 13px;
-				font-weight: var(--dev-wallet-font-weight-semibold);
-				text-decoration: none;
-				cursor: grab;
-				user-select: none;
-			}
-
-			.bookmarklet-link:hover {
-				opacity: 0.9;
-			}
-
-			.bookmarklet-link:active {
-				cursor: grabbing;
-			}
-
-			.bookmarklet-url {
-				font-family: var(--dev-wallet-font-mono);
-				font-size: 10px;
-				color: var(--dev-wallet-muted-foreground);
-				word-break: break-all;
-				user-select: all;
-			}
-
-			.console-snippet {
-				margin-top: 8px;
-				border-radius: var(--dev-wallet-radius);
-				background: var(--dev-wallet-bg-0);
-				border: 1px solid var(--dev-wallet-border);
-				overflow: hidden;
-			}
-
-			.console-snippet-header {
-				display: flex;
-				align-items: center;
-				justify-content: space-between;
-				gap: 8px;
-				padding: 7px 8px 7px 10px;
-				border-bottom: 1px solid var(--dev-wallet-border);
-				background: color-mix(in srgb, var(--dev-wallet-bg-1) 72%, transparent);
-			}
-
-			.console-snippet-label {
-				font-family: var(--dev-wallet-font-mono);
-				font-size: 9.5px;
-				font-weight: var(--dev-wallet-font-weight-medium);
-				letter-spacing: 0.12em;
-				text-transform: uppercase;
-				color: var(--dev-wallet-text-3);
-			}
-
-			.console-snippet-code {
-				margin: 0;
-				max-width: 100%;
-				padding: 10px 12px 12px;
-				overflow-x: auto;
-				font-family: var(--dev-wallet-font-mono);
-				font-size: 11px;
-				color: var(--dev-wallet-foreground);
-				line-height: 1.5;
-				white-space: pre-wrap;
-				overflow-wrap: anywhere;
-				user-select: all;
-			}
-
-			.btn-copy {
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				min-width: 54px;
-				height: 24px;
-				padding: 0 8px;
-				border-radius: var(--dev-wallet-radius-xs);
-				border: 1px solid var(--dev-wallet-border);
-				background: var(--dev-wallet-bg-2);
-				color: var(--dev-wallet-foreground);
-				font-size: 10px;
-				font-weight: var(--dev-wallet-font-weight-medium);
-				cursor: pointer;
-				white-space: nowrap;
-			}
-
-			.btn-copy:hover {
-				background: var(--dev-wallet-bg-hover);
-				border-color: var(--dev-wallet-border-strong);
-				color: var(--dev-wallet-foreground);
-			}
-
 			@media (max-width: 420px) {
 				.settings-summary {
 					grid-template-columns: 1fr;
@@ -371,8 +273,10 @@ export class DevWalletSettings extends LitElement {
 	@property({ type: String })
 	activeAddress = '';
 
+	/** Origin of a standalone/hosted wallet. When set, Settings leads with the
+	 *  connect guide so it's reachable when the standalone aside is hidden. */
 	@property({ type: String })
-	bookmarkletOrigin = '';
+	walletOrigin = '';
 
 	@state()
 	private _showAddNetwork = false;
@@ -392,20 +296,19 @@ export class DevWalletSettings extends LitElement {
 	@state()
 	private _editingUrl = '';
 
-	@state()
-	private _copied = false;
-
 	override render() {
 		return html`
+			${this.walletOrigin
+				? html`<div class="section">
+						<dev-wallet-connect-guide .origin=${this.walletOrigin}></dev-wallet-connect-guide>
+					</div>`
+				: nothing}
 			<div class="section">${this.#renderSummary()}</div>
 			<div class="section">${this.#renderNetworks()}</div>
 			${this.#hasCliAdapter()
 				? html`<div class="section">${this.#renderCliSigner()}</div>`
 				: nothing}
 			<div class="section">${this.#renderAccounts()}</div>
-			${this.bookmarkletOrigin
-				? html`<div class="section">${this.#renderBookmarklet()}</div>`
-				: nothing}
 		`;
 	}
 
@@ -632,60 +535,6 @@ export class DevWalletSettings extends LitElement {
 				.activeAddress=${this.activeAddress}
 			></dev-wallet-accounts>
 		`;
-	}
-
-	#renderBookmarklet() {
-		if (!this.bookmarkletOrigin) return nothing;
-		const origin = this.bookmarkletOrigin;
-
-		const bookmarkletJs = `${origin}/bookmarklet.js`;
-		const bookmarkletHref = `javascript:void(document.head.appendChild(Object.assign(document.createElement('script'),{src:'${bookmarkletJs}'})))`;
-		const consoleSnippet = `var s=document.createElement('script');s.src='${bookmarkletJs}';document.head.appendChild(s);`;
-
-		return html`
-			<h3 class="section-header">Bookmarklet</h3>
-			<div class="about">
-				Drag this link to your bookmarks bar, then click it on any dApp to inject the wallet:
-			</div>
-			<div class="bookmarklet-link-wrapper">
-				<a
-					class="bookmarklet-link"
-					href=${bookmarkletHref}
-					title="Drag to bookmarks bar"
-					@click=${(e: MouseEvent) => e.preventDefault()}
-				>
-					Dev Wallet
-				</a>
-			</div>
-			<div class="about" style="margin-top: 12px">Or paste this in the browser console:</div>
-			<div class="console-snippet">
-				<div class="console-snippet-header">
-					<span class="console-snippet-label">Console</span>
-					<button
-						class="btn-copy"
-						type="button"
-						aria-label="Copy console snippet"
-						@click=${() => this.#copySnippet(consoleSnippet)}
-					>
-						${this._copied ? 'Copied' : 'Copy'}
-					</button>
-				</div>
-				<pre class="console-snippet-code"><code>${consoleSnippet}</code></pre>
-			</div>
-			<div class="about" style="margin-top: 8px">
-				Or add this script to your page:<br />
-				<code class="bookmarklet-url">${bookmarkletJs}</code>
-			</div>
-		`;
-	}
-
-	#copySnippet(text: string) {
-		navigator.clipboard.writeText(text).then(() => {
-			this._copied = true;
-			setTimeout(() => {
-				this._copied = false;
-			}, 2000);
-		});
 	}
 
 	#addNetwork() {

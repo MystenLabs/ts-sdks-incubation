@@ -109,6 +109,11 @@ DevWalletClient.register({ origin: 'http://localhost:5174' });
 Signing works via popup windows — same flow as a production browser wallet. See
 [Standalone Mode](/dev-wallet/reference/standalone-mode) for full options.
 
+<Callout type="info">
+	To skip running the server, use the [hosted wallet](/dev-wallet/guides/hosted-wallet) with
+	`origin: 'https://sui-dev-wallet.vercel.app'`. It can't use your CLI keystore.
+</Callout>
+
 ## Vanilla JavaScript setup
 
 ```ts

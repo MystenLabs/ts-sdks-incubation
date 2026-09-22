@@ -210,6 +210,10 @@ export class DevWalletBalances extends LitElement {
 				color: var(--dev-wallet-foreground);
 			}
 
+			.empty-copy a {
+				color: var(--dev-wallet-foreground);
+			}
+
 			.empty-copy {
 				margin-top: 6px;
 				font-size: 12px;
@@ -361,8 +365,13 @@ export class DevWalletBalances extends LitElement {
 									${this.faucetHost
 										? html`Use the Faucet button above to fund ${formatAddress(this.address)} on
 											${networkLabel}, then refresh.`
-										: html`Fund ${formatAddress(this.address)} from your local faucet or devstack
-											seed, then refresh balances here.`}
+										: this.network === 'testnet'
+											? html`Get testnet SUI for ${formatAddress(this.address)} at
+													<a href="https://faucet.sui.io" target="_blank" rel="noopener noreferrer"
+														>faucet.sui.io</a
+													>, then refresh.`
+											: html`Fund ${formatAddress(this.address)} from your local faucet or devstack
+												seed, then refresh balances here.`}
 								</div>
 							</div>`
 						: html`
