@@ -16,6 +16,7 @@ autoInstallPeers: false
 catalog:
   '@0no-co/graphqlsp': ^1.17.2
   '@effect/platform-node': 4.0.0-beta.65
+  '@effect/platform-node-shared': 4.0.0-beta.65
   '@effect/vitest': 4.0.0-beta.65
   '@fontsource-variable/geist': ^5.2.5
   '@fontsource-variable/geist-mono': ^5.2.5
