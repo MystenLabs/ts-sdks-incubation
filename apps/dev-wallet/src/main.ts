@@ -13,7 +13,7 @@ import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
 import type { SignerAdapter } from '@mysten-incubation/dev-wallet';
 import { DevWallet } from '@mysten-incubation/dev-wallet';
-import { parseWalletRequest } from '@mysten-incubation/dev-wallet/client';
+import { ConnectedAppsStore, parseWalletRequest } from '@mysten-incubation/dev-wallet/client';
 
 // Import UI components to register custom elements (side-effect imports)
 import '@mysten-incubation/dev-wallet/ui';
@@ -86,7 +86,7 @@ async function createWallet(): Promise<DevWallet> {
 		adapters,
 		activeNetwork: 'devnet',
 		persistState: true,
-		faucets: { devnet: getFaucetHost('devnet') },
+		faucets: { devnet: getFaucetHost('devnet'), localnet: getFaucetHost('localnet') },
 	});
 }
 
@@ -118,6 +118,7 @@ async function handlePopupRequest(hash: string) {
 		const request = parseWalletRequest({
 			adapters: [...wallet.adapters],
 			jwtSecretKey,
+			connectedApps: new ConnectedAppsStore(),
 			getClient: (network) => {
 				try {
 					return wallet.getClient(network);
@@ -207,6 +208,7 @@ async function showStandaloneUI() {
 
 		const el = document.createElement('dev-wallet-standalone');
 		el.wallet = wallet;
+		el.connectedApps = new ConnectedAppsStore();
 		app.appendChild(el);
 	} catch (error) {
 		showErrorMessage(app, 'Failed to initialize wallet', error);

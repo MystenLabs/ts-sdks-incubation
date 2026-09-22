@@ -5,6 +5,7 @@ import type { ReadonlyWalletAccount } from '@mysten/wallet-standard';
 import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
+import type { ConnectedAppsStore } from '../client/connected-apps.js';
 import type { DevWallet } from '../wallet/dev-wallet.js';
 import type { SignerAdapter } from '../types.js';
 import {
@@ -21,6 +22,7 @@ import {
 import { emitEvent, formatAddress, getErrorMessage, NETWORK_COLORS } from './utils.js';
 import './dev-wallet-accounts.js';
 import './dev-wallet-connect-guide.js';
+import './dev-wallet-connected-apps.js';
 
 @customElement('dev-wallet-settings')
 export class DevWalletSettings extends LitElement {
@@ -106,6 +108,9 @@ export class DevWalletSettings extends LitElement {
 			.network-info {
 				flex: 1;
 				min-width: 0;
+				display: flex;
+				flex-direction: column;
+				gap: 3px;
 			}
 
 			.network-url {
@@ -119,6 +124,8 @@ export class DevWalletSettings extends LitElement {
 				background: var(--dev-wallet-background);
 				font-size: 10px;
 				font-family: var(--dev-wallet-font-mono);
+				width: 100%;
+				box-sizing: border-box;
 			}
 
 			.network-actions {
@@ -253,6 +260,14 @@ export class DevWalletSettings extends LitElement {
 				margin-top: 4px;
 			}
 
+			/* The standalone page shows these in side rails above 1240px
+			   (see dev-wallet-standalone.ts); only repeat them here below that. */
+			@media (min-width: 1241px) {
+				.rail-mirror {
+					display: none;
+				}
+			}
+
 			@media (max-width: 420px) {
 				.settings-summary {
 					grid-template-columns: 1fr;
@@ -278,6 +293,10 @@ export class DevWalletSettings extends LitElement {
 	@property({ type: String })
 	walletOrigin = '';
 
+	/** Connected-dApps store of a standalone wallet; listed below the guide. */
+	@property({ attribute: false })
+	connectedApps: ConnectedAppsStore | null = null;
+
 	@state()
 	private _showAddNetwork = false;
 
@@ -288,6 +307,9 @@ export class DevWalletSettings extends LitElement {
 	private _networkUrl = '';
 
 	@state()
+	private _networkFaucet = '';
+
+	@state()
 	private _error: string | null = null;
 
 	@state()
@@ -296,11 +318,19 @@ export class DevWalletSettings extends LitElement {
 	@state()
 	private _editingUrl = '';
 
+	@state()
+	private _editingFaucet = '';
+
 	override render() {
 		return html`
 			${this.walletOrigin
-				? html`<div class="section">
+				? html`<div class="section rail-mirror">
 						<dev-wallet-connect-guide .origin=${this.walletOrigin}></dev-wallet-connect-guide>
+					</div>`
+				: nothing}
+			${this.connectedApps
+				? html`<div class="section rail-mirror">
+						<dev-wallet-connected-apps .store=${this.connectedApps}></dev-wallet-connected-apps>
 					</div>`
 				: nothing}
 			<div class="section">${this.#renderSummary()}</div>
@@ -339,6 +369,7 @@ export class DevWalletSettings extends LitElement {
 		const networks = this.wallet.availableNetworks;
 		const activeNetwork = this.wallet.activeNetwork;
 		const urls = this.wallet.networkUrls;
+		const faucets = this.wallet.faucetUrls;
 
 		return html`
 			<h3 class="section-header">Networks</h3>
@@ -354,20 +385,34 @@ export class DevWalletSettings extends LitElement {
 								<span class="network-name">${name}</span>
 								${isEditing
 									? html`<input
-											class="network-url-input"
-											type="text"
-											.value=${this._editingUrl}
-											@input=${(e: InputEvent) => {
-												this._editingUrl = (e.target as HTMLInputElement).value;
-											}}
-											@keydown=${(e: KeyboardEvent) => {
-												if (e.key === 'Enter') this.#saveNetworkUrl(name);
-												if (e.key === 'Escape') this.#cancelEditNetwork();
-											}}
-										/>`
+												class="network-url-input"
+												type="text"
+												aria-label="gRPC URL"
+												.value=${this._editingUrl}
+												@input=${(e: InputEvent) => {
+													this._editingUrl = (e.target as HTMLInputElement).value;
+												}}
+												@keydown=${this.#onEditKeydown(name)}
+											/>
+											<input
+												class="network-url-input"
+												type="text"
+												aria-label="Faucet URL"
+												placeholder="Faucet URL (optional)"
+												.value=${this._editingFaucet}
+												@input=${(e: InputEvent) => {
+													this._editingFaucet = (e.target as HTMLInputElement).value;
+												}}
+												@keydown=${this.#onEditKeydown(name)}
+											/>
+											${this._error ? html`<div class="error">${this._error}</div>` : nothing}`
 									: html`<span class="network-url" title=${urls[name] ?? ''}
-											>${urls[name] ?? ''}</span
-										>`}
+												>${urls[name] ?? ''}</span
+											>${faucets[name]
+												? html`<span class="network-url" title=${faucets[name]}
+														>faucet: ${faucets[name]}</span
+													>`
+												: nothing}`}
 							</div>
 							<div class="network-actions">
 								${isEditing
@@ -375,7 +420,7 @@ export class DevWalletSettings extends LitElement {
 											<button
 												class="btn-icon"
 												title="Save"
-												aria-label="Save URL"
+												aria-label="Save network"
 												@click=${() => this.#saveNetworkUrl(name)}
 											>
 												&#10003;
@@ -392,9 +437,10 @@ export class DevWalletSettings extends LitElement {
 									: html`
 											<button
 												class="btn-icon"
-												title="Edit URL"
-												aria-label="Edit network URL"
-												@click=${() => this.#startEditNetwork(name, urls[name] ?? '')}
+												title="Edit"
+												aria-label="Edit network"
+												@click=${() =>
+													this.#startEditNetwork(name, urls[name] ?? '', faucets[name] ?? '')}
 											>
 												&#9998;
 											</button>
@@ -452,10 +498,18 @@ export class DevWalletSettings extends LitElement {
 						this._networkUrl = (e.target as HTMLInputElement).value;
 						this._error = null;
 					}}
-					@keydown=${(e: KeyboardEvent) => {
-						if (e.key === 'Enter') this.#addNetwork();
-						if (e.key === 'Escape') this.#cancelAddNetwork();
+					@keydown=${this.#onAddKeydown}
+				/>
+				<input
+					class="form-input"
+					type="text"
+					placeholder="Faucet URL (optional, e.g. http://localhost:9123)"
+					.value=${this._networkFaucet}
+					@input=${(e: InputEvent) => {
+						this._networkFaucet = (e.target as HTMLInputElement).value;
+						this._error = null;
 					}}
+					@keydown=${this.#onAddKeydown}
 				/>
 				${this._error ? html`<div class="error">${this._error}</div>` : nothing}
 				<div class="form-actions">
@@ -542,6 +596,7 @@ export class DevWalletSettings extends LitElement {
 
 		const name = this._networkName.trim();
 		const url = this._networkUrl.trim();
+		const faucet = this._networkFaucet.trim();
 
 		if (!name || !url) return;
 
@@ -551,9 +606,10 @@ export class DevWalletSettings extends LitElement {
 		}
 
 		try {
-			this.wallet.addNetwork(name, url);
+			this.wallet.addNetwork(name, url, faucet || undefined);
 			this._networkName = '';
 			this._networkUrl = '';
+			this._networkFaucet = '';
 			this._showAddNetwork = false;
 			this._error = null;
 			emitEvent(this, 'network-added', { name, url });
@@ -566,23 +622,39 @@ export class DevWalletSettings extends LitElement {
 		this._showAddNetwork = false;
 		this._networkName = '';
 		this._networkUrl = '';
+		this._networkFaucet = '';
 		this._error = null;
 	}
 
-	#startEditNetwork(name: string, url: string) {
+	#onAddKeydown = (e: KeyboardEvent) => {
+		if (e.key === 'Enter') this.#addNetwork();
+		if (e.key === 'Escape') this.#cancelAddNetwork();
+	};
+
+	#onEditKeydown(name: string) {
+		return (e: KeyboardEvent) => {
+			if (e.key === 'Enter') this.#saveNetworkUrl(name);
+			if (e.key === 'Escape') this.#cancelEditNetwork();
+		};
+	}
+
+	#startEditNetwork(name: string, url: string, faucet: string) {
 		this._editingNetwork = name;
 		this._editingUrl = url;
+		this._editingFaucet = faucet;
 	}
 
 	#saveNetworkUrl(name: string) {
 		if (!this.wallet) return;
 		const url = this._editingUrl.trim();
+		const faucet = this._editingFaucet.trim();
 		if (!url) return;
 
 		try {
-			this.wallet.addNetwork(name, url);
+			this.wallet.addNetwork(name, url, faucet || null);
 			this._editingNetwork = null;
 			this._editingUrl = '';
+			this._editingFaucet = '';
 		} catch (error) {
 			this._error = error instanceof Error ? error.message : 'Invalid URL';
 		}
@@ -591,6 +663,7 @@ export class DevWalletSettings extends LitElement {
 	#cancelEditNetwork() {
 		this._editingNetwork = null;
 		this._editingUrl = '';
+		this._editingFaucet = '';
 	}
 
 	#removeNetwork(name: string) {

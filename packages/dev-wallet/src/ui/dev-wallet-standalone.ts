@@ -5,7 +5,9 @@ import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 
 import type { DevWallet } from '../wallet/dev-wallet.js';
+import type { ConnectedAppsStore } from '../client/connected-apps.js';
 import './dev-wallet-connect-guide.js';
+import './dev-wallet-connected-apps.js';
 import { connectDialogStyles, sharedStyles } from './styles.js';
 import type { CoinRecord } from './utils.js';
 import { WalletController } from './wallet-controller.js';
@@ -32,7 +34,7 @@ export class DevWalletStandalone extends LitElement {
 				background-position: -1px -1px;
 			}
 
-			/* Wallet centered; setup help sits to its right as a quiet aside. */
+			/* Wallet centered: connect help on the left, connected apps on the right. */
 			.standalone-layout {
 				width: 100%;
 				margin: 0 auto;
@@ -47,8 +49,17 @@ export class DevWalletStandalone extends LitElement {
 				grid-column: 2;
 			}
 
-			.guide {
+			.rail-left {
+				grid-column: 1;
+				justify-self: end;
+				width: 100%;
+			}
+
+			.rail-right {
 				grid-column: 3;
+			}
+
+			.rail {
 				max-width: 348px;
 				min-width: 0;
 				display: flex;
@@ -148,7 +159,7 @@ export class DevWalletStandalone extends LitElement {
 					grid-column: 1;
 				}
 
-				.guide {
+				.rail {
 					display: none;
 				}
 			}
@@ -184,6 +195,11 @@ export class DevWalletStandalone extends LitElement {
 	@property({ attribute: false })
 	coins: CoinRecord | null = null;
 
+	/** Connected-dApps store shared with the signing popup. Pass the same
+	 *  store to `parseWalletRequest` so Disconnect takes effect. */
+	@property({ attribute: false })
+	connectedApps: ConnectedAppsStore | null = null;
+
 	#ctrl = new WalletController(this);
 
 	override willUpdate(changedProperties: Map<string, unknown>) {
@@ -192,6 +208,9 @@ export class DevWalletStandalone extends LitElement {
 		}
 		if (changedProperties.has('walletOrigin')) {
 			this.#ctrl.walletOrigin = this.walletOrigin;
+		}
+		if (changedProperties.has('connectedApps')) {
+			this.#ctrl.connectedApps = this.connectedApps;
 		}
 		if (changedProperties.has('coins')) {
 			this.#ctrl.coins = this.coins;
@@ -210,6 +229,10 @@ export class DevWalletStandalone extends LitElement {
 	override render() {
 		return html`
 			<div class="standalone-layout">
+				<aside class="rail rail-left">
+					<dev-wallet-connect-guide .origin=${this.walletOrigin}></dev-wallet-connect-guide>
+					${this.#renderAbout()}
+				</aside>
 				<main class="card" part="card">
 					<div class="card-header">
 						<span class="card-title">${this.wallet?.name ?? 'Dev Wallet'}</span>
@@ -218,9 +241,8 @@ export class DevWalletStandalone extends LitElement {
 					${this.#ctrl.renderTabBar()}
 					<div class="card-body">${this.#ctrl.renderTabContent()}</div>
 				</main>
-				<aside class="guide">
-					<dev-wallet-connect-guide .origin=${this.walletOrigin}></dev-wallet-connect-guide>
-					${this.#renderAbout()}
+				<aside class="rail rail-right">
+					<dev-wallet-connected-apps .store=${this.connectedApps}></dev-wallet-connected-apps>
 				</aside>
 			</div>
 			${this.#ctrl.renderSigningModal()} ${this.#ctrl.renderConnectPicker()}

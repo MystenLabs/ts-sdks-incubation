@@ -34,22 +34,48 @@ export const STATE_STORAGE_KEY = 'dev-wallet:state:v1';
 interface PersistedStateV1 {
 	version: 1;
 	networks: Record<string, string>;
+	faucets?: Record<string, string>;
 	activeNetwork?: string;
 	activeAccount?: string;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		!Array.isArray(value) &&
+		Object.values(value).every((v) => typeof v === 'string')
+	);
+}
+
+function assertHttpUrl(url: string): void {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		throw new Error(`Invalid URL: ${url}`);
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		throw new Error(`Invalid URL: must use http or https (got ${parsed.protocol})`);
+	}
 }
 
 function decodePersistedState(raw: string): PersistedStateV1 | null {
 	const parsed: unknown = JSON.parse(raw);
 	if (typeof parsed !== 'object' || parsed === null) return null;
-	const { version, networks, activeNetwork, activeAccount } = parsed as Record<string, unknown>;
+	const { version, networks, faucets, activeNetwork, activeAccount } = parsed as Record<
+		string,
+		unknown
+	>;
 	if (version !== 1) return null;
-	if (typeof networks !== 'object' || networks === null || Array.isArray(networks)) return null;
-	if (!Object.values(networks).every((url) => typeof url === 'string')) return null;
+	if (!isStringRecord(networks)) return null;
+	if (faucets !== undefined && !isStringRecord(faucets)) return null;
 	if (activeNetwork !== undefined && typeof activeNetwork !== 'string') return null;
 	if (activeAccount !== undefined && typeof activeAccount !== 'string') return null;
 	return {
 		version,
-		networks: networks as Record<string, string>,
+		networks,
+		faucets,
 		activeNetwork,
 		activeAccount,
 	};
@@ -174,7 +200,7 @@ export class DevWallet implements Wallet {
 		this.#persistState = config.persistState ?? false;
 		const persisted = this.#loadState();
 		this.#networkUrls = persisted?.networks ?? { ...(config.networks ?? DEFAULT_NETWORK_URLS) };
-		this.#faucetUrls = { ...config.faucets };
+		this.#faucetUrls = { ...(persisted?.faucets ?? config.faucets) };
 		this.#clients = {};
 		this.#activeNetwork =
 			persisted?.activeNetwork && persisted.activeNetwork in this.#networkUrls
@@ -379,20 +405,19 @@ export class DevWallet implements Wallet {
 		this.#saveState();
 	}
 
+	/**
+	 * Add a network or replace its URL. `faucet` sets the network's faucet
+	 * endpoint; pass `null` to remove it, or omit it to leave it unchanged.
+	 */
 	addNetwork(name: string, url: string, faucet?: string | null): void {
-		let parsed: URL;
-		try {
-			parsed = new URL(url);
-		} catch {
-			throw new Error(`Invalid URL: ${url}`);
-		}
-		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-			throw new Error(`Invalid URL: must use http or https (got ${parsed.protocol})`);
-		}
+		assertHttpUrl(url);
+		if (faucet) assertHttpUrl(faucet);
 		this.#networkUrls[name] = url;
 		this.#clients[name] = this.#clientFactory(name, url);
-		if (faucet !== undefined && faucet !== null) {
+		if (faucet) {
 			this.#faucetUrls[name] = faucet;
+		} else if (faucet === null) {
+			delete this.#faucetUrls[name];
 		}
 		this.#saveState();
 		this.#events.emit('change', { accounts: this.#exposedAccounts() });
@@ -643,6 +668,7 @@ export class DevWallet implements Wallet {
 		const state: PersistedStateV1 = {
 			version: 1,
 			networks: this.#networkUrls,
+			faucets: this.#faucetUrls,
 			activeNetwork: this.#activeNetwork,
 			...(this.#activeAccount ? { activeAccount: this.#activeAccount } : {}),
 		};

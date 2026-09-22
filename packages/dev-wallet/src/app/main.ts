@@ -6,6 +6,7 @@ import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
 import { RemoteCliAdapter } from '../adapters/remote-cli-adapter.js';
 import type { SignerAdapter } from '../types.js';
+import { ConnectedAppsStore } from '../client/connected-apps.js';
 import { parseWalletRequest } from '../client/request-handler.js';
 import { getNetworkFromChain } from '../wallet/constants.js';
 import { DevWallet } from '../wallet/dev-wallet.js';
@@ -114,6 +115,7 @@ async function handlePopupRequest(hash: string) {
 		const request = parseWalletRequest({
 			adapters: [...wallet.adapters],
 			jwtSecretKey,
+			connectedApps: new ConnectedAppsStore(),
 			getClient: (network) => {
 				try {
 					return wallet.getClient(network);
@@ -203,6 +205,7 @@ async function showStandaloneUI() {
 
 		const el = document.createElement('dev-wallet-standalone') as DevWalletStandalone;
 		el.wallet = wallet;
+		el.connectedApps = new ConnectedAppsStore();
 		app.appendChild(el);
 	} catch (error) {
 		showErrorMessage(app, 'Failed to initialize wallet', error);

@@ -26,14 +26,17 @@ const dAppKit = createDAppKit({
 transaction opens a popup from the hosted wallet. Without dApp Kit, call
 `DevWalletClient.register({ origin: 'https://sui-dev-wallet.vercel.app' })` instead.
 
+Apps you approve appear under **Connected apps** on the wallet page. Disconnecting one there makes
+the wallet reject its requests until it connects again.
+
 ### Connecting a dApp you can't change
 
 To add the wallet to any page without editing its code, use the bookmarklet from the wallet page:
 
 1. Show your browser's bookmarks bar (<kbd>⌘ Shift B</kbd> on macOS, <kbd>Ctrl Shift B</kbd>
    elsewhere).
-2. Drag the **Dev Wallet** button from the wallet page onto the bookmarks bar. On small screens it's
-   under the **Settings** tab.
+2. On the wallet page, drag the **Dev Wallet** button from the **Bookmarklet** tab onto the
+   bookmarks bar. On small screens it's under the **Settings** tab.
 3. Open the dApp, click the bookmark, and choose **Dev Wallet (Web)** in the dApp's wallet picker.
 
 The bookmark only lasts until the page reloads, so click it again after a reload. If you can't use
@@ -46,12 +49,13 @@ whose Content-Security-Policy blocks third-party scripts won't load either one.
   gets its own. Clearing that site's data deletes the account. Don't use this wallet for real funds.
 - The wallet starts on devnet. Networks you add, the active network, and the selected account are
   saved in the browser across reloads.
-- On devnet, the **Faucet** button on the Home tab funds the active account. For testnet, use
-  [faucet.sui.io](https://faucet.sui.io).
+- The **Faucet** button on the Home tab funds the active account on devnet and on localnet (assuming
+  the default faucet at `127.0.0.1:9123`). When you add a network in Settings, you can also give it
+  a faucet URL. For testnet, use [faucet.sui.io](https://faucet.sui.io).
 
-For localnet or your CLI keystore, run the wallet locally with
-`pnpm dlx @mysten-incubation/dev-wallet serve`. A page served over HTTPS can't reliably reach
-`http://localhost`.
+Localnet works from the hosted wallet in Chrome, which lets HTTPS pages call `http://127.0.0.1`.
+Other browsers may block those requests. If yours does, or you want to sign with your CLI keystore,
+run the wallet locally with `pnpm dlx @mysten-incubation/dev-wallet serve`.
 
 ## Hosting your own copy
 

@@ -36,6 +36,7 @@ const mockChannel = (windowWalletCore as any).__mockChannel;
 const { WalletPostMessageChannel } = windowWalletCore;
 
 const { parseWalletRequest } = await import('../src/client/request-handler.js');
+const { ConnectedAppsStore } = await import('../src/client/connected-apps.js');
 
 describe('parseWalletRequest', () => {
 	let adapter: InMemorySignerAdapter;
@@ -181,6 +182,60 @@ describe('parseWalletRequest', () => {
 			expect(mockChannel.sendMessage).toHaveBeenCalledWith({
 				type: 'reject',
 				reason: 'Account 0xdeadbeef not found',
+			});
+		});
+	});
+
+	describe('connected apps', () => {
+		beforeEach(() => localStorage.clear());
+
+		it('records the app on connect approval', async () => {
+			mockChannel.getRequestData.mockReturnValue({
+				appName: 'Test dApp',
+				appUrl: 'http://localhost:3000/some/page',
+				payload: { type: 'connect' },
+			});
+			const connectedApps = new ConnectedAppsStore();
+
+			await parseWalletRequest({
+				adapters: [adapter],
+				jwtSecretKey,
+				hash: 'h',
+				connectedApps,
+			}).approve();
+
+			expect(connectedApps.list()).toEqual([
+				expect.objectContaining({
+					origin: 'http://localhost:3000',
+					name: 'Test dApp',
+					accounts: [adapter.getAccounts()[0].address],
+				}),
+			]);
+		});
+
+		it('rejects signing from an origin that was disconnected', async () => {
+			const account = adapter.getAccounts()[0];
+			mockChannel.getRequestData.mockReturnValue({
+				appName: 'Test dApp',
+				appUrl: 'http://localhost:3000',
+				payload: {
+					type: 'sign-personal-message',
+					message: toBase64(new TextEncoder().encode('hi')),
+					address: account.address,
+					chain: 'sui:testnet',
+				},
+			});
+
+			await parseWalletRequest({
+				adapters: [adapter],
+				jwtSecretKey,
+				hash: 'h',
+				connectedApps: new ConnectedAppsStore(),
+			}).approve();
+
+			expect(mockChannel.sendMessage).toHaveBeenCalledWith({
+				type: 'reject',
+				reason: 'http://localhost:3000 was disconnected from the wallet. Reconnect to continue.',
 			});
 		});
 	});

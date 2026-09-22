@@ -16,22 +16,59 @@ const BOOKMARKS_BAR_SHORTCUT = /Mac|iPhone|iPad/.test(globalThis.navigator?.plat
 	? '⌘ Shift B'
 	: 'Ctrl Shift B';
 
+type TabId = 'bookmarklet' | 'dapp-kit';
+const TABS: { id: TabId; label: string }[] = [
+	{ id: 'bookmarklet', label: 'Bookmarklet' },
+	{ id: 'dapp-kit', label: 'dApp Kit' },
+];
+
 @customElement('dev-wallet-connect-guide')
 export class DevWalletConnectGuide extends LitElement {
 	static override styles = css`
 		:host {
 			display: flex;
 			flex-direction: column;
-			gap: 24px;
+			gap: 10px;
 			font-size: 12px;
 			line-height: 1.55;
 			color: var(--dev-wallet-muted-foreground);
 		}
 
-		.guide-section {
+		.tabs {
+			display: flex;
+			gap: 2px;
+			padding: 2px;
+			border-radius: var(--dev-wallet-radius-sm);
+			border: 1px solid var(--dev-wallet-border);
+			background: var(--dev-wallet-bg-1);
+		}
+
+		.tab {
+			flex: 1;
+			height: 26px;
+			border: 0;
+			border-radius: var(--dev-wallet-radius-xs);
+			background: transparent;
+			color: var(--dev-wallet-muted-foreground);
+			font: inherit;
+			font-weight: var(--dev-wallet-font-weight-medium);
+			cursor: pointer;
+		}
+
+		.tab:hover {
+			color: var(--dev-wallet-foreground);
+		}
+
+		.tab[aria-selected='true'] {
+			background: var(--dev-wallet-bg-3);
+			color: var(--dev-wallet-foreground);
+		}
+
+		.panel {
 			display: flex;
 			flex-direction: column;
-			gap: 8px;
+			gap: 10px;
+			padding-top: 4px;
 		}
 
 		.guide-title {
@@ -195,6 +232,9 @@ export class DevWalletConnectGuide extends LitElement {
 	@state()
 	private _dragNudge = false;
 
+	@state()
+	private _tab: TabId = 'bookmarklet';
+
 	#copy = new CopyController(this);
 
 	override render() {
@@ -216,56 +256,78 @@ createDAppKit({
 });`;
 
 		return html`
-			<section class="guide-section">
-				<h2 class="guide-title">Connect an app</h2>
-				<p>Use a bookmarklet to add this wallet to any dApp, no code changes needed.</p>
-				<ol class="steps">
-					<li>Show your browser's bookmarks bar (<kbd>${BOOKMARKS_BAR_SHORTCUT}</kbd>).</li>
-					<li>
-						Drag this button onto the bookmarks bar:
-						<div class="bookmarklet-row">
-							<a
-								class="bookmarklet"
-								href=${bookmarkletHref}
-								title="Drag to your bookmarks bar"
-								@click=${this.#nudgeDrag}
-								>${this.#walletIcon} Dev Wallet</a
-							>
-							${this._dragNudge
-								? html`<span class="hint nudge">Drag it, don't click it</span>`
-								: nothing}
-						</div>
-					</li>
-					<li>
-						Open your dApp and click the bookmark. Then choose
-						<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
-					</li>
-				</ol>
-				<p class="hint">
-					The bookmark only lasts until the page reloads. After a reload, click it again.
-				</p>
-				<button class="link-btn" type="button" @click=${() => this.#copy.copy(consoleScript)}>
-					${this.#copy.isCopied(consoleScript)
-						? 'Copied. Paste it into the dApp’s browser console.'
-						: 'Can’t use bookmarks? Copy a script for the dApp’s console instead.'}
-				</button>
-			</section>
+			<h2 class="guide-title">Connect an app</h2>
+			<div class="tabs" role="tablist" aria-label="Connection method">
+				${TABS.map(
+					({ id, label }) =>
+						html`<button
+							role="tab"
+							class="tab"
+							aria-selected=${this._tab === id}
+							@click=${() => (this._tab = id)}
+						>
+							${label}
+						</button>`,
+				)}
+			</div>
+			<div role="tabpanel" class="panel">
+				${this._tab === 'bookmarklet'
+					? this.#renderBookmarklet(bookmarkletHref, consoleScript)
+					: this.#renderDappKit(dappKitSnippet)}
+			</div>
+		`;
+	}
 
-			<section class="guide-section">
-				<h2 class="guide-title">Add to your app</h2>
-				<p>Register it with dApp Kit so it's always in your wallet picker.</p>
-				<div class="snippet">
-					<button
-						class="btn-copy"
-						type="button"
-						aria-label="Copy dApp Kit snippet"
-						@click=${() => this.#copy.copy(dappKitSnippet)}
-					>
-						${this.#copy.isCopied(dappKitSnippet) ? 'Copied' : 'Copy'}
-					</button>
-					<pre><code>${dappKitSnippet}</code></pre>
-				</div>
-			</section>
+	#renderBookmarklet(bookmarkletHref: string, consoleScript: string) {
+		return html`
+			<p>Add this wallet to any dApp without changing its code.</p>
+			<ol class="steps">
+				<li>Show your browser's bookmarks bar (<kbd>${BOOKMARKS_BAR_SHORTCUT}</kbd>).</li>
+				<li>
+					Drag this button onto the bookmarks bar:
+					<div class="bookmarklet-row">
+						<a
+							class="bookmarklet"
+							href=${bookmarkletHref}
+							title="Drag to your bookmarks bar"
+							@click=${this.#nudgeDrag}
+							>${this.#walletIcon} Dev Wallet</a
+						>
+						${this._dragNudge
+							? html`<span class="hint nudge">Drag it, don't click it</span>`
+							: nothing}
+					</div>
+				</li>
+				<li>
+					Open your dApp and click the bookmark. Then choose
+					<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
+				</li>
+			</ol>
+			<p class="hint">
+				The bookmark only lasts until the page reloads. After a reload, click it again.
+			</p>
+			<button class="link-btn" type="button" @click=${() => this.#copy.copy(consoleScript)}>
+				${this.#copy.isCopied(consoleScript)
+					? 'Copied. Paste it into the dApp’s browser console.'
+					: 'Can’t use bookmarks? Copy a script for the dApp’s console instead.'}
+			</button>
+		`;
+	}
+
+	#renderDappKit(dappKitSnippet: string) {
+		return html`
+			<p>Register the wallet with dApp Kit so it's always in your app's wallet picker.</p>
+			<div class="snippet">
+				<button
+					class="btn-copy"
+					type="button"
+					aria-label="Copy dApp Kit snippet"
+					@click=${() => this.#copy.copy(dappKitSnippet)}
+				>
+					${this.#copy.isCopied(dappKitSnippet) ? 'Copied' : 'Copy'}
+				</button>
+				<pre><code>${dappKitSnippet}</code></pre>
+			</div>
 		`;
 	}
 

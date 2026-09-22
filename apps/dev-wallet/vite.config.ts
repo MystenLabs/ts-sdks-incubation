@@ -54,6 +54,8 @@ export default defineConfig({
 	plugins: [forceSideEffects(), copyBookmarklet()],
 	build: {
 		outDir: 'dist',
+		// Single-page wallet bundle (Lit UI + Sui SDK); no benefit from splitting further.
+		chunkSizeWarningLimit: 600,
 	},
 	server: {
 		// Serve bookmarklet.js with CORS for local dev

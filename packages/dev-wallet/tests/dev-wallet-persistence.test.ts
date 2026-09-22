@@ -35,6 +35,25 @@ describe('DevWallet persisted state', () => {
 		expect(second.activeAccount).toBe('0xabc');
 	});
 
+	it('restores faucet URLs, including ones added with a custom network', () => {
+		const first = new DevWallet({ ...config(), faucets: { devnet: 'https://faucet.d' } });
+		first.addNetwork('mynet', 'http://127.0.0.1:9000', 'http://127.0.0.1:9123');
+
+		const second = new DevWallet(config());
+		expect(second.getFaucet('devnet')).toBe('https://faucet.d');
+		expect(second.getFaucet('mynet')).toBe('http://127.0.0.1:9123');
+	});
+
+	it('addNetwork sets a faucet with a URL, clears it with null, and keeps it when omitted', () => {
+		const wallet = new DevWallet(config());
+		wallet.addNetwork('mynet', 'http://a', 'http://faucet');
+		wallet.addNetwork('mynet', 'http://b');
+		expect(wallet.getFaucet('mynet')).toBe('http://faucet');
+		wallet.addNetwork('mynet', 'http://b', null);
+		expect(wallet.getFaucet('mynet')).toBeNull();
+		expect(() => wallet.addNetwork('mynet', 'http://b', 'ftp://x')).toThrow('Invalid URL');
+	});
+
 	it('keeps removed networks removed', () => {
 		new DevWallet(config()).removeNetwork('testnet');
 		expect(new DevWallet(config()).availableNetworks).toEqual(['devnet']);
@@ -52,6 +71,7 @@ describe('DevWallet persisted state', () => {
 		['invalid JSON', '{'],
 		['unknown version', JSON.stringify({ version: 2, networks: {} })],
 		['non-string URL', JSON.stringify({ version: 1, networks: { devnet: 42 } })],
+		['non-string faucet', JSON.stringify({ version: 1, networks: {}, faucets: { devnet: 1 } })],
 	])('ignores %s with a warning and uses config', (_label, raw) => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		localStorage.setItem(STATE_STORAGE_KEY, raw);

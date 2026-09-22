@@ -7,6 +7,7 @@ import { html, nothing } from 'lit';
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 
 import type { ForkRelay } from '../adapters/fork-relay.js';
+import type { ConnectedAppsStore } from '../client/connected-apps.js';
 import { getNetworkFromChain } from '../wallet/constants.js';
 import type {
 	DevWallet,
@@ -44,6 +45,8 @@ export class WalletController implements ReactiveController {
 	/** Origin of a standalone/hosted wallet. When set, Settings leads with the
 	 *  connect guide (bookmarklet + dApp Kit snippet). */
 	walletOrigin = '';
+	/** Connected-dApps store for a standalone wallet; listed in Settings. */
+	connectedApps: ConnectedAppsStore | null = null;
 	/** Pre-seeded coin metadata (typically the generated `coins` constant from
 	 *  devstack codegen). Forwarded to `<dev-wallet-balances>` and the
 	 *  signing modal so they can skip per-coin RPC waterfalls. */
@@ -280,6 +283,7 @@ export class WalletController implements ReactiveController {
 				.adapters=${this.#wallet ? [...this.#wallet.adapters] : []}
 				.activeAddress=${this.activeAddress}
 				.walletOrigin=${this.walletOrigin}
+				.connectedApps=${this.connectedApps}
 				@account-selected=${(e: CustomEvent) => this.handleAccountSelected(e)}
 			></dev-wallet-settings>
 		`;
