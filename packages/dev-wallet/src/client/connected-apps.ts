@@ -1,6 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { readPersisted } from '../wallet/persisted.js';
+
 /** localStorage key for the connected-apps list. Bump the suffix on shape changes. */
 export const CONNECTED_APPS_STORAGE_KEY = 'dev-wallet:connected-apps:v1';
 
@@ -43,18 +45,10 @@ export class ConnectedAppsStore {
 
 	/** Connected apps, most recently connected first. */
 	list(): ConnectedApp[] {
-		const raw = this.#storage.getItem(CONNECTED_APPS_STORAGE_KEY);
-		if (raw === null) return [];
-		try {
-			const parsed: unknown = JSON.parse(raw);
-			if (Array.isArray(parsed) && parsed.every(isConnectedApp)) {
-				return [...parsed].sort((a, b) => b.connectedAt - a.connectedAt);
-			}
-		} catch {
-			// Invalid JSON — handled below.
-		}
-		console.warn(`[dev-wallet] Ignoring invalid data in "${CONNECTED_APPS_STORAGE_KEY}".`);
-		return [];
+		const apps = readPersisted(this.#storage, CONNECTED_APPS_STORAGE_KEY, (value) =>
+			Array.isArray(value) && value.every(isConnectedApp) ? value : null,
+		);
+		return (apps ?? []).sort((a, b) => b.connectedAt - a.connectedAt);
 	}
 
 	has(origin: string): boolean {

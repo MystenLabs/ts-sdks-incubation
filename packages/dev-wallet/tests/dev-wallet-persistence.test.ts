@@ -54,6 +54,29 @@ describe('DevWallet persisted state', () => {
 		expect(() => wallet.addNetwork('mynet', 'http://b', 'ftp://x')).toThrow('Invalid URL');
 	});
 
+	it('applies config faucets that previously persisted state predates', () => {
+		localStorage.setItem(
+			STATE_STORAGE_KEY,
+			JSON.stringify({ version: 1, networks: { devnet: 'https://d' }, faucets: {} }),
+		);
+		const wallet = new DevWallet({ ...config(), faucets: { devnet: 'https://faucet.d' } });
+		expect(wallet.getFaucet('devnet')).toBe('https://faucet.d');
+	});
+
+	it('keeps a removed config faucet removed across reloads', () => {
+		const withFaucet = () => ({ ...config(), faucets: { devnet: 'https://faucet.d' } });
+		new DevWallet(withFaucet()).addNetwork('devnet', 'https://d', null);
+		expect(new DevWallet(withFaucet()).getFaucet('devnet')).toBeNull();
+	});
+
+	it('names the network in URL errors', () => {
+		const wallet = new DevWallet(config());
+		expect(() => wallet.addNetwork('mynet', 'nope')).toThrow('Invalid URL for network "mynet"');
+		expect(() => wallet.addNetwork('mynet', 'http://a', 'nope')).toThrow(
+			'Invalid URL for the faucet of network "mynet"',
+		);
+	});
+
 	it('keeps removed networks removed', () => {
 		new DevWallet(config()).removeNetwork('testnet');
 		expect(new DevWallet(config()).availableNetworks).toEqual(['devnet']);

@@ -24,6 +24,7 @@ import { getWallets, ReadonlyWalletAccount } from '@mysten/wallet-standard';
 import { chainsForNetworks } from '../adapters/build-managed-account.js';
 import type { SignerAdapter } from '../types.js';
 import { DEFAULT_WALLET_ICON, getNetworkFromChain, type WalletEventsMap } from './constants.js';
+import { readPersisted } from './persisted.js';
 import { type SigningResult, executeSigning } from './signing.js';
 
 const DEFAULT_WALLET_NAME = 'Dev Wallet';
@@ -48,20 +49,32 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 	);
 }
 
-function assertHttpUrl(url: string): void {
+/** Throws unless `url` is an http(s) URL. `what` names it in the error, e.g. `network "localnet"`. */
+function assertHttpUrl(url: string, what: string): void {
 	let parsed: URL;
 	try {
 		parsed = new URL(url);
 	} catch {
-		throw new Error(`Invalid URL: ${url}`);
+		throw new Error(`Invalid URL for ${what}: ${url}`);
 	}
 	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-		throw new Error(`Invalid URL: must use http or https (got ${parsed.protocol})`);
+		throw new Error(`Invalid URL for ${what}: must use http or https (got ${parsed.protocol})`);
 	}
 }
 
-function decodePersistedState(raw: string): PersistedStateV1 | null {
-	const parsed: unknown = JSON.parse(raw);
+/** Config faucets overlaid with persisted ones; `''` marks a removed faucet. */
+function mergeFaucets(
+	config: Record<string, string>,
+	persisted: Record<string, string> | undefined,
+): Record<string, string> {
+	const merged = { ...config, ...persisted };
+	for (const [name, url] of Object.entries(merged)) {
+		if (url === '') delete merged[name];
+	}
+	return merged;
+}
+
+function decodePersistedState(parsed: unknown): PersistedStateV1 | null {
 	if (typeof parsed !== 'object' || parsed === null) return null;
 	const { version, networks, faucets, activeNetwork, activeAccount } = parsed as Record<
 		string,
@@ -167,6 +180,8 @@ export class DevWallet implements Wallet {
 	readonly #adapters: SignerAdapter[];
 	#networkUrls: Record<string, string>;
 	#faucetUrls: Record<string, string>;
+	/** Faucets from config; persisted faucets layer over these. */
+	readonly #configFaucets: Record<string, string>;
 	#clients: Record<string, ClientWithCoreApi>;
 	#activeNetwork: string;
 	readonly #name: string;
@@ -200,7 +215,8 @@ export class DevWallet implements Wallet {
 		this.#persistState = config.persistState ?? false;
 		const persisted = this.#loadState();
 		this.#networkUrls = persisted?.networks ?? { ...(config.networks ?? DEFAULT_NETWORK_URLS) };
-		this.#faucetUrls = { ...(persisted?.faucets ?? config.faucets) };
+		this.#configFaucets = { ...config.faucets };
+		this.#faucetUrls = mergeFaucets(this.#configFaucets, persisted?.faucets);
 		this.#clients = {};
 		this.#activeNetwork =
 			persisted?.activeNetwork && persisted.activeNetwork in this.#networkUrls
@@ -410,8 +426,8 @@ export class DevWallet implements Wallet {
 	 * endpoint; pass `null` to remove it, or omit it to leave it unchanged.
 	 */
 	addNetwork(name: string, url: string, faucet?: string | null): void {
-		assertHttpUrl(url);
-		if (faucet) assertHttpUrl(faucet);
+		assertHttpUrl(url, `network "${name}"`);
+		if (faucet) assertHttpUrl(faucet, `the faucet of network "${name}"`);
 		this.#networkUrls[name] = url;
 		this.#clients[name] = this.#clientFactory(name, url);
 		if (faucet) {
@@ -649,18 +665,17 @@ export class DevWallet implements Wallet {
 
 	#loadState(): PersistedStateV1 | null {
 		if (!this.#persistState || typeof localStorage === 'undefined') return null;
-		const raw = localStorage.getItem(STATE_STORAGE_KEY);
-		if (raw === null) return null;
-		let state: PersistedStateV1 | null = null;
-		try {
-			state = decodePersistedState(raw);
-		} catch {
-			// Invalid JSON — handled below.
+		return readPersisted(localStorage, STATE_STORAGE_KEY, decodePersistedState);
+	}
+
+	/** Current faucets plus an empty-string marker for each config faucet the
+	 *  user removed, so the removal survives a reload. */
+	#persistableFaucets(): Record<string, string> {
+		const faucets = { ...this.#faucetUrls };
+		for (const name of Object.keys(this.#configFaucets)) {
+			if (!(name in faucets)) faucets[name] = '';
 		}
-		if (!state) {
-			console.warn(`[dev-wallet] Ignoring invalid persisted state in "${STATE_STORAGE_KEY}".`);
-		}
-		return state;
+		return faucets;
 	}
 
 	#saveState(): void {
@@ -668,7 +683,7 @@ export class DevWallet implements Wallet {
 		const state: PersistedStateV1 = {
 			version: 1,
 			networks: this.#networkUrls,
-			faucets: this.#faucetUrls,
+			faucets: this.#persistableFaucets(),
 			activeNetwork: this.#activeNetwork,
 			...(this.#activeAccount ? { activeAccount: this.#activeAccount } : {}),
 		};
