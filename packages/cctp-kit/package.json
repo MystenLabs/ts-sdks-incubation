@@ -1,0 +1,127 @@
+{
+	"name": "@mysten-incubation/cctp-kit",
+	"version": "0.0.0",
+	"description": "Embeddable USDC bridge widget for Sui dapps, built on Circle CCTP v2. Framework-agnostic core with React bindings.",
+	"license": "Apache-2.0",
+	"author": "Mysten Labs <build@mystenlabs.com>",
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"module": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs",
+			"default": "./dist/index.mjs"
+		},
+		"./web": {
+			"types": "./dist/web/index.d.mts",
+			"import": "./dist/web/index.mjs",
+			"default": "./dist/web/index.mjs"
+		},
+		"./react": {
+			"types": "./dist/react/index.d.mts",
+			"import": "./dist/react/index.mjs",
+			"default": "./dist/react/index.mjs"
+		},
+		"./react/ui": {
+			"types": "./dist/react/ui.d.mts",
+			"import": "./dist/react/ui.mjs",
+			"default": "./dist/react/ui.mjs"
+		}
+	},
+	"files": [
+		"CHANGELOG.md",
+		"LICENSE",
+		"README.md",
+		"dist",
+		"src"
+	],
+	"scripts": {
+		"clean": "rm -rf tsconfig.tsbuildinfo ./dist",
+		"build": "rm -rf dist && tsc --noEmit && tsdown",
+		"typecheck": "tsc --noEmit && tsc -p ./test --noEmit",
+		"dev": "tsdown --watch",
+		"prettier:check": "prettier -c --ignore-unknown .",
+		"prettier:fix": "prettier -w --ignore-unknown .",
+		"oxlint:check": "oxlint .",
+		"oxlint:fix": "oxlint --fix",
+		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
+		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
+		"test": "vitest run"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/cctp-kit"
+	},
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"keywords": [
+		"sui",
+		"usdc",
+		"cctp",
+		"circle",
+		"bridge",
+		"dapp-kit",
+		"web-component"
+	],
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/cctp-kit#readme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"devDependencies": {
+		"@mysten/dapp-kit-core": "catalog:",
+		"@mysten/sui": "catalog:",
+		"@reown/appkit": "^1.8.24",
+		"@reown/appkit-adapter-solana": "^1.8.24",
+		"@reown/appkit-adapter-wagmi": "^1.8.24",
+		"@types/react": "catalog:",
+		"@wagmi/core": "^3.6.0",
+		"react": "catalog:",
+		"tsdown": "^0.22.2",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"dependencies": {
+		"@lit-labs/scoped-registry-mixin": "^1.0.4",
+		"@lit/react": "^1.0.8",
+		"@nanostores/lit": "^0.2.3",
+		"@nanostores/react": "^1.0.0",
+		"@solana/web3.js": "^1.98.0",
+		"@webcomponents/scoped-custom-element-registry": "^0.0.10",
+		"bs58": "^6.0.0",
+		"buffer": "^6.0.3",
+		"lit": "^3.3.3",
+		"nanostores": "^1.0.0",
+		"viem": "^2.55.0"
+	},
+	"peerDependencies": {
+		"@mysten/dapp-kit-core": "^1.6.0",
+		"@mysten/sui": "^2.33.0",
+		"@reown/appkit": ">=1.8.0",
+		"@reown/appkit-adapter-solana": ">=1.8.0",
+		"@reown/appkit-adapter-wagmi": ">=1.8.0",
+		"@types/react": ">=17.0.0",
+		"@wagmi/core": ">=2.21.0",
+		"react": ">=17.0.0"
+	},
+	"peerDependenciesMeta": {
+		"@reown/appkit": {
+			"optional": true
+		},
+		"@reown/appkit-adapter-solana": {
+			"optional": true
+		},
+		"@reown/appkit-adapter-wagmi": {
+			"optional": true
+		},
+		"@types/react": {
+			"optional": true
+		},
+		"react": {
+			"optional": true
+		}
+	}
+}
