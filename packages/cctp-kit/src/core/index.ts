@@ -261,11 +261,25 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	// A page that is going away gives its claims up at once, so the page that replaces it (a
 	// reload) can carry on without waiting for them to lapse.
 	if (storage && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-		const releaseAll = () => {
+		const putAway = (event: PageTransitionEvent) => {
+			// A page kept for the back button is frozen, not gone. Brought back, it would carry
+			// on with runs whose claims it gave up here, beside whichever tab took them over. So
+			// its runs end with its claims.
+			if (event.persisted) {
+				for (const controller of controllers.values()) controller.abort();
+			}
 			for (const release of leases.values()) release();
 		};
-		window.addEventListener('pagehide', releaseAll);
-		cleanups.push(() => window.removeEventListener('pagehide', releaseAll));
+		// Brought back, it starts again the way a page that has just loaded does.
+		const broughtBack = (event: PageTransitionEvent) => {
+			if (event.persisted && !destroyed) resumeInterrupted();
+		};
+		window.addEventListener('pagehide', putAway);
+		window.addEventListener('pageshow', broughtBack);
+		cleanups.push(() => {
+			window.removeEventListener('pagehide', putAway);
+			window.removeEventListener('pageshow', broughtBack);
+		});
 	}
 
 	// --- Sui account comes straight from dapp-kit. -------------------------------------

@@ -373,6 +373,66 @@ describe('a transfer that another tab is driving', () => {
 		second.kit.destroy();
 	});
 
+	it('is given up by a page that is put away for the back button, and picked up when it returns', async () => {
+		// Such a page is frozen with its runs still pending. If it only gave up its claims, it
+		// would carry on with those runs when it came back, beside the tab that took them over.
+		vi.useFakeTimers();
+		vi.stubGlobal('window', new EventTarget());
+		const pageEvent = (type: string, persisted: boolean) =>
+			window.dispatchEvent(Object.assign(new Event(type), { persisted }));
+		try {
+			const storage = createInMemoryStorage();
+			storage.setItem(KEY, JSON.stringify([waitingForCircle]));
+			const claim = () => storage.getItem(`${KEY}:running:${waitingForCircle.id}`);
+			const { kit, circle } = await otherTab(storage);
+			const polls = () =>
+				circle.mock.calls.filter(([url]) => String(url).includes('/v2/messages/')).length;
+			await vi.advanceTimersByTimeAsync(6_000);
+			expect(polls()).toBeGreaterThan(0);
+			expect(claim()).not.toBeNull();
+
+			pageEvent('pagehide', true);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(claim()).toBeNull();
+			expect(kit.isRunning(waitingForCircle.id)).toBe(false);
+			// Its run has ended: it asks Circle nothing more while it is away.
+			const before = polls();
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(polls()).toBe(before);
+			// Stopping is not failing: the record is as the run left it.
+			expect(kit.stores.$transfers.get()[0]).toMatchObject({ status: 'attesting' });
+			expect(kit.stores.$transfers.get()[0]!.error).toBeUndefined();
+
+			pageEvent('pageshow', true);
+			await vi.advanceTimersByTimeAsync(6_000);
+			expect(claim()).not.toBeNull();
+			expect(polls()).toBeGreaterThan(before);
+			kit.destroy();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it('is left running by a page that is simply shown again', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('window', new EventTarget());
+		try {
+			const storage = createInMemoryStorage();
+			storage.setItem(KEY, JSON.stringify([waitingForCircle]));
+			const { kit, circle } = await otherTab(storage);
+			await vi.advanceTimersByTimeAsync(6_000);
+			// The first load of a page also fires `pageshow`, with nothing to bring back.
+			window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: false }));
+			const before = circle.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(6_000);
+			expect(kit.isRunning(waitingForCircle.id)).toBe(true);
+			expect(circle.mock.calls.length).toBeGreaterThan(before);
+			kit.destroy();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it("is picked up once a dead tab's claim has lapsed", async () => {
 		vi.useFakeTimers();
 		const storage = createInMemoryStorage();
