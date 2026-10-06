@@ -5,6 +5,7 @@ import { fromBase64, toBase64 } from "@mysten/sui/utils";
 import { describe, expect, it } from "vitest";
 import realFixture from "./fixtures/createBucket746.json" with { type: "json" };
 import type { BucketGroupPackageConfig } from "../src/console/packageConfig";
+import { KEY_ADMIN_PIN_REMEDY } from "../src/console/pinRemedy";
 import {
   assertExpectedTransaction,
   type RosterMember,
@@ -920,22 +921,34 @@ describe("create-bucket identity: manager precedence", () => {
   it("refuses when the pinned and derived manager disagree", async () => {
     const bytes = await build746Reserve({ manager: ADMIN });
     expect(() => validate(bytes, { manager: ADMIN, derivedManager: ATTACKER })).toThrow(
-      /CONSOLE_KEY_ADMIN_ADDRESS/,
+      KEY_ADMIN_PIN_REMEDY,
     );
   });
 
   it("refuses a grant_permission when no manager address is available at all", async () => {
     // A deliberate behaviour change from the legacy arm, which skipped the check.
-    // The refusal names the three ways to supply one.
+    // The refusal names the three ways to supply one (see src/console/pinRemedy.ts).
     const bytes = await build746Reserve();
-    expect(() => validate(bytes, { derivedManager: undefined })).toThrow(
-      /credential bundle.*CONSOLE_KEY_ADMIN_ADDRESS.*walrus-console-mcp config/s,
-    );
+    expect(() => validate(bytes, { derivedManager: undefined })).toThrow(KEY_ADMIN_PIN_REMEDY);
   });
 
   it("rejects a grant to an address that is neither pinned nor derived", async () => {
     const bytes = await build746Reserve({ manager: ATTACKER });
     expect(() => validate(bytes, { derivedManager: ADMIN })).toThrow(/hands group management to/);
+  });
+
+  it("points a host holding the admin key at its new bundle when the grant names another Key-Admin", async () => {
+    const bytes = await build746Reserve({ manager: ATTACKER });
+    expect(() => validate(bytes, { derivedManager: ADMIN })).toThrow(
+      /rotated or re-created.*Re-run the MCP installer.*not from this message/s,
+    );
+  });
+
+  it("points a pin-only host at the pin update when the grant names another Key-Admin", async () => {
+    const bytes = await build746Reserve({ manager: ATTACKER });
+    expect(() => validate(bytes, { manager: ADMIN, derivedManager: undefined })).toThrow(
+      /rotated or re-created.*config --silent --key-admin-address.*not from this message/s,
+    );
   });
 
   it("rejects grant_permission type args that are not [WalrusConsole, ExtensionPermissionsAdmin]", async () => {

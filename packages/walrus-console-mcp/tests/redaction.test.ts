@@ -1,3 +1,4 @@
+import { HttpClientError, HttpClientRequest } from "@effect/platform";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearSecrets,
@@ -102,6 +103,28 @@ describe("formatToolError", () => {
     const out = formatToolError("upload_file", err);
     expect(out).not.toContain(SERVICE_KEY);
     expect(out).toContain("**Error in upload_file**");
+  });
+
+  // @effect/platform's RequestError wraps a `cause` that is usually a plain
+  // Error, not one of this codebase's own tagged errors — so Error's own
+  // `message` is non-enumerable and does not survive JSON.stringify the way
+  // it does for everything else `describeError` handles. A redirect refused
+  // by `fetchWithRedirectGuard` (thrown as the `cause` here) used to report as
+  // an opaque RequestError blob naming no host at all.
+  it("surfaces a RequestError's cause message, not just its opaque JSON shape", () => {
+    class UnapprovedRedirectError extends Error {}
+    const error = new HttpClientError.RequestError({
+      request: HttpClientRequest.get("https://api.walrus.xyz/x"),
+      reason: "Transport",
+      cause: new UnapprovedRedirectError(
+        "Refused to follow a redirect to an unapproved host: evil.example.com",
+      ),
+    });
+
+    const out = formatToolError("upload_file", error);
+
+    expect(out).toContain("RequestError");
+    expect(out).toContain("Refused to follow a redirect to an unapproved host: evil.example.com");
   });
 });
 

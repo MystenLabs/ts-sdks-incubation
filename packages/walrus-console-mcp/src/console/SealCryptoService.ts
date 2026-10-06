@@ -13,16 +13,64 @@ import {
   getRawServiceKey,
 } from "../config";
 import { tryPromiseSettling } from "../effectPromise";
-import { SealIdentity, type SealIdentityInput } from "./constants";
-import { SealCryptoError } from "./errors";
+import { fetchWithRedirectGuard } from "../safeFetch";
+import { parseSealIdentityPolicyId, SealIdentity, type SealIdentityInput } from "./constants";
+import { FileBindingRefusedError, SealCryptoError } from "./errors";
+import { type BoundFileRecord, classifyFileAad } from "./fileAad";
 import {
   resolveFullnodeUrl,
   resolvePackageConfigForBaseUrl,
   resolveSuiNetwork,
 } from "./packageConfig";
+import { fetchWithClientHeader } from "./ConsoleApiClient";
 import { interpretSealProxyFailure, resolveSealConfig } from "./seal-config";
 import { buildSealApproveTransaction } from "./sealApprove";
 import { assertExpectedTransaction, type SponsoredTxExpectation } from "./txValidation";
+
+/**
+ * The AAD an `EncryptedObject` carries, or `null` when it carries none.
+ *
+ * Only the AEAD variants have one, as `Option<vector<u8>>`; `Plain` reads as
+ * unbound, exactly like an absent option.
+ */
+function aadFromParsed(parsed: ReturnType<typeof EncryptedObject.parse>): Uint8Array | null {
+  const variant = parsed.ciphertext;
+  // A missing variant would otherwise throw on the `in` below.
+  if (!variant) return null;
+  if ("Aes256Gcm" in variant && variant.Aes256Gcm) {
+    return variant.Aes256Gcm.aad ? Uint8Array.from(variant.Aes256Gcm.aad) : null;
+  }
+  if ("Hmac256Ctr" in variant && variant.Hmac256Ctr) {
+    return variant.Hmac256Ctr.aad ? Uint8Array.from(variant.Hmac256Ctr.aad) : null;
+  }
+  return null;
+}
+
+/**
+ * What a download must know to decide whether a ciphertext may be decrypted
+ * under the record that points at it.
+ */
+export interface DownloadBinding {
+  /**
+   * The bucket the CALLER addressed — the `bucketId` tool argument — never the
+   * one the file record reports. Comparing the record against itself would
+   * authenticate nothing, and the cross-bucket swap works precisely because that
+   * column is rewritable.
+   */
+  readonly bucketId: string;
+  /** For the refusal message; this service never fetches by it. */
+  readonly fileId: string;
+  /**
+   * The group `deriveBucketGroupId(registry, bucketId, creator)` names.
+   *
+   * Passed in rather than derived here: the derivation lives in
+   * `ConsoleStorageService`, which imports this service, so computing it here
+   * would make the two files circular for no gain.
+   */
+  readonly expectedGroupId: string;
+  /** The three columns the AAD is compared against. A null in any refuses. */
+  readonly record: BoundFileRecord;
+}
 
 /**
  * SealCryptoService — the heart of private (encrypted) Console operations.
@@ -242,6 +290,19 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
       // server that stops answering settle at all rather than hang. Pinning it
       // here means a future SDK default cannot silently lengthen that wait.
       timeout: 10_000,
+      // The one Console lane the client's own header plumbing cannot reach: the SDK
+      // owns these requests, and its only header slot (`apiKeyName`/`apiKey`) is spent
+      // on `Authorization`. `fetch` arrived in seal 1.4.0 for exactly this
+      // (`@mysten/seal/dist/types.d.mts`: "attach your own headers"), so `fetch_key`
+      // is attributed like every other request rather than counted as a bare API
+      // client. Attribution only: nothing here carries authority.
+      //
+      // Over `fetchWithRedirectGuard`, not the bare global: the SDK sets
+      // no redirect policy, so a redirected `fetch_key` POST would otherwise be replayed
+      // to the target with its body — the SessionKey certificate, the `seal_approve`
+      // PTB and the ephemeral key. Behind the guard an unapproved target is refused
+      // before any connection and the body survives no redirect at all.
+      fetch: fetchWithClientHeader(fetchWithRedirectGuard),
     });
 
     // SessionKey.create performs a network round-trip (a getObject RPC to assert
@@ -311,6 +372,13 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
     const encrypt = Effect.fn("SealCryptoService.encrypt")(function* (
       plaintext: Uint8Array,
       sealPolicyId: string,
+      /**
+       * The file AAD, binding this ciphertext to the record that will point at
+       * it. Required: in `@mysten/seal` 1.4.0 omitting the AAD and passing an
+       * empty one write the same empty value, which is the legacy lane, so a new
+       * upload must always pass the encoded v1 struct.
+       */
+      aad: Uint8Array,
     ) {
       // Each file gets a fresh 32-byte nonce
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(32)));
@@ -335,6 +403,7 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
             packageId: packageConfig.originalPackageId,
             id,
             data: plaintext,
+            aad,
           }),
         catch: (cause) =>
           new SealCryptoError({
@@ -348,23 +417,38 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
     });
 
     /**
-     * Decrypt a downloaded ciphertext using the bucket's sealPolicyId.
+     * Decrypt a downloaded ciphertext, if it belongs to the record that points at it.
+     *
+     * Approves against the group embedded in the ciphertext's identity: on chain,
+     * `seal_approve` asserts the group id equals that 32-byte prefix, so it is the
+     * only group that can approve these bytes.
+     *
+     * What `is_prefix` cannot know is which folder the caller asked for, and this
+     * key can read many. So the embedded group must also equal
+     * `binding.expectedGroupId`, the group the addressed folder derives. That value
+     * is compared against, never approved with.
+     *
+     * The AAD and group compares run before a key is fetched; the size check after,
+     * because it is about the bytes that came back.
      */
     const decrypt = Effect.fn("SealCryptoService.decrypt")(function* (
       ciphertext: Uint8Array,
-      sealPolicyId: string,
+      binding: DownloadBinding,
     ) {
-      const keypair = yield* getKeypair();
-
       // Parse the ciphertext + derive the Seal identity. These are synchronous and
       // can throw (malformed ciphertext / bad hex), so wrap them in a typed step —
       // an outer try/catch would NOT catch a failing `yield*` (Effect unwinds past
       // the generator) and mislabeled these as the decrypt step.
-      const idBytes = yield* Effect.try({
+      const { idBytes, embeddedPolicyId, aad } = yield* Effect.try({
         try: () => {
           const parsed = EncryptedObject.parse(ciphertext);
           const idHex = parsed.id.startsWith("0x") ? parsed.id : `0x${parsed.id}`;
-          return fromHex(idHex);
+          const idBytes = fromHex(idHex);
+          return {
+            idBytes,
+            embeddedPolicyId: parseSealIdentityPolicyId(idBytes),
+            aad: aadFromParsed(parsed),
+          };
         },
         catch: (cause) =>
           new SealCryptoError({
@@ -374,15 +458,52 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
           }),
       });
 
+      // The DEM verifies whatever AAD the ciphertext carries, so a ciphertext moved
+      // onto this record verifies against its own. The compare has to happen here.
+      const classification = classifyFileAad(aad, {
+        bucketId: binding.bucketId,
+        record: binding.record,
+      });
+      if (classification.kind === "refused") {
+        return yield* new FileBindingRefusedError({
+          message: classification.detail,
+          reason: classification.reason,
+          bucketId: binding.bucketId,
+          fileId: binding.fileId,
+        });
+      }
+
+      // The folder asked for must be the folder these bytes were encrypted for.
+      // Compared raw: `parseSealIdentityPolicyId` and `deriveBucketGroupId` both
+      // return `normalizeSuiAddress` output, so there is nothing left to fold.
+      if (embeddedPolicyId !== binding.expectedGroupId) {
+        return yield* new FileBindingRefusedError({
+          message:
+            `This file was encrypted for a different folder: its ciphertext names group ` +
+            `${embeddedPolicyId}, while folder ${binding.bucketId} derives ` +
+            `${binding.expectedGroupId}. Likely cause: an upload made by a build that did ` +
+            `not verify the folder's policy (the published @beta build still does not). ` +
+            `Re-upload the original into this folder. Nothing was decrypted.`,
+          reason: "wrong_group",
+          bucketId: binding.bucketId,
+          fileId: binding.fileId,
+        });
+      }
+
+      const keypair = yield* getKeypair();
+
       // Build the access-check transaction kind (never broadcast). Construction is
-      // synchronous and can throw; the build itself is async.
+      // synchronous and can throw; the build itself is async. The group argument is
+      // `embeddedPolicyId` — read out of the ciphertext above, never a caller value,
+      // and equal to the derived group by the check above.
       const tx = yield* Effect.try({
-        try: () => buildSealApproveTransaction(packageConfig, idBytes, sealPolicyId),
+        try: () => buildSealApproveTransaction(packageConfig, idBytes, embeddedPolicyId),
         catch: (cause) =>
           new SealCryptoError({
             message: "Failed to build seal_approve PTB",
             cause,
             step: "build_ptb",
+            embeddedPolicyId,
           }),
       });
 
@@ -393,6 +514,7 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
             message: "Failed to build seal_approve PTB",
             cause,
             step: "build_ptb",
+            embeddedPolicyId,
           }),
       });
 
@@ -412,7 +534,10 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
         // switched off will keep retrying the wrong fix. Seal's own denials carry no
         // `console:` prefix, so they fall through to the message below unchanged.
         catch: (cause) =>
-          interpretSealProxyFailure(cause) ??
+          interpretSealProxyFailure(cause, {
+            rawKey: getRawApiKey(config),
+            baseUrl: config.baseUrl,
+          }) ??
           new SealCryptoError({
             message:
               "Seal decryption failed. Common causes: CONSOLE_SERVICE_PRIVATE_KEY is not " +
@@ -421,11 +546,38 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
               "servers evaluate seal_approve, so a version-gate abort surfaces here.",
             cause,
             step: "decrypt",
+            embeddedPolicyId,
           }),
         label: "Seal decrypt",
       });
 
-      return plaintext;
+      // The size is bound: a plaintext of the wrong length is not this record's file.
+      if (
+        classification.kind === "bound" &&
+        plaintext.length !== Number(classification.aad.contentSize)
+      ) {
+        return yield* new FileBindingRefusedError({
+          message:
+            `This file decrypted to ${plaintext.length} bytes, but its record and its own ` +
+            `binding both say ${classification.aad.contentSize}. Nothing was written.`,
+          reason: "size",
+          bucketId: binding.bucketId,
+          fileId: binding.fileId,
+        });
+      }
+
+      return {
+        plaintext,
+        /**
+         * The name the uploader actually encrypted under, or `null` for a legacy
+         * ciphertext, which authenticates no name. A rewrite that changes every
+         * bound column consistently passes the compare above, so this is the one
+         * trace it cannot erase.
+         */
+        authenticatedName: classification.kind === "bound" ? classification.aad.originalName : null,
+        /** False for a pre-cutover ciphertext, which the tool output says so about. */
+        bound: classification.kind === "bound",
+      };
     });
 
     /**

@@ -268,6 +268,22 @@ describe("probeKey", () => {
     expect(seen).toBe(`${baseUrl}/api/v1/spaces`);
   });
 
+  // COMG-1053. Setup probes are Console requests too, so they carry the same
+  // attribution as the client's own lanes; without it `configure` and `install`
+  // traffic counts as a bare API integration.
+  it("sends X-Console-Client alongside the bearer token", async () => {
+    let headers = new Headers();
+    const fake = (async (_url: string | URL, init?: RequestInit) => {
+      headers = new Headers(init?.headers);
+      return new Response("", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await probeKey("api", "hbr_x", baseUrl, fake);
+
+    expect(headers.get("x-console-client")).toBe("mcp");
+    expect(headers.get("authorization")).toBe("Bearer hbr_x");
+  });
+
   it("calls the key-admin control-plane route for a management key", async () => {
     let seen = "";
     let auth = "";

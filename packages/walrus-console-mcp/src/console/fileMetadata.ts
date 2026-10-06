@@ -25,11 +25,27 @@ const descriptionSchema = (max: number) => z.string().trim().max(max);
 const tagsSchema = (tagLength: number, maxTags: number) =>
   z.array(z.string().trim().min(1).max(tagLength)).max(maxTags);
 
-export const fileDescriptionSchema = descriptionSchema(MAX_FILE_DESCRIPTION_LENGTH);
-export const fileTagsSchema = tagsSchema(MAX_FILE_TAG_LENGTH, MAX_FILE_TAGS);
+// Described here, once, rather than at each tool's use site: every tool below
+// wraps these in its own `.optional()` / `.nullable()`, and the description
+// carries through that wrapping into the JSON schema an agent actually sees
+// (verified against zod-to-json-schema, the converter the MCP SDK uses).
+// Tags are searchable through Console's /search API, which no tool here calls;
+// list_files' `q` matches the file name only, and nothing searches descriptions.
+export const fileDescriptionSchema = descriptionSchema(MAX_FILE_DESCRIPTION_LENGTH).describe(
+  `Free-text note about the file, for your own reference. Up to ${MAX_FILE_DESCRIPTION_LENGTH} characters.`,
+);
+export const fileTagsSchema = tagsSchema(MAX_FILE_TAG_LENGTH, MAX_FILE_TAGS).describe(
+  `Short labels for the file, for your own reference. Up to ${MAX_FILE_TAGS} tags, ` +
+    `${MAX_FILE_TAG_LENGTH} characters each.`,
+);
 
-export const bucketDescriptionSchema = descriptionSchema(MAX_BUCKET_DESCRIPTION_LENGTH);
-export const bucketTagsSchema = tagsSchema(MAX_BUCKET_TAG_LENGTH, MAX_BUCKET_TAGS);
+export const bucketDescriptionSchema = descriptionSchema(MAX_BUCKET_DESCRIPTION_LENGTH).describe(
+  `Free-text note about the bucket, for your own reference. Up to ${MAX_BUCKET_DESCRIPTION_LENGTH} characters.`,
+);
+export const bucketTagsSchema = tagsSchema(MAX_BUCKET_TAG_LENGTH, MAX_BUCKET_TAGS).describe(
+  `Short labels for the bucket, for your own reference. Up to ${MAX_BUCKET_TAGS} tags, ` +
+    `${MAX_BUCKET_TAG_LENGTH} characters each.`,
+);
 
 /**
  * `| undefined` is explicit because the repo runs `exactOptionalPropertyTypes`:
@@ -42,13 +58,6 @@ export interface FileUserMetadata {
   readonly tags?: readonly string[] | undefined;
 }
 
-/**
- * Assemble the `metadata` object for an upload.
- *
- * Returns `undefined` when the caller supplied neither field, so the multipart
- * form omits `metadata` entirely rather than sending `{}` — the server treats a
- * missing key as "absent", which is the canonical empty state.
- */
 /**
  * A file patch. `null` clears a field; `undefined` leaves it untouched.
  * `PATCH /api/v1/files/:id` also renames, so `name` rides along here.
@@ -96,6 +105,10 @@ export function buildBucketMetadataPatch(
   ]);
 }
 
+/**
+ * The caller's fields for an upload's `metadata`, or `undefined` when it supplied
+ * neither. The upload adds its own `aadVersion` beside them.
+ */
 export function buildUploadMetadata(input: FileUserMetadata): Record<string, unknown> | undefined {
   const metadata: Record<string, unknown> = {};
   if (input.description !== undefined) metadata["description"] = input.description;

@@ -9,6 +9,7 @@ import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/Consol
 import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
 import { BucketId, FileId } from "../src/console/types";
+import { FIXTURE_OWNER, verifiedBucket } from "./verifiedBucket";
 
 /**
  * COMG-662 — the regression this pins: `uploadFileToBucket` called
@@ -39,7 +40,7 @@ const STUB_CONFIG: ConsoleConfig = {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.testnet.console.walrus.xyz",
-  webAccountAddress: "",
+  webAccountAddress: FIXTURE_OWNER,
   keyAdminAddress: "",
 };
 
@@ -56,14 +57,24 @@ function makeHarness() {
   const calls: Array<Record<string, unknown> | undefined> = [];
 
   const api = {
+    getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
     uploadBucketFile: (
       _bucketId: unknown,
       _bytes: Uint8Array,
-      _fileName: string,
+      fileName: string,
       metadata?: Record<string, unknown>,
+      contentSize?: number,
+      declaredType?: string,
     ) => {
       calls.push(metadata);
-      return Effect.succeed({ data: { id: FileId.make("file-1") } });
+      return Effect.succeed({
+        data: {
+          id: FileId.make("file-1"),
+          original_name: fileName.trim().normalize("NFC"),
+          declared_mime_type: declaredType ?? null,
+          content_size: contentSize ?? null,
+        },
+      });
     },
     getFileUploadStatus: () => Effect.succeed({ data: { state: "completed" as const } }),
   };
@@ -95,7 +106,7 @@ async function upload(
       Effect.flatMap((storage) =>
         storage.uploadFileToBucket(
           BucketId.make("bucket-1"),
-          "0xpolicy",
+          undefined,
           tmpFile,
           undefined,
           metadata,
@@ -112,7 +123,9 @@ describe("uploadFileToBucket — metadata pass-through (COMG-662)", () => {
 
     await upload(layer, { description: "quarterly report", tags: ["finance", "q3"] });
 
-    expect(calls).toEqual([{ description: "quarterly report", tags: ["finance", "q3"] }]);
+    expect(calls).toEqual([
+      { description: "quarterly report", tags: ["finance", "q3"], aadVersion: 1 },
+    ]);
   });
 
   it("forwards only the field that was supplied", async () => {
@@ -120,14 +133,14 @@ describe("uploadFileToBucket — metadata pass-through (COMG-662)", () => {
 
     await upload(layer, { tags: ["draft"] });
 
-    expect(calls).toEqual([{ tags: ["draft"] }]);
+    expect(calls).toEqual([{ tags: ["draft"], aadVersion: 1 }]);
   });
 
-  it("still sends no metadata when the caller supplies none", async () => {
+  it("sends the binding stamp alone when the caller supplies no fields", async () => {
     const { calls, layer } = makeHarness();
 
     await upload(layer);
 
-    expect(calls).toEqual([undefined]);
+    expect(calls).toEqual([{ aadVersion: 1 }]);
   });
 });

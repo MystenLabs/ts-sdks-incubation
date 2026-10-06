@@ -344,6 +344,136 @@ describe("generateApiKey — a successful mint", () => {
     expect(outcome.credential.keyId).toBe("key_1");
     expect(outcome.credential.privateBuckets).toEqual([{ bucketId: "b1", groupId: "g1" }]);
   });
+
+  it("names where to revoke the key, since no credential this client holds can", async () => {
+    const outcome = await mint(mintHarness({}));
+
+    if (!outcome.ok) throw new Error(`expected a successful mint: ${outcome.reason}`);
+    // The one thing a caller cannot work out for itself: a revoke endpoint
+    // exists, but it is session-only, so the only path from here is a human in
+    // the Console UI. The guidance must say where, not just that it can't.
+    expect(outcome.revocation).toContain("Integrations");
+    expect(outcome.revocation).toMatch(/browser session/i);
+  });
+
+  it("points at a value the Console UI actually shows", async () => {
+    // The Integrations table renders the key's NAME; the key id appears only as
+    // a React key, in no visible column. Guidance built around keyId sends an
+    // agent looking for the one value it cannot match on, so the mint name
+    // (which carries the marker) has to be both reported and named.
+    const outcome = await mint(mintHarness({}));
+
+    if (!outcome.ok) throw new Error(`expected a successful mint: ${outcome.reason}`);
+    expect(outcome.credential.name).toMatch(/mcp-mint-[0-9a-f]{12}/);
+    expect(outcome.revocation).toContain(outcome.credential.name);
+  });
+
+  it("says nothing about warnings when there is nothing to warn about", async () => {
+    const outcome = await mint(mintHarness({}));
+
+    if (!outcome.ok) throw new Error(`expected a successful mint: ${outcome.reason}`);
+    // Absent, not an empty array: an empty `warnings` reads as "we checked and
+    // found none" for checks that may not have run at all.
+    expect(outcome.warnings).toBeUndefined();
+  });
+});
+
+/**
+ * COMG-849. A `spaceId` that does not match is NOT a failed mint.
+ *
+ * `spaceId` never reaches Console — `createApiKey` sends only `permissions`,
+ * `serviceSignerAddress` and `name`, and the space comes from the Key-Admin
+ * credential. So a mismatch means the admin bundle on this host is for a
+ * different space than the caller assumed; the key itself is valid there.
+ * Reporting that as `ok: false` was the bug: it invited a retry, and each retry
+ * mints another key against the 25-key cap with no API to revoke any of them.
+ */
+describe("generateApiKey — a spaceId that does not match is a warning, not a failure", () => {
+  it("completes the mint, grants and activates it, and warns", async () => {
+    const outcome = await mint(mintHarness({}), "sp_WRONG");
+
+    if (!outcome.ok) throw new Error(`expected the mint to complete: ${outcome.reason}`);
+    // Not half-built: the grant and activation steps ran like any other mint,
+    // rather than being skipped by an early return.
+    expect(outcome.credential.privateBuckets).toEqual([{ bucketId: "b1", groupId: "g1" }]);
+    // The secrets are on disk and reachable, as on any successful mint.
+    const secrets = readCredentialSecrets(outcome.credential.credentialFile);
+    expect(secrets.apiKey).toBe("hbr_minted_once");
+    expect(secrets.privateKey).toBe("suiprivkey1child");
+    // And it reports the space it actually landed in, not the one asserted.
+    expect(outcome.credential.spaceId).toBe("sp_1");
+
+    expect(outcome.warnings).toHaveLength(1);
+    const [warning] = outcome.warnings ?? [];
+    expect(warning?.kind).toBe("space-mismatch");
+    expect(warning?.expected).toBe("sp_WRONG");
+    expect(warning?.actual).toBe("sp_1");
+    // The warning must name the real cause — a misconfigured admin bundle —
+    // rather than implying the caller picked the wrong space.
+    expect(warning?.message).toContain("CONSOLE_ADMIN_KEY");
+    expect(warning?.message).toMatch(/do NOT retry|not retry/i);
+  });
+
+  it("leaves an operator breadcrumb on stderr, not only a caller-facing warning", async () => {
+    // The tool result reaches whoever made the call; a misconfigured admin
+    // bundle is the operator's problem, and the operator may never see it.
+    // Without this assertion the whole console.error can be deleted with the
+    // suite still green.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const outcome = await mint(mintHarness({}), "sp_WRONG");
+    if (!outcome.ok) throw new Error(`expected the mint to complete: ${outcome.reason}`);
+
+    const stderr = spy.mock.calls.flat().join(" ");
+    expect(stderr).toContain("CONSOLE_ADMIN_KEY");
+    expect(stderr).toContain("sp_WRONG");
+    expect(stderr).toContain("sp_1");
+
+    spy.mockRestore();
+  });
+
+  it("treats a blank spaceId as no assertion, not as a failed one", async () => {
+    // An empty string is what an LLM caller writes when it means "I have
+    // nothing to assert" — it reaches for the field because the schema offers
+    // it. Comparing it produces a warning with holes where the space ids should
+    // be, ending in "revoke this key" about a key that is perfectly correct:
+    // the exact class of advice this whole change exists to remove.
+    const outcome = await mint(mintHarness({}), "   ");
+
+    if (!outcome.ok) throw new Error(`expected a successful mint: ${outcome.reason}`);
+    expect(outcome.warnings).toBeUndefined();
+  });
+
+  it("asserts nothing when spaceId is omitted", async () => {
+    const outcome = await Effect.runPromise(
+      KeyAdminService.pipe(
+        Effect.flatMap((svc) => svc.generateApiKey({ permission: "read_write" })),
+        Effect.provide(mintHarness({})),
+      ),
+    );
+
+    if (!outcome.ok) throw new Error(`expected a successful mint: ${outcome.reason}`);
+    expect(outcome.warnings).toBeUndefined();
+    expect(outcome.credential.spaceId).toBe("sp_1");
+  });
+
+  it("keeps the warning when a later step fails", async () => {
+    // The space check runs before the grant. A grant failure must not swallow a
+    // mismatch already found — they are independent problems and the caller has
+    // to see both.
+    const outcome = await mint(
+      mintHarness({
+        execute: () =>
+          Effect.fail(new ConsoleAuthError({ message: "boom", code: "invalid_api_key" })),
+      }),
+      "sp_WRONG",
+    );
+
+    const failed = incomplete(outcome);
+    expect(failed.stage).toBe("grant");
+    expect(failed.warnings).toHaveLength(1);
+    expect(failed.warnings?.[0]?.kind).toBe("space-mismatch");
+  });
 });
 
 /**
@@ -579,7 +709,7 @@ describe("generateApiKey — lost-response mitigation (F7)", () => {
       ),
     );
 
-    await Effect.runPromise(
+    const outcome = await Effect.runPromise(
       Effect.gen(function* () {
         const keyAdmin = yield* KeyAdminService;
         return yield* keyAdmin.generateApiKey({
@@ -595,6 +725,15 @@ describe("generateApiKey — lost-response mitigation (F7)", () => {
     // The marker survives the clamp — it is the tail, and it is the recovery handle.
     expect(capturedName).toMatch(/mcp-mint-[0-9a-f]{12}\]$/);
     expect(spy.mock.calls.flat().join(" ")).toContain("mcp-mint-");
+
+    // The name the caller is told to search for must be the name Console was
+    // actually given — the whole "delete the key named X" guidance rests on it.
+    // Asserted here rather than on a bare-marker mint because this is the case
+    // where the two can diverge: a label is present AND the clamp runs, so a
+    // reported name reconstructed instead of carried would show up.
+    if (!outcome.ok) throw new Error(`expected a successful mint: ${outcome.reason}`);
+    expect(outcome.credential.name).toBe(capturedName);
+    expect(outcome.revocation).toContain(capturedName as string);
   });
 
   it("advertises a label limit the server will actually accept", () => {
@@ -606,22 +745,6 @@ describe("generateApiKey — lost-response mitigation (F7)", () => {
 });
 
 describe("generateApiKey — post-mint failures keep the credential recoverable", () => {
-  it("returns a pointer to the minted secrets when the space does not match", async () => {
-    const outcome = await mint(mintHarness({}), "sp_WRONG");
-
-    const failed = incomplete(outcome);
-    expect(failed.stage).toBe("space-check");
-    // The whole point: the one-time values survive the failure — on disk.
-    expect(typeof failed.credential.credentialFile).toBe("string");
-    const secrets = readCredentialSecrets(failed.credential.credentialFile);
-    expect(secrets.apiKey).toBe("hbr_minted_once");
-    expect(secrets.privateKey).toBe("suiprivkey1child");
-    expect(failed.credential.keyId).toBe("key_1");
-    // And it reports the space it actually landed in, not the one asked for.
-    expect(failed.credential.spaceId).toBe("sp_1");
-    expect(failed.reason).toContain("sp_WRONG");
-  });
-
   it("returns a pointer to the minted secrets when the bucket grant fails", async () => {
     const outcome = await mint(
       mintHarness({
@@ -677,8 +800,31 @@ describe("generateApiKey — post-mint failures keep the credential recoverable"
     expect(readCredentialSecrets(failed.credential.credentialFile).apiKey).toBe("hbr_minted_once");
   });
 
+  it("says how to revoke on an incomplete mint too, not only a clean one", async () => {
+    // This is the branch that most needs it: a live key with a half-built flow
+    // behind it. It previously got prose about "the Console UI" with no path,
+    // while the clean case got the specific guidance.
+    const outcome = await mint(
+      mintHarness({
+        execute: () =>
+          Effect.fail(new ConsoleAuthError({ message: "boom", code: "invalid_api_key" })),
+      }),
+    );
+
+    const failed = incomplete(outcome);
+    expect(failed.revocation).toContain("Integrations");
+    expect(failed.revocation).toContain(failed.credential.name);
+  });
+
   it("tells the caller not to retry, because a retry mints a second orphan", async () => {
-    const outcome = await mint(mintHarness({}), "sp_WRONG");
+    // Vehicle is a grant failure, not a space mismatch: a mismatch completes the
+    // mint now (COMG-849), so it no longer produces a `recovery` at all.
+    const outcome = await mint(
+      mintHarness({
+        execute: () =>
+          Effect.fail(new ConsoleAuthError({ message: "boom", code: "invalid_api_key" })),
+      }),
+    );
 
     const failed = incomplete(outcome);
     expect(failed.recovery).toMatch(/do not|don't|without retry|already exists/i);
@@ -962,11 +1108,14 @@ describe("generateApiKey — the failure is machine-readable, not just prose", (
   });
 
   it("omits detail entirely when the failure carried none", async () => {
-    const outcome = await mint(mintHarness({}), "sp_WRONG");
+    // `private-buckets-unknown` is our own check on a well-formed response, not a
+    // transport error — inventing an empty object here would imply structure that
+    // does not exist. (This used to ride on a space mismatch, which no longer
+    // fails at all — see COMG-849.)
+    const outcome = await mint(mintHarness({ minted: { private_buckets: null } }));
 
     const failed = incomplete(outcome);
-    // A space mismatch is our own check, not a transport error — inventing an
-    // empty object here would imply structure that does not exist.
+    expect(failed.stage).toBe("private-buckets-unknown");
     expect(failed.detail).toBeUndefined();
   });
 });

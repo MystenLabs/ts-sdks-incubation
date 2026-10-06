@@ -10,10 +10,11 @@
 		"dist",
 		"README.md",
 		"LICENSE",
-		"npm-shrinkwrap.json"
+		"npm-shrinkwrap.json",
+		"walrus-console-mcp.mcpb"
 	],
 	"engines": {
-		"node": ">=24"
+		"node": ">=22"
 	},
 	"repository": {
 		"type": "git",
@@ -25,13 +26,12 @@
 		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
 	},
 	"publishConfig": {
-		"access": "public",
-		"tag": "beta"
+		"access": "public"
 	},
 	"scripts": {
 		"dev": "tsx bin/console-mcp.ts",
 		"build": "tsdown",
-		"prepublishOnly": "pnpm build && pnpm pack:check",
+		"prepublishOnly": "pnpm build && pnpm mcpb:pack && pnpm pack:check",
 		"build:mcpb": "tsdown --config tsdown.mcpb.config.ts",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run && tsx scripts/check-shrinkwrap.mts",
@@ -62,8 +62,8 @@
 	"dependencies": {
 		"@effect/platform": "^0.97.1",
 		"@modelcontextprotocol/sdk": "^1.30.0",
-		"@mysten/seal": "^1.2.0",
-		"@mysten/sui": "^2.18.0",
+		"@mysten/seal": "1.4.0",
+		"@mysten/sui": "2.29.0",
 		"effect": "^3.22.1",
 		"zod": "^3.24.4"
 	},

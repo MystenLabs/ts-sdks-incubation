@@ -37,6 +37,7 @@
 			"esbuild"
 		],
 		"overrides": {
+			"@mysten-incubation/walrus-console-mcp>@mysten/sui": "2.29.0",
 			"@mysten/sui": "catalog:",
 			"axios": "^1.18.0",
 			"brace-expansion@2": "^2.1.4",

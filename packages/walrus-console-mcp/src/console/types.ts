@@ -28,6 +28,12 @@ export interface SpaceListItem {
 
 /** Aggregated storage usage for the authenticated space (GET /api/v1/usage). */
 export interface StorageUsage {
+  /**
+   * `"space"`: the figures cover the whole space. `"api_key"`: `storage_used` counts only the
+   * buckets the key can read, so `available` is an upper bound. Absent on older Console
+   * deployments.
+   */
+  readonly scope?: "space" | "api_key";
   readonly storage_used: number;
   readonly storage_cap: number;
   readonly available: number;
@@ -40,6 +46,18 @@ export interface Bucket {
   readonly name: string;
   readonly visibility: "public" | "private";
   readonly seal_policy_id: string | null;
+  /**
+   * `ctx.sender()` the on-chain group was derived from. Lets a download
+   * recompute the group with `deriveBucketGroupId(registry, bucketId, creator)`
+   * instead of comparing against `seal_policy_id`, which is a column an
+   * operator can rewrite. Nothing on the server keeps it filled for a private
+   * bucket, so the download refuses a null rather than falling back.
+   *
+   * Optional on the type, not on the wire: a build talking to an API that
+   * predates the field reads `undefined`, which the download path refuses for a
+   * private bucket rather than silently skipping the check.
+   */
+  readonly creator?: string | null;
   readonly storage_used: number;
   readonly created_at: string;
   readonly updated_at: string;
@@ -58,6 +76,16 @@ export interface FileSummary {
    * ciphertext.
    */
   readonly content_size?: number | null;
+  /**
+   * The two fields bound into a private file's Seal AAD, returned so
+   * a client can rebuild the AAD and compare it before decrypting. Null on rows
+   * written before the binding shipped; a bound ciphertext over a null one is
+   * refused, never waved through, because the record is exactly what an attacker
+   * rewrites. `mime_type` is NOT bound: the server derives it from the name, so
+   * no client can predict it. Both inputs of that derivation are bound instead.
+   */
+  readonly original_name?: string | null;
+  readonly declared_mime_type?: string | null;
   readonly status: string;
   readonly is_private: boolean;
   readonly mime_type: string | null;
@@ -98,6 +126,7 @@ export interface UploadFileInput {
   readonly metadata?: Record<string, unknown>;
 }
 
+/** Unused: the tool calls `downloadFile` positionally, `overwrite` included. */
 export interface DownloadFileInput {
   readonly bucketId: BucketId;
   readonly fileId: FileId;

@@ -67,22 +67,95 @@ describe("ConsoleConfig — management key from the config file", () => {
   });
 });
 
+describe("ConsoleConfig — read when evaluated, not when the module loads", () => {
+  it("sees a config.json written after the module was imported", async () => {
+    // The server imports this module statically, so it has loaded before
+    // `--import-bundle` writes the file. A module-load read would leave that
+    // first start with no credentials.
+    vi.resetModules();
+    const mod = await import("../src/config.js");
+    const dir = path.join(tmpDir, "walrus-console-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_written_later" }),
+    );
+
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+    expect(mod.getRawApiKey(cfg)).toBe("hbr_written_later");
+  });
+
+  it("registers a key saved after boot for redaction before it can be used", async () => {
+    // Boot registers whatever config.json held then. A key switched before the
+    // first evaluation must be redacted too, or it reaches a log line in clear.
+    vi.resetModules();
+    const redaction = await import("../src/redaction.js");
+    const mod = await import("../src/config.js");
+    const dir = path.join(tmpDir, "walrus-console-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_bootTimeKey01" }),
+    );
+    redaction.registerConfigFileSecrets({ apiKey: "hbr_bootTimeKey01" });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_switchedLaterKey" }),
+    );
+
+    await Effect.runPromise(mod.ConsoleConfig);
+    expect(redaction.redactString("Bearer hbr_switchedLaterKey")).toBe(
+      `Bearer ${redaction.REDACTION_PLACEHOLDER}`,
+    );
+    redaction.clearSecrets();
+  });
+});
+
 describe("ConsoleConfig — corrupt config file at startup (review #5)", () => {
   it("does not crash module load; falls back to env credentials", async () => {
     // config.ts reads the file at module-load time. A corrupt file must not take
     // down a server that is correctly configured through the environment — the
     // read is caught loudly and falls back to env creds.
+    //
+    //: config.ts now delegates to
+    // loadConfigFileOrEmpty, which warns via console.error rather than a raw
+    // process.stderr.write — spy on that instead.
     const dir = path.join(tmpDir, "walrus-console-mcp");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "config.json"), "{ not json", "utf-8");
     process.env = { ...process.env, CONSOLE_API_KEY: "hbr_env_only" };
 
-    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.resetModules();
     const mod = await import("../src/config.js"); // must not throw at import
     const cfg = await Effect.runPromise(mod.ConsoleConfig);
 
     expect(mod.getRawApiKey(cfg)).toBe("hbr_env_only");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // security review, C10: config.ts used to wrap loadConfigFile in its own
+  // bare try/catch, so a corrupt admin.json — which loadConfigFile now also
+  // throws on — discarded a perfectly healthy config.json working key at
+  // server startup. Reproduces the exact regression: a healthy config.json
+  // (a working key, no env override) alongside a truncated admin.json.
+  it("keeps a healthy config.json working key when only admin.json is corrupt", async () => {
+    const dir = path.join(tmpDir, "walrus-console-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_healthy" }),
+      "utf-8",
+    );
+    fs.writeFileSync(path.join(dir, "admin.json"), '{ "adminKey": "hbradm_TRUNC', "utf-8");
+
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.resetModules();
+    const mod = await import("../src/config.js");
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect(mod.getRawApiKey(cfg)).toBe("hbr_healthy");
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });

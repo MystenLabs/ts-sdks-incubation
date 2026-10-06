@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { CommandRunner } from "./clients.js";
+import { runCommand } from "./spawnCommand.js";
 
 /**
  * A private installation of the MCP server, owned by this installer.
@@ -111,5 +111,7 @@ export function installServer(spec: string, opts: InstallServerOptions = {}): st
 const defaultRunner: CommandRunner = (bin, args) => {
   // Inherit stdio: an npm install is slow enough that silence reads as a hang,
   // and its failure output is the only useful diagnostic when it does fail.
-  execFileSync(bin, args, { stdio: "inherit" });
+  // runCommand, not execFileSync: on Windows `npm` is `npm.cmd`, which a bare
+  // execFileSync cannot spawn — see src/spawnCommand.ts.
+  runCommand(bin, args, { stdio: "inherit" });
 };

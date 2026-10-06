@@ -4,8 +4,10 @@ import { Effect, Stream } from "effect";
 import { z } from "zod";
 import { isAllowedUgcRedirectUrl } from "../baseUrl";
 import { ConsoleConfigTag, getRawAdminKey, getRawApiKey } from "../config";
+import { fetchWithRedirectGuard, UnapprovedRedirectError } from "../safeFetch";
 import { MAX_TRANSFER_BYTES_ENV, maxTransferBytes } from "../transferLimits";
 import { resolveSuiNetwork } from "./packageConfig";
+import { isRevokedKeyCode, revokedKeyMessage } from "./revokedKey";
 import {
   ConsoleApiError,
   ConsoleAuthError,
@@ -23,6 +25,39 @@ import type {
   StorageUsage,
 } from "./types";
 import type { RosterMember } from "./txValidation";
+
+// Defined in a leaf module so the CLI can read the pair without importing this
+// one; re-exported here because this is where every lane already looks for it.
+export { CLIENT_HEADER, CLIENT_HEADER_VALUE } from "../consoleClientHeader.js";
+import { CLIENT_HEADER, CLIENT_HEADER_VALUE } from "../consoleClientHeader.js";
+
+/**
+ * Wrap a `fetch` so it carries the attribution header.
+ *
+ * For the lanes this client does not own: the Seal SDK builds its own `fetch_key`
+ * requests and its only header slot is spent on `Authorization`, so `SealClientOptions.fetch`
+ * (seal 1.4.0) is the one way in. Exported as a function rather than repeated inline so
+ * the header name and value have a single definition.
+ */
+export const fetchWithClientHeader =
+  (base?: typeof fetch): typeof fetch =>
+  (input, init) => {
+    // `init.headers` replaces a `Request`'s own header list wholesale, so read the
+    // request's headers when the caller passed one and sent no init of its own.
+    // No caller does today — seal calls with a string URL — but the signature
+    // admits it, and silently dropping a caller's `Authorization` is not a trap
+    // worth leaving for the next one.
+    const headers = new Headers(
+      init?.headers ??
+        (typeof input === "object" && "headers" in input ? input.headers : undefined),
+    );
+    headers.set(CLIENT_HEADER, CLIENT_HEADER_VALUE);
+    // `globalThis.fetch` is read per call, not captured as a default parameter: the
+    // wrapper is built once when the Seal client is constructed, and binding the
+    // global there would ignore any later replacement and make the wiring
+    // untestable without a real network call.
+    return (base ?? globalThis.fetch)(input, { ...init, headers });
+  };
 
 // Console stores a file's mime_type from the multipart part's content-type (it does NOT
 // sniff the ciphertext or read the extension server-side). The UI keys preview/rendering
@@ -54,7 +89,7 @@ const EXT_MIME: Record<string, string> = {
   ogg: "audio/ogg",
 };
 
-function contentTypeFromName(fileName: string): string {
+export function contentTypeFromName(fileName: string): string {
   const ext = fileName.slice(fileName.lastIndexOf(".") + 1).toLowerCase();
   return EXT_MIME[ext] ?? "application/octet-stream";
 }
@@ -95,15 +130,90 @@ export interface FinalizeBucketResponse {
 export interface FileUploadResponse {
   readonly data: {
     readonly id: FileId;
+    /** Bound columns on the created row — compared after upload (COMG-1061). */
+    readonly original_name?: string | null;
+    readonly declared_mime_type?: string | null;
+    readonly content_size?: number | null;
   };
 }
 
-export interface FileStatusResponse {
+export type FileStatusErrorBody = {
+  readonly code: string;
+  readonly message: string;
+  /**
+   * Console's response serializer snake_cases every /api/v1 body, so the wire
+   * key is `http_status` even though the domain object builds `httpStatus`.
+   * Verified against the real middleware, not the domain type.
+   */
+  readonly http_status?: number;
+  /**
+   * When the cap that refused the upload can reopen, present for
+   * `upload_daily_funding_limit` and for `upload_funding_paused` when a cap
+   * window (not the kill switch) closed it. `retry_after_seconds` is
+   * recomputed by the Console on every read.
+   */
+  readonly retry_at?: string;
+  readonly retry_after_seconds?: number;
+};
+
+/**
+ * What Console can actually answer with, across every deployment this client
+ * may be pointed at. Deliberately permissive: an unpatched Console pairs
+ * `completed` with a mid-flight checkpoint, pairs `failed` with a stale one,
+ * and bounds `progress` only by documentation.
+ */
+export interface FileStatusWire {
   readonly data: {
     readonly state: "queued" | "active" | "completed" | "failed";
     readonly progress?: number;
-    readonly error?: { code: string; message: string };
+    readonly error?: FileStatusErrorBody;
   };
+}
+
+/**
+ * What this client guarantees after reconciliation, stated as a union so the
+ * invariant is checked by `tsc` rather than by one unit test: a completed
+ * upload always carries a numeric progress, a failed one never carries any.
+ */
+export type FileStatusData =
+  | { readonly state: "completed"; readonly progress: number }
+  | { readonly state: "failed"; readonly error?: FileStatusErrorBody }
+  | { readonly state: "queued" | "active"; readonly progress?: number };
+
+export interface FileStatusResponse {
+  readonly data: FileStatusData;
+}
+
+/**
+ * Reconcile a file status' `progress` with its `state`. Always returns a new
+ * object and never mutates the response it is given, for every state.
+ *
+ * Console's upload worker never reports a final 1, so an older deployment
+ * answers a finished upload with `completed` plus a mid-flight checkpoint.
+ * Kept even though Console now fixes this at the source: this tool still
+ * talks to deployments that have not picked that fix up.
+ *
+ * Non-terminal progress is reconciled too. It is the one field an unpatched
+ * Console can get wrong that the terminal branches do not cover, and the tool
+ * description promises callers a 0..1 fraction: a value outside that range, or
+ * one that is not a finite number at all, is dropped rather than forwarded.
+ */
+export function reconcileFileStatusProgress(res: FileStatusWire): FileStatusResponse {
+  const data = res.data;
+  if (data.state === "completed") {
+    return { ...res, data: { ...data, state: "completed", progress: 1 } };
+  }
+  if (data.state === "failed") {
+    const { progress: _dropped, ...rest } = data;
+    return { ...res, data: { ...rest, state: "failed" } };
+  }
+  const { progress } = data;
+  if (progress === undefined) return { ...res, data: { ...data, state: data.state } };
+  if (typeof progress !== "number" || !Number.isFinite(progress) || progress < 0) {
+    const { progress: _dropped, ...rest } = data;
+    return { ...res, data: { ...rest, state: data.state } };
+  }
+  return { ...res, data: { ...data, state: data.state, progress: Math.min(1, progress) } };
 }
 
 export interface FileListResponse {
@@ -401,7 +511,10 @@ async function fetchDownloadFollowingUgcRedirect(
 ): Promise<Response> {
   const first = await fetch(url, {
     method: "GET",
-    headers: { Authorization: `Bearer ${bearerKey}` },
+    headers: {
+      Authorization: `Bearer ${bearerKey}`,
+      [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
+    },
     redirect: "manual",
     signal,
   });
@@ -451,6 +564,7 @@ async function fetchDownloadFollowingUgcRedirect(
 function failFromFetchResponse(
   response: Response,
   action: string,
+  credential: { rawKey: string; baseUrl: string },
 ): Effect.Effect<never, ConsoleApiError> {
   return Effect.gen(function* () {
     // Bounded: a non-OK response from a hostile-but-allowlisted endpoint could
@@ -465,6 +579,15 @@ function failFromFetchResponse(
       decoded = undefined; // non-JSON body (proxy HTML, empty) — fall back to raw text
     }
     const { code, message } = parseConsoleErrorBody(decoded);
+    if (response.status === 401 && isRevokedKeyCode(code)) {
+      return yield* Effect.fail(
+        new ConsoleApiError({
+          message: revokedKeyMessage(code, credential.rawKey, credential.baseUrl),
+          code,
+          status: response.status,
+        }),
+      );
+    }
     return yield* Effect.fail(
       new ConsoleApiError({
         message: `${action} failed with status ${response.status}: ${message ?? text}`,
@@ -620,6 +743,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       HttpClient.mapRequest((req) =>
         HttpClientRequest.setHeader(req, "Authorization", `Bearer ${getRawApiKey(config)}`),
       ),
+      HttpClient.mapRequest((req) =>
+        HttpClientRequest.setHeader(req, CLIENT_HEADER, CLIENT_HEADER_VALUE),
+      ),
       HttpClient.mapRequest(HttpClientRequest.acceptJson),
     );
 
@@ -630,6 +756,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       HttpClient.mapRequest(HttpClientRequest.prependUrl(config.baseUrl)),
       HttpClient.mapRequest((req) =>
         HttpClientRequest.setHeader(req, "Authorization", `Bearer ${getRawAdminKey(config)}`),
+      ),
+      HttpClient.mapRequest((req) =>
+        HttpClientRequest.setHeader(req, CLIENT_HEADER, CLIENT_HEADER_VALUE),
       ),
       HttpClient.mapRequest(HttpClientRequest.acceptJson),
     );
@@ -666,6 +795,26 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         const parsed = parseConsoleErrorBody(body);
         const code = parsed.code;
         const message = parsed.message ?? `HTTP ${res.status}`;
+        // A 403 `mirror_missing_grant` is not an auth failure: the key is valid and
+        // its grant on a just-created bucket has not propagated yet. Keep it a
+        // ConsoleApiError with its code — the same shape the multipart upload
+        // produces — so callers can retry it instead of reporting an invalid key.
+        if (res.status === 403 && code === "mirror_missing_grant") {
+          return yield* Effect.fail(
+            new ConsoleApiError({ message: String(message), code, status: res.status }),
+          );
+        }
+        // Name the key that was refused: the request's own bearer, so this holds
+        // for the working key and the Key-Admin credential alike.
+        if (res.status === 401 && isRevokedKeyCode(code)) {
+          const bearer = (res.request.headers["authorization"] ?? "").replace(/^Bearer\s+/i, "");
+          return yield* Effect.fail(
+            new ConsoleAuthError({
+              message: revokedKeyMessage(code, bearer, config.baseUrl),
+              code,
+            }),
+          );
+        }
         if (res.status === 401 || res.status === 403) {
           return yield* Effect.fail(
             new ConsoleAuthError({
@@ -723,6 +872,15 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
               // an explicit hint we can't tell them apart, so record "server".
               layer: "server",
               ...(code !== undefined ? { code } : {}),
+            }),
+          );
+        }
+        if (response.status === 401 && isRevokedKeyCode(code)) {
+          return yield* Effect.fail(
+            new ConsoleApiError({
+              message: revokedKeyMessage(code, getRawApiKey(config), config.baseUrl),
+              code,
+              status: response.status,
             }),
           );
         }
@@ -844,10 +1002,19 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     const getBucketById = Effect.fn("ConsoleApiClient.getBucketById")(function* (
       bucketId: BucketId,
     ) {
-      const res = yield* authed.get(`/api/v1/buckets/${bucketId}`);
+      const endpoint = `/api/v1/buckets/${bucketId}`;
+      const res = yield* authed.get(endpoint);
       if (res.status !== 200) return yield* handleError(res);
-      const json = (yield* res.json) as DataEnvelope<Bucket>;
-      return json.data;
+      const body = (yield* res.json) as Partial<DataEnvelope<Bucket>> | null;
+      // A typed failure rather than a TypeError defect; same guard as getBucketFile.
+      if (!body || typeof body.data !== "object" || body.data === null) {
+        return yield* new ConsoleApiError({
+          message: "Console returned a bucket record with no `data` object.",
+          status: res.status,
+          endpoint,
+        });
+      }
+      return body.data;
     });
 
     const updateBucket = Effect.fn("ConsoleApiClient.updateBucket")(function* (
@@ -876,9 +1043,25 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       return yield* updateBucket(bucketId, { name: newName });
     });
 
-    const deleteBucket = Effect.fn("ConsoleApiClient.deleteBucket")(function* (bucketId: BucketId) {
-      // Console guards bucket deletion behind ?confirm=true (it deletes all contained files).
-      const res = yield* authed.del(`/api/v1/buckets/${bucketId}?confirm=true`);
+    const deleteBucket = Effect.fn("ConsoleApiClient.deleteBucket")(function* (
+      bucketId: BucketId,
+      opts: { confirm: true; deleteContents: boolean },
+    ) {
+      // Two separate answers, and neither is defaulted here (COMG-1021).
+      // `confirm` used to be hardcoded into this URL, which is why a beta user
+      // lost a folder and the 8 files in it: Console's gate was satisfied by
+      // this client rather than by the person. Both are parameters now, and
+      // `confirm`'s type is the literal `true`, so the only value that compiles
+      // is the one the tool schema produces after the model supplied it.
+      //
+      // Without `deleteContents`, Console answers 400 `bucket_not_empty` and
+      // names the file count, which is what the agent can put to the user
+      // before asking again.
+      const query = new URLSearchParams({ confirm: String(opts.confirm) });
+      if (opts.deleteContents) {
+        query.set("deleteContents", "true");
+      }
+      const res = yield* authed.del(`/api/v1/buckets/${bucketId}?${query}`);
       // Console returns 204 No Content on success.
       if (res.status !== 200 && res.status !== 204) {
         return yield* handleError(res);
@@ -900,13 +1083,26 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       fileName: string,
       metadata?: Record<string, unknown>,
       contentSize?: number,
+      declaredType?: string,
     ) {
       // Pragmatic multipart using native fetch (reliable for MCP use case)
       const form = new FormData();
-      const blob = new Blob([fileBytes], { type: contentTypeFromName(fileName) });
+      // `||`, not `??`: an empty declared type is a real value for the bound
+      // FIELD below, but as a part header it would publish a typeless part, so the
+      // header keeps its own derivation. The two differ on purpose.
+      const blob = new Blob([fileBytes], { type: declaredType || contentTypeFromName(fileName) });
       form.append("file", blob, fileName);
+      // Its own field, because the part filename is the multipart layer's to
+      // escape: a name that literally contains `%22` comes back as `"`. The name
+      // is bound into the ciphertext, so one changed character breaks download.
+      form.append("name", fileName);
       if (metadata) {
         form.append("metadata", JSON.stringify(metadata));
+      }
+      // Same reason as `name`. `!== undefined`, not truthiness: `""` is a real
+      // declared type, and dropping it would bind one string and store another.
+      if (declaredType !== undefined) {
+        form.append("contentType", declaredType);
       }
       // Private uploads carry ciphertext, so the server cannot infer the plaintext
       // length. Declare it or the file reports its encrypted size forever — there
@@ -921,15 +1117,19 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       // actually stop the transfer rather than just disconnect the caller.
       const response = yield* Effect.tryPromise({
         try: (signal) =>
-          fetch(url, {
+          fetchWithRedirectGuard(url, {
             method: "POST",
             headers: {
               Authorization: `Bearer ${getRawApiKey(config)}`,
+              [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
             },
             body: form,
             signal,
           }),
-        catch: () => new ConsoleApiError({ message: "Multipart upload failed" }),
+        catch: (err) =>
+          err instanceof UnapprovedRedirectError
+            ? new ConsoleApiError({ message: err.message })
+            : new ConsoleApiError({ message: "Multipart upload failed" }),
       });
 
       if (response.status !== 202) {
@@ -956,13 +1156,53 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       return json as FileUploadResponse;
     });
 
+    /**
+     * One file's record — `GET /api/v1/buckets/:id/files/:fileId`.
+     *
+     * The download compares the AAD against `original_name`,
+     * `declared_mime_type` and `content_size`; `/status` carries none of them.
+     */
+    const getBucketFile = Effect.fn("ConsoleApiClient.getBucketFile")(function* (
+      bucketId: BucketId,
+      fileId: FileId,
+    ) {
+      const endpoint = `/api/v1/buckets/${bucketId}/files/${fileId}`;
+      const res = yield* authed.get(endpoint);
+      if (res.status !== 200) return yield* handleError(res);
+      const body = (yield* res.json) as Partial<DataEnvelope<FileSummary>> | null;
+      // A typed failure rather than a TypeError defect; see `getFileUploadStatus`.
+      if (!body || typeof body.data !== "object" || body.data === null) {
+        return yield* new ConsoleApiError({
+          message: "Console returned a file record with no `data` object.",
+          status: res.status,
+          endpoint,
+        });
+      }
+      return body.data;
+    });
+
     const getFileUploadStatus = Effect.fn("ConsoleApiClient.getFileUploadStatus")(function* (
       bucketId: BucketId,
       fileId: FileId,
     ) {
-      const res = yield* authed.get(`/api/v1/buckets/${bucketId}/files/${fileId}/status`);
+      const endpoint = `/api/v1/buckets/${bucketId}/files/${fileId}/status`;
+      const res = yield* authed.get(endpoint);
       if (res.status !== 200) return yield* handleError(res);
-      return (yield* res.json) as FileStatusResponse;
+      const body = (yield* res.json) as Partial<FileStatusWire> | null;
+      // Dereferencing `data` on an unvalidated cast would throw a TypeError,
+      // and a TypeError raised inside `Effect.gen` is a defect: it sails past
+      // the `Effect.mapError` in `ConsoleStorageService.uploadFile` that exists
+      // to keep the accepted fileId in the message (COMG-662), and
+      // `formatToolError` would append a raw stack to the agent-visible text.
+      // Fail in the typed channel instead, so both callers keep their handling.
+      if (!body || typeof body.data !== "object" || body.data === null) {
+        return yield* new ConsoleApiError({
+          message: "Console returned a file status with no `data` object.",
+          status: res.status,
+          endpoint,
+        });
+      }
+      return reconcileFileStatusProgress(body as FileStatusWire);
     });
 
     const downloadBucketFile = Effect.fn("ConsoleApiClient.downloadBucketFile")(function* (
@@ -990,7 +1230,11 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
 
       // Same parsing as upload: a private download can also 403 with
       // mirror_missing_grant, and callers need the code to say so usefully.
-      if (response.status !== 200) return yield* failFromFetchResponse(response, "Download");
+      if (response.status !== 200)
+        return yield* failFromFetchResponse(response, "Download", {
+          rawKey: getRawApiKey(config),
+          baseUrl: config.baseUrl,
+        });
 
       // The response body is buffered whole, and Seal then allocates the decrypted
       // plaintext beside it — so an unbounded download is two unbounded
@@ -1221,6 +1465,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       createBucket,
       finalizeBucket,
       uploadBucketFile,
+      getBucketFile,
       getFileUploadStatus,
       downloadBucketFile,
       listBucketFiles,

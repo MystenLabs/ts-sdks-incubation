@@ -2,6 +2,9 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Effect, Fiber, Layer, Redacted } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const POLICY_OBJECT_ID = `0x${"1".repeat(64)}`;
+const DECRYPT_ID = `${"1".repeat(64)}${"07".repeat(32)}`;
+
 /**
  * Does the REAL decrypt path single-flight its SessionKey?
  *
@@ -22,22 +25,48 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const created: string[] = [];
 
 /**
+ * Object ids handed to `seal_approve`, in call order. `decrypt` takes no policy
+ * argument, so this is how a test observes WHICH group it derived for the PTB.
+ */
+const approvedObjects: string[] = [];
+
+/**
  * Test seams on the stubbed `SealClient.decrypt`/`encrypt`, reset per test.
  * `gate` lets a test hold the promise open after the fiber is interrupted,
  * which is how the M8 wiring tests observe that the real service waits for it.
  */
-const decryptHooks: { entered: (() => void) | undefined; gate: Promise<void> | undefined } = {
+const decryptHooks: {
+  entered: (() => void) | undefined;
+  gate: Promise<void> | undefined;
+  /** When set, the stubbed key-server decrypt rejects with this. */
+  reject: Error | undefined;
+} = {
   entered: undefined,
   gate: undefined,
+  reject: undefined,
 };
-const encryptHooks: { entered: (() => void) | undefined; gate: Promise<void> | undefined } = {
+const encryptHooks: {
+  entered: (() => void) | undefined;
+  gate: Promise<void> | undefined;
+  /** Last options passed to the stubbed SealClient.encrypt. */
+  lastOptions: { aad?: Uint8Array } | undefined;
+} = {
   entered: undefined,
   gate: undefined,
+  lastOptions: undefined,
 };
+
+/**
+ * The AAD the stubbed `parse` reports, so a test can drive the real decrypt seam
+ * down the BOUND lane. A fixed `null` here is why nothing observed what the seam
+ * computes for a bound file: every other harness stubs the seam itself.
+ */
+const parseHooks: { aad: Uint8Array | null } = { aad: null };
 
 vi.mock("@mysten/seal", () => ({
   EncryptedObject: {
-    parse: () => ({ id: "0xab" }),
+    // The real `parse` returns `ciphertext`, which carries the AAD; null is the legacy lane.
+    parse: () => ({ id: DECRYPT_ID, ciphertext: { Aes256Gcm: { aad: parseHooks.aad } } }),
   },
   SessionKey: {
     create: async ({ address }: { address: string }) => {
@@ -53,10 +82,12 @@ vi.mock("@mysten/seal", () => ({
     async decrypt() {
       decryptHooks.entered?.();
       if (decryptHooks.gate) await decryptHooks.gate;
+      if (decryptHooks.reject) throw decryptHooks.reject;
       return new Uint8Array([1, 2, 3]);
     }
-    async encrypt() {
+    async encrypt(options: { aad?: Uint8Array }) {
       encryptHooks.entered?.();
+      encryptHooks.lastOptions = options;
       if (encryptHooks.gate) await encryptHooks.gate;
       return { encryptedObject: new Uint8Array([1, 2, 3]) };
     }
@@ -66,7 +97,8 @@ vi.mock("@mysten/seal", () => ({
 vi.mock("@mysten/sui/transactions", () => ({
   Transaction: class {
     pure = { vector: () => ({}) };
-    object() {
+    object(id: string) {
+      approvedObjects.push(id);
       return {};
     }
     moveCall() {}
@@ -77,6 +109,7 @@ vi.mock("@mysten/sui/transactions", () => ({
 }));
 
 const { SealCryptoService } = await import("../src/console/SealCryptoService");
+const { encodeFileAad } = await import("../src/console/fileAad");
 const { ConsoleConfigTag } = await import("../src/config");
 
 const SIGNER = Ed25519Keypair.generate().getSecretKey();
@@ -95,30 +128,73 @@ const TestConfig = Layer.succeed(ConsoleConfigTag, {
 const freshService = () =>
   SealCryptoService.DefaultWithoutDependencies.pipe(Layer.provide(TestConfig));
 
+// No policy argument: decrypt reads it out of the ciphertext's identity, which the
+// mocked `EncryptedObject.parse` above pins to DECRYPT_ID (POLICY_OBJECT_ID + nonce).
 const decryptOnce = () =>
   Effect.gen(function* () {
     const seal = yield* SealCryptoService;
-    return yield* seal.decrypt(new Uint8Array([1]), "0xpolicy");
+    return yield* seal.decrypt(new Uint8Array([1]), {
+      bucketId: "bucket-1",
+      fileId: "file-1",
+      // The group the mocked identity names, so the group check passes.
+      expectedGroupId: POLICY_OBJECT_ID,
+      record: { original_name: null, declared_mime_type: null, content_size: null },
+    });
   });
 
-// Unlike `decrypt`'s policy id (only reaches the mocked `Transaction` builder),
-// `encrypt` bcs-encodes this as a `SealIdentity.policyObjectId` (`bcs.Address`)
-// before ever touching the mocked `SealClient`, so it must be a real 32-byte hex
-// address rather than an arbitrary label.
-const POLICY_OBJECT_ID = `0x${"1".repeat(64)}`;
+// encrypt's identity encodes this as a `SealIdentity.policyObjectId` (`bcs.Address`)
+// before touching the mocked Seal client, so it must be a real 32-byte hex address
+// rather than an arbitrary label.
+const ENCRYPT_AAD = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
 
 const encryptOnce = () =>
   Effect.gen(function* () {
     const seal = yield* SealCryptoService;
-    return yield* seal.encrypt(new Uint8Array([1]), POLICY_OBJECT_ID);
+    return yield* seal.encrypt(new Uint8Array([1]), POLICY_OBJECT_ID, ENCRYPT_AAD);
   });
 
 beforeEach(() => {
   created.length = 0;
+  approvedObjects.length = 0;
   decryptHooks.entered = undefined;
   decryptHooks.gate = undefined;
+  decryptHooks.reject = undefined;
+  parseHooks.aad = null;
   encryptHooks.entered = undefined;
   encryptHooks.gate = undefined;
+  encryptHooks.lastOptions = undefined;
+});
+
+describe("SealCryptoService.encrypt — AAD required (COMG-1061)", () => {
+  it("forwards the AAD bytes to SealClient.encrypt", async () => {
+    await Effect.runPromise(encryptOnce().pipe(Effect.provide(freshService())));
+    expect(encryptHooks.lastOptions?.aad).toEqual(ENCRYPT_AAD);
+  });
+});
+
+describe("SealCryptoService.decrypt — policy derivation (COMG-848)", () => {
+  // The group `seal_approve` is asked to approve must come from the ciphertext's own
+  // identity. On-chain that is the only group that can approve it (`EInvalidPrefix`),
+  // so deriving it is what makes a caller-supplied policy unable to matter — the
+  // parameter is gone from `decrypt` entirely rather than merely being validated.
+  it("hands seal_approve the policy embedded in the ciphertext", async () => {
+    await Effect.runPromise(decryptOnce().pipe(Effect.provide(freshService())));
+    expect(approvedObjects).toContain(POLICY_OBJECT_ID);
+  });
+
+  // A key-server denial after parse must still carry the embedded policy for
+  // diagnostics / agent-visible tool output.
+  it("carries the embedded policy on a key-server decrypt failure", async () => {
+    decryptHooks.reject = new Error("NoAccessError: user does not have access");
+    const error = await Effect.runPromise(
+      decryptOnce().pipe(Effect.flip, Effect.provide(freshService())),
+    );
+    expect(error).toMatchObject({
+      _tag: "SealCryptoError",
+      step: "decrypt",
+      embeddedPolicyId: POLICY_OBJECT_ID,
+    });
+  });
 });
 
 describe("SealCryptoService.decrypt — session single-flight", () => {
@@ -157,7 +233,7 @@ describe("SealCryptoService.decrypt — session single-flight", () => {
       ).pipe(Effect.provide(layer)),
     );
     expect(out).toHaveLength(5);
-    for (const bytes of out) expect(Array.from(bytes)).toEqual([1, 2, 3]);
+    for (const result of out) expect(Array.from(result.plaintext)).toEqual([1, 2, 3]);
   });
 });
 
@@ -271,5 +347,82 @@ describe("SealCryptoService.encrypt — cancellation waits for the Seal promise 
 
     expect(orderWhileHeld).toEqual([]);
     expect(order).toEqual(["encrypt promise settled", "interrupt finished"]);
+  });
+});
+
+/**
+ * Through the real decrypt seam, which every other harness replaces. The stubbed
+ * key server returns three bytes, which is what the bindings below declare.
+ */
+describe("decrypt's bound result", () => {
+  const BUCKET = "b7f0b3a0-0000-4000-8000-00000000000a";
+
+  const bindingFor = (contentSize: number) => ({
+    bucketId: BUCKET,
+    fileId: "file-1",
+    expectedGroupId: POLICY_OBJECT_ID,
+    record: {
+      original_name: "the-real-name.pdf",
+      declared_mime_type: "application/pdf",
+      content_size: contentSize,
+    },
+  });
+
+  const aadFor = (contentSize: number) =>
+    encodeFileAad({
+      bucketId: BUCKET,
+      originalName: "the-real-name.pdf",
+      declaredType: "application/pdf",
+      contentSize,
+    });
+
+  it("returns the name the ciphertext authenticates, and says it is bound", async () => {
+    parseHooks.aad = aadFor(3);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const seal = yield* SealCryptoService;
+        return yield* seal.decrypt(new Uint8Array([1]), bindingFor(3));
+      }).pipe(Effect.provide(freshService())),
+    );
+
+    expect(Array.from(result.plaintext)).toEqual([1, 2, 3]);
+    expect(result.bound).toBe(true);
+    expect(result.authenticatedName).toBe("the-real-name.pdf");
+  });
+
+  it("reports a legacy ciphertext as unbound and authenticates no name", async () => {
+    parseHooks.aad = null;
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const seal = yield* SealCryptoService;
+        return yield* seal.decrypt(new Uint8Array([1]), {
+          ...bindingFor(3),
+          record: { original_name: null, declared_mime_type: null, content_size: null },
+        });
+      }).pipe(Effect.provide(freshService())),
+    );
+
+    expect(result.bound).toBe(false);
+    expect(result.authenticatedName).toBeNull();
+  });
+
+  // The AAD matched the record, so the compare passed and a key WAS fetched. The
+  // bytes that came back are the wrong length, which is the only thing left that
+  // can still say the ciphertext is not the one this record describes.
+  it("refuses when the decrypted length disagrees with the bound size", async () => {
+    parseHooks.aad = aadFor(99);
+
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const seal = yield* SealCryptoService;
+        return yield* seal.decrypt(new Uint8Array([1]), bindingFor(99));
+      }).pipe(Effect.flip, Effect.provide(freshService())),
+    );
+
+    expect(error._tag).toBe("FileBindingRefusedError");
+    expect(error).toMatchObject({ reason: "size" });
+    expect(error.message).toContain("99");
   });
 });

@@ -243,3 +243,85 @@ describe("uploadBucketFile — 202 accepted path is unchanged", () => {
     expect(result).toEqual({ data: { id: "file-42" } });
   });
 });
+
+/**
+ * `name` and `contentType` are bound into the ciphertext, so these assert what
+ * this client puts in the body, not what the caller hands it.
+ */
+describe("uploadBucketFile — the bound form fields", () => {
+  const captureForm = () => {
+    const sent: { body?: FormData } = {};
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      sent.body = init?.body as FormData;
+      return jsonResponse(202, { data: { id: "file-1" } });
+    }) as unknown as typeof fetch;
+    return sent;
+  };
+
+  const upload = (fileName: string, contentSize?: number, declaredType?: string) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const api = yield* ConsoleApiClient;
+        return yield* api.uploadBucketFile(
+          BUCKET,
+          BYTES,
+          fileName,
+          undefined,
+          contentSize,
+          declaredType,
+        );
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+  it("sends the name as its own field, beside the part it also names", async () => {
+    const sent = captureForm();
+
+    await upload("report.pdf", 3, "application/pdf");
+
+    expect(sent.body?.get("name")).toBe("report.pdf");
+  });
+
+  // The escape the part filename would apply, and the one it would undo. A name
+  // holding a literal `%22` is the case that breaks when the server reads the
+  // filename instead of this field: the parser decodes it to `"`.
+  it.each(['a"b.pdf', "a%22b.pdf", "line\nbreak.txt"])(
+    "sends %j through the name field unaltered",
+    async (fileName) => {
+      const sent = captureForm();
+
+      await upload(fileName, 3, "application/pdf");
+
+      expect(sent.body?.get("name")).toBe(fileName);
+    },
+  );
+
+  it("sends the declared type as its own field", async () => {
+    const sent = captureForm();
+
+    await upload("report.pdf", 3, "application/pdf");
+
+    expect(sent.body?.get("contentType")).toBe("application/pdf");
+    expect(sent.body?.get("contentSize")).toBe("3");
+  });
+
+  // `""` is the honest value for a file whose type this client cannot name.
+  // Dropping it as falsy would have the server derive a type nothing bound.
+  it("sends an empty declared type rather than dropping the field", async () => {
+    const sent = captureForm();
+
+    await upload("mystery", 3, "");
+
+    expect(sent.body?.get("contentType")).toBe("");
+  });
+
+  // An unbound upload sends neither, which is what keeps a caller that does not
+  // bind untouched: the server only requires contentSize when contentType came.
+  it("sends neither field when nothing is declared", async () => {
+    const sent = captureForm();
+
+    await upload("plain.txt");
+
+    expect(sent.body?.has("contentType")).toBe(false);
+    expect(sent.body?.has("contentSize")).toBe(false);
+  });
+});

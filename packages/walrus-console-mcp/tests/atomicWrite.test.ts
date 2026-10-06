@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic, writeFileAtomicAsync } from "../src/atomicWrite.js";
 
 // `vi.spyOn(fs, "linkSync")` fails under ESM ("module namespace is not
@@ -13,7 +14,20 @@ import { writeFileAtomic, writeFileAtomicAsync } from "../src/atomicWrite.js";
 // call before reverting to the real function on its own.
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, linkSync: vi.fn(actual.linkSync), rmSync: vi.fn(actual.rmSync) };
+  return {
+    ...actual,
+    linkSync: vi.fn(actual.linkSync),
+    rmSync: vi.fn(actual.rmSync),
+    renameSync: vi.fn(actual.renameSync),
+    writeFileSync: vi.fn(actual.writeFileSync),
+  };
+});
+
+// The async writer needs the same seam for the same reason: its exclusive
+// publish is `fsp.link`, and no filesystem a test can create here refuses one.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, link: vi.fn(actual.link) };
 });
 
 let dir: string;
@@ -27,6 +41,144 @@ afterEach(() => {
 });
 
 const modeOf = (p: string) => fs.statSync(p).mode & 0o777;
+
+/** An fs error shaped like the one Windows raises for a locked rename. */
+const errno = (code: string) =>
+  Object.assign(new Error(`${code}: operation not permitted, rename`), { code, syscall: "rename" });
+
+/** Run `fn` with `process.platform` reporting `platform`. */
+const onPlatform = (platform: NodeJS.Platform, fn: () => void) => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  try {
+    fn();
+  } finally {
+    if (original) Object.defineProperty(process, "platform", original);
+  }
+};
+
+describe("writeFileAtomic on a Windows rename failure", () => {
+  let actual: typeof import("node:fs");
+
+  // Back to the real functions (and zeroed call counts) around every test, so a
+  // persistent mockImplementation cannot leak into the describes that follow.
+  const restoreFs = () => {
+    vi.mocked(fs.renameSync).mockReset().mockImplementation(actual.renameSync);
+    vi.mocked(fs.writeFileSync).mockReset().mockImplementation(actual.writeFileSync);
+  };
+
+  beforeAll(async () => {
+    actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  });
+  beforeEach(() => restoreFs());
+  afterEach(() => restoreFs());
+
+  it("retries a transient EPERM and then publishes atomically", () => {
+    const target = path.join(dir, "config.json");
+    fs.writeFileSync(target, "old");
+    vi.mocked(fs.renameSync)
+      .mockImplementationOnce(() => {
+        throw errno("EPERM");
+      })
+      .mockImplementationOnce(() => {
+        throw errno("EBUSY");
+      });
+
+    onPlatform("win32", () => writeFileAtomic(target, "new", { mode: 0o600 }));
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("new");
+    expect(vi.mocked(fs.renameSync)).toHaveBeenCalledTimes(3);
+    expect(fs.readdirSync(dir)).toEqual(["config.json"]);
+  });
+
+  it("gives up after the retries, leaving the original intact and never writing to it directly", () => {
+    // No write-in-place fallback: writing through the destination name would
+    // follow a link planted there, keep the file's old mode, and truncate it
+    // before writing, so its own failure would destroy the config.
+    const target = path.join(dir, "config.json");
+    fs.writeFileSync(target, "old");
+    vi.mocked(fs.writeFileSync).mockClear();
+    vi.mocked(fs.renameSync).mockImplementation(() => {
+      throw errno("EPERM");
+    });
+
+    onPlatform("win32", () => {
+      expect(() => writeFileAtomic(target, "new", { mode: 0o600 })).toThrow(/EPERM/);
+    });
+
+    // One attempt plus one per backoff step.
+    expect(vi.mocked(fs.renameSync)).toHaveBeenCalledTimes(8);
+    expect(vi.mocked(fs.writeFileSync).mock.calls.some(([file]) => file === target)).toBe(false);
+    expect(fs.readFileSync(target, "utf-8")).toBe("old");
+    expect(fs.readdirSync(dir)).toEqual(["config.json"]);
+  });
+
+  it("retries the exclusive fallback's rename too, so a minted credential is not lost", () => {
+    // A filesystem without hard links sends an exclusive write to rename();
+    // a transient lock there must not delete the only copy of the secret.
+    const target = path.join(dir, "minted.json");
+    vi.mocked(fs.linkSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("ENOTSUP: operation not supported"), { code: "ENOTSUP" });
+    });
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => {
+      throw errno("EPERM");
+    });
+
+    onPlatform("win32", () => writeFileAtomic(target, "secret", { mode: 0o600, exclusive: true }));
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("secret");
+    expect(vi.mocked(fs.renameSync)).toHaveBeenCalledTimes(2);
+    expect(fs.readdirSync(dir)).toEqual(["minted.json"]);
+  });
+
+  it("does not retry the exclusive fallback's rename off Windows", () => {
+    const target = path.join(dir, "minted.json");
+    vi.mocked(fs.linkSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("ENOTSUP: operation not supported"), { code: "ENOTSUP" });
+    });
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => {
+      throw errno("EPERM");
+    });
+
+    onPlatform("linux", () => {
+      expect(() => writeFileAtomic(target, "secret", { mode: 0o600, exclusive: true })).toThrow(
+        /EPERM/,
+      );
+    });
+
+    expect(vi.mocked(fs.renameSync)).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("does not retry off Windows, where EPERM is a real permission error", () => {
+    const target = path.join(dir, "config.json");
+    fs.writeFileSync(target, "old");
+    vi.mocked(fs.renameSync).mockImplementation(() => {
+      throw errno("EPERM");
+    });
+
+    onPlatform("linux", () => {
+      expect(() => writeFileAtomic(target, "new", { mode: 0o600 })).toThrow(/EPERM/);
+    });
+
+    expect(vi.mocked(fs.renameSync)).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(target, "utf-8")).toBe("old");
+    expect(fs.readdirSync(dir)).toEqual(["config.json"]);
+  });
+
+  it("does not retry an error that is not a lock", () => {
+    const target = path.join(dir, "config.json");
+    vi.mocked(fs.renameSync).mockImplementation(() => {
+      throw errno("ENOSPC");
+    });
+
+    onPlatform("win32", () => {
+      expect(() => writeFileAtomic(target, "new", { mode: 0o600 })).toThrow(/ENOSPC/);
+    });
+
+    expect(vi.mocked(fs.renameSync)).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("writeFileAtomic", () => {
   it("creates a new file with the requested mode", () => {
@@ -113,19 +265,177 @@ describe("writeFileAtomic", () => {
     // A cross-device rename is not atomic (and fails outright on many systems),
     // so the temp file has to be a sibling of the target.
     const target = path.join(dir, "sibling.json");
+    let tmpPath = "";
     let observed: string[] = [];
 
     writeFileAtomic(target, "x", {
       mode: 0o600,
-      onTempCreated: () => {
+      onTempCreated: (p) => {
+        tmpPath = p;
         observed = fs.readdirSync(dir);
       },
     });
 
-    expect(observed.some((f) => f.includes("sibling.json") && f !== "sibling.json")).toBe(true);
+    expect(path.dirname(tmpPath)).toBe(dir);
+    expect(observed).toContain(path.basename(tmpPath));
+  });
+
+  describe("precondition", () => {
+    it("runs after the temp is written and before publishing", () => {
+      const target = path.join(dir, "pre.json");
+      fs.writeFileSync(target, "old");
+      const order: string[] = [];
+      let seenAtCheck = "";
+
+      writeFileAtomic(target, "new", {
+        mode: 0o600,
+        onTempCreated: () => order.push("temp"),
+        precondition: () => {
+          order.push("precondition");
+          seenAtCheck = fs.readFileSync(target, "utf-8");
+        },
+      });
+
+      expect(order).toEqual(["temp", "precondition"]);
+      expect(seenAtCheck).toBe("old"); // not yet published when it ran
+      expect(fs.readFileSync(target, "utf-8")).toBe("new");
+    });
+
+    // On Windows a locked destination is retried for up to ~1.3s; the app holding
+    // the lock is often the one saving the file. A check made only before the
+    // first attempt would let a later retry publish over that save.
+    it("runs again before each rename retry on a Windows lock, and can veto it", () => {
+      const target = path.join(dir, "pre.json");
+      fs.writeFileSync(target, "old");
+      vi.mocked(fs.renameSync).mockImplementationOnce(() => {
+        throw errno("EPERM");
+      });
+      let checks = 0;
+      const veto = new Error("changed while locked");
+
+      onPlatform("win32", () => {
+        expect(() =>
+          writeFileAtomic(target, "new", {
+            mode: 0o600,
+            precondition: () => {
+              if (++checks === 2) throw veto;
+            },
+          }),
+        ).toThrow(veto);
+      });
+
+      expect(checks).toBe(2);
+      expect(fs.readFileSync(target, "utf-8")).toBe("old");
+      expect(fs.readdirSync(dir)).toEqual(["pre.json"]);
+    });
+
+    it("rethrows a veto from a retry's re-check even when removing the temp fails", () => {
+      const target = path.join(dir, "pre.json");
+      fs.writeFileSync(target, "old");
+      vi.mocked(fs.renameSync).mockImplementationOnce(() => {
+        throw errno("EPERM");
+      });
+      vi.mocked(fs.rmSync).mockImplementationOnce(() => {
+        throw errno("EACCES");
+      });
+      let checks = 0;
+      const veto = new Error("changed while locked");
+
+      onPlatform("win32", () => {
+        expect(() =>
+          writeFileAtomic(target, "new", {
+            mode: 0o600,
+            precondition: () => {
+              if (++checks === 2) throw veto;
+            },
+          }),
+        ).toThrow(veto);
+      });
+      expect(fs.readFileSync(target, "utf-8")).toBe("old");
+    });
+
+    it("rethrows its own error even when removing the temp fails", () => {
+      const target = path.join(dir, "pre.json");
+      const veto = new Error("changed underneath");
+      vi.mocked(fs.rmSync).mockImplementationOnce(() => {
+        throw errno("EACCES");
+      });
+
+      expect(() =>
+        writeFileAtomic(target, "new", {
+          mode: 0o600,
+          precondition: () => {
+            throw veto;
+          },
+        }),
+      ).toThrow(veto);
+    });
+
+    it("publishes nothing and removes the temp when it throws, rethrowing the same error", () => {
+      const target = path.join(dir, "pre.json");
+      fs.writeFileSync(target, "old");
+      const veto = new Error("changed underneath");
+
+      expect(() =>
+        writeFileAtomic(target, "new", {
+          mode: 0o600,
+          precondition: () => {
+            throw veto;
+          },
+        }),
+      ).toThrow(veto);
+
+      expect(fs.readFileSync(target, "utf-8")).toBe("old");
+      expect(fs.readdirSync(dir)).toEqual(["pre.json"]);
+    });
   });
 
   describe("exclusive", () => {
+    it("vetoes the first fallback rename when state changes during an unsupported link", () => {
+      const target = path.join(dir, "exclusive.json");
+      const revisionFile = path.join(dir, "revision.txt");
+      fs.writeFileSync(revisionFile, "original");
+      const veto = new Error("revision changed during link");
+      vi.mocked(fs.linkSync).mockImplementationOnce(() => {
+        fs.writeFileSync(revisionFile, "newer");
+        throw Object.assign(new Error("ENOTSUP"), { code: "ENOTSUP" });
+      });
+
+      expect(() =>
+        writeFileAtomic(target, "replacement", {
+          mode: 0o600,
+          exclusive: true,
+          precondition: () => {
+            if (fs.readFileSync(revisionFile, "utf8") !== "original") throw veto;
+          },
+        }),
+      ).toThrow(veto);
+      expect(fs.existsSync(target)).toBe(false);
+      expect(fs.readFileSync(revisionFile, "utf8")).toBe("newer");
+      expect(fs.readdirSync(dir)).toEqual(["revision.txt"]);
+    });
+
+    it("publishes through the fallback when the refreshed precondition still permits it", () => {
+      const target = path.join(dir, "exclusive.json");
+      let linkAttempted = false;
+      let checkedAfterLink = false;
+      vi.mocked(fs.linkSync).mockImplementationOnce(() => {
+        linkAttempted = true;
+        throw Object.assign(new Error("ENOTSUP"), { code: "ENOTSUP" });
+      });
+
+      writeFileAtomic(target, "replacement", {
+        mode: 0o600,
+        exclusive: true,
+        precondition: () => {
+          if (linkAttempted) checkedAfterLink = true;
+        },
+      });
+      expect(checkedAfterLink).toBe(true);
+      expect(fs.readFileSync(target, "utf8")).toBe("replacement");
+      expect(fs.readdirSync(dir)).toEqual(["exclusive.json"]);
+    });
+
     it("creates a new file via link() and leaves no temp behind", () => {
       const target = path.join(dir, "exclusive.json");
 
@@ -164,6 +474,30 @@ describe("writeFileAtomic", () => {
 
       expect(fs.readFileSync(target, "utf-8")).toBe("secret");
       expect(fs.readdirSync(dir)).toEqual(["notsup.json"]); // no temp left behind
+    });
+
+    // The async twin of this is at "refuses a dangling symlink when link() is
+    // unsupported". `existsSync` follows the link and answers "free", so the
+    // two writers used to disagree about the same destination.
+    it("refuses a dangling symlink when link() is unsupported", () => {
+      const target = path.join(dir, "notsup-dangling.json");
+      fs.symlinkSync(path.join(dir, "no-such-target.json"), target);
+      vi.mocked(fs.linkSync).mockImplementationOnce(() => {
+        const err = new Error("ENOTSUP: operation not supported") as NodeJS.ErrnoException;
+        err.code = "ENOTSUP";
+        throw err;
+      });
+
+      let thrown: NodeJS.ErrnoException | undefined;
+      try {
+        writeFileAtomic(target, "payload", { mode: 0o600, exclusive: true });
+      } catch (err) {
+        thrown = err as NodeJS.ErrnoException;
+      }
+
+      expect(thrown?.code).toBe("EEXIST");
+      expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(target)).toBe(false);
     });
 
     it("still refuses to overwrite an existing file when link() is unsupported, with an EEXIST-shaped error", () => {
@@ -328,17 +662,128 @@ describe("writeFileAtomicAsync", () => {
     expect(fs.readdirSync(dir)).toEqual(["keep.json"]);
   });
 
-  it("rejects when exclusive is set, without touching the filesystem", async () => {
-    // No async caller wants exclusive-create; a loud rejection beats silently
-    // ignoring the option and overwriting anyway.
-    const target = path.join(dir, "no-async-exclusive.json");
+  // COMG-790: the download path writes to a destination the agent chose, so an
+  // existing file there must survive untouched unless the caller opted in.
+  it("exclusive refuses an existing destination and leaves its bytes and mode alone", async () => {
+    const target = path.join(dir, "exclusive-existing.bin");
+    fs.writeFileSync(target, "original", { mode: 0o644 });
+    fs.chmodSync(target, 0o644);
 
     await expect(
-      writeFileAtomicAsync(target, "x", { mode: 0o600, exclusive: true } as never),
-    ).rejects.toThrow(/exclusive/i);
+      writeFileAtomicAsync(target, "replacement", { mode: 0o600, exclusive: true }),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("original");
+    expect(fs.statSync(target).mode & 0o777).toBe(0o644);
+    // No temp sibling left behind by the refusal.
+    expect(fs.readdirSync(dir)).toEqual(["exclusive-existing.bin"]);
+  });
+
+  it("exclusive writes the file when the destination is free", async () => {
+    const target = path.join(dir, "exclusive-new.bin");
+
+    await writeFileAtomicAsync(target, "fresh", { mode: 0o600, exclusive: true });
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("fresh");
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(dir)).toEqual(["exclusive-new.bin"]);
+  });
+
+  it("exclusive publishes nothing when the signal aborts before the write is published", async () => {
+    const target = path.join(dir, "exclusive-aborted.bin");
+    const controller = new AbortController();
+
+    await expect(
+      writeFileAtomicAsync(target, "fresh", {
+        mode: 0o600,
+        exclusive: true,
+        signal: controller.signal,
+        onTempCreated: () => controller.abort(),
+      }),
+    ).rejects.toThrow(/abort/i);
 
     expect(fs.existsSync(target)).toBe(false);
     expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  // Same fallback the sync writer has: a filesystem that cannot hard-link must
+  // not lose the refusal, and must not lose the write either.
+  it("falls back to rename() when link() is unsupported, and still publishes", async () => {
+    const target = path.join(dir, "async-notsup.bin");
+    vi.mocked(fsp.link).mockImplementationOnce(() => {
+      const err = new Error("ENOTSUP: operation not supported") as NodeJS.ErrnoException;
+      err.code = "ENOTSUP";
+      return Promise.reject(err);
+    });
+
+    await writeFileAtomicAsync(target, "payload", { mode: 0o600, exclusive: true });
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("payload");
+    expect(fs.readdirSync(dir)).toEqual(["async-notsup.bin"]);
+  });
+
+  // `link()` fails EEXIST when the destination IS a symlink, dangling or not,
+  // so the fallback's own existence check has to look at the link rather than
+  // follow it. Following it answers "free" and renames over the link.
+  it("refuses a dangling symlink when link() is unsupported", async () => {
+    const target = path.join(dir, "async-dangling.bin");
+    fs.symlinkSync(path.join(dir, "no-such-target.bin"), target);
+    vi.mocked(fsp.link).mockImplementationOnce(() => {
+      const err = new Error("ENOTSUP: operation not supported") as NodeJS.ErrnoException;
+      err.code = "ENOTSUP";
+      return Promise.reject(err);
+    });
+
+    let thrown: NodeJS.ErrnoException | undefined;
+    try {
+      await writeFileAtomicAsync(target, "payload", { mode: 0o600, exclusive: true });
+    } catch (err) {
+      thrown = err as NodeJS.ErrnoException;
+    }
+
+    expect(thrown?.code).toBe("EEXIST");
+    // Still a symlink, still dangling: nothing was published through or over it.
+    expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(target)).toBe(false);
+  });
+
+  it("still refuses an existing file when link() is unsupported, with an EEXIST-shaped error", async () => {
+    const target = path.join(dir, "async-notsup-existing.bin");
+    fs.writeFileSync(target, "original", { mode: 0o600 });
+    vi.mocked(fsp.link).mockImplementationOnce(() => {
+      const err = new Error("EPERM: operation not permitted") as NodeJS.ErrnoException;
+      err.code = "EPERM";
+      return Promise.reject(err);
+    });
+
+    let thrown: NodeJS.ErrnoException | undefined;
+    try {
+      await writeFileAtomicAsync(target, "attacker-controlled", {
+        mode: 0o600,
+        exclusive: true,
+      });
+    } catch (err) {
+      thrown = err as NodeJS.ErrnoException;
+    }
+
+    // `syscall: "link"` is load-bearing downstream, so the fallback keeps it.
+    expect(thrown?.code).toBe("EEXIST");
+    expect(thrown?.syscall).toBe("link");
+    expect(fs.readFileSync(target, "utf-8")).toBe("original");
+    expect(fs.readdirSync(dir)).toEqual(["async-notsup-existing.bin"]);
+  });
+
+  // `preserveExistingMode` is what keeps a deliberate overwrite from resetting a
+  // read-only file to the writer's own mode.
+  it("keeps the existing file's mode when replacing it with preserveExistingMode", async () => {
+    const target = path.join(dir, "preserve-mode.bin");
+    fs.writeFileSync(target, "old");
+    fs.chmodSync(target, 0o444);
+
+    await writeFileAtomicAsync(target, "new", { mode: 0o600, preserveExistingMode: true });
+
+    expect(fs.readFileSync(target, "utf-8")).toBe("new");
+    expect(fs.statSync(target).mode & 0o777).toBe(0o444);
   });
 
   it("gives two overlapping attempts on the same destination distinct temp names, so aborting one leaves the other's write untouched (M6)", async () => {
@@ -383,3 +828,8 @@ describe("writeFileAtomicAsync", () => {
     expect(fs.readdirSync(dir)).toEqual(["shared.json"]);
   });
 });
+
+// Long-file-name coverage moved to tests/atomicWriteLongFileName.test.ts: it
+// is the file the Windows CI job runs, unfiltered, and a `-t` selection into
+// this file's tests exits 0 (everything skipped) if the filter ever stops
+// matching — see that file's header comment.

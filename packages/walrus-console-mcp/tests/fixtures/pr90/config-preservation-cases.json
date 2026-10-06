@@ -1,0 +1,41 @@
+{
+  "registration": [
+    { "name": "fresh", "policy": "merge" },
+    { "name": "rich-object", "policy": "merge", "fixture": true },
+    { "name": "relative-symlink", "policy": "merge", "fixture": true, "symlink": true },
+    { "name": "empty-object", "policy": "merge", "raw": "{}\n" },
+    { "name": "invalid-json", "policy": "refuse", "raw": "{ unfinished" },
+    { "name": "null", "policy": "non-object", "raw": "  null\n" },
+    { "name": "array", "policy": "non-object", "raw": "  [\"preserve-me\"]\n" },
+    { "name": "number", "policy": "non-object", "raw": "  42\n" },
+    { "name": "string", "policy": "non-object", "raw": "  \"preserve-me\"\n" },
+    { "name": "boolean", "policy": "non-object", "raw": "  true\n" },
+    { "name": "servers-null", "policy": "refuse", "raw": "{\"mcpServers\":null,\"keep\":true}" },
+    {
+      "name": "servers-array",
+      "policy": "refuse",
+      "raw": "{\"mcpServers\":[\"preserve-me\"],\"keep\":true}"
+    },
+    {
+      "name": "servers-string",
+      "policy": "refuse",
+      "raw": "{\"mcpServers\":\"preserve-me\",\"keep\":true}"
+    },
+    { "name": "servers-number", "policy": "refuse", "raw": "{\"mcpServers\":42,\"keep\":true}" },
+    { "name": "servers-boolean", "policy": "refuse", "raw": "{\"mcpServers\":true,\"keep\":true}" }
+  ],
+  "cleanup": [
+    "regular",
+    "absolute",
+    "relative",
+    "chain",
+    "directory",
+    "dangling",
+    "missing",
+    "non-regular",
+    "non-object",
+    "invalid-json",
+    "not-found",
+    "already-cleaned"
+  ]
+}

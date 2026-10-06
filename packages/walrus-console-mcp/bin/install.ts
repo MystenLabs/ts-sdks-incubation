@@ -12,10 +12,10 @@ import {
   isAllowedBaseUrl,
 } from "../src/baseUrl.js";
 import { resolveSuiNetwork } from "../src/console/packageConfig.js";
-import { SECRET_VALUE_FIELDS, parseArgs } from "../src/cliArgs.js";
-import { getClients, selectClients } from "../src/clients.js";
+import { SECRET_VALUE_FIELDS, VALUE_TAKING_FLAGS, parseArgs } from "../src/cliArgs.js";
+import { type Client, getClients, selectClients } from "../src/clients.js";
 import { installServer } from "../src/installDir.js";
-import { type ConfigFileData, loadConfigFile, mergeConfigFile } from "../src/configFile.js";
+import { type ConfigFileData, loadConfigFileOrEmpty, mergeConfigFile } from "../src/configFile.js";
 import { validateAllowedDirectory } from "../src/pathSandbox.js";
 import {
   type CredentialChoice,
@@ -27,6 +27,7 @@ import {
   type PinSeeds,
 } from "../src/credentials.js";
 import { registerSecret } from "../src/redaction.js";
+import { INSTALL_USAGE, wantsHelp } from "../src/usage.js";
 import {
   clampVisible,
   panelBottom,
@@ -66,19 +67,29 @@ export const PACKAGE_NAME = "@mysten-incubation/walrus-console-mcp";
  * perfectly good credential, or blessing one against a service it will never
  * talk to.
  *
- * `loadConfigFile` already drops an off-policy saved `baseUrl`, so a hostile
- * config file falls through to the default rather than being adopted here; the
- * check below is what rejects an off-policy *env* value.
+ * `loadConfigFileOrEmpty`, not `loadConfigFile`:
+ * this reads only `.baseUrl`, before any write decision exists, so a corrupt
+ * `admin.json` must not abort a call that has nothing to do with the admin
+ * pair — that reader already drops an off-policy saved `baseUrl` too, so a
+ * hostile config file falls through to the default rather than being adopted
+ * here; the check below is what rejects an off-policy *env* value.
  *
  * Called at the very start of runInstall — before any readline/prompt machinery —
  * so the rejection surfaces cleanly instead of being swallowed by readline's
  * `close`→cancel handler, and before any key-bearing fetch could leak the API key
  * to a disallowed host. Shared by the interactive and silent paths so the value is
  * validated and persisted identically in either branch.
+ *
+ * `onNotice` forwards to `loadConfigFileOrEmpty`:
+ * most callers run before any panel exists, where the default `console.error`
+ * is fine, but `stepAuth` calls this again inside the open AUTHENTICATE panel
+ * to re-resolve the URL, and a corrupt file there would otherwise tear the
+ * panel's `│` border exactly like an un-routed migration notice does.
  */
-export function resolveInstallBaseUrl(): string {
+export function resolveInstallBaseUrl(onNotice?: (message: string) => void): string {
   const { CONSOLE_API_BASE_URL } = process.env;
-  const baseUrl = CONSOLE_API_BASE_URL || loadConfigFile().baseUrl || DEFAULT_CONSOLE_API_BASE_URL;
+  const baseUrl =
+    CONSOLE_API_BASE_URL || loadConfigFileOrEmpty(onNotice).baseUrl || DEFAULT_CONSOLE_API_BASE_URL;
   if (!isAllowedBaseUrl(baseUrl)) {
     throw new Error(
       `CONSOLE_API_BASE_URL is not an allowed Console endpoint: ${baseUrl}. ` +
@@ -549,7 +560,18 @@ function printSummaryPanel(label: string, rows: string[]) {
   }
   print(panelTop(styleText("bold", label), width));
   print(panelRow("", width));
-  for (const r of rows) print(panelRow(`  ${r}`, width));
+  // Wrapped, not clamped, on the same terms as streamPanel's `line`: this panel
+  // prints once and is never redrawn, so a row may occupy several lines as long
+  // as each is its own panelRow. Clamping cost the DONE panel the second half of
+  // this sentence at EVERY width it draws at (it is 90 printable columns and the
+  // widest panel is 72), which is how the File access tip
+  // lost its own second half. -7 and the 4-space continuation are the same
+  // arithmetic as everywhere else in this file.
+  for (const r of rows) {
+    const [first, ...rest] = wrapVisible(r, width - 7);
+    print(panelRow(`  ${first ?? ""}`, width));
+    for (const l of rest) print(panelRow(`    ${l}`, width));
+  }
   print(panelRow("", width));
   print(panelBottom(width));
 }
@@ -695,6 +717,22 @@ export function savedLabel(write: CredentialWrite): string {
 const savedRow = (write: CredentialWrite): string =>
   isEmptyWrite(write) ? warn(savedLabel(write)) : ok(savedLabel(write));
 
+/**
+ * The one spelling of "take me back".
+ *
+ * Honoured by `config`'s credential prompts (bin/configure.ts) and by every
+ * prompt in the File access step below. `install`'s own credential step does
+ * not honour it, and deliberately: it has no menu behind it to return to.
+ *
+ * No value those prompts accept can collide with it: an API key is `hbr_`
+ * prefixed, a signer is `suiprivkey`, a pin is 0x and 64 hex characters, and a
+ * bundle is JSON. A folder is the one real ambiguity, since `./back` can exist.
+ * The sentinel wins there, which is why the step says so before it asks.
+ */
+export function isBackAnswer(value: string): boolean {
+  return value.trim().toLowerCase() === "back";
+}
+
 /** Affirmative answers to a `[y/N]` question. Bare Enter is No. */
 const isAffirmative = (answer: string): boolean => {
   const normalized = answer.trim().toLowerCase();
@@ -757,6 +795,14 @@ export interface StepAllowedDirsDeps {
    * the picker asks, and asking it again is what made the flag look ignored.
    */
   seed?: readonly string[] | undefined;
+  /**
+   * Make esc mean "back to the previous step" instead of "skip".
+   *
+   * `config` reaches this step from a menu, so there is somewhere to return to,
+   * and a skip there ends the whole run having done nothing. The installer has
+   * no previous step to offer, so it keeps the skip and says so in its hint.
+   */
+  back?: boolean;
 }
 
 /**
@@ -770,6 +816,8 @@ export interface StepAllowedDirsDeps {
  */
 export interface AllowedDirsWrite extends CredentialWrite {
   seedRejected?: boolean;
+  /** esc under `deps.back`. Nothing was written and nothing was printed. */
+  backRequested?: boolean;
 }
 
 /**
@@ -828,12 +876,32 @@ function applySeededAllowedDirs(
     return { updates: {}, clear: [], seedRejected: true };
   }
 
-  merge({ allowedDirs: dirs });
+  // This step only ever writes `allowedDirs` — it never carries an admin
+  // field in `updates` — so the only way admin.json gets touched here is a
+  // side-effect migration of a pre-existing legacy inline pair (see the
+  // `onNotice` doc comment on mergeConfigFile). Track whether that fired so
+  // the closing "saved →" line names the right file(s), and route the
+  // notice itself through the panel's own bordered line printer rather than
+  // the default console.error — a bare stderr write here would land
+  // mid-render and break `rail`'s `│` border, the same bug the AUTHENTICATE
+  // step's onNotice wiring fixes.
+  let migratedLegacyAdmin = false;
+  merge({ allowedDirs: dirs }, [], (msg) => {
+    migratedLegacyAdmin = true;
+    rail.line(info(msg));
+  });
   rail.line(info("Folders from --allowed-dirs:"));
   // `show`, not `line`: a long path must be confirmed in full rather than
   // clamped to a prefix (see showRow).
   for (const dir of dirs) rail.show(ok(dir));
-  rail.line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+  rail.line(
+    styleText(
+      "dim",
+      migratedLegacyAdmin
+        ? "saved → ~/.config/walrus-console-mcp/config.json + admin.json"
+        : "saved → ~/.config/walrus-console-mcp/config.json",
+    ),
+  );
   rail.blank();
   rail.close();
   gap();
@@ -869,17 +937,35 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
       step,
       notice:
         "Some agents don't share workspace folders. Pick directories upload and download may use.",
-      hint: "↑/↓ move   enter select   esc cancel",
+      // What esc actually does here, which is not "cancel" in either mode: it
+      // skips the step in the installer, and returns to the menu under `config`.
+      hint: deps.back ? "↑/↓ move   enter select   esc back" : "↑/↓ move   enter select   esc skip",
     },
   );
 
-  if (index === null) {
+  /** What the three `back` exits print when there is no menu behind them. */
+  const LEAVE_NOTE =
+    "File access skipped — set later with walrus-console-mcp config --allowed-dirs <dir>";
+
+  /**
+   * Leave the step having written nothing.
+   *
+   * Back prints nothing at all: the caller is about to redraw the step the user
+   * is returning to, and a "skipped" line above it would describe the opposite
+   * of what happened.
+   */
+  const leave = (skipNote: string): AllowedDirsWrite => {
+    if (deps.back) return { updates: {}, clear: [], backRequested: true };
     print("");
-    line(
-      info("File access skipped — upload/download will fail on agents that don't share folders."),
-    );
+    line(info(skipNote));
     gap();
     return { updates: {}, clear: [] };
+  };
+
+  if (index === null) {
+    return leave(
+      "File access skipped — upload/download will fail on agents that don't share folders.",
+    );
   }
 
   const picked = choices[index];
@@ -894,6 +980,15 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
 
   print("");
   if (picked.id === "home") line(warn(HOME_DIR_WARNING));
+  // Before the first prompt, and for every row: `back` is honoured at all three
+  // prompts below, so advertising it once here is the whole step's promise.
+  line(
+    info(
+      deps.back
+        ? 'Type "back" at any prompt to return to the menu. Nothing is saved.'
+        : 'Type "back" at any prompt to leave this step. Nothing is saved.',
+    ),
+  );
 
   const ask =
     deps.ask ??
@@ -923,6 +1018,11 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
   if (picked.id === "custom") {
     while (true) {
       const typed = await ask("Folder: ");
+      // The one prompt in this step with no other way out: it re-asks until a
+      // folder validates, so without this the only exit is Ctrl-C and a fresh
+      // run. That is the same complaint COMG-1036 filed against the credential
+      // prompts, one step along.
+      if (isBackAnswer(typed)) return leave(LEAVE_NOTE);
       if (!typed.trim()) {
         line(fail("This value is required."));
         continue;
@@ -937,8 +1037,17 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     }
   }
 
-  while (isAffirmative(await ask("Add another directory? [y/N]: "))) {
+  // Not `while (isAffirmative(...))`: the answer has to be read once and checked
+  // for the sentinel first. Without that, `back` here fell through as "not
+  // affirmative" and the step SAVED the folders it had collected, one prompt
+  // after promising the opposite. `leave` discards them, which is what "nothing
+  // is saved" says and what someone typing `back` is asking for.
+  while (true) {
+    const more = await ask("Add another directory? [y/N]: ");
+    if (isBackAnswer(more)) return leave(LEAVE_NOTE);
+    if (!isAffirmative(more)) break;
     const typed = await ask("Folder: ");
+    if (isBackAnswer(typed)) return leave(LEAVE_NOTE);
     if (!typed.trim()) {
       line(info("Nothing added."));
       continue;
@@ -951,8 +1060,25 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     return { updates: {}, clear: [] };
   }
 
-  merge({ allowedDirs: dirs });
-  line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+  // Same reasoning as applySeededAllowedDirs above: this step never writes
+  // an admin field itself, so admin.json is only touched by a side-effect
+  // migration, and the closing line needs to say so when it happens. This
+  // flow has no bordered panel to break (`line` is the flat fallback), but
+  // route the notice through it anyway for consistent indentation/styling
+  // rather than a bare stderr write.
+  let migratedLegacyAdmin = false;
+  merge({ allowedDirs: dirs }, [], (msg) => {
+    migratedLegacyAdmin = true;
+    line(info(msg));
+  });
+  line(
+    styleText(
+      "dim",
+      migratedLegacyAdmin
+        ? "saved → ~/.config/walrus-console-mcp/config.json + admin.json"
+        : "saved → ~/.config/walrus-console-mcp/config.json",
+    ),
+  );
   gap();
   return { updates: { allowedDirs: dirs }, clear: [] };
 }
@@ -981,7 +1107,9 @@ export async function stepAuth(
   // Resolve BEFORE printing guidance: the "get your key" directions must name
   // the Console deployment the key is about to be probed against, or a key
   // minted on the wrong network dead-ends the install at validation.
-  const baseUrl = resolveInstallBaseUrl();
+  // onNotice: this runs inside the open panel
+  // above, so a corrupt file's default console.error would tear its border.
+  const baseUrl = resolveInstallBaseUrl((msg) => rail.line(info(msg)));
   const network = resolveSuiNetwork(baseUrl);
   rail.line(`Get your key at ${accent(new URL(CONSOLE_WEB_URLS[network]).host)} → Integrations`);
   if (baseUrl !== DEFAULT_CONSOLE_API_BASE_URL) {
@@ -1020,8 +1148,12 @@ export async function stepAuth(
         withSpinner("validating", () => probeKey(kind, key, baseUrl), gutter, rail.width),
     },
     // Read fresh rather than reusing an earlier snapshot: `config` may have been
-    // run in between, and a stale view would clear a signer that is no longer stale.
-    loadConfigFile(),
+    // run in between, and a stale view would clear a signer that is no longer
+    // stale. loadConfigFileOrEmpty, not loadConfigFile — a pre-write read, not the read-modify-write that writes the file
+    // (mergeConfigFile's own internal load), so a corrupt admin.json must not
+    // abort setting up a working key that has nothing to do with it. Its own
+    // onNotice (C18) keeps a corrupt-file warning inside this panel too.
+    loadConfigFileOrEmpty((msg) => rail.line(info(msg))),
     seeds,
   );
 
@@ -1032,8 +1164,33 @@ export async function stepAuth(
     rail.line(info(savedLabel(write)));
   } else {
     const { updates, clear } = write;
-    mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)]);
-    rail.line(styleText("dim", "saved → ~/.config/walrus-console-mcp/config.json"));
+    // Route the migration notice through the panel's own line printer rather
+    // than the default console.error — a bare stderr write here would land
+    // mid-render and break the panel's `│` border (see the comment on
+    // mergeConfigFile's `onNotice` param). Also track whether it fired: a
+    // legacy inline pair can migrate into admin.json as a side effect of
+    // this call even when `updates` itself carries no admin field (e.g.
+    // setting up a working key on a host that already had one inline).
+    let migratedLegacyAdmin = false;
+    mergeConfigFile(updates, [...clear, ...applyResolvedBaseUrl(updates, baseUrl)], (msg) => {
+      migratedLegacyAdmin = true;
+      rail.line(info(msg));
+    });
+    // security review, C5 — this step's `updates` can carry the Key-Admin
+    // pair (adminKey / adminServicePrivateKey), which mergeConfigFile routes
+    // to a separate admin.json (see configFile.ts), never config.json. Naming
+    // only config.json here would tell an operator the wrong file to protect
+    // or back up.
+    rail.line(
+      styleText(
+        "dim",
+        migratedLegacyAdmin ||
+          updates.adminKey !== undefined ||
+          updates.adminServicePrivateKey !== undefined
+          ? "saved → ~/.config/walrus-console-mcp/config.json + admin.json"
+          : "saved → ~/.config/walrus-console-mcp/config.json",
+      ),
+    );
   }
   rail.blank();
   rail.close();
@@ -1105,11 +1262,13 @@ export async function stepRegister(
   if (selected === null) {
     print("");
     line(info("Registration cancelled — your saved credentials are untouched."));
+    launcherSkippedNote();
     return { outcome: "cancelled", configured: 0 };
   }
   if (selected.length === 0) {
     print("");
     line(info("No clients selected — nothing registered."));
+    launcherSkippedNote();
     return { outcome: "none-selected", configured: 0 };
   }
 
@@ -1130,20 +1289,52 @@ export async function stepRegister(
     return { outcome: "install-failed", configured: 0 };
   }
 
-  let configured = 0;
+  const registered: Client[] = [];
   for (const client of selected) {
     try {
       client.register(command);
-      line(ok(`${client.label} configured`));
-      configured++;
+      registered.push(client);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       line(warn(`${client.label} not configured — ${msg}`));
       detail(`run manually: ${client.manualHint(command)}`);
     }
   }
+  // Re-check after the LAST client rather than right after each write: an app
+  // that saves settings it loaded before we wrote drops our entry with no error
+  // on our side, and the other clients' run time gives that save a chance to
+  // land. Only saves within this run are caught; the last client gets almost no
+  // window, and a save after the installer exits is not caught at all.
+  let configured = 0;
+  for (const client of registered) {
+    let problem: string | undefined;
+    try {
+      problem = client.verify?.(command);
+    } catch (err) {
+      problem = `could not be checked (${err instanceof Error ? err.message : String(err)})`;
+    }
+    if (problem === undefined) {
+      line(ok(`${client.label} configured`));
+      if (client.nextStep) detail(client.nextStep);
+      configured++;
+      continue;
+    }
+    line(warn(`${client.label} could not be verified — ${problem}`));
+    detail(`re-run the installer, or run manually: ${client.manualHint(command)}`);
+  }
   gap();
   return { outcome: "installed", configured };
+}
+
+/**
+ * The launcher is installed only on the way to registering a client, so leaving
+ * the checklist with nothing ticked skips it too. Say so: a Claude Desktop user
+ * (no longer a row, COMG-1133) re-running this to upgrade would otherwise keep
+ * the old build without being told.
+ */
+function launcherSkippedNote(): void {
+  detail("The launcher was not installed or upgraded.");
+  detail('For Claude Desktop, see the README section "Claude Desktop".');
 }
 
 /** Silent mode does not run the interactive checklist; point at the manual path. */
@@ -1179,6 +1370,13 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
   const auth = deps.auth ?? stepAuth;
   const allowedDirs = deps.allowedDirs ?? stepAllowedDirs;
   const runRegister = deps.register ?? stepRegister;
+  // Before parseArgs, which would otherwise answer `--help` with "Unknown
+  // flag: --help". Help wins over every other argument: it writes nothing, so
+  // there is no half-applied command to reason about.
+  if (wantsHelp(argv, VALUE_TAKING_FLAGS)) {
+    print(INSTALL_USAGE);
+    return;
+  }
   const args = parseArgs(argv, process.env);
   if (args.errors.length > 0) {
     for (const err of args.errors) print(fail(err));
@@ -1196,10 +1394,14 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
     for (const field of SECRET_VALUE_FIELDS) {
       registerSecret(args.values[field]);
     }
+    // loadConfigFileOrEmpty, not loadConfigFile:
+    // pre-write read for the strand-check, not the read-modify-write that
+    // writes the file — a corrupt admin.json must not abort an unrelated
+    // silent working-key install.
     const { updates, clear, errors, warnings } = await validateSilent(
       args.values,
       (kind, key) => probeKey(kind, key, baseUrl),
-      loadConfigFile(),
+      loadConfigFileOrEmpty(),
     );
     if (errors.length > 0) {
       for (const err of errors) print(fail(err));
@@ -1255,7 +1457,10 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
   // Shown inside step 1's panel rather than above it, where it's competing with
   // the banner for attention. The key preview is gone: it never told the user
   // anything step 2 doesn't, and it doesn't fit the panel width.
-  const existing = loadConfigFile();
+  // loadConfigFileOrEmpty, not loadConfigFile: this
+  // notice is purely informational, so a corrupt admin.json must not abort
+  // the install banner over an unrelated file's health.
+  const existing = loadConfigFileOrEmpty();
   const notice = existing.apiKey ? "overwriting existing config" : undefined;
 
   // The chooser needs raw keypresses, the prompts need readline — so the
@@ -1350,12 +1555,31 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
       : isEmptyWrite(allowedWrite)
         ? []
         : [ok("File access folders saved")]),
-    ...(args.register
-      ? [ok(`${configured} ${configured === 1 ? "agent" : "agents"} configured`)]
-      : []),
+    // Zero agents is not a success to celebrate: ticking nothing is the normal
+    // Claude Desktop path now (COMG-1133), and no agent has anything to restart.
+    ...(!args.register
+      ? []
+      : configured > 0
+        ? [ok(`${configured} ${configured === 1 ? "agent" : "agents"} configured`)]
+        : [warn("No agent registered — see the note above")]),
     "",
-    `Restart your agent, then run ${accent("ping_console")}`,
     `Change a key later:  ${accent("walrus-console-mcp config")}`,
+    // Last, and a warning rather than a footnote. This is the step the
+    // 18 September report shows people skipping: `claude mcp list` says
+    // "Connected" as soon as the server is registered, so a session that was
+    // already running looks healthy while exposing none of the tools, and the
+    // natural next move is to re-run the installer, which changes nothing.
+    // Omitted when registration ran and configured nothing: there is no agent
+    // to restart, and no launcher for one to start (COMG-1133).
+    ...(args.register && configured === 0
+      ? []
+      : [
+          "",
+          warn(
+            "Restart your agent now. The tools will not appear in a session that was already running.",
+          ),
+          `Then run ${accent("ping_console")} to confirm.`,
+        ]),
   ]);
   // Trailing gap so the shell prompt doesn't come back flush against the panel.
   gap();

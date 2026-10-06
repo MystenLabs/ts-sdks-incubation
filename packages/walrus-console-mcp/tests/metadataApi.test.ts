@@ -3,6 +3,7 @@ import { Effect, Layer, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 import { ConsoleConfigTag } from "../src/config";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
+import { ConsoleApiError } from "../src/console/errors";
 import { BucketId, FileId } from "../src/console/types";
 
 /**
@@ -18,7 +19,7 @@ interface Seen {
   body: unknown;
 }
 
-function harness(responseBody: unknown) {
+function harness(responseBody: unknown, status = 200) {
   const seen: Seen[] = [];
 
   const stub = HttpClient.make((request) => {
@@ -32,7 +33,7 @@ function harness(responseBody: unknown) {
       HttpClientResponse.fromWeb(
         request,
         new Response(JSON.stringify(responseBody), {
-          status: 200,
+          status,
           headers: { "content-type": "application/json" },
         }),
       ),
@@ -84,6 +85,33 @@ describe("updateFile", () => {
     await run(layer, (api) => api.updateFile(FileId.make("file-1"), { description: null }));
 
     expect(seen[0]?.body).toEqual({ description: null });
+  });
+
+  // Console refuses a rename that changes the file's extension (400,
+  // code: extension_change_not_allowed). No special-cased handling exists
+  // for it in ConsoleApiClient — `handleError` surfaces any `{ error, code }`
+  // 4xx body generically — so this pins that the generic path still carries
+  // the code through, the same way it does for every other 4xx code today.
+  it("surfaces a 400 extension_change_not_allowed from the server", async () => {
+    const { layer } = harness(
+      {
+        error: "The file extension can't be changed by renaming.",
+        code: "extension_change_not_allowed",
+      },
+      400,
+    );
+
+    const error = await run(
+      layer,
+      (api) =>
+        api
+          .updateFile(FileId.make("file-1"), { name: "a.docx" })
+          .pipe(Effect.flip) as Effect.Effect<unknown, never>,
+    );
+
+    expect(error).toBeInstanceOf(ConsoleApiError);
+    expect((error as ConsoleApiError).code).toBe("extension_change_not_allowed");
+    expect((error as ConsoleApiError).status).toBe(400);
   });
 });
 

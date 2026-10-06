@@ -3,8 +3,8 @@
   "name": "walrus-console-mcp",
   "display_name": "Walrus Console",
   "version": "0.1.0",
-  "description": "MCP server for Walrus Console — ggdrive-style decentralized, Seal-encrypted storage on Walrus + Sui.",
-  "long_description": "Console is ggdrive-style decentralized storage. This bundle exposes tools to list spaces, manage Seal-encrypted buckets, and upload/download files. All Seal encryption/decryption and Sui signing happens locally using your service private key, which never leaves your machine.",
+  "description": "MCP server for Walrus Console.",
+  "long_description": "Walrus Console is the developer-first interface for the Walrus network: a hosted place to store, manage and serve data without running your own Walrus client or handling wallets and tokens directly. With this extension Claude can browse your spaces and buckets, create buckets, upload, download, rename and delete files, and issue API keys on your behalf.\n\nSetup takes one Console API key, created at console.walrus.xyz under Integrations.\n\nDocs: https://docs.wal.app/docs/console/overview",
   "author": {
     "name": "Commandoss"
   },
@@ -13,6 +13,7 @@
     "url": "https://github.com/MystenLabs/walrus-console-mcp"
   },
   "homepage": "https://github.com/MystenLabs/walrus-console-mcp",
+  "icon": "icon.png",
   "license": "MIT",
   "keywords": ["mcp", "walrus", "console", "sui", "seal", "decentralized-storage"],
   "server": {
@@ -24,53 +25,70 @@
       "env": {
         "CONSOLE_API_KEY": "${user_config.console_api_key}",
         "CONSOLE_SERVICE_PRIVATE_KEY": "${user_config.console_service_private_key}",
+        "CONSOLE_WEB_ACCOUNT_ADDRESS": "${user_config.console_web_account_address}",
+        "CONSOLE_KEY_ADMIN_ADDRESS": "${user_config.console_key_admin_address}",
         "CONSOLE_ADMIN_KEY": "${user_config.console_admin_key}",
         "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY": "${user_config.console_admin_service_private_key}",
-        "CONSOLE_API_BASE_URL": "${user_config.console_api_base_url}"
+        "CONSOLE_MCP_ALLOWED_DIRS": "${user_config.console_mcp_allowed_dirs}"
       }
     }
   },
   "user_config": {
+    "console_web_account_address": {
+      "type": "string",
+      "title": "Web Account Address",
+      "description": "0x…",
+      "required": true
+    },
+    "console_key_admin_address": {
+      "type": "string",
+      "title": "Key Admin Address (optional)",
+      "description": "0x…",
+      "required": false,
+      "default": ""
+    },
     "console_api_key": {
       "type": "string",
       "title": "Console API Key",
-      "description": "Your Console API key. Required for all Console API calls.",
+      "description": "hbr_…",
       "required": true,
       "sensitive": true
     },
     "console_service_private_key": {
       "type": "string",
       "title": "Service Private Key",
-      "description": "Sui private key used locally for Seal encryption/decryption and signing. Never sent to any remote server. Required only for upload/download.",
-      "required": false,
+      "description": "suiprivkey1…",
+      "required": true,
       "sensitive": true
+    },
+    "console_mcp_allowed_dirs": {
+      "type": "directory",
+      "title": "Allowed Directories",
+      "description": "The folder upload_file / download_file may access.",
+      "required": true,
+      "multiple": false
     },
     "console_admin_key": {
       "type": "string",
-      "title": "Key-Admin Credential",
-      "description": "Key-Admin credential (hbradm_…) used by generate_api_key to mint child working keys. Load only on the provisioning host — never alongside a working key on worker hosts.",
+      "title": "Key Admin Credential (optional)",
+      "description": "hbradm_…",
       "required": false,
-      "sensitive": true
+      "sensitive": true,
+      "default": ""
     },
     "console_admin_service_private_key": {
       "type": "string",
-      "title": "Admin Signer Private Key",
-      "description": "Ed25519 seed for the admin signer (suiprivkey1…) that signs the sponsored grant_bucket_access PTB. Treat like a GitHub App private key. Provisioning host only.",
+      "title": "Admin Signer Private Key (optional)",
+      "description": "suiprivkey1…",
       "required": false,
-      "sensitive": true
-    },
-    "console_api_base_url": {
-      "type": "string",
-      "title": "Console API Base URL",
-      "description": "Override the Console API base URL (defaults to the public mainnet endpoint; use https://api.testnet.console.walrus.xyz for testnet).",
-      "required": false,
-      "default": "https://api.console.walrus.xyz"
+      "sensitive": true,
+      "default": ""
     }
   },
   "compatibility": {
     "platforms": ["darwin", "win32", "linux"],
     "runtimes": {
-      "node": ">=24.0.0"
+      "node": ">=22.0.0"
     }
   },
   "tools": [
@@ -88,15 +106,15 @@
     },
     {
       "name": "list_buckets",
-      "description": "List buckets in a space."
+      "description": "List buckets in a space, one page at a time. Filter by visibility (public/private) and page by passing the returned next_cursor back as cursor until next_cursor is null."
     },
     {
       "name": "create_bucket",
-      "description": "Create a new Seal-encrypted bucket. Refuses unless a bucket-owner Sui address is pinned locally (CONSOLE_WEB_ACCOUNT_ADDRESS or the config file). Returns identity.owner and identity.members — who the signed transaction makes the owner and which addresses it grants access to — plus disclosure, one sentence on who can read the bucket and on what evidence; show it and confirm the roster before uploading sensitive data. There is no top-level members field."
+      "description": "Create a new Seal-encrypted bucket. Refuses unless Web Account Address is set in this extension's settings, and, on a space that hands group management to a Key-Admin, Key Admin Address too. Returns identity.owner and identity.members — who the signed transaction makes the owner and which addresses it grants access to — plus disclosure, one sentence on who can read the bucket and on what evidence; show it and confirm the roster before uploading sensitive data. There is no top-level members field."
     },
     {
       "name": "generate_api_key",
-      "description": "Mint a new Console working API key headlessly using the Key-Admin credential."
+      "description": "Mint a new Console working API key using the Key-Admin credential. Requires confirm: true and, when supported, an operator-controlled MCP form confirmation."
     },
     {
       "name": "upload_file",
@@ -108,11 +126,11 @@
     },
     {
       "name": "list_files",
-      "description": "List files inside a specific bucket."
+      "description": "List files inside a specific bucket, one page at a time. Page by passing pagination.next_cursor back as cursor while pagination.has_more is true."
     },
     {
       "name": "get_file_status",
-      "description": "Check the processing state of an in-flight upload."
+      "description": "Check the processing state of an in-flight upload. Progress is 1 once completed, and absent when failed. A not-found answer means the job record aged out, not that the file is gone."
     },
     {
       "name": "get_bucket",
@@ -124,7 +142,7 @@
     },
     {
       "name": "delete_bucket",
-      "description": "Permanently delete a bucket and all its files."
+      "description": "Permanently delete a bucket. A bucket that still holds files is refused with the file count unless deleteContents is also set."
     },
     {
       "name": "delete_file",

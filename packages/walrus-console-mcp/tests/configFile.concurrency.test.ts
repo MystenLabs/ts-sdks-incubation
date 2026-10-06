@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getAdminConfigFilePath,
   getConfigDir,
   getConfigFilePath,
   loadConfigFile,
@@ -172,4 +173,45 @@ describe("mergeConfigFile — concurrent writers", () => {
     expect(merged.adminKey).toBe("hbradm_second");
     expect(fs.statSync(getConfigFilePath()).mode & 0o777).toBe(0o600);
   });
+
+  it("a plain-field writer and an admin-field writer racing under the same lock lose neither file", async () => {
+    const { spawn } = await import("node:child_process");
+    const startAt = Date.now() + 1200;
+
+    const plainScript = path.join(tmpDir, "race-plain.mts");
+    fs.writeFileSync(
+      plainScript,
+      `import { mergeConfigFile } from ${JSON.stringify(MODULE)};\n` +
+        `while (Date.now() < ${startAt}) {}\n` +
+        `mergeConfigFile({ apiKey: "hbr_race_plain" });\n`,
+    );
+    const adminScript = path.join(tmpDir, "race-admin.mts");
+    fs.writeFileSync(
+      adminScript,
+      `import { mergeConfigFile } from ${JSON.stringify(MODULE)};\n` +
+        `while (Date.now() < ${startAt}) {}\n` +
+        `mergeConfigFile({ adminKey: "hbradm_race_admin" });\n`,
+    );
+
+    const procs = [plainScript, adminScript].map((file) =>
+      spawn("npx", ["tsx", file], {
+        env: { ...process.env, XDG_CONFIG_HOME: tmpDir },
+        stdio: "ignore",
+      }),
+    );
+    const codes = await Promise.all(
+      procs.map((p) => new Promise<number | null>((resolve) => p.on("exit", resolve))),
+    );
+    expect(codes.every((c) => c === 0)).toBe(true);
+
+    const saved = loadConfigFile();
+    expect(saved.apiKey).toBe("hbr_race_plain");
+    expect(saved.adminKey).toBe("hbradm_race_admin");
+    expect(fs.statSync(getConfigFilePath()).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(getAdminConfigFilePath()).mode & 0o777).toBe(0o600);
+    // config.json must never have picked up the admin field, even transiently
+    // under the race — assert against the file on disk, not the merged view.
+    const onDiskConfig = JSON.parse(fs.readFileSync(getConfigFilePath(), "utf-8"));
+    expect(onDiskConfig.adminKey).toBeUndefined();
+  }, 60_000);
 });

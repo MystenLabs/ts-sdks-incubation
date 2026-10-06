@@ -15,6 +15,7 @@ import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import type { CredentialValues } from "./cliArgs.js";
+import { CLIENT_HEADER, CLIENT_HEADER_VALUE } from "./consoleClientHeader.js";
 import type { ConfigFileData } from "./configFile.js";
 import { validateAllowedDirectory } from "./pathSandbox.js";
 import { registerSecret } from "./redaction.js";
@@ -483,7 +484,13 @@ export async function probeKey(
   try {
     const res = await fetchImpl(`${baseUrl}${path}`, {
       method: "GET",
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      // Same pair the client uses, imported rather than retyped: setup probes are
+      // Console requests too, and a second literal here could drift from it.
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+        [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
+      },
     });
     return classifyProbe(kind, res.status);
   } catch {

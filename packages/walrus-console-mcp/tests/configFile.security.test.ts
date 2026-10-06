@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getAdminConfigFilePath,
   getConfigFilePath,
   loadConfigFile,
   mergeConfigFile,
@@ -62,6 +63,29 @@ describe("saveConfigFile — file permissions (review #1)", () => {
 
     const mode = fs.statSync(filePath).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it("writes admin.json as 0600 and the config dir as 0700", () => {
+    saveConfigFile({
+      apiKey: "hbr_x",
+      adminKey: "hbradm_y",
+      adminServicePrivateKey: "suiprivkey1_z",
+    });
+
+    const adminPath = getAdminConfigFilePath();
+    expect(fs.statSync(adminPath).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(path.dirname(adminPath)).mode & 0o777).toBe(0o700);
+  });
+
+  it("tightens a pre-existing world-readable admin.json back to 0600 on overwrite", () => {
+    saveConfigFile({ adminKey: "hbradm_old" });
+    const adminPath = getAdminConfigFilePath();
+    fs.chmodSync(adminPath, 0o644);
+    expect(fs.statSync(adminPath).mode & 0o777).toBe(0o644);
+
+    saveConfigFile({ adminKey: "hbradm_new" });
+
+    expect(fs.statSync(adminPath).mode & 0o777).toBe(0o600);
   });
 
   it("leaves no temp file behind after an atomic save", () => {

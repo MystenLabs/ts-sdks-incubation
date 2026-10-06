@@ -1,7 +1,8 @@
 import { isValidSuiAddress } from "@mysten/sui/utils";
 import { Config, Context, Layer, Option, Redacted } from "effect";
 import { DEFAULT_CONSOLE_API_BASE_URL, isAllowedBaseUrl } from "./baseUrl.js";
-import { type ConfigFileData, loadConfigFile } from "./configFile.js";
+import { loadConfigFileOrEmpty } from "./configFile.js";
+import { registerConfigFileSecrets } from "./redaction.js";
 
 /**
  * Console MCP configuration loaded from env + optional config file (XDG).
@@ -14,29 +15,6 @@ import { type ConfigFileData, loadConfigFile } from "./configFile.js";
  *
  * We expose both the raw Config *and* a Context.Tag so services can `yield* ConsoleConfig`.
  */
-
-/**
- * Read the config file once at module load (synchronous, no I/O per-request).
- *
- * `loadConfigFile` now throws on a corrupt/unreadable file rather than masking it
- * as `{}` (so the CLI write path stays fail-stop). But this module loads at boot,
- * so a broken file here would crash a server that is configured entirely through
- * the environment. Catch it loudly and fall back to env-only credentials — the
- * env values still resolve, and `ping_console` can report anything missing.
- */
-function loadFileConfigForStartup(): ConfigFileData {
-  try {
-    return loadConfigFile();
-  } catch (err) {
-    process.stderr.write(
-      `warning: ${(err as Error).message} Ignoring the config file; ` +
-        `using environment credentials only.\n`,
-    );
-    return {};
-  }
-}
-
-const fileConfig = loadFileConfigForStartup();
 
 /**
  * Resolve a string setting with priority: non-empty env var → non-empty config-file
@@ -158,32 +136,62 @@ export const resolvedOptionalAddress = (envName: string, fileValue: string | und
     }),
   );
 
-export const ConsoleConfig = Config.all({
-  // Working credential: `hbr_` bearer + its on-chain signer seed, resolved as a
-  // pair so an env bearer never gets silently paired with a stale file signer.
-  working: resolvedPair(
-    { env: "CONSOLE_API_KEY", file: fileConfig.apiKey },
-    { env: "CONSOLE_SERVICE_PRIVATE_KEY", file: fileConfig.servicePrivateKey },
-  ),
-  // Key-Admin (management) credential: `hbradm_` bearer + its on-chain signer seed.
-  // Resolved env → installer-saved file → "" so a provisioning host can be configured
-  // by `walrus-console-mcp config` instead of exported env vars. Both default to ""
-  // so absence never fails startup; hasAdminCredential() guards the empty case. Same
-  // by-source pairing as the working credential above.
-  admin: resolvedPair(
-    { env: "CONSOLE_ADMIN_KEY", file: fileConfig.adminKey },
-    { env: "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY", file: fileConfig.adminServicePrivateKey },
-  ),
-  // main's allowlist-enforcing resolver, not the plain string one this branch
-  // had: a config-file baseUrl must not redirect the Bearer key to a foreign host.
-  baseUrl: resolvedBaseUrl(fileConfig.baseUrl),
-  // Trust-anchor pins for the create-bucket owner/manager recipients (COMG-761).
-  // Plain strings, not Redacted — these are not secrets. "" = no pin configured.
-  webAccountAddress: resolvedOptionalAddress(
-    "CONSOLE_WEB_ACCOUNT_ADDRESS",
-    fileConfig.webAccountAddress,
-  ),
-  keyAdminAddress: resolvedOptionalAddress("CONSOLE_KEY_ADMIN_ADDRESS", fileConfig.keyAdminAddress),
+/**
+ * The config file is read when this Config is evaluated, which is when the
+ * runtime builds its layer, not when this module loads. The server's entry
+ * point imports this module statically, and ESM evaluates static imports
+ * before any statement of the importer runs; a module-load read would
+ * therefore happen before `--import-bundle` has had a chance to write the
+ * file, and the first start from an install link would come up with no
+ * credentials.
+ *
+ * `loadConfigFileOrEmpty`, not `loadConfigFile`:
+ * `loadConfigFile` throws on a corrupt/unreadable file — config.json OR
+ * admin.json — so the CLI write path stays fail-stop. This read happens at
+ * boot, so a broken file here would crash a server that is configured
+ * entirely through the environment, or (the regression a bare try/catch
+ * around `loadConfigFile` reintroduced here) would discard a perfectly
+ * healthy working key in config.json purely because admin.json was corrupt.
+ * `loadConfigFileOrEmpty` already degrades the two files independently and
+ * warns to stderr — this just needs to use it instead of its own wrapper.
+ */
+export const ConsoleConfig = Config.suspend(() => {
+  const fileConfig = loadConfigFileOrEmpty();
+  // Registered here, at the read, not only at boot: this read can happen long
+  // after the boot-time registration (the layer is built on the first tool
+  // call), and a key saved in between would otherwise reach an Authorization
+  // header the redactor has never seen.
+  registerConfigFileSecrets(fileConfig);
+  return Config.all({
+    // Working credential: `hbr_` bearer + its on-chain signer seed, resolved as a
+    // pair so an env bearer never gets silently paired with a stale file signer.
+    working: resolvedPair(
+      { env: "CONSOLE_API_KEY", file: fileConfig.apiKey },
+      { env: "CONSOLE_SERVICE_PRIVATE_KEY", file: fileConfig.servicePrivateKey },
+    ),
+    // Key-Admin (management) credential: `hbradm_` bearer + its on-chain signer seed.
+    // Resolved env → installer-saved file → "" so a provisioning host can be configured
+    // by `walrus-console-mcp config` instead of exported env vars. Both default to ""
+    // so absence never fails startup; hasAdminCredential() guards the empty case. Same
+    // by-source pairing as the working credential above.
+    admin: resolvedPair(
+      { env: "CONSOLE_ADMIN_KEY", file: fileConfig.adminKey },
+      { env: "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY", file: fileConfig.adminServicePrivateKey },
+    ),
+    // main's allowlist-enforcing resolver, not the plain string one this branch
+    // had: a config-file baseUrl must not redirect the Bearer key to a foreign host.
+    baseUrl: resolvedBaseUrl(fileConfig.baseUrl),
+    // Trust-anchor pins for the create-bucket owner/manager recipients (COMG-761).
+    // Plain strings, not Redacted — these are not secrets. "" = no pin configured.
+    webAccountAddress: resolvedOptionalAddress(
+      "CONSOLE_WEB_ACCOUNT_ADDRESS",
+      fileConfig.webAccountAddress,
+    ),
+    keyAdminAddress: resolvedOptionalAddress(
+      "CONSOLE_KEY_ADMIN_ADDRESS",
+      fileConfig.keyAdminAddress,
+    ),
+  });
 }).pipe(
   Config.map(({ working, admin, baseUrl, webAccountAddress, keyAdminAddress }) => ({
     apiKey: Redacted.make(working.bearer),

@@ -66,7 +66,12 @@ export interface ParsedArgs {
   errors: string[];
 }
 
-const VALUE_FLAGS: Record<string, Exclude<keyof CredentialValues, "allowedDirs">> = {
+/**
+ * Exported so tests/usage.test.ts can assert that every flag accepted here is
+ * documented in `--help`. A flag the parser takes but the usage screen never
+ * mentions is a flag nobody can find.
+ */
+export const VALUE_FLAGS: Record<string, Exclude<keyof CredentialValues, "allowedDirs">> = {
   "--api-key": "apiKey",
   "--service-key": "serviceKey",
   "--admin-key": "adminKey",
@@ -88,6 +93,24 @@ const ADDRESS_FIELDS = new Set<keyof CredentialValues>(["ownerAddress", "keyAdmi
  * matching the `ADDRESS_FIELDS` convention just above.
  */
 const SECRET_VALUE_FIELD_SET = new Set<keyof CredentialValues>(SECRET_VALUE_FIELDS);
+
+/**
+ * Every flag that consumes the token after it, so `wantsHelp` can tell
+ * `--allowed-dirs -h` (a bad folder) from `--silent -h` (a help request).
+ * `takeValue` below accepts any next token that does not start with `--`, which
+ * includes `-h`.
+ */
+export const VALUE_TAKING_FLAGS: readonly string[] = [
+  ...Object.keys(VALUE_FLAGS),
+  "--allowed-dirs",
+];
+
+/**
+ * The flags that take no value. Exported for the same reason as VALUE_FLAGS:
+ * tests/usage.test.ts asserts each one is documented, so a new boolean flag
+ * cannot ship without a decision about which verbs it belongs to.
+ */
+export const BOOLEAN_FLAGS = ["--silent", "--no-register"] as const;
 
 const ENV_FLAGS: Record<string, keyof CredentialValues> = {
   CONSOLE_API_KEY: "apiKey",

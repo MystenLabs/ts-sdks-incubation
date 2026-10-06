@@ -114,26 +114,35 @@ export function railLine(content = "", width: number): string {
  * Splitting on spaces can't cut an escape sequence (they contain none), so
  * styled text survives; a single word longer than `max` is clamped instead.
  *
- * Only the open rail wraps. A closed panel can't: its rows are counted for the
- * cursor-up redraw, and a wrapped row occupies two terminal lines while
- * counting as one. The rail is never redrawn, so it has no such constraint —
- * and having no right border, it has nowhere to truncate *to*.
+ * What may NOT be done is hand a terminal one string it then soft-wraps: that
+ * string occupies two rows while the redraw counts it as one. Splitting into
+ * separate rows, each inside the width, is fine, which is what `radioPanelLines`
+ * below and `printSummaryPanel` in bin/install.ts do. The open rail has no such
+ * constraint at all, being never redrawn, and having no right border it has
+ * nowhere to truncate *to*.
+ *
+ * Each returned line closes any style it opened. A styled run with a space in
+ * it (`accent("walrus-console-mcp config")`) otherwise splits with its opening
+ * escape on one line and its reset on the next, and the colour bleeds through
+ * the padding and the border of the first. `clampVisible` already does this for
+ * the truncating case; wrapping needs it for the same reason.
  */
 export function wrapVisible(text: string, max: number): string[] {
   if (max <= 0 || visibleWidth(text) <= max) return [text];
 
   const lines: string[] = [];
   let current = "";
+  const push = (line: string) => lines.push(line.includes(ESC) ? `${line}${ESC}[0m` : line);
   for (const word of text.split(" ")) {
     const candidate = current ? `${current} ${word}` : word;
     if (visibleWidth(candidate) <= max) {
       current = candidate;
       continue;
     }
-    if (current) lines.push(current);
+    if (current) push(current);
     current = visibleWidth(word) <= max ? word : clampVisible(word, max);
   }
-  if (current) lines.push(current);
+  if (current) push(current);
   return lines.length > 0 ? lines : [""];
 }
 
@@ -288,9 +297,28 @@ function radioPanelLines(
   width: number | null,
 ): string[] {
   if (!opts.title || width === null) {
-    return renderRadioLines(items, cursor).map((line, i) =>
+    // No frame, but the notice and the key hints still have to arrive: the File
+    // access tip is the step's only explanation, and the hint line is where
+    // `esc back` / `esc skip` is stated. Dropping them left a terminal too
+    // narrow to frame with a menu that explained nothing.
+    const rows = renderRadioLines(items, cursor).map((line, i) =>
       paintRadioRow(line, items[i]?.hint, i === cursor),
     );
+    // Sized against the TERMINAL here, not the panel: `runSelector` rewinds by
+    // the number of lines it wrote, so one string the terminal then soft-wraps
+    // walks the menu down the screen on every keypress. The notice is 90
+    // printable columns, so unwrapped it wraps at every width this branch runs
+    // at (under MIN_PANEL_WIDTH + 2), not just the narrow ones. `||` not `??`,
+    // matching panelWidth: a pty with no window size reports 0.
+    const cols = opts.columns || process.stdout.columns || 80;
+    const head = opts.notice
+      ? [...wrapVisible(`${styleText("yellow", "!")} ${opts.notice}`, cols), ""]
+      : [];
+    return [
+      ...head,
+      ...rows,
+      ...(opts.hint ? ["", clampVisible(styleText("dim", opts.hint), cols)] : []),
+    ];
   }
 
   const lines = [
@@ -298,7 +326,22 @@ function radioPanelLines(
   ];
   lines.push(panelRow("", width));
   if (opts.notice) {
-    lines.push(panelRow(`  ${styleText("yellow", "!")} ${opts.notice}`, width));
+    // Split across rows rather than clamped. A notice is the one row here that
+    // carries a sentence, and at 72 columns (the widest panel we draw, reached
+    // on any terminal of 74 or more) the File access tip lost its second half
+    // to the ellipsis: "Pick directories uplo…".
+    //
+    // This does not break the redraw contract above. That rule forbids emitting
+    // a row the TERMINAL then soft-wraps, because one string would occupy two
+    // rows while counting as one. Each line below is its own panelRow, already
+    // inside the width, and both the notice and the width are fixed for the
+    // life of the selector, so `render()` still returns a constant count.
+    //
+    // -7: the `  ! ` prefix costs 4 and panelRow keeps a column of margin before
+    // the border. Continuations indent 4 to sit under the first word.
+    const [first, ...rest] = wrapVisible(opts.notice, width - 7);
+    lines.push(panelRow(`  ${styleText("yellow", "!")} ${first ?? ""}`, width));
+    for (const l of rest) lines.push(panelRow(`    ${l}`, width));
     lines.push(panelRow("", width));
   }
   items.forEach((item, i) => {
@@ -326,7 +369,12 @@ export function selectOne(items: RadioItem[], opts: SelectOneOptions = {}): Prom
 
   if (!isTTY || items.length === 0) return Promise.resolve(items.length === 0 ? null : 0);
 
-  const width = panelWidth(opts.columns ?? process.stdout.columns ?? 80);
+  // `panelWidth`'s own default, not `?? 80`: a pty with no window size reports
+  // `columns` as 0, and `0 ?? 80` is 0, which sizes the panel to nothing and
+  // drops the frame, the title and the notice while every other panel in the
+  // same run still frames at 72. Passing `undefined` through lets panelWidth
+  // apply `|| 80` once, in one place.
+  const width = panelWidth(opts.columns);
   let cursor = 0;
 
   return runSelector<number>(

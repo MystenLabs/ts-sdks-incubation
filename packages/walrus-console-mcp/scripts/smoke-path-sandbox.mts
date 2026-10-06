@@ -27,7 +27,12 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type RootsCapableServer, resolvePathWithinRoots, toRealPath } from "../src/pathSandbox.js";
+import {
+  type RootsCapableServer,
+  resolveDownloadDestWithinRoots,
+  resolvePathWithinRoots,
+  toRealPath,
+} from "../src/pathSandbox.js";
 
 type Expect = "approve" | "reject";
 
@@ -88,12 +93,12 @@ function build(): Case[] {
       why: "overwrite in place",
     },
 
-    // --- live symlinks: still followed, then containment-checked ---
+    // --- live dest symlink: download refuses the leaf ---
     {
       name: "live symlink, stays inside",
       path: join(allowed, "live-in"),
-      expect: "approve",
-      why: "must keep working — /tmp and /var are live links on macOS",
+      expect: "reject",
+      why: "COMG-1039: download dest whose final component is a symlink is refused",
     },
     {
       name: "live symlink, escapes",
@@ -178,7 +183,7 @@ async function run(): Promise<number> {
     let approved: string | undefined;
     let rejection: string | undefined;
     try {
-      approved = await resolvePathWithinRoots(server, c.path, "Destination", {});
+      approved = await resolveDownloadDestWithinRoots(server, c.path, "Destination", {});
     } catch (error) {
       rejection = error instanceof Error ? error.message : String(error);
     }
