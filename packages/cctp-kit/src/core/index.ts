@@ -98,6 +98,16 @@ export interface CctpKit {
  */
 const RUNNING = new Set<string>();
 
+/**
+ * This page, as other tabs see it. A tab that drives a transfer says so in the shared storage,
+ * so that a second tab does not offer to retry a burn the first one is in the middle of. The
+ * claim lapses on its own if the tab dies without releasing it.
+ */
+const PAGE_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const LEASE_MS = 90_000;
+// Short enough that a background tab, whose timers may fire only once a minute, keeps its claim.
+const LEASE_RENEW_MS = 20_000;
+
 const QUOTE_PENDING = 'Fetching quote…';
 
 export function createCctpKit(config: CctpKitConfig): CctpKit {
@@ -166,13 +176,79 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	// not go on showing a transfer as it was before that tab moved it on.
 	if (storage && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
 		const onStorage = (event: StorageEvent) => {
-			if (event.key === storageKey) stores.$transfers.set(readStored());
+			// The records themselves, or another tab starting or finishing a run.
+			if (event.key === storageKey || event.key?.startsWith(`${storageKey}:running:`)) {
+				stores.$transfers.set(readStored());
+			}
 		};
 		window.addEventListener('storage', onStorage);
 		cleanups.push(() => window.removeEventListener('storage', onStorage));
 	}
 	const controllers = new Map<string, AbortController>();
 	let destroyed = false;
+
+	// --- Which tab is driving a transfer ----------------------------------------------------
+	const leaseKey = (id: string) => `${storageKey}:running:${id}`;
+	const leases = new Map<string, () => void>();
+
+	/** The page holding a live claim on this transfer, or null. */
+	function leaseHolder(id: string): { owner: string; until: number } | null {
+		if (!storage) return null;
+		try {
+			const lease = JSON.parse(storage.getItem(leaseKey(id)) ?? 'null') as {
+				owner?: unknown;
+				until?: unknown;
+			} | null;
+			if (typeof lease?.owner !== 'string' || typeof lease.until !== 'number') return null;
+			return lease.until > Date.now() ? { owner: lease.owner, until: lease.until } : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function runningElsewhere(id: string): boolean {
+		const holder = leaseHolder(id);
+		return holder !== null && holder.owner !== PAGE_ID;
+	}
+
+	/** Claim a transfer for this page until the returned function is called. */
+	function takeLease(id: string): () => void {
+		if (!storage) return () => undefined;
+		const write = () => {
+			try {
+				storage.setItem(
+					leaseKey(id),
+					JSON.stringify({ owner: PAGE_ID, until: Date.now() + LEASE_MS }),
+				);
+			} catch {
+				// Storage full or unavailable: this page still knows, other tabs will not.
+			}
+		};
+		write();
+		const timer = setInterval(write, LEASE_RENEW_MS);
+		(timer as { unref?: () => void }).unref?.();
+		const release = () => {
+			clearInterval(timer);
+			leases.delete(id);
+			try {
+				if (leaseHolder(id)?.owner === PAGE_ID) storage.removeItem(leaseKey(id));
+			} catch {
+				// Nothing to do: the claim lapses by itself.
+			}
+		};
+		leases.set(id, release);
+		return release;
+	}
+
+	// A page that is going away gives its claims up at once, so the page that replaces it (a
+	// reload) can carry on without waiting for them to lapse.
+	if (storage && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+		const releaseAll = () => {
+			for (const release of leases.values()) release();
+		};
+		window.addEventListener('pagehide', releaseAll);
+		cleanups.push(() => window.removeEventListener('pagehide', releaseAll));
+	}
 
 	// --- Sui account comes straight from dapp-kit. -------------------------------------
 	cleanups.push(
@@ -498,7 +574,11 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	): Promise<TransferRecord> {
 		const key = runKey(record.id);
 		if (RUNNING.has(key)) throw new Error('Transfer is already running');
+		if (runningElsewhere(record.id)) {
+			throw new Error('This transfer is being handled in another tab.');
+		}
 		RUNNING.add(key);
+		const releaseLease = takeLease(record.id);
 		const controller = new AbortController();
 		controllers.set(record.id, controller);
 		stores.$activeTransferId.set(record.id);
@@ -532,6 +612,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		} finally {
 			controllers.delete(record.id);
 			RUNNING.delete(key);
+			releaseLease();
 		}
 	}
 
@@ -685,7 +766,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	}
 
 	function isRunning(id: string) {
-		return RUNNING.has(runKey(id));
+		return RUNNING.has(runKey(id)) || runningElsewhere(id);
 	}
 
 	function setHidden(id: string, hidden: boolean) {
@@ -718,7 +799,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 			!stored.droppedSourceTxHash &&
 			!stored.attestation &&
 			stored.status !== 'complete' &&
-			!RUNNING.has(runKey(id));
+			!isRunning(id);
 		if (!removable) {
 			// This page's copy was out of date. Show what is true instead.
 			stores.$transfers.set(readStored());
@@ -737,21 +818,36 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 
 	// Pick up transfers interrupted by a reload: keep polling for attestations, but stop short
 	// of the mint, which needs the user's wallet (the widget shows Claim). Skip anything another
-	// kit on the page is already driving.
-	for (const record of stores.$transfers.get()) {
-		const interrupted =
-			record.status === 'attesting' ||
-			record.status === 'minting' ||
-			(record.status === 'burning' && !!record.sourceTxHash) ||
-			// Failed while waiting for the attestation (e.g. an old timeout or a network outage):
-			// the burn is done, so just keep polling.
-			(record.status === 'failed' && !!record.sourceTxHash && !record.attestation);
-		if (interrupted && !RUNNING.has(runKey(record.id))) {
+	// kit on the page, or another tab, is already driving. A tab that died without releasing its
+	// claim holds it a little longer, so look again once the claims seen here have lapsed.
+	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+	cleanups.push(() => clearTimeout(resumeTimer));
+	function resumeInterrupted() {
+		let lookAgainAt = 0;
+		for (const record of readStored()) {
+			const interrupted =
+				record.status === 'attesting' ||
+				record.status === 'minting' ||
+				(record.status === 'burning' && !!record.sourceTxHash) ||
+				// Failed while waiting for the attestation (e.g. an old timeout or a network
+				// outage): the burn was sent, so keep watching for it.
+				(record.status === 'failed' && !!record.sourceTxHash && !record.attestation);
+			if (!interrupted || RUNNING.has(runKey(record.id))) continue;
+			const holder = leaseHolder(record.id);
+			if (holder && holder.owner !== PAGE_ID) {
+				lookAgainAt = Math.max(lookAgainAt, holder.until);
+				continue;
+			}
 			void execute({ ...record, error: undefined }, { stopAfterAttestation: true }).catch(
 				() => undefined,
 			);
 		}
+		if (lookAgainAt && !destroyed) {
+			resumeTimer = setTimeout(resumeInterrupted, lookAgainAt - Date.now() + 1_000);
+			(resumeTimer as { unref?: () => void }).unref?.();
+		}
 	}
+	resumeInterrupted();
 
 	void backfillBurnTimes();
 	void refreshBalance();

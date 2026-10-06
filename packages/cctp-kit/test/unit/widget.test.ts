@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { atom } from 'nanostores';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCctpKit } from '../../src/core/index.js';
 import type { AnyDAppKit, TransferRecord } from '../../src/core/types.js';
 import { createInMemoryStorage } from '../../src/utils/storage.js';
@@ -252,6 +252,96 @@ describe('dismissing a transfer', () => {
 		});
 		kit.restore(failedBeforeBurning.id);
 		expect(element.pendingTransfers(kit)).toHaveLength(1);
+		kit.destroy();
+	});
+});
+
+describe('a transfer that another tab is driving', () => {
+	afterEach(() => vi.useRealTimers());
+
+	/** A second tab: its own copy of the kit module, the same storage. */
+	async function otherTab(storage: ReturnType<typeof createInMemoryStorage>) {
+		vi.resetModules();
+		const fresh = await import('../../src/core/index.js');
+		const signAndExecuteTransaction = vi.fn(async () => ({
+			$kind: 'Transaction',
+			Transaction: { digest: DIGEST },
+		}));
+		const circle = vi.fn<typeof fetch>(async () => json(404, { error: 'not found' }));
+		const kit = fresh.createCctpKit({
+			dAppKit: {
+				stores: {
+					$connection: atom({ account: { address: SUI_ADDRESS } }),
+					$currentNetwork: atom('mainnet'),
+				},
+				getClient: () => ({ core: { waitForTransaction: async () => ({}) } }),
+				signAndExecuteTransaction,
+			} as unknown as AnyDAppKit,
+			network: 'mainnet',
+			direction: 'outflow',
+			defaults: { to: 'avalanche' },
+			storage,
+			iris: { fetch: circle },
+			wallets: { evm: unusedWallet('evm') as never, solana: unusedWallet('solana') as never },
+		});
+		return { kit, signAndExecuteTransaction, circle };
+	}
+
+	it('cannot be retried or removed from a second tab while the first is at the wallet', async () => {
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([failedBeforeBurning]));
+		const first = suiKit(storage);
+		// The first tab's wallet prompt is open and unanswered.
+		let answer: (value: unknown) => void = () => undefined;
+		first.signAndExecuteTransaction.mockImplementationOnce(
+			() => new Promise((resolve) => (answer = resolve)) as never,
+		);
+		const running = first.kit.resume(failedBeforeBurning.id).catch(() => undefined);
+
+		const second = await otherTab(storage);
+		expect(second.kit.isRunning(failedBeforeBurning.id)).toBe(true);
+		await expect(second.kit.resume(failedBeforeBurning.id)).rejects.toThrow(
+			'This transfer is being handled in another tab.',
+		);
+		expect(second.signAndExecuteTransaction).not.toHaveBeenCalled();
+		expect(second.kit.removeUnburned(failedBeforeBurning.id)).toBe(false);
+
+		// The first tab's wallet answers and its run moves on: the second tab is free again.
+		answer({
+			$kind: 'FailedTransaction',
+			FailedTransaction: { status: { error: { message: 'rejected' } } },
+		});
+		await running;
+		expect(second.kit.isRunning(failedBeforeBurning.id)).toBe(false);
+		first.kit.destroy();
+		second.kit.destroy();
+	});
+
+	it("is picked up once a dead tab's claim has lapsed", async () => {
+		vi.useFakeTimers();
+		const storage = createInMemoryStorage();
+		const waiting = {
+			...failedBeforeBurning,
+			status: 'attesting',
+			sourceTxHash: DIGEST,
+			burnedAt: 1,
+			error: undefined,
+		};
+		storage.setItem(KEY, JSON.stringify([waiting]));
+		// A tab that crashed left its claim behind; it has 30 seconds to run.
+		storage.setItem(
+			`${KEY}:running:${waiting.id}`,
+			JSON.stringify({ owner: 'a-dead-tab', until: Date.now() + 30_000 }),
+		);
+		const { kit, circle } = await otherTab(storage);
+		// Polls for this transfer's attestation, not the fee quote the form asks for at start.
+		const polls = () =>
+			circle.mock.calls.filter(([url]) => String(url).includes('/v2/messages/')).length;
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(polls()).toBe(0);
+		expect(kit.isRunning(waiting.id)).toBe(true);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(polls()).toBeGreaterThan(0);
 		kit.destroy();
 	});
 });
