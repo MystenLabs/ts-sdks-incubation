@@ -284,7 +284,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					${this.renderWallet(kit, chain, account)}
 				</div>
 
-				${side === 'to' && this.showRecipientField(chain, account)
+				${side === 'to' && this.showRecipientField(kit, chain, account)
 					? html`<input
 							class="field"
 							type="text"
@@ -346,7 +346,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		if (!account && chain.ecosystem !== 'sui') {
 			return html`<span class="muted">Sending to a custom address</span>`;
 		}
-		if (this._customRecipient) {
+		if (this._customRecipient || kit.stores.$recipient.get()) {
 			return html`<button
 				type="button"
 				class="text-button"
@@ -367,8 +367,21 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		</button>`;
 	}
 
-	private showRecipientField(chain: ChainDefinition, account: { address: string } | null) {
-		return this._customRecipient || (!account && chain.ecosystem !== 'sui');
+	/**
+	 * A typed recipient is what the transfer will use, whatever wallet is connected, so it is
+	 * never off screen: connecting a wallet after typing an address must not make it look as if
+	 * the funds will go to that wallet.
+	 */
+	private showRecipientField(
+		kit: CctpKit,
+		chain: ChainDefinition,
+		account: { address: string } | null,
+	) {
+		return (
+			this._customRecipient ||
+			!!kit.stores.$recipient.get() ||
+			(!account && chain.ecosystem !== 'sui')
+		);
 	}
 
 	private renderWallet(kit: CctpKit, chain: ChainDefinition, account: { address: string } | null) {
@@ -445,14 +458,18 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		`;
 	}
 
+	/** Transfers that are not finished and not dismissed, the active one first. */
+	private pendingTransfers(kit: CctpKit): TransferRecord[] {
+		const activeId = kit.stores.$activeTransferId.get();
+		return kit.stores.$transfers
+			.get()
+			.filter((t) => t.status !== 'complete' && !t.hidden)
+			.sort((a, b) => (a.id === activeId ? -1 : b.id === activeId ? 1 : b.createdAt - a.createdAt));
+	}
+
 	/** In-flight transfers, one card at a time, the active one first. */
 	private renderTransfers(kit: CctpKit) {
-		const { stores } = kit;
-		const activeId = stores.$activeTransferId.get();
-		const list = stores.$transfers
-			.get()
-			.filter((t) => t.status !== 'complete')
-			.sort((a, b) => (a.id === activeId ? -1 : b.id === activeId ? 1 : b.createdAt - a.createdAt));
+		const list = this.pendingTransfers(kit);
 		if (!list.length) return nothing;
 		const index = Math.min(this._transferIndex, list.length - 1);
 		const many = list.length > 1;

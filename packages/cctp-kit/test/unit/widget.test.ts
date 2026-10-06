@@ -180,3 +180,78 @@ describe('removing a transfer that never burned', () => {
 		}
 	});
 });
+
+describe('a typed recipient', () => {
+	it('stays on screen when a wallet is connected afterwards', async () => {
+		// Typing an address and then connecting a wallet used to hide the field while the
+		// transfer still went to the typed address: the screen showed the wallet, not the truth.
+		let announce: (account: { address: string } | null) => void = () => undefined;
+		const evmWallet = {
+			...unusedWallet('evm'),
+			subscribe: (listener: typeof announce) => {
+				announce = listener;
+				return () => undefined;
+			},
+		};
+		const dAppKit = {
+			stores: {
+				$connection: atom({ account: { address: SUI_ADDRESS } }),
+				$currentNetwork: atom('mainnet'),
+			},
+			getClient: () => ({ core: {} }),
+		} as unknown as AnyDAppKit;
+		const kit = createCctpKit({
+			dAppKit,
+			network: 'mainnet',
+			direction: 'outflow',
+			defaults: { to: 'avalanche' },
+			storage: createInMemoryStorage(),
+			iris: { fetch: vi.fn<typeof fetch>(async () => json(404, { error: 'not found' })) },
+			wallets: { evm: evmWallet as never, solana: unusedWallet('solana') as never },
+		});
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			showRecipientField(kit: unknown, chain: unknown, account: unknown): boolean;
+		};
+		element.instance = kit;
+		await settle();
+		const destination = kit.stores.$destinationChain.get();
+
+		const typed = '0x2222222222222222222222222222222222222222';
+		kit.setRecipient(typed);
+		announce({ address: EVM_ADDRESS });
+		await settle();
+
+		const connected = kit.stores.$destinationAccount.get();
+		expect(connected?.address).toBe(EVM_ADDRESS);
+		expect(kit.stores.$recipient.get()).toBe(typed);
+		expect(element.showRecipientField(kit, destination, connected)).toBe(true);
+		// With nothing typed, a connected wallet needs no field.
+		kit.setRecipient('');
+		expect(element.showRecipientField(kit, destination, connected)).toBe(false);
+		kit.destroy();
+	});
+});
+
+describe('dismissing a transfer', () => {
+	it('takes its card out of the pending list and keeps the record', () => {
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([failedBeforeBurning]));
+		const { kit } = suiKit(storage);
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			pendingTransfers(kit: unknown): TransferRecord[];
+		};
+		element.instance = kit;
+		expect(element.pendingTransfers(kit).map((t) => t.id)).toEqual([failedBeforeBurning.id]);
+		kit.dismiss(failedBeforeBurning.id);
+		expect(element.pendingTransfers(kit)).toEqual([]);
+		expect(kit.stores.$transfers.get()[0]).toMatchObject({
+			id: failedBeforeBurning.id,
+			hidden: true,
+		});
+		kit.restore(failedBeforeBurning.id);
+		expect(element.pendingTransfers(kit)).toHaveLength(1);
+		kit.destroy();
+	});
+});

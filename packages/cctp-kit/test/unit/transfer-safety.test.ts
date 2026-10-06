@@ -20,6 +20,7 @@ vi.mock('../../src/engine/evm.js', async (original) => ({
 	...(await original<typeof evm>()),
 	getEvmUsdcAllowance: vi.fn(async () => 10n ** 12n),
 	getEvmUsdcBalance: vi.fn(async () => 10n ** 12n),
+	approveEvmUsdc: vi.fn(async () => BURN_HASH),
 	evmDepositForBurn: vi.fn(async () => BURN_HASH),
 	waitForEvmReceipt: vi.fn(async (_chain: unknown, hash: string) => hash),
 }));
@@ -54,17 +55,25 @@ function evmWallets(): () => Promise<WalletAdapters> {
 		}) as unknown as WalletAdapters;
 }
 
-function suiDAppKit() {
+const SUI_DIGEST = 'C1v6NwPuxdXmaag9Wjcnq4TX65fh5QQj5nDVaSGeM39M';
+
+/**
+ * A dapp-kit with a connected Sui account. `core` adds to, or replaces, what its client can do;
+ * by default it can only wait for a transaction, so the "already claimed" lookup is unanswered.
+ */
+function suiDAppKit(options: { account?: string | null; core?: Record<string, unknown> } = {}) {
 	const signAndExecuteTransaction = vi.fn(async () => ({
 		$kind: 'Transaction',
-		Transaction: { digest: 'C1v6NwPuxdXmaag9Wjcnq4TX65fh5QQj5nDVaSGeM39M' },
+		Transaction: { digest: SUI_DIGEST },
 	}));
+	const account = options.account === undefined ? SUI_ADDRESS : options.account;
+	const core = { waitForTransaction: vi.fn(async () => ({})), ...options.core };
 	const dAppKit = {
 		stores: {
-			$connection: atom({ account: { address: SUI_ADDRESS } }),
+			$connection: atom({ account: account ? { address: account } : null }),
 			$currentNetwork: atom('mainnet'),
 		},
-		getClient: () => ({ core: { waitForTransaction: vi.fn(async () => ({})) } }),
+		getClient: () => ({ core }),
 		signAndExecuteTransaction,
 	} as unknown as AnyDAppKit;
 	return { dAppKit, signAndExecuteTransaction };
@@ -199,7 +208,14 @@ describe('an expired Fast Transfer into Sui', () => {
 		expect(result.message).toBe(renewed);
 		expect(result.attestation).toBe(newAttestation);
 		expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
-		expect(updates.map((u) => u.status)).toEqual(['attesting', 'attesting', 'minting', 'complete']);
+		// 'minting' twice: once when the claim starts, once when its digest is recorded.
+		expect(updates.map((u) => u.status)).toEqual([
+			'attesting',
+			'attesting',
+			'minting',
+			'minting',
+			'complete',
+		]);
 	});
 
 	it('leaves a message that is still valid alone', async () => {
@@ -564,5 +580,171 @@ describe('claiming on Solana', () => {
 		const result = await runTransfer(claim(), context(signAndSendTransaction));
 		expect(result.status).toBe('complete');
 		expect(signAndSendTransaction).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe('a transfer is burned by the wallet it was started from', () => {
+	const noIris = () => new IrisClient('mainnet', { fetch: vi.fn<typeof fetch>() });
+	const OTHER_EVM = '0x1111111111111111111111111111111111111111';
+
+	it('refuses an EVM burn from another account, before approving or burning', async () => {
+		vi.mocked(evm.evmDepositForBurn).mockClear();
+		vi.mocked(evm.approveEvmUsdc).mockClear();
+		await expect(
+			runTransfer(record({ sender: OTHER_EVM }), {
+				dAppKit: suiDAppKit().dAppKit,
+				wallets: evmWallets(),
+				iris: noIris(),
+				chains,
+				onUpdate: () => undefined,
+			}),
+		).rejects.toThrow(
+			'This transfer was started from 0x1111…1111 on Ethereum. Connect that wallet to continue.',
+		);
+		expect(evm.approveEvmUsdc).not.toHaveBeenCalled();
+		expect(evm.evmDepositForBurn).not.toHaveBeenCalled();
+	});
+
+	it('accepts the same EVM account whatever the letter case', async () => {
+		vi.mocked(evm.evmDepositForBurn).mockClear();
+		vi.mocked(evm.waitForEvmReceipt).mockImplementation(async (_chain, hash) => hash);
+		const attested = {
+			status: 'complete',
+			message: message(0n),
+			attestation: `0x${'bb'.repeat(65)}`,
+		};
+		const result = await runTransfer(record({ sender: EVM_ADDRESS.toLowerCase() }), {
+			dAppKit: suiDAppKit().dAppKit,
+			wallets: evmWallets(),
+			iris: new IrisClient('mainnet', {
+				fetch: vi.fn<typeof fetch>(async () => json(200, { messages: [attested] })),
+			}),
+			chains,
+			stopAfterAttestation: true,
+			pollIntervalMs: 1,
+			onUpdate: () => undefined,
+		});
+		expect(result.sourceTxHash).toBe(BURN_HASH);
+		expect(evm.evmDepositForBurn).toHaveBeenCalledTimes(1);
+	});
+
+	it('refuses a Solana burn from another account', async () => {
+		solanaAcceptsEverything();
+		solanaWalletHolds(5_000_000n);
+		const started = Keypair.generate().publicKey.toBase58();
+		const connected = Keypair.generate().publicKey.toBase58();
+		const signAndSendTransaction = vi.fn<SendSolana>();
+		await expect(
+			runTransfer(record({ from: 'solana', sender: started }), {
+				dAppKit: suiDAppKit().dAppKit,
+				wallets: solanaWallets(connected, signAndSendTransaction),
+				iris: noIris(),
+				chains,
+				onUpdate: () => undefined,
+			}),
+		).rejects.toThrow(/This transfer was started from .* on Solana\. Connect that wallet/);
+		expect(signAndSendTransaction).not.toHaveBeenCalled();
+	});
+
+	it('refuses a Sui burn when another Sui account, or none, is connected', async () => {
+		for (const account of [`0x${'ee'.repeat(32)}`, null]) {
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({ account });
+			await expect(
+				runTransfer(
+					record({ from: 'sui', to: 'ethereum', sender: SUI_ADDRESS, recipient: EVM_ADDRESS }),
+					{
+						dAppKit,
+						wallets: evmWallets(),
+						iris: noIris(),
+						chains,
+						onUpdate: () => undefined,
+					},
+				),
+			).rejects.toThrow(/This transfer was started from 0xcdcd…cdcd on Sui\. Connect that wallet/);
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		}
+	});
+});
+
+describe('a kit that is torn down while an approval is pending', () => {
+	it('does not go on to ask for the burn', async () => {
+		vi.mocked(evm.evmDepositForBurn).mockClear();
+		vi.mocked(evm.getEvmUsdcAllowance).mockResolvedValueOnce(0n);
+		const controller = new AbortController();
+		// The approval is mined after the host has destroyed the kit.
+		vi.mocked(evm.approveEvmUsdc).mockImplementationOnce(async () => {
+			controller.abort(new Error('destroyed'));
+			return BURN_HASH;
+		});
+		const updates: TransferRecord[] = [];
+		await expect(
+			runTransfer(record({}), {
+				dAppKit: suiDAppKit().dAppKit,
+				wallets: evmWallets(),
+				iris: new IrisClient('mainnet', { fetch: vi.fn<typeof fetch>() }),
+				chains,
+				signal: controller.signal,
+				onUpdate: (t) => updates.push(t),
+			}),
+		).rejects.toThrow('destroyed');
+		expect(evm.evmDepositForBurn).not.toHaveBeenCalled();
+		// Aborted, not failed: the record is left as it was for whoever resumes it.
+		expect(updates.map((u) => u.status)).toEqual(['approving']);
+	});
+});
+
+describe('a claim on Sui', () => {
+	const claimable = () =>
+		record({
+			status: 'readyToMint',
+			sourceTxHash: BURN_HASH,
+			message: message(BigInt(Date.now() + 3_600_000)),
+			attestation: `0x${'11'.repeat(65)}`,
+		});
+	const context = (dAppKit: AnyDAppKit, updates: TransferRecord[] = []) => ({
+		dAppKit,
+		wallets: evmWallets(),
+		iris: new IrisClient('mainnet', { fetch: vi.fn<typeof fetch>() }),
+		chains,
+		onUpdate: (t: TransferRecord) => updates.push(t),
+	});
+	/** What the transmitter's `is_nonce_used` view returns, as a simulation result. */
+	const nonceIs = (used: boolean) =>
+		vi.fn(async () => ({
+			commandResults: [{ returnValues: [{ bcs: new Uint8Array([used ? 1 : 0]) }] }],
+		}));
+
+	it('keeps its digest when the wait that follows fails', async () => {
+		// The message is spent once the claim executes. Losing the digest here left a transfer
+		// that could only ever fail: every later claim met a nonce that was already used.
+		const { dAppKit } = suiDAppKit({
+			core: { waitForTransaction: vi.fn(async () => Promise.reject(new Error('node says no'))) },
+		});
+		const updates: TransferRecord[] = [];
+		const result = await runTransfer(claimable(), context(dAppKit, updates));
+		expect(result).toMatchObject({ status: 'complete', destinationTxHash: SUI_DIGEST });
+		// Recorded while the claim was still in progress, not only at the end.
+		expect(updates.find((u) => u.destinationTxHash)?.status).toBe('minting');
+	});
+
+	it('is not sent again when the chain says the message was already claimed', async () => {
+		const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+			core: { simulateTransaction: nonceIs(true) },
+		});
+		const result = await runTransfer(claimable(), context(dAppKit));
+		expect(result.status).toBe('complete');
+		expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+	});
+
+	it('is sent when the message has not been claimed, or the lookup cannot be made', async () => {
+		for (const simulateTransaction of [
+			nonceIs(false),
+			vi.fn(async () => Promise.reject(new Error('no'))),
+		]) {
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({ core: { simulateTransaction } });
+			const result = await runTransfer(claimable(), context(dAppKit));
+			expect(result.status).toBe('complete');
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+		}
 	});
 });

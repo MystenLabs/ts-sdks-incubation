@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { bcs } from '@mysten/sui/bcs';
 import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { SuiChainDefinition } from '../chains/types.js';
@@ -133,6 +134,34 @@ export function buildSuiReceiveTransaction(
 	});
 
 	return tx;
+}
+
+/**
+ * Whether a message's nonce has been consumed on Sui, that is, whether it was already claimed.
+ * Read by simulating the transmitter's public `is_nonce_used` view; nothing is signed or sent.
+ */
+export async function suiIsNonceUsed(
+	client: ClientWithCoreApi,
+	chain: SuiChainDefinition,
+	nonce: Uint8Array,
+): Promise<boolean> {
+	const tx = new Transaction();
+	// A simulation needs a sender, but this call reads state and does not care who asks.
+	tx.setSender(`0x${'0'.repeat(64)}`);
+	tx.moveCall({
+		target: `${chain.packages.messageTransmitterV2}::state::is_nonce_used`,
+		arguments: [
+			tx.object(chain.objects.messageTransmitterState),
+			tx.pure.u256(BigInt(bytesToHex(nonce))),
+		],
+	});
+	const result = await client.core.simulateTransaction({
+		transaction: tx,
+		include: { commandResults: true },
+	});
+	const returned = result.commandResults?.[0]?.returnValues?.[0]?.bcs;
+	if (!returned) throw new Error('The nonce lookup on Sui returned nothing');
+	return bcs.Bool.parse(returned);
 }
 
 export async function getSuiUsdcBalance(

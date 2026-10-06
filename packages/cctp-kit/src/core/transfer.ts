@@ -33,6 +33,7 @@ import {
 	buildSuiBurnTransaction,
 	buildSuiReceiveTransaction,
 	getSuiUsdcBalance,
+	suiIsNonceUsed,
 } from '../engine/sui.js';
 import type { IrisClient } from '../iris/client.js';
 import { formatUsdc } from '../utils/amount.js';
@@ -136,7 +137,7 @@ export async function runTransfer(
 				update({ message: fresh.message, attestation: fresh.attestation });
 			}
 			update({ status: 'minting' });
-			const destinationTxHash = await mint(transfer, to, ctx);
+			const destinationTxHash = await mint(transfer, to, ctx, update);
 			update({ status: 'complete', destinationTxHash, completedAt: Date.now() });
 		} else {
 			update({ status: 'complete', completedAt: transfer.completedAt ?? Date.now() });
@@ -196,6 +197,24 @@ async function assertSourceBalance(
 	}
 }
 
+/**
+ * A transfer is burned by the wallet it was started from. Retry and Resume skip the form, so
+ * without this a transfer started from one account would burn whichever account is connected
+ * now, towards the first one's recipient.
+ */
+function assertSender(transfer: TransferRecord, from: ChainDefinition, connected?: string) {
+	const same =
+		!!connected &&
+		(connected === transfer.sender ||
+			(connected.startsWith('0x') && connected.toLowerCase() === transfer.sender.toLowerCase()));
+	if (same) return;
+	const sender = transfer.sender;
+	const short = sender.length > 14 ? `${sender.slice(0, 6)}…${sender.slice(-4)}` : sender;
+	throw new Error(
+		`This transfer was started from ${short} on ${from.name}. Connect that wallet to continue.`,
+	);
+}
+
 async function burn(
 	transfer: TransferRecord,
 	from: ChainDefinition,
@@ -213,6 +232,7 @@ async function burn(
 			// Nothing is awaited before the wallet is asked: a Sui wallet that signs in a window
 			// it opens itself can only open it while the click is still being handled. The SDK
 			// reports a short balance when it builds the transaction.
+			assertSender(transfer, from, ctx.dAppKit.stores.$connection.get().account?.address);
 			update({ status: 'burning' });
 			const tx = buildSuiBurnTransaction(from, {
 				sender: transfer.sender,
@@ -227,13 +247,18 @@ async function burn(
 		case 'evm': {
 			const wallets = await ctx.wallets();
 			const walletClient = await wallets.evm.getWalletClient(from);
-			const owner = walletClient.account!.address;
-			await assertSourceBalance(from, owner, amount, ctx);
-			const allowance = await getEvmUsdcAllowance(from, owner);
+			const owner = walletClient.account?.address;
+			assertSender(transfer, from, owner);
+			await assertSourceBalance(from, owner!, amount, ctx);
+			const allowance = await getEvmUsdcAllowance(from, owner!);
 			if (allowance < amount) {
+				ctx.signal?.throwIfAborted();
 				update({ status: 'approving' });
 				await approveEvmUsdc(walletClient, from, amount);
 			}
+			// The approval can take minutes. If the kit was torn down meanwhile, stop here rather
+			// than open a burn request nobody is waiting for.
+			ctx.signal?.throwIfAborted();
 			update({ status: 'burning' });
 			const hash = await evmDepositForBurn(walletClient, from, {
 				amount,
@@ -265,6 +290,7 @@ async function burn(
 		}
 		case 'solana': {
 			const wallets = await ctx.wallets();
+			assertSender(transfer, from, wallets.solana.getAccount()?.address);
 			update({ status: 'burning' });
 			const owner = new PublicKey(transfer.sender);
 			const dropped = transfer.droppedSourceTxHash;
@@ -291,6 +317,7 @@ async function burn(
 				maxFee,
 				minFinalityThreshold,
 			});
+			ctx.signal?.throwIfAborted();
 			const signature = await wallets.solana.signAndSendTransaction(
 				built.transaction,
 				getSolanaConnection(from),
@@ -316,6 +343,7 @@ async function mint(
 	transfer: TransferRecord,
 	to: ChainDefinition,
 	ctx: TransferContext,
+	update: (patch: Partial<TransferRecord>) => TransferRecord,
 ): Promise<string> {
 	const message = hexToBytes(transfer.message!);
 	const attestation = hexToBytes(transfer.attestation!);
@@ -324,11 +352,14 @@ async function mint(
 		case 'sui': {
 			const account = ctx.dAppKit.stores.$connection.get().account;
 			const tx = buildSuiReceiveTransaction(to, message, attestation, account?.address);
-			return executeSui(ctx, to, tx);
+			// Keep the digest the moment there is one. The message is spent from here on, so a
+			// claim that is forgotten can never be made again.
+			return executeSui(ctx, to, tx, (digest) => update({ destinationTxHash: digest }));
 		}
 		case 'evm': {
 			const wallets = await ctx.wallets();
 			const walletClient = await wallets.evm.getWalletClient(to);
+			ctx.signal?.throwIfAborted();
 			const hash = await evmReceiveMessage(
 				walletClient,
 				to,
@@ -360,6 +391,7 @@ async function mint(
 					`Claiming on Solana needs at least ${formatSol(funds.required, 'up')} SOL in the connected wallet for account rent and fees; it has ${formatSol(funds.balance, 'down')} SOL. Add SOL and claim again.`,
 				);
 			}
+			ctx.signal?.throwIfAborted();
 			if (createAccount) {
 				const created = await wallets.solana.signAndSendTransaction(
 					createAccount.transaction,
@@ -368,6 +400,7 @@ async function mint(
 				await waitForSolanaConfirmation(to, created, { signal: ctx.signal });
 			}
 			const built = await buildSolanaReceiveTransaction(to, payerKey, message, attestation);
+			ctx.signal?.throwIfAborted();
 			const signature = await wallets.solana.signAndSendTransaction(built.transaction, connection);
 			await waitForSolanaConfirmation(to, signature, { signal: ctx.signal });
 			return signature;
@@ -393,7 +426,12 @@ async function executeSui(
 	}
 	const digest = result.Transaction.digest;
 	onDigest?.(digest);
-	await ctx.dAppKit.getClient(network).core.waitForTransaction({ digest });
+	// The transaction has executed. Waiting only gives the node time to index it, so a wait
+	// that fails is no reason to fail a transfer whose transaction went through.
+	await ctx.dAppKit
+		.getClient(network)
+		.core.waitForTransaction({ digest })
+		.catch(() => undefined);
 	return digest;
 }
 
@@ -422,10 +460,7 @@ async function isNonceUsedUnsafe(
 		case 'solana':
 			return solanaIsNonceUsed(to, parsed.nonce).catch(() => false);
 		case 'sui':
-			// The Sui v2 package exposes no cheap public nonce lookup yet; the mint PTB aborts
-			// if the nonce was already consumed and that surfaces as a failure the user can dismiss.
-			void ctx;
-			return false;
+			return suiIsNonceUsed(ctx.dAppKit.getClient(to.suiNetwork), to, parsed.nonce);
 	}
 }
 

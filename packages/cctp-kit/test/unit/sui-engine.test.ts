@@ -1,9 +1,15 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from 'vitest';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
+import type { Transaction } from '@mysten/sui/transactions';
+import { describe, expect, it, vi } from 'vitest';
 import { SUI_MAINNET } from '../../src/chains/sui.js';
-import { buildSuiBurnTransaction, buildSuiReceiveTransaction } from '../../src/engine/sui.js';
+import {
+	buildSuiBurnTransaction,
+	buildSuiReceiveTransaction,
+	suiIsNonceUsed,
+} from '../../src/engine/sui.js';
 import { toBytes32 } from '../../src/utils/bytes.js';
 import { getChainRegistry } from '../../src/chains/index.js';
 
@@ -54,5 +60,36 @@ describe('Sui CCTP v2 PTB builders', () => {
 			`${packages.stablecoinHandler}::handler::mint`,
 			`${packages.tokenMessengerMinterV2}::handle_receive_message::complete_mint`,
 		]);
+	});
+});
+
+describe('the "already claimed" lookup on Sui', () => {
+	it("simulates the transmitter's nonce view and reads the answer", async () => {
+		const nonce = new Uint8Array(32).fill(0xab);
+		const simulateTransaction = vi.fn(async (_input: { transaction: Transaction }) => ({
+			commandResults: [{ returnValues: [{ bcs: new Uint8Array([1]) }] }],
+		}));
+		const client = { core: { simulateTransaction } } as unknown as ClientWithCoreApi;
+		expect(await suiIsNonceUsed(client, SUI_MAINNET, nonce)).toBe(true);
+		const tx = simulateTransaction.mock.calls[0]![0].transaction;
+		expect(moveCalls(tx)).toEqual([
+			`${SUI_MAINNET.packages.messageTransmitterV2}::state::is_nonce_used`,
+		]);
+		// A simulation needs a sender even though the view does not care who asks.
+		expect(tx.getData().sender).toMatch(/^0x0+$/);
+
+		simulateTransaction.mockResolvedValueOnce({
+			commandResults: [{ returnValues: [{ bcs: new Uint8Array([0]) }] }],
+		});
+		expect(await suiIsNonceUsed(client, SUI_MAINNET, nonce)).toBe(false);
+	});
+
+	it('does not guess when the simulation returns nothing', async () => {
+		const client = {
+			core: { simulateTransaction: vi.fn(async () => ({})) },
+		} as unknown as ClientWithCoreApi;
+		await expect(suiIsNonceUsed(client, SUI_MAINNET, new Uint8Array(32))).rejects.toThrow(
+			/returned nothing/,
+		);
 	});
 });
