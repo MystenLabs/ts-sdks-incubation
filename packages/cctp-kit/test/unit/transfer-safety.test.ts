@@ -821,6 +821,10 @@ describe('a burn that was sent but not yet seen on its chain', () => {
 		// The hash was only dropped by the answer that ruled the burn out.
 		const dropped = updates.findIndex((u) => !u.sourceTxHash);
 		expect(dropped).toBe(updates.length - 2);
+		// Meanwhile it was shown as waiting for Circle, not held at "burning": the form is free.
+		expect(updates.slice(0, dropped).some((u) => u.status === 'attesting' && !u.burnedAt)).toBe(
+			true,
+		);
 		vi.mocked(evm.waitForEvmReceipt)
 			.mockReset()
 			.mockImplementation(async (_chain, hash) => hash);

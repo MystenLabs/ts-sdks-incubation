@@ -335,13 +335,25 @@ async function attest(
 			return waitForCircle(ctx.signal);
 		}
 
-		if (transfer.status !== 'burning') update({ status: 'burning' });
+		// A burn just sent is "burning" until the chain answers. One found in a record in any
+		// other state is shown as waiting, as it was before this check existed.
+		const waiting = () => {
+			const now = current();
+			if (now.status !== 'attesting' || !now.attestingSince) {
+				update({ status: 'attesting', attestingSince: now.attestingSince ?? Date.now() });
+			}
+		};
+		if (transfer.status !== 'burning') waiting();
 		const stop = new AbortController();
 		const stopWithCaller = () => stop.abort(ctx.signal?.reason);
 		if (ctx.signal?.aborted) stopWithCaller();
 		else ctx.signal?.addEventListener('abort', stopWithCaller, { once: true });
 		const circle = waitForCircle(stop.signal).then((attested) => ({ attested }));
-		const chain = confirmSource(transfer, from, ctx, stop.signal).then((mined) => ({ mined }));
+		// When the chain cannot say, stop holding the form for it: show the transfer as waiting
+		// for Circle, and keep watching the chain behind that.
+		const chain = confirmSource(transfer, from, ctx, stop.signal, waiting).then((mined) => ({
+			mined,
+		}));
 		// Whichever loses the race is stopped below; its rejection is expected.
 		circle.catch(() => undefined);
 		chain.catch(() => undefined);
@@ -389,6 +401,7 @@ async function confirmSource(
 	from: ChainDefinition,
 	ctx: TransferContext,
 	signal: AbortSignal,
+	onInconclusive: () => void,
 ): Promise<string> {
 	const hash = transfer.sourceTxHash!;
 	for (;;) {
@@ -410,6 +423,7 @@ async function confirmSource(
 		} catch (error) {
 			if (error instanceof TransactionRevertedError) throw error;
 			signal.throwIfAborted();
+			onInconclusive();
 		}
 		await sleep(ctx.confirmRetryMs ?? 15_000, signal);
 	}
