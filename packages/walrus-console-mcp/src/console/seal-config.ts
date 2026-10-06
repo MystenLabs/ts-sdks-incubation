@@ -1,6 +1,7 @@
 import type { KeyServerConfig } from "@mysten/seal";
 
 import { SealProxyError } from "./errors";
+import { isRevokedKeyCode, revokedKeyMessage } from "./revokedKey";
 import type { SuiNetwork } from "./packageConfig";
 
 /**
@@ -34,7 +35,12 @@ const AGGREGATOR_PROXY_PATH = "/api/v1/seal/aggregator";
  * @mysten/seal ≥ 1.4.0's `fetch` option to send it — the MCP already authenticates every
  * Console call with a Bearer key, and the SDK has spelled arbitrary headers as
  * `apiKeyName`/`apiKey` since well before then. The proxy accepts either
- * (`requireSessionOrApiKey`), so no SDK bump is needed here.
+ * (`requireSessionOrApiKey`), so auth alone never needed an SDK bump.
+ *
+ * The bump to 1.4.0 happened anyway, for a different reason: `apiKeyName`/`apiKey` is a
+ * single slot and this header is in it, so the attribution header COMG-1053 adds has
+ * nowhere else to go. That is what `SealClientOptions.fetch` carries — see the `fetch`
+ * option passed in `SealCryptoService`.
  */
 const AUTH_HEADER = "Authorization";
 
@@ -169,6 +175,8 @@ const CONDITION_BY_CODE = new Map<string, SealProxyError["condition"]>(
     api_key_registering: "credential",
     api_key_revoking: "credential",
     api_key_revoked: "credential",
+    api_key_rotation_incomplete: "credential",
+    api_key_replaced: "credential",
     api_key_not_usable: "credential",
     mirror_missing_grant: "credential",
     bucket_not_in_scope: "credential",
@@ -217,12 +225,24 @@ function consoleErrorCode(cause: unknown): string | undefined {
  * testable without a live backend, and reusable by any future call site that wraps
  * `SealClient` (encrypt does not reach the aggregator today).
  */
-export function interpretSealProxyFailure(cause: unknown): SealProxyError | undefined {
+export function interpretSealProxyFailure(
+  cause: unknown,
+  /**
+   * The key the proxy refused (fetch_key authenticates with the working key) and the base
+   * URL its Integrations link follows. With it, a revoked key gets the same state-specific
+   * remedy as every other Console call, instead of the generic credential guidance.
+   */
+  credential?: { rawKey: string; baseUrl: string },
+): SealProxyError | undefined {
   const code = consoleErrorCode(cause);
   if (code === undefined) return undefined;
   const condition = CONDITION_BY_CODE.get(code) ?? "unknown";
+  const guidance =
+    credential !== undefined && isRevokedKeyCode(code)
+      ? revokedKeyMessage(code, credential.rawKey, credential.baseUrl)
+      : GUIDANCE[condition];
   return new SealProxyError({
-    message: `Seal fetch_key failed at the Console proxy (${code}). ${GUIDANCE[condition]}`,
+    message: `Seal fetch_key failed at the Console proxy (${code}). ${guidance}`,
     cause,
     condition,
     code,

@@ -144,17 +144,35 @@ export function redactValue(input: unknown): string {
  * indistinguishable from each other and from a 500. The older tagged errors
  * only escaped this because they happen to leave `.message` empty.
  *
- * Nothing is lost by serializing first: `message` is itself a field, so it
- * survives inside the JSON. Untagged errors (a plain `Error`, an `@effect/platform`
- * transport error) still render as their message.
+ * Nothing is lost by serializing first: `message` is itself a field on this
+ * codebase's own tagged errors (declared explicitly, so it is enumerable), so
+ * it survives inside the JSON. Untagged errors (a plain `Error`) still render
+ * as their message.
+ *
+ * `@effect/platform`'s own `RequestError`/`ResponseError` are the one
+ * exception worth naming: their `cause` is usually a plain `Error` subclass,
+ * not one of this codebase's tagged errors, so `Error`'s own `message` is
+ * non-enumerable and does NOT survive `JSON.stringify` the way it does for
+ * everything else here — a redirect `fetchWithRedirectGuard` refuses (see
+ * `runtime.ts`) would otherwise report as an opaque `RequestError` blob
+ * naming no host, instead of what its cause actually says.
  */
 function describeError(error: unknown): string {
   if (typeof error === "object" && error !== null && "_tag" in error) {
+    // See the exception noted above the cause's message would otherwise be
+    // silently dropped for exactly this shape.
+    const cause = "cause" in error ? error.cause : undefined;
+    const causeSuffix =
+      (error._tag === "RequestError" || error._tag === "ResponseError") &&
+      cause instanceof Error &&
+      cause.message.trim() !== ""
+        ? ` (${cause.message})`
+        : "";
     try {
       // `undefined` when a hand-rolled `toJSON` opts out; treat it as a miss
       // rather than printing the string "undefined" at the tool boundary.
       const json = JSON.stringify(error);
-      if (json !== undefined) return json;
+      if (json !== undefined) return `${json}${causeSuffix}`;
     } catch {
       // Unserializable (circular field) — fall through to the message/String path.
     }

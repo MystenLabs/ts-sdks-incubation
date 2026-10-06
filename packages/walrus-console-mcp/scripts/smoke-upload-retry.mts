@@ -3,9 +3,13 @@
  *
  * Run:  npx tsx scripts/smoke-upload-retry.mts
  *
- * Needs no credentials and no network — every HTTP call is stubbed. Takes ~6s,
+ * Needs no credentials and no network — every HTTP call is stubbed. Takes ~12s,
  * because it lets the real retry sleep rather than faking the clock: the point
  * is to prove the production path actually waits and retries.
+ *
+ * Since COMG-1007 an upload first reads the bucket to verify its Seal policy, and
+ * `GET /buckets/:id` is behind the same grant check — so Stage 4 pins that the
+ * lookup rides out `mirror_missing_grant` too.
  *
  * Background. Console answers an upload into a freshly created private bucket
  * with 403 `mirror_missing_grant` until the bucket's on-chain access grant has
@@ -38,6 +42,7 @@ import { ConsoleApiError } from "../src/console/errors.js";
 import type { RosterChainDeps } from "../src/console/rosterVerification.js";
 import { SealCryptoService } from "../src/console/SealCryptoService.js";
 import type { BucketId } from "../src/console/types.js";
+import { FIXTURE_OWNER, verifiedBucket } from "../tests/verifiedBucket.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,20 +90,41 @@ const TestConfig = Layer.succeed(ConsoleConfigTag, {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.example.test",
+  // The upload verifies the bucket's policy against this pinned owner (COMG-1007).
+  webAccountAddress: FIXTURE_OWNER,
+  keyAdminAddress: "",
 });
 
-/** Status polling goes through the Effect HttpClient, not `fetch`. Always done. */
-const stubHttp = HttpClient.make((request) =>
-  Effect.succeed(
-    HttpClientResponse.fromWeb(
-      request,
-      new Response(JSON.stringify({ data: { state: "completed" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    ),
-  ),
-);
+/**
+ * How many upcoming `GET /buckets/:id` lookups answer 403 `mirror_missing_grant`
+ * before the bucket is returned. Stage 4 sets it; everything else leaves it at 0.
+ */
+const bucketLookup = { failTimes: 0, count: 0 };
+
+/**
+ * The Effect HttpClient carries the bucket lookup and status polling (the upload
+ * itself is `fetch`). The lookup returns a bucket whose policy derives from the
+ * pinned owner; polling is always done.
+ */
+const stubHttp = HttpClient.make((request) => {
+  const json = (status: number, body: unknown) =>
+    Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        new Response(typeof body === "string" ? body : JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+  const lookup = /\/api\/v1\/buckets\/([^/?]+)$/.exec(new URL(request.url).pathname);
+  if (lookup) {
+    bucketLookup.count += 1;
+    if (bucketLookup.count <= bucketLookup.failTimes) return json(403, GRANT_PENDING);
+    return json(200, { data: verifiedBucket("https://api.example.test", lookup[1] ?? "") });
+  }
+  return json(200, { data: { state: "completed" } });
+});
 
 /** Seal is irrelevant here; pass the plaintext straight through. */
 const stubSeal = Layer.succeed(SealCryptoService, {
@@ -221,7 +247,7 @@ async function upload(): Promise<string> {
   return Effect.runPromise(
     Effect.gen(function* () {
       const storage = yield* ConsoleStorageService;
-      const out = yield* storage.uploadFileToBucket(BUCKET, "0xpolicy", localPath);
+      const out = yield* storage.uploadFileToBucket(BUCKET, undefined, localPath);
       return `uploaded ${out.fileId}`;
     }).pipe(
       Effect.provide(StorageLayer),
@@ -264,6 +290,23 @@ async function upload(): Promise<string> {
     "different code, same 403 → no retry",
     `${attempts.count} attempt → ${result}`,
   );
+}
+
+// ── Stage 4: the policy lookup before the upload rides out the grant delay ───
+console.log("\n  Stage 4 — the bucket lookup retries mirror_missing_grant too\n");
+{
+  bucketLookup.failTimes = 2; // GET 403, 403, then the bucket
+  bucketLookup.count = 0;
+  const attempts = stubUpload(0, GRANT_PENDING);
+  const started = process.hrtime.bigint();
+  const result = await upload();
+  const secs = Number(process.hrtime.bigint() - started) / 1e9;
+  const ok = result.startsWith("uploaded") && bucketLookup.count === 3 && attempts.count === 1;
+  (ok ? pass : fail)(
+    "lookup grant pending twice, then granted",
+    `${bucketLookup.count} lookups, ${attempts.count} upload in ${secs.toFixed(1)}s → ${result}`,
+  );
+  bucketLookup.failTimes = 0;
 }
 
 rmSync(dir, { recursive: true, force: true });

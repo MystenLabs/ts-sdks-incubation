@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  antigravityClient,
+  antigravityConfigPath,
   CLI_CLIENT_SPECS,
-  claudeDesktopConfigPath,
   cliClient,
   commandExists,
   cursorConfigPath,
@@ -288,29 +289,9 @@ describe("jsonFileClient", () => {
     expect(config.mcpServers.other).toEqual({ command: "x", args: [] });
     expect(config.mcpServers[SERVER_NAME]).toBeDefined();
   });
-
-  it("throws when the platform has no config path", () => {
-    const client = jsonFileClient({
-      id: "claude-desktop",
-      label: "Claude Desktop",
-      configPath: () => null,
-      detect: () => false,
-    });
-    expect(() => client.register(pkgSpec)).toThrow();
-  });
 });
 
 describe("config path resolvers", () => {
-  it("claudeDesktopConfigPath resolves per platform", () => {
-    expect(claudeDesktopConfigPath("darwin", "/home/x")).toContain(
-      path.join("Library", "Application Support", "Claude", "claude_desktop_config.json"),
-    );
-    expect(claudeDesktopConfigPath("linux", "/home/x")).toBe(
-      path.join("/home/x", ".config", "Claude", "claude_desktop_config.json"),
-    );
-    expect(claudeDesktopConfigPath("freebsd", "/home/x")).toBeNull();
-  });
-
   it("cursorConfigPath is ~/.cursor/mcp.json on every platform", () => {
     expect(cursorConfigPath("darwin", "/home/x")).toBe(path.join("/home/x", ".cursor", "mcp.json"));
     expect(cursorConfigPath("win32", "C:\\Users\\x")).toBe(
@@ -335,7 +316,7 @@ describe("dirExists", () => {
 describe("getClients", () => {
   it("returns the five supported clients in a stable order", () => {
     const ids = getClients().map((c) => c.id);
-    expect(ids).toEqual(["claude-code", "claude-desktop", "cursor", "codex", "gemini"]);
+    expect(ids).toEqual(["claude-code", "cursor", "codex", "gemini", "antigravity"]);
   });
 
   it("every client exposes detect/register/manualHint", () => {
@@ -393,6 +374,40 @@ describe("renderConfirmLine", () => {
 });
 
 describe("selectClients", () => {
+  // The same zero-columns pty case tests/tui.test.ts covers for selectOne: both
+  // selectors read `process.stdout.columns` themselves, and both read it the
+  // same wrong way. Fixing one and not the other would leave the Register step
+  // unframed in the run whose earlier steps frame.
+  it("frames on a terminal that reports zero columns", async () => {
+    const original = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+    Object.defineProperty(process.stdout, "columns", { value: 0, configurable: true });
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _enc, cb) {
+        chunks.push(String(chunk));
+        cb();
+      },
+    });
+    try {
+      const input = new PassThrough();
+      const pending = selectClients([stubClient("alpha", true)], {
+        input,
+        output,
+        isTTY: true,
+        title: "REGISTER",
+      });
+      // Ctrl-C, not esc: a lone escape byte sits in readline's 500 ms
+      // ESCAPE_CODE_TIMEOUT before it is delivered, and this test only needs
+      // the first render to have happened.
+      input.write("\x03");
+      await pending;
+      expect(chunks.join("")).toContain("\u256d");
+    } finally {
+      if (original) Object.defineProperty(process.stdout, "columns", original);
+      else delete (process.stdout as { columns?: number }).columns;
+    }
+  });
+
   it("non-TTY: auto-selects only the detected clients (no UI)", async () => {
     const chosen = await selectClients([stubClient("a", true), stubClient("b", false)], {
       isTTY: false,
@@ -427,6 +442,26 @@ describe("selectClients", () => {
     input.write(" "); // space on the Confirm row confirms
     const chosen = await pending;
     expect(chosen?.map((c) => c.id)).toEqual(["alpha"]); // alpha stayed ticked, beta not
+  });
+
+  // COMG-1133: the rendered REGISTER panel, not just the registry ids — this is
+  // what the user sees.
+  it("interactive: the real registry renders five rows and no Claude Desktop", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const chunks: string[] = [];
+    output.on("data", (chunk: Buffer) => chunks.push(chunk.toString()));
+    // Real ids and labels, stubbed detection: the host's PATH and ~/.cursor
+    // must not decide what this test renders.
+    const clients = getClients().map((c) => ({ ...c, detect: () => false }));
+    const pending = selectClients(clients, { input, output, isTTY: true });
+    input.write("\x03"); // Ctrl-C cancels once the first frame is drawn
+    await pending;
+    const text = chunks.join("");
+    for (const label of ["Claude Code", "Cursor", "Codex", "Gemini", "Antigravity"]) {
+      expect(text).toContain(label);
+    }
+    expect(text).not.toContain("Claude Desktop");
   });
 
   it("interactive: Ctrl-C cancels and returns null", async () => {
@@ -490,16 +525,18 @@ describe("jsonFileClient — preserving an existing config", () => {
     expect(JSON.parse(fs.readFileSync(configPath, "utf-8")).mcpServers[SERVER_NAME]).toBeDefined();
   });
 
-  it("keeps a JSON null config from being treated as an object", () => {
-    const configPath = path.join(tmpDir, "cursor", "null.json");
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, "null");
+  it.each([null, [], 42, "text", true].map((value) => ({ value })))(
+    "refuses a non-object config $value without changing bytes",
+    ({ value }) => {
+      const configPath = path.join(tmpDir, "cursor", "null.json");
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      const raw = `  ${JSON.stringify(value)}\n`;
+      fs.writeFileSync(configPath, raw);
 
-    clientFor(configPath).register(pkgSpec);
-
-    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    expect(config.mcpServers[SERVER_NAME]).toBeDefined();
-  });
+      expect(() => clientFor(configPath).register(pkgSpec)).toThrow(/top-level.*not an object/i);
+      expect(fs.readFileSync(configPath, "utf-8")).toBe(raw);
+    },
+  );
 
   it("preserves unrelated top-level keys and other servers", () => {
     const configPath = path.join(tmpDir, "cursor", "rich.json");
@@ -537,5 +574,142 @@ describe("jsonFileClient — preserving an existing config", () => {
     clientFor(configPath).register(pkgSpec);
 
     expect(fs.readdirSync(path.dirname(configPath))).toEqual(["tidy.json"]);
+  });
+});
+
+describe("antigravityConfigPath", () => {
+  it("is ~/.gemini/config/mcp_config.json on every platform", () => {
+    expect(antigravityConfigPath("/Users/x")).toBe(
+      path.join("/Users/x", ".gemini", "config", "mcp_config.json"),
+    );
+    expect(antigravityConfigPath("C:\\Users\\x")).toBe(
+      path.join("C:\\Users\\x", ".gemini", "config", "mcp_config.json"),
+    );
+  });
+});
+
+describe("antigravityClient", () => {
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(tmpDir, "home-"));
+  });
+  const client = (hasAgy = false) => antigravityClient({ home, hasAgy: () => hasAgy });
+  const cfgDir = () => path.join(home, ".gemini", "config");
+  const cfgFile = () => antigravityConfigPath(home);
+  const markMigrated = () => {
+    fs.mkdirSync(cfgDir(), { recursive: true });
+    fs.writeFileSync(path.join(cfgDir(), ".migrated"), "");
+  };
+
+  it("has the id, label and a nextStep naming both surfaces", () => {
+    const c = client();
+    expect(c.id).toBe("antigravity");
+    expect(c.label).toBe("Antigravity");
+    expect(c.nextStep).toContain("/mcp");
+    expect(c.nextStep).toContain("Installed MCP Servers");
+  });
+
+  describe("detect", () => {
+    it.each(["antigravity", "antigravity-cli", "antigravity-ide"])(
+      "is found when ~/.gemini/%s is a directory",
+      (dir) => {
+        fs.mkdirSync(path.join(home, ".gemini", dir), { recursive: true });
+        expect(client().detect()).toBe(true);
+      },
+    );
+
+    it("is found when agy is on PATH", () => {
+      expect(client(true).detect()).toBe(true);
+    });
+
+    it("is not found for ~/.gemini alone (Gemini CLI uses it)", () => {
+      fs.mkdirSync(path.join(home, ".gemini"), { recursive: true });
+      expect(client().detect()).toBe(false);
+    });
+
+    it("is not found for ~/.gemini/config alone", () => {
+      fs.mkdirSync(cfgDir(), { recursive: true });
+      expect(client().detect()).toBe(false);
+    });
+
+    it("is not found when ~/.gemini/antigravity is a file", () => {
+      fs.mkdirSync(path.join(home, ".gemini"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".gemini", "antigravity"), "");
+      expect(client().detect()).toBe(false);
+    });
+  });
+
+  describe("register", () => {
+    it("refuses before the first-start migration and creates nothing", () => {
+      expect(() => client().register(INSTALLED_BIN)).toThrow(
+        /hasn't finished its first start.*\.migrated/s,
+      );
+      expect(fs.existsSync(path.join(home, ".gemini"))).toBe(false);
+    });
+
+    it("refuses without touching an existing config when .migrated is missing", () => {
+      fs.mkdirSync(cfgDir(), { recursive: true });
+      fs.writeFileSync(cfgFile(), '{"mcpServers":{}}');
+      expect(() => client().register(INSTALLED_BIN)).toThrow(/first start/);
+      expect(fs.readFileSync(cfgFile(), "utf-8")).toBe('{"mcpServers":{}}');
+      expect(fs.readdirSync(cfgDir())).toEqual(["mcp_config.json"]);
+    });
+
+    it("writes {command, args: []} once migrated", () => {
+      markMigrated();
+      client().register(INSTALLED_BIN);
+      expect(JSON.parse(fs.readFileSync(cfgFile(), "utf-8"))).toEqual({
+        mcpServers: { [SERVER_NAME]: { command: INSTALLED_BIN, args: [] } },
+      });
+    });
+
+    it("preserves other servers and unknown keys at both levels", () => {
+      markMigrated();
+      fs.writeFileSync(
+        cfgFile(),
+        JSON.stringify({
+          topLevel: { keep: 1 },
+          mcpServers: {
+            other: { command: "o", args: ["x"], env: { A: "1" } },
+            [SERVER_NAME]: { command: "old", args: ["a"], extra: true },
+          },
+        }),
+      );
+      client().register(INSTALLED_BIN);
+      const cfg = JSON.parse(fs.readFileSync(cfgFile(), "utf-8"));
+      expect(cfg.topLevel).toEqual({ keep: 1 });
+      expect(cfg.mcpServers.other).toEqual({ command: "o", args: ["x"], env: { A: "1" } });
+      expect(cfg.mcpServers[SERVER_NAME].command).toBe(INSTALLED_BIN);
+      expect(cfg.mcpServers[SERVER_NAME].args).toEqual([]);
+    });
+
+    it("refuses invalid JSON and leaves the file untouched", () => {
+      markMigrated();
+      fs.writeFileSync(cfgFile(), "{ not json");
+      expect(() => client().register(INSTALLED_BIN)).toThrow(/could not be parsed/);
+      expect(fs.readFileSync(cfgFile(), "utf-8")).toBe("{ not json");
+    });
+
+    it("manualHint names the shared config path once migrated", () => {
+      markMigrated();
+      expect(client().manualHint(INSTALLED_BIN)).toContain(cfgFile());
+    });
+
+    // The installer prints manualHint right after a refused register. Before the
+    // first-start migration, a hand-written entry is dropped just like ours, so
+    // the hint must not invite one.
+    it("manualHint says to start Antigravity first, not to edit the file, before migration", () => {
+      const hint = client().manualHint(INSTALLED_BIN);
+      expect(hint).not.toContain(cfgFile());
+      expect(hint).toMatch(/run `agy` once/);
+      expect(hint).toMatch(/re-run/);
+    });
+
+    it("refuses a non-object mcpServers instead of spreading it", () => {
+      markMigrated();
+      fs.writeFileSync(cfgFile(), '{"mcpServers":"abc","x":1}');
+      expect(() => client().register(INSTALLED_BIN)).toThrow(/mcpServers/);
+      expect(fs.readFileSync(cfgFile(), "utf-8")).toBe('{"mcpServers":"abc","x":1}');
+    });
   });
 });

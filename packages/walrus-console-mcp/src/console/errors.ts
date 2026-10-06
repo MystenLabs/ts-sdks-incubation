@@ -20,7 +20,12 @@ export class ConsoleAuthError extends Data.TaggedError("ConsoleAuthError")<{
     | "read_only_api_key"
     // A 403 from a scope violation (e.g. a working key hitting the Key-Admin mint
     // endpoints). Kept distinct so the fidelity isn't lost to invalid_api_key.
-    | "insufficient_scope";
+    | "insufficient_scope"
+    // A revoked key: plainly, by a rotation that has not finished, or replaced by
+    // one. Each has a different remedy; see `revokedKey.ts`.
+    | "api_key_revoked"
+    | "api_key_rotation_incomplete"
+    | "api_key_replaced";
 }> {}
 
 export class SealCryptoError extends Data.TaggedError("SealCryptoError")<{
@@ -35,6 +40,12 @@ export class SealCryptoError extends Data.TaggedError("SealCryptoError")<{
     | "session_key"
     | "sign"
     | "generate_keypair";
+  /**
+   * The Seal policy the ciphertext is bound to, set by `decrypt` on failures after the
+   * ciphertext has been parsed. Attached for diagnostics and agent-visible tool output;
+   * `download_file` does not rewrite failures from it.
+   */
+  readonly embeddedPolicyId?: string;
 }> {}
 
 /**
@@ -124,6 +135,63 @@ export class BucketCreatePinError extends Data.TaggedError("BucketCreatePinError
     | "anchor_id_mismatch";
 }> {}
 
+/**
+ * Raised by `upload_file` when the Seal policy to encrypt under cannot be
+ * established. Always raised before the local file is read, so nothing is
+ * encrypted or uploaded (COMG-1007).
+ *
+ * - `no_policy` — Console reports no `seal_policy_id` for the bucket (e.g. a
+ *   public bucket), so there is no group to encrypt to.
+ * - `unverifiable` — Console's `seal_policy_id` does not derive from the bucket
+ *   id and any creator this client trusts (typically: the bucket was created by
+ *   a different key), and the caller did not confirm it by passing that same
+ *   `sealPolicyId`. The message lists the creators tried, how to confirm the
+ *   policy, and, when relevant, why this host's signing key could not be loaded.
+ * - `caller_mismatch` — the caller passed a `sealPolicyId` that is not a valid
+ *   object id, or that differs from the bucket's policy (verified locally, or as
+ *   Console reports it). Encrypting under it would bind the file to a different
+ *   group than the bucket's, so its members could not read it.
+ */
+export class UploadPolicyError extends Data.TaggedError("UploadPolicyError")<{
+  readonly message: string;
+  readonly reason: "no_policy" | "unverifiable" | "caller_mismatch";
+}> {}
+
+/**
+ * Raised instead of decrypting: the folder is not decryptable here (`not_private`,
+ * `missing_policy`, `missing_creator`), or the ciphertext disagrees with the record /
+ * derived group (`mismatch`, `wrong_group`, `size`, …).
+ */
+export class FileBindingRefusedError extends Data.TaggedError("FileBindingRefusedError")<{
+  readonly message: string;
+  readonly reason:
+    | "record_not_bound"
+    | "unreadable"
+    | "mismatch"
+    | "wrong_group"
+    | "size"
+    | "not_private"
+    /** Private folder whose `seal_policy_id` column is empty — not the same as public. */
+    | "missing_policy"
+    /** Private folder whose `creator` column is missing — group cannot be derived. */
+    | "missing_creator";
+  readonly bucketId: string;
+  readonly fileId: string;
+}> {}
+
+/**
+ * Upload was accepted by Console, but the created row does not carry the binding
+ * this client wrote into the ciphertext. The columns are write-once, so the file
+ * is stored and permanently unreadable to every binding client. Do not retry.
+ */
+export class UploadBindingStoredUnreadableError extends Data.TaggedError(
+  "UploadBindingStoredUnreadableError",
+)<{
+  readonly message: string;
+  readonly fileId: string;
+  readonly bucketId: string;
+}> {}
+
 /** Raised when a mint is attempted without a configured Key-Admin credential. */
 export class AdminCredentialMissingError extends Data.TaggedError("AdminCredentialMissingError")<{
   readonly message: string;
@@ -135,10 +203,42 @@ export class MirrorGrantMissingError extends Data.TaggedError("MirrorGrantMissin
   readonly attempt: number;
 }> {}
 
+/**
+ * What to do about a failed upload, mapped from Console's `error.code` in
+ * `uploadFailure.ts` (the same vocabulary Console's OpenAPI uses for its retry
+ * classes):
+ *
+ * - `daily_limit`: this account's rolling 24h funding cap is closed. Stop
+ *   uploading to this account until `retry_at`; the service refuses further
+ *   uploads locally until then (`UploadsPausedError`).
+ * - `funding_paused`: funding is refused service-wide, for every account.
+ *   Stop the batch; an operator can lift it at any time.
+ * - `storage_cap`: the space is full; free space first.
+ * - `transient`: retry the same upload after a short pause.
+ * - `permanent`: retrying as-is will not succeed; also the fallback for a
+ *   code this build does not know, deliberately (see `uploadFailure.ts`).
+ */
+export type UploadFailureCondition =
+  | "daily_limit"
+  | "funding_paused"
+  | "storage_cap"
+  | "transient"
+  | "permanent";
+
 export class FileStatusError extends Data.TaggedError("FileStatusError")<{
   readonly fileId: string;
   readonly state: string;
   readonly error?: { code: string; message: string };
+}> {}
+
+/**
+ * Refused before any API call: `get_file_status` earlier reported that this
+ * account's daily funding limit is closed until `retryAt`.
+ */
+export class UploadsPausedError extends Data.TaggedError("UploadsPausedError")<{
+  readonly message: string;
+  readonly condition: "daily_limit";
+  readonly retryAt: string;
 }> {}
 
 export class LocalFsError extends Data.TaggedError("LocalFsError")<{

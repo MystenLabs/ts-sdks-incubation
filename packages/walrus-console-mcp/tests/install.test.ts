@@ -30,11 +30,17 @@ import {
   visibleWidth,
 } from "../bin/install.js";
 import { DEFAULT_CONSOLE_API_BASE_URL } from "../src/baseUrl.js";
-import type { Client } from "../src/clients.js";
-import { loadConfigFile, saveConfigFile } from "../src/configFile.js";
+import { type Client, jsonFileClient } from "../src/clients.js";
+import {
+  getAdminConfigFilePath,
+  getConfigDir,
+  loadConfigFile,
+  type mergeConfigFile,
+  saveConfigFile,
+} from "../src/configFile.js";
 import type { PinSeeds } from "../src/credentials.js";
 import { toRealPath } from "../src/pathSandbox.js";
-import { panelWidth, wrapVisible } from "../src/tui.js";
+import { panelWidth, stripAnsi, wrapVisible } from "../src/tui.js";
 
 /** A real, decodable signer — `isValidServiceKeyFormat` now actually decodes the value. */
 const VALID_SIGNER = Ed25519Keypair.generate().getSecretKey();
@@ -578,8 +584,8 @@ describe("getPackageVersion", () => {
   });
 });
 
-// Client detection + registration (Claude Desktop, Cursor, Claude Code, Codex,
-// Gemini) lives in src/clients.ts and is covered by tests/clients.test.ts.
+// Client detection + registration (Claude Code, Cursor, Codex, Gemini, Antigravity) lives in
+// src/clients.ts and is covered by tests/clients.test.ts.
 
 describe("allowedDirChoices", () => {
   it("builds presets from cwd and home, never POSIX literals", () => {
@@ -667,6 +673,52 @@ describe("stepAllowedDirs", () => {
   it("warns when Home is chosen", () => {
     expect(HOME_DIR_WARNING).toMatch(/home directory/i);
   });
+
+  // Companion to stepAuth's equivalent test above: this step only ever
+  // writes `allowedDirs`, so a legacy inline admin pair migrating into
+  // admin.json is always a side effect of `mergeConfigFile`'s own read, not
+  // something `updates` names — the "saved →" line has to learn about it
+  // from the migration notice firing, not from `updates`. Uses the REAL
+  // `mergeConfigFile` (no `merge` override) so the migration actually runs.
+  it("names admin.json in the saved line when this write migrates a legacy inline pair (interactive picker)", async () => {
+    const envBackup = { ...process.env };
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    try {
+      const dir = getConfigDir();
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({ adminKey: "hbradm_legacy", adminServicePrivateKey: VALID_SIGNER }),
+        "utf-8",
+      );
+      const target = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-picker-dir-"));
+      const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+      const capture = captureStdout();
+      try {
+        await stepAllowedDirs({
+          cwd: tmpDir,
+          home: tmpDir,
+          select: async () => 4, // custom
+          ask: async () => target,
+        });
+        expect(capture.text()).toContain("config.json + admin.json");
+        // Review, "test gap": the earlier assertion above only pins
+        // the saved-line WORDING, not that the migration notice actually
+        // reached the panel's own line printer rather than console.error —
+        // reverting that specific onNotice callback to console.error left
+        // this test green. These two lines close that gap.
+        expect(warn).not.toHaveBeenCalled();
+        expect(capture.text()).toContain("Moving the Key-Admin credential");
+        expect(fs.existsSync(getAdminConfigFilePath())).toBe(true);
+      } finally {
+        capture.restore();
+        warn.mockRestore();
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+    } finally {
+      process.env = envBackup;
+    }
+  });
 });
 
 describe("stepRegister outcome and exit code", () => {
@@ -714,6 +766,206 @@ describe("stepRegister outcome and exit code", () => {
     expect(registerExitCode(result.outcome)).toBe(0);
   });
 
+  it("prints a client's nextStep after verification succeeds, and only then", async () => {
+    const capture = captureStdout();
+    let outputDuringVerification = "";
+    try {
+      await stepRegister(spec, {
+        select: async () => [
+          fakeClient({
+            label: "Hinted",
+            nextStep: "Reload it in the app.",
+            verify: () => {
+              outputDuringVerification = capture.text();
+              return undefined;
+            },
+          }),
+          fakeClient({ label: "Plain" }),
+        ],
+        install: () => "/abs/launcher",
+      });
+      const out = capture.text();
+      expect(outputDuringVerification).not.toContain("Hinted configured");
+      expect(outputDuringVerification).not.toContain("Reload it in the app.");
+      expect(out).toContain("Hinted configured");
+      expect(out).toContain("Reload it in the app.");
+      expect(out.match(/Reload it in the app\./g)).toHaveLength(1);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  // A JSON-file client's app can save settings it loaded before we wrote, dropping
+  // our entry with no error on our side. The check runs after every client has
+  // registered, so the app has had the CLI clients' run time to do it.
+  it("re-checks every configured client after the last one, and does not count one whose entry is gone", async () => {
+    const capture = captureStdout();
+    const order: string[] = [];
+    try {
+      const result = await stepRegister(spec, {
+        select: async () => [
+          fakeClient({
+            label: "Overwritten",
+            register: () => order.push("register Overwritten"),
+            verify: (cmd) => {
+              order.push(`verify Overwritten ${cmd}`);
+              return "the entry is no longer there";
+            },
+          }),
+          fakeClient({
+            label: "Kept",
+            register: () => order.push("register Kept"),
+            verify: () => {
+              order.push("verify Kept");
+              return undefined;
+            },
+          }),
+          fakeClient({ label: "NoVerify", register: () => order.push("register NoVerify") }),
+        ],
+        install: () => "/abs/launcher",
+      });
+      expect(order).toEqual([
+        "register Overwritten",
+        "register Kept",
+        "register NoVerify",
+        "verify Overwritten /abs/launcher",
+        "verify Kept",
+      ]);
+      expect(result.configured).toBe(2);
+      const out = capture.text();
+      expect(out).toMatch(/Overwritten.*the entry is no longer there/);
+      expect(out).toContain("re-run the installer");
+      expect(out).not.toMatch(/Kept.*no longer/);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it.each(["unreadable", "missing"] as const)(
+    "withholds success and reload instructions when a real JSON entry becomes %s",
+    async (failure) => {
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pr90-verify-"));
+      const configPath = path.join(fixture, "mcp.json");
+      fs.writeFileSync(configPath, '{"mcpServers":{"other":{"command":"other"}}}');
+      let denyRead = false;
+      const real = jsonFileClient({
+        id: "fixture",
+        label: "Fixture",
+        detect: () => true,
+        configPath: () => configPath,
+        readFile: (p) => {
+          if (denyRead) throw Object.assign(new Error("EACCES fixture"), { code: "EACCES" });
+          return fs.readFileSync(p, "utf8");
+        },
+      });
+      const capture = captureStdout();
+      try {
+        const result = await stepRegister(spec, {
+          install: () => "/abs/launcher",
+          select: async () => [
+            { ...real, nextStep: "Reload fixture client." },
+            fakeClient({
+              label: "Fine",
+              // Simulate another writer changing the earlier client's config
+              // between registration and the final verification pass.
+              register: () => {
+                if (failure === "unreadable") denyRead = true;
+                else fs.unlinkSync(configPath);
+              },
+            }),
+          ],
+        });
+        const out = capture.text();
+        expect(result.configured).toBe(1);
+        expect(out).toContain("Fixture could not be verified");
+        expect(out).not.toContain("Fixture entry lost");
+        expect(out).not.toContain("Fixture configured");
+        expect(out).not.toContain("Reload fixture client.");
+        expect(out).toContain("Fine configured");
+        if (failure === "unreadable") {
+          expect(out).toContain("EACCES fixture");
+          expect(
+            JSON.parse(fs.readFileSync(configPath, "utf8")).mcpServers["walrus-console-mcp"],
+          ).toEqual({ command: "/abs/launcher", args: [] });
+        } else {
+          expect(out).toContain("no longer there");
+          expect(fs.existsSync(configPath)).toBe(false);
+        }
+      } finally {
+        capture.restore();
+        fs.rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("keeps going when a client's verify throws, reporting it as unverified", async () => {
+    const capture = captureStdout();
+    try {
+      const result = await stepRegister(spec, {
+        select: async () => [
+          fakeClient({
+            label: "Throws",
+            nextStep: "Reload throwing client.",
+            verify: () => {
+              throw new Error("no home directory");
+            },
+          }),
+          fakeClient({ label: "Fine", verify: () => undefined }),
+        ],
+        install: () => "/abs/launcher",
+      });
+      expect(result.configured).toBe(1);
+      expect(capture.text()).toMatch(/Throws.*could not be verified.*no home directory/);
+      expect(capture.text()).not.toContain("Throws entry lost");
+      expect(capture.text()).not.toContain("Throws configured");
+      expect(capture.text()).not.toContain("Reload throwing client.");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("does not verify a client whose register failed", async () => {
+    let verified = false;
+    const result = await stepRegister(spec, {
+      select: async () => [
+        fakeClient({
+          register: () => {
+            throw new Error("boom");
+          },
+          verify: () => {
+            verified = true;
+            return undefined;
+          },
+        }),
+      ],
+      install: () => "/abs/launcher",
+    });
+    expect(verified).toBe(false);
+    expect(result.configured).toBe(0);
+  });
+
+  it("does not print nextStep when registration fails", async () => {
+    const capture = captureStdout();
+    try {
+      await stepRegister(spec, {
+        select: async () => [
+          fakeClient({
+            nextStep: "Reload it in the app.",
+            register: () => {
+              throw new Error("boom");
+            },
+          }),
+        ],
+        install: () => "/abs/launcher",
+      });
+      const out = capture.text();
+      expect(out).toContain("not configured");
+      expect(out).not.toContain("Reload it in the app.");
+    } finally {
+      capture.restore();
+    }
+  });
+
   it("keeps a zero exit code when the checklist is cancelled", async () => {
     const result = await stepRegister(spec, { select: async () => null });
     expect(result.outcome).toBe("cancelled");
@@ -724,6 +976,47 @@ describe("stepRegister outcome and exit code", () => {
     const result = await stepRegister(spec, { select: async () => [] });
     expect(result.outcome).toBe("none-selected");
     expect(registerExitCode(result.outcome)).toBe(0);
+  });
+
+  // COMG-1133: Claude Desktop is no longer a row, so a Desktop-only user who
+  // re-runs `install` to upgrade ticks nothing — and the launcher their
+  // hand-written entry points at is silently left on the old version.
+  it("says the launcher was not installed or upgraded when no client is ticked", async () => {
+    let installed = false;
+    const capture = captureStdout();
+    try {
+      await stepRegister(spec, {
+        select: async () => [],
+        install: () => {
+          installed = true;
+          return "/abs/launcher";
+        },
+      });
+    } finally {
+      capture.restore();
+    }
+    expect(installed).toBe(false);
+    expect(capture.text()).toContain("launcher was not installed or upgraded");
+    expect(capture.text()).toContain("Claude Desktop");
+  });
+
+  it("says the launcher was not installed or upgraded when the checklist is cancelled", async () => {
+    let installed = false;
+    const capture = captureStdout();
+    try {
+      await stepRegister(spec, {
+        select: async () => null,
+        install: () => {
+          installed = true;
+          return "/abs/launcher";
+        },
+      });
+    } finally {
+      capture.restore();
+    }
+    expect(installed).toBe(false);
+    expect(capture.text()).toContain("launcher was not installed or upgraded");
+    expect(capture.text()).toContain("Claude Desktop");
   });
 });
 
@@ -1060,6 +1353,43 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
       capture.restore();
     }
   });
+
+  // Same case as the interactive-picker test above, for applySeededAllowedDirs
+  // (the `--allowed-dirs` flag path) — its panel uses `rail`, a real bordered
+  // box a bare console.error would break, so this also stands in for that
+  // regression check. Uses the REAL mergeConfigFile (no `merge` override).
+  it("names admin.json in the saved line when this write migrates a legacy inline pair (seeded)", async () => {
+    const envBackup = { ...process.env };
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    try {
+      const dir = getConfigDir();
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({ adminKey: "hbradm_legacy", adminServicePrivateKey: VALID_SIGNER }),
+        "utf-8",
+      );
+      const target = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-seed-migrate-dir-"));
+      const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+      const capture = captureStdout();
+      try {
+        await stepAllowedDirs({ cwd: tmpDir, home: tmpDir, seed: [target] });
+        expect(capture.text()).toContain("config.json + admin.json");
+        // Review, "test gap": pins that the migration notice reached
+        // `rail.line`, not a bare `console.error` — a revert of that specific
+        // onNotice callback left this test green before this assertion.
+        expect(warn).not.toHaveBeenCalled();
+        expect(capture.text()).toContain("Moving the Key-Admin credential");
+        expect(fs.existsSync(getAdminConfigFilePath())).toBe(true);
+      } finally {
+        capture.restore();
+        warn.mockRestore();
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+    } finally {
+      process.env = envBackup;
+    }
+  });
 });
 
 describe("stepAuth", () => {
@@ -1101,6 +1431,100 @@ describe("stepAuth", () => {
       rl.close();
     }
     expect(seen).toEqual([{ ownerAddress: OWNER_ADDRESS, keyAdminAddress: KEY_ADMIN_ADDRESS }]);
+  });
+
+  // The C15 review also flagged (as "cosmetic, related") that the
+  // "saved →" summary line only named admin.json when `updates` itself
+  // carried an admin field — missing the case where a legacy inline pair
+  // migrates as a side effect of an otherwise unrelated write (exactly what
+  // the C15 fix made possible: the notice now fires here too). This proves
+  // the summary line follows suit.
+  it("names admin.json in the saved summary when this write migrates a legacy inline pair as a side effect", async () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ adminKey: "hbradm_legacy", adminServicePrivateKey: VALID_SIGNER }),
+      "utf-8",
+    );
+
+    const rl = readline.createInterface({ input: new PassThrough(), output: new PassThrough() });
+    const capture = captureStdout();
+    try {
+      // Only a working-key write — no admin field in `updates` — yet the
+      // legacy pair already on disk still needs to migrate into admin.json.
+      await stepAuth(
+        rl,
+        "api",
+        {},
+        {
+          collect: async () => ({ updates: { apiKey: "hbr_new" }, clear: [] }),
+        },
+      );
+    } finally {
+      capture.restore();
+      rl.close();
+    }
+    expect(capture.text()).toContain("config.json + admin.json");
+    expect(fs.existsSync(getAdminConfigFilePath())).toBe(true);
+  });
+
+  // security review, C18: `resolveInstallBaseUrl` and the pre-write
+  // `loadConfigFileOrEmpty` read inside this step both used to warn about a
+  // corrupt file via the default bare `console.error` — landing mid-render
+  // and tearing the AUTHENTICATE panel's `│` border, the same failure mode
+  // `onNotice` was added to `mergeConfigFile` to fix. Both are wired to the
+  // panel's own line printer now, so a corrupt file here must never reach
+  // `console.error` at all.
+  it("routes a corrupt config.json's warnings through the panel instead of a bare console.error (C18)", async () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not valid json", "utf-8");
+
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rl = readline.createInterface({ input: new PassThrough(), output: new PassThrough() });
+    const capture = captureStdout();
+    try {
+      await stepAuth(rl, "api", {}, { collect: async () => ({ updates: {}, clear: [] }) });
+      expect(warn).not.toHaveBeenCalled();
+      expect(capture.text()).toContain("could not be parsed as JSON");
+    } finally {
+      capture.restore();
+      rl.close();
+      warn.mockRestore();
+    }
+  });
+
+  // security review, "test gap": the test above only isolates
+  // `resolveInstallBaseUrl`'s onNotice — with the per-path dedup (C16b),
+  // that read always happens first and already consumes the one warning for
+  // config.json, so the SECOND read (the `loadConfigFileOrEmpty` fed to
+  // `collect` below) never even attempts to warn, and its own onNotice
+  // wiring could be reverted to a bare `console.error` without this test
+  // going red. Setting CONSOLE_API_BASE_URL short-circuits
+  // `resolveInstallBaseUrl` before it ever reads the file (see its own
+  // `CONSOLE_API_BASE_URL || loadConfigFileOrEmpty(...)…`), so THIS read is
+  // the first and only one — isolating the second call site for real.
+  it("routes the pre-write loadConfigFileOrEmpty's own warning through the panel too, not just resolveInstallBaseUrl's (C18)", async () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not valid json", "utf-8");
+
+    const envBackup = { ...process.env };
+    process.env = { ...process.env, CONSOLE_API_BASE_URL: DEFAULT_CONSOLE_API_BASE_URL };
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rl = readline.createInterface({ input: new PassThrough(), output: new PassThrough() });
+    const capture = captureStdout();
+    try {
+      await stepAuth(rl, "api", {}, { collect: async () => ({ updates: {}, clear: [] }) });
+      expect(warn).not.toHaveBeenCalled();
+      expect(capture.text()).toContain("could not be parsed as JSON");
+    } finally {
+      capture.restore();
+      rl.close();
+      warn.mockRestore();
+      process.env = envBackup;
+    }
   });
 });
 
@@ -1217,6 +1641,33 @@ describe("runInstall", () => {
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
+    });
+
+    // security review, C11: `resolveInstallBaseUrl` and the pre-write read
+    // passed to `validateSilent` as `existing` both used to call
+    // `loadConfigFile` bare — a pure read, evaluated as a plain function
+    // argument before `validateSilent` ever runs, so a corrupt admin.json
+    // threw there and masked whatever `validateSilent` would otherwise have
+    // reported. The actual WRITE (`mergeConfigFile`'s own internal load)
+    // stays correctly fail-stop on a genuinely corrupt admin.json — the
+    // review itself calls that "deliberate and right" — so this only fixes the
+    // reads that ran BEFORE any write decision exists. What's testable
+    // post-fix: a wrong-key-type error unrelated to admin.json now surfaces
+    // correctly instead of being pre-empted by the admin file's own corruption.
+    it("surfaces a real validation error instead of an unrelated admin.json corruption (C11)", async () => {
+      fs.mkdirSync(getConfigDir(), { recursive: true });
+      fs.writeFileSync(getAdminConfigFilePath(), '{ "adminKey": "hbradm_TRUNC', "utf-8");
+
+      const { code, out } = await runSilent([
+        "--admin-key",
+        "hbr_wrong_type",
+        "--admin-signer",
+        VALID_SIGNER,
+      ]);
+
+      expect(code).toBe(1);
+      expect(out).toMatch(/everyday API key/i); // validateSilent's real error
+      expect(out).not.toMatch(/could not be parsed as JSON/); // the masked one
     });
   });
 
@@ -1394,6 +1845,51 @@ describe("runInstall", () => {
       expect(seenExitCode).toBe(1);
     });
 
+    // COMG-1133 review: ticking nothing is now the normal Claude Desktop path, so
+    // a green "0 agents configured" plus "Restart your agent" reads as success
+    // while no launcher exists for any agent to start.
+    for (const outcome of ["none-selected", "cancelled"] as const) {
+      it(`does not report success in the DONE panel when registration is ${outcome}`, async () => {
+        const exitCodeBackup = process.exitCode;
+        const capture = captureStdout();
+        try {
+          await runInstall([], {
+            choose: async () => "api",
+            createReadline: pipeReadline,
+            auth: async () => ({ updates: {}, clear: [] }),
+            allowedDirs: async () => ({ updates: {}, clear: [] }),
+            register: async () => ({ outcome, configured: 0 }),
+          });
+          const out = capture.text();
+          expect(out).toContain("No agent registered");
+          expect(out).not.toContain("0 agents configured");
+          expect(out).not.toContain("Restart your agent");
+          expect(process.exitCode ?? 0).toBe(0);
+        } finally {
+          capture.restore();
+          process.exitCode = exitCodeBackup;
+        }
+      });
+    }
+
+    it("still tells the user to restart their agent when one was configured", async () => {
+      const capture = captureStdout();
+      try {
+        await runInstall([], {
+          choose: async () => "api",
+          createReadline: pipeReadline,
+          auth: async () => ({ updates: {}, clear: [] }),
+          allowedDirs: async () => ({ updates: {}, clear: [] }),
+          register: async () => ({ outcome: "installed", configured: 1 }),
+        });
+        const out = capture.text();
+        expect(out).toContain("1 agent configured");
+        expect(out).toContain("Restart your agent");
+      } finally {
+        capture.restore();
+      }
+    });
+
     it("reports a failed server install with a non-zero exit code", async () => {
       const exitCodeBackup = process.exitCode;
       const capture = captureStdout();
@@ -1412,5 +1908,306 @@ describe("runInstall", () => {
         process.exitCode = exitCodeBackup;
       }
     });
+  });
+});
+
+/**
+ * COMG-1036 items 3 and 5: esc on the File access step, and what the installer
+ * says last.
+ */
+describe("stepAllowedDirs — esc (COMG-1036)", () => {
+  it("skips, and says so, when there is no previous step to return to", async () => {
+    const capture = captureStdout();
+    let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
+    try {
+      write = await stepAllowedDirs({ select: async () => null, cwd: tmpDir, home: tmpDir });
+    } finally {
+      capture.restore();
+    }
+    expect(write.backRequested).toBeUndefined();
+    expect(capture.text()).toContain("File access skipped");
+  });
+
+  // `config` redraws the menu straight after, so a "skipped" line printed above
+  // it would describe the opposite of what happened.
+  it("reports back and prints nothing when the caller offers one", async () => {
+    const capture = captureStdout();
+    let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
+    try {
+      write = await stepAllowedDirs({
+        select: async () => null,
+        cwd: tmpDir,
+        home: tmpDir,
+        back: true,
+      });
+    } finally {
+      capture.restore();
+    }
+    expect(write.backRequested).toBe(true);
+    expect(write.updates).toEqual({});
+    expect(capture.text()).toBe("");
+  });
+
+  it("tells the user which one esc does", async () => {
+    const hints: (string | undefined)[] = [];
+    const capture = captureStdout();
+    try {
+      for (const back of [false, true]) {
+        await stepAllowedDirs({
+          select: async (_items, opts) => {
+            hints.push(opts?.hint);
+            return null;
+          },
+          cwd: tmpDir,
+          home: tmpDir,
+          back,
+        });
+      }
+    } finally {
+      capture.restore();
+    }
+    expect(hints[0]).toContain("esc skip");
+    expect(hints[1]).toContain("esc back");
+  });
+});
+
+describe("stepAllowedDirs — the custom-path prompt (COMG-1036)", () => {
+  /** The index of the "Custom path" row in allowedDirChoices. */
+  const customRow = (cwd: string, home: string) =>
+    allowedDirChoices(cwd, home).findIndex((c) => c.id === "custom");
+
+  /**
+   * A prompt that gives up rather than answering forever.
+   *
+   * The loop under test re-asks until a folder validates, so a stub that always
+   * answers turns a regression into a hung CI job instead of a failure. Verified
+   * by deleting the `back` branch: this throws on the sixth call.
+   */
+  /**
+   * A merge that writes nothing. Without it `stepAllowedDirs` falls back to the
+   * real `mergeConfigFile`, whose target is resolved from the ambient
+   * XDG_CONFIG_HOME at call time: on a run that reaches the write, that is the
+   * developer's own ~/.config/walrus-console-mcp/config.json.
+   */
+  const noMerge = (() => {}) as unknown as typeof mergeConfigFile;
+
+  const askAtMost = (answers: string[]) => {
+    let calls = 0;
+    return async (): Promise<string> => {
+      if (++calls > answers.length + 1) {
+        throw new Error("the custom-path prompt never let go");
+      }
+      return answers[calls - 1] ?? "back";
+    };
+  };
+
+  it("re-asks until a folder validates, which is why it needs a way out", async () => {
+    const capture = captureStdout();
+    let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
+    try {
+      write = await stepAllowedDirs({
+        select: async () => customRow(tmpDir, tmpDir),
+        ask: askAtMost(["", "back"]),
+        cwd: tmpDir,
+        merge: noMerge,
+        home: tmpDir,
+      });
+    } finally {
+      capture.restore();
+    }
+    // The empty answer was refused rather than accepted, and `back` ended it.
+    expect(capture.text()).toContain("This value is required");
+    expect(capture.text()).toContain("File access skipped");
+    expect(write.updates).toEqual({});
+  });
+
+  it("returns to the menu instead, when the caller has one", async () => {
+    const capture = captureStdout();
+    let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
+    try {
+      write = await stepAllowedDirs({
+        select: async () => customRow(tmpDir, tmpDir),
+        ask: askAtMost(["BACK "]),
+        cwd: tmpDir,
+        merge: noMerge,
+        home: tmpDir,
+        back: true,
+      });
+    } finally {
+      capture.restore();
+    }
+    // Trimmed and case-folded, like every other answer this CLI reads.
+    expect(write.backRequested).toBe(true);
+    expect(capture.text()).not.toContain("File access skipped");
+  });
+
+  it("leaves without saving from the add-another prompt, which used to save", async () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-addanother-"));
+    const merged: unknown[] = [];
+    const capture = captureStdout();
+    let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
+    try {
+      write = await stepAllowedDirs({
+        select: async () => customRow(tmpDir, tmpDir),
+        // A folder that validates, then `back` at "Add another directory?".
+        ask: askAtMost([real, "back"]),
+        cwd: tmpDir,
+        home: tmpDir,
+        merge: ((u: unknown) => {
+          merged.push(u);
+        }) as unknown as typeof mergeConfigFile,
+      });
+    } finally {
+      capture.restore();
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+    // Before this, `back` fell through `isAffirmative` as "no" and the step
+    // saved the folder it had collected, one prompt after promising otherwise.
+    expect(merged).toEqual([]);
+    expect(write.updates).toEqual({});
+  });
+
+  it("leaves from the follow-up folder prompt too", async () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-followup-"));
+    const merged: unknown[] = [];
+    const capture = captureStdout();
+    let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
+    try {
+      write = await stepAllowedDirs({
+        select: async () => customRow(tmpDir, tmpDir),
+        ask: askAtMost([real, "y", "back"]),
+        cwd: tmpDir,
+        home: tmpDir,
+        merge: ((u: unknown) => {
+          merged.push(u);
+        }) as unknown as typeof mergeConfigFile,
+      });
+    } finally {
+      capture.restore();
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+    expect(merged).toEqual([]);
+    expect(write.updates).toEqual({});
+  });
+
+  // The other side of the same edit: reading the answer once, to check it for
+  // the sentinel, must not break the ordinary y/N loop.
+  it("still saves when the operator answers the add-another prompt normally", async () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-normal-"));
+    const merged: unknown[] = [];
+    const capture = captureStdout();
+    let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
+    try {
+      write = await stepAllowedDirs({
+        select: async () => customRow(tmpDir, tmpDir),
+        ask: askAtMost([real, "n"]),
+        cwd: tmpDir,
+        home: tmpDir,
+        merge: ((u: unknown) => {
+          merged.push(u);
+        }) as unknown as typeof mergeConfigFile,
+      });
+    } finally {
+      capture.restore();
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+    expect(merged).toHaveLength(1);
+    expect(write.updates.allowedDirs).toHaveLength(1);
+  });
+
+  it("says so before the prompt, since an unadvertised way out is none", async () => {
+    const capture = captureStdout();
+    try {
+      await stepAllowedDirs({
+        select: async () => customRow(tmpDir, tmpDir),
+        ask: askAtMost(["back"]),
+        cwd: tmpDir,
+        merge: noMerge,
+        home: tmpDir,
+      });
+    } finally {
+      capture.restore();
+    }
+    expect(capture.text()).toContain('Type "back" at any prompt to leave this step');
+  });
+});
+
+describe("runInstall — the last thing it says (COMG-1036)", () => {
+  /** A readline over detached pipes: this must not touch a TTY. */
+  const pipeReadline = () =>
+    readline.createInterface({ input: new PassThrough(), output: new PassThrough() });
+
+  // `claude mcp list` reports Connected the moment the server is registered, so
+  // a session that was already running looks healthy while exposing none of the
+  // 17 tools. The 18 September report is someone re-running the installer
+  // instead, which changes nothing.
+  /** Drive a minimal interactive install and return everything it printed. */
+  const runToSummary = async (columns?: number): Promise<string> => {
+    const envBackup = { ...process.env };
+    const colsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    if (columns !== undefined) {
+      Object.defineProperty(process.stdout, "columns", { value: columns, configurable: true });
+    }
+    const capture = captureStdout();
+    try {
+      await runInstall(["--no-register"], {
+        choose: async () => "api",
+        createReadline: pipeReadline,
+        auth: async () => ({ updates: { apiKey: "hbr_x" }, clear: [] }),
+        allowedDirs: async () => ({ updates: {}, clear: [] }),
+      });
+    } finally {
+      capture.restore();
+      process.env = envBackup;
+      if (colsDescriptor) Object.defineProperty(process.stdout, "columns", colsDescriptor);
+      else delete (process.stdout as { columns?: number }).columns;
+    }
+    return capture.text();
+  };
+
+  // The panel frames down to MIN_PANEL_WIDTH, and its rows used to be clamped,
+  // so this sentence lost its second half at every width, including the widest
+  // panel: it is 90 printable columns against a 67-column budget. The
+  // same defect as the File access tip, in the same change that fixed that one.
+  // Under vitest `process.stdout.columns` is undefined, so a test that does not
+  // set it only ever sees the widest panel.
+  it("keeps the whole sentence on a narrow terminal", async () => {
+    for (const columns of [46, 60, 70]) {
+      const out = stripAnsi(await runToSummary(columns));
+      expect(out).not.toContain("\u2026");
+      // Borders and line breaks removed, so the assertion is about the sentence
+      // surviving rather than about where it happened to wrap.
+      const flat = out.replace(/[\u2502\u256d\u256e\u2570\u256f\u2500]/g, " ").replace(/\s+/g, " ");
+      expect(flat).toContain(
+        "Restart your agent now. The tools will not appear in a session that was already running.",
+      );
+      expect(flat).toContain("Then run ping_console to confirm.");
+    }
+  });
+
+  it("ends by telling the user to restart the agent, and names the check", async () => {
+    const envBackup = { ...process.env };
+    process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
+    const capture = captureStdout();
+    try {
+      await runInstall(["--no-register"], {
+        choose: async () => "api",
+        createReadline: pipeReadline,
+        auth: async () => ({ updates: { apiKey: "hbr_x" }, clear: [] }),
+        allowedDirs: async () => ({ updates: {}, clear: [] }),
+      });
+    } finally {
+      capture.restore();
+      process.env = envBackup;
+    }
+    const out = capture.text();
+    expect(out).toContain("Restart your agent now");
+    expect(out).toContain("will not appear in a session");
+    expect(out).toContain("ping_console");
+    // Last, not a footnote above the housekeeping line.
+    expect(out.indexOf("Restart your agent now")).toBeGreaterThan(
+      out.indexOf("Change a key later"),
+    );
   });
 });

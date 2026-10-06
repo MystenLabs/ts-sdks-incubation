@@ -1,32 +1,55 @@
+import { statSync } from "node:fs";
 import * as path from "node:path";
 import { bcs } from "@mysten/sui/bcs";
-import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
-import { Context, Effect, Layer } from "effect";
+import {
+  deriveObjectID,
+  isValidSuiAddress,
+  isValidSuiObjectId,
+  normalizeSuiAddress,
+} from "@mysten/sui/utils";
+import { Context, Effect, Layer, Schedule } from "effect";
 import { writeFileAtomicAsync } from "../atomicWrite";
 import {
   ConsoleConfigLive,
   ConsoleConfigTag,
   getKeyAdminAddress,
   getWebAccountAddress,
+  hasAdminCredential,
 } from "../config";
 import { tryPromiseSettling } from "../effectPromise";
+import { checkFileNameLength } from "../fileNameLimit";
 import { readFileWithinRootAsync } from "../pathSandbox";
 import { maxTransferBytes } from "../transferLimits";
 import { type AnchorEntry, readAnchors, recordAnchor } from "./anchorStore";
-import type { CreateBucketReserveResponse, FileUploadResponse } from "./ConsoleApiClient";
-import { ConsoleApiClient } from "./ConsoleApiClient";
+import type {
+  CreateBucketReserveResponse,
+  FileStatusData,
+  FileStatusResponse,
+  FileUploadResponse,
+} from "./ConsoleApiClient";
+import { ConsoleApiClient, contentTypeFromName } from "./ConsoleApiClient";
+import {
+  canonicalBucketId,
+  canonicalOriginalName,
+  encodeFileAad,
+  FILE_AAD_VERSION,
+} from "./fileAad";
 import {
   BucketCreatePinError,
   ConsoleApiError,
-  FileStatusError,
+  FileBindingRefusedError,
+  UploadBindingStoredUnreadableError,
   LocalFsError,
   MirrorGrantMissingError,
   PayloadTooLargeError,
   SealCryptoError,
   UnsupportedFileTypeError,
+  UploadPolicyError,
+  UploadsPausedError,
 } from "./errors";
 import { buildUploadMetadata, type FileUserMetadata } from "./fileMetadata";
 import { type BucketGroupPackageConfig, resolvePackageConfigForBaseUrl } from "./packageConfig";
+import { KEY_ADMIN_PIN_REMEDY, WEB_ACCOUNT_PIN_REMEDY } from "./pinRemedy";
 import {
   type AuthoredRoster,
   authorVerifiedRoster,
@@ -35,8 +58,45 @@ import {
   type RosterChainDeps,
 } from "./rosterVerification";
 import { SealCryptoService } from "./SealCryptoService";
-import { describeUploadResult, pollUntilTerminal } from "./uploadPolling";
+import {
+  interpretUploadFailure,
+  type UploadFailureReading,
+  uploadsBlockedUntil,
+  uploadsPausedMessage,
+  type UploadsPause,
+} from "./uploadFailure";
+import { keyAdminPinRemedy } from "./txValidation";
 import { type FileId, type SpaceId, BucketId } from "./types";
+
+/**
+ * How long a write to a just-created bucket rides out Console's ACL-mirror delay:
+ * a 403 `mirror_missing_grant` is retried this many times in total, this far apart.
+ * Shared by the upload's bucket lookup and the upload itself so the two budgets
+ * cannot drift apart.
+ */
+const MIRROR_GRANT_ATTEMPTS = 12;
+const MIRROR_GRANT_RETRY_INTERVAL = "3 seconds";
+
+/**
+ * Bound on `uploadFileToBucket`'s whole accept step — read, encrypt, upload,
+ * and the mirror-grant retry loop above — not just the network call inside it
+ * (COMG-1019 review). This is a hang guard, not a slow-transfer preventer: at
+ * MAX_TRANSFER_BYTES's 256 MiB ceiling, even a slow-but-working connection
+ * (a few Mbit/s) can legitimately take minutes, so this must not fire on an
+ * upload that is merely slow. It exists for the case with no other bound
+ * today — a stalled `fetch` to Console with no response ever coming — which
+ * would otherwise hang until undici's own ~300s backstop (see
+ * SealCryptoService's SESSION_KEY_TIMEOUT for the same reasoning applied to a
+ * much faster call). Set below that backstop so a genuine stall surfaces as
+ * this typed, actionable error instead of whatever raw error undici produces
+ * first.
+ *
+ * This does NOT make the tool call return inside a client's own 60s default
+ * request timeout on a slow connection — that budget is spent on the
+ * transfer itself, which no server-side change can shorten. See the README's
+ * note on `upload_file` for what to do about that.
+ */
+const UPLOAD_ACCEPT_TIMEOUT = "4 minutes";
 
 /**
  * High-level "ggdrive" style operations.
@@ -126,6 +186,109 @@ export function deriveBucketGroupId(
   );
 }
 
+/**
+ * What `get_file_status` returns: Console's status, and on a failed one this
+ * MCP's reading of it (see `uploadFailure.ts`).
+ */
+export type FileStatusWithGuidance =
+  | FileStatusResponse
+  | {
+      readonly data: Extract<FileStatusData, { readonly state: "failed" }> & UploadFailureReading;
+    };
+
+/** Result of establishing an upload's Seal policy; see `resolveUploadPolicy`. */
+export type UploadPolicyResolution =
+  | { readonly status: "verified"; readonly policyId: string; readonly creator: string }
+  | { readonly status: "no_policy" }
+  | { readonly status: "unverifiable"; readonly reported: string };
+
+/**
+ * The Seal policy an upload into `bucketId` is encrypted under, proven locally.
+ *
+ * The encryption policy decides — permanently — who can decrypt the file, so it
+ * cannot be taken on trust from either side. Not from the caller: an agent holding
+ * several buckets' policy ids passes the wrong one, and the file lands in one bucket
+ * bound to another's group (COMG-1007). Not from Console either: an endpoint that
+ * names a group it controls would have this client encrypt to it. That second case
+ * is why the read path's fix (COMG-848, derive from the ciphertext) has no write-path
+ * twin that simply reads `seal_policy_id` off the bucket.
+ *
+ * So Console's value is used only to SELECT, never trusted to be correct. It is
+ * accepted when it equals `deriveBucketGroupId(bucketId, creator)` for a creator this
+ * client already trusts — the group created for this exact bucket id by one of them.
+ * The endpoint can pick among those and nothing else. The bucket id is the caller's,
+ * not an echo from the response, so a reply describing some other bucket derives
+ * nothing that matches.
+ *
+ * The `bucketIdArg` encoding is the PTB's own `bucket_id` argument — a BCS string —
+ * which is what `create_bucket` derives from (see `deriveBucketGroupId`). The id is
+ * trimmed and lowercased first, the way Console's `uuidSchema` canonicalizes it: Console
+ * resolves `GET /buckets/<UPPERCASE-ID>` to the stored lowercase bucket and derives
+ * from that, so deriving from the raw string would miss a bucket that is really there.
+ *
+ * Ids are validated rather than normalized: `normalizeSuiAddress` never throws (it
+ * pads anything), so it cannot tell a real address from garbage. A reported policy
+ * that is not a full object id is unverifiable; a candidate that is not a full address
+ * is skipped, not fatal — one bad entry must not stop another candidate from matching.
+ */
+export function resolveUploadPolicy(
+  packageConfig: BucketGroupPackageConfig,
+  bucketId: string,
+  reportedPolicyId: string | null | undefined,
+  trustedCreators: readonly string[],
+): UploadPolicyResolution {
+  if (!reportedPolicyId) return { status: "no_policy" };
+  if (!isValidSuiObjectId(reportedPolicyId)) {
+    return { status: "unverifiable", reported: reportedPolicyId };
+  }
+  const reported = normalizeSuiAddress(reportedPolicyId);
+
+  const bucketIdArg = bcs.string().serialize(bucketId.trim().toLowerCase()).toBytes();
+  const seen = new Set<string>();
+  for (const candidate of trustedCreators) {
+    if (!isValidSuiAddress(candidate)) continue;
+    const creator = normalizeSuiAddress(candidate);
+    if (seen.has(creator)) continue;
+    seen.add(creator);
+    let derived: string;
+    try {
+      derived = deriveBucketGroupId(packageConfig, bucketIdArg, creator);
+    } catch {
+      continue;
+    }
+    if (derived === reported) return { status: "verified", policyId: derived, creator };
+  }
+  return { status: "unverifiable", reported };
+}
+
+/**
+ * A destination that is a directory, asked of the filesystem rather than read
+ * off the errno: without the flag `link()` reports a directory as plain
+ * `EEXIST`, and with it the rename reports `EISDIR`. Both need telling apart
+ * from a file that is merely in the way, because `overwrite: true` cannot help
+ * either way and advising it sends the caller round the same loop.
+ */
+function destinationIsDirectory(destPath: string): boolean {
+  try {
+    return statSync(destPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The refusal an exclusive publish raises when the destination already exists.
+ * Matched on `code` rather than the message, which names the temp file rather
+ * than the destination and would only confuse the caller.
+ */
+function isEexist(cause: unknown): boolean {
+  const error = cause as NodeJS.ErrnoException | null;
+  // `syscall` too: the temp file is opened `wx`, so an EEXIST can also mean the
+  // temp name collided, in which case nothing was written and the destination
+  // is fine. `mintedCredentialStore.ts` discriminates the same way.
+  return error?.code === "EEXIST" && error.syscall === "link";
+}
+
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -168,6 +331,43 @@ export type StoredAnchorCheck =
  *    explains that, so it keeps the hard refusal: using such an anchor is how a
  *    hostile finalize poisons every later roster in the space.
  */
+/**
+ * Whether a stored anchor's `creator` may be trusted as a candidate creator for an
+ * upload (COMG-1007).
+ *
+ * Stricter than `checkStoredAnchor`, which answers `stale` without deriving when an
+ * entry's package ids differ from the current ones or are missing — right for
+ * `createBucket`, which only needs to know the entry is not tampered with under the
+ * current config. Here the creator itself is what gets trusted, so every entry is
+ * re-derived under the ids that produced it: the ids it recorded, or the current ones
+ * when it recorded none. A genuine stale entry still reproduces and still counts; a
+ * hand-added entry cannot pass by omitting the ids. Anything that does not encode or
+ * does not reproduce vouches for no one.
+ */
+export function anchorVouchesForCreator(
+  packageConfig: BucketGroupPackageConfig,
+  entry: AnchorEntry,
+): boolean {
+  const derivedUnder =
+    entry.bucketRegistryId !== undefined && entry.originalPackageId !== undefined
+      ? {
+          ...packageConfig,
+          bucketRegistryId: entry.bucketRegistryId,
+          originalPackageId: entry.originalPackageId,
+        }
+      : packageConfig;
+  try {
+    const derived = deriveBucketGroupId(
+      derivedUnder,
+      bcs.string().serialize(entry.bucketId).toBytes(),
+      entry.creator,
+    );
+    return normalizeSuiAddress(entry.groupId) === derived;
+  } catch {
+    return false;
+  }
+}
+
 export function checkStoredAnchor(
   packageConfig: BucketGroupPackageConfig,
   entry: AnchorEntry,
@@ -261,6 +461,7 @@ function checkReserveEcho(
   reserve: CreateBucketReserveResponse,
   ownerAddress: string,
   managerAddress: string | undefined,
+  hasAdminCredential: boolean,
 ): BucketCreatePinError | undefined {
   // NULL IS TOLERATED BELOW AND REFUSED HERE, and the two branches must not be
   // made "consistent": Console's OpenAPI lists `owner_address` in the reserve
@@ -280,8 +481,9 @@ function checkReserveEcho(
       message:
         `Refusing to create the bucket: the reserve was asked to make ${normalizeSuiAddress(ownerAddress)} ` +
         `the bucket's owner, and Console echoed back ${describeEcho(ownerEcho)}. Nothing was ` +
-        `signed. Either CONSOLE_WEB_ACCOUNT_ADDRESS names a different account than the one this ` +
-        `API key belongs to, or the endpoint is not honouring the owner this client sends.`,
+        `signed. Either the owner pin names a different account than the one this API key ` +
+        `belongs to (correct ${WEB_ACCOUNT_PIN_REMEDY}), or the endpoint is not honouring the ` +
+        `owner this client sends.`,
     });
   }
 
@@ -300,8 +502,7 @@ function checkReserveEcho(
         `${normalizeSuiAddress(managerAddress)}, and Console says this space's admin signer is ` +
         `${describeEcho(adminEcho)} — so the reserve would hand group management to an ` +
         `address this host does not recognise. Nothing was signed. Correct ` +
-        `CONSOLE_KEY_ADMIN_ADDRESS (or \`keyAdminAddress\` in the config file), or re-provision ` +
-        `the admin credential bundle.`,
+        `${KEY_ADMIN_PIN_REMEDY}. ${keyAdminPinRemedy(hasAdminCredential)}`,
     });
   }
 
@@ -580,6 +781,16 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
       const transferLock = yield* Effect.makeSemaphore(1);
 
       /**
+       * Set when `getFileStatus` reads a daily-limit failure with a time, read
+       * at the top of `uploadFileToBucket`. Per-layer like the semaphore,
+       * which here means per-process: this MCP resolves one API key, so one
+       * account, so one cap. Cleared on the first upload attempted after the
+       * time passes, never earlier. Uploads already accepted before the first
+       * failed status was read are not affected; this stops the next one.
+       */
+      let uploadsPausedUntil: UploadsPause | undefined;
+
+      /**
        * Full create bucket flow (private + Seal): pin gate → chain-verified
        * roster → reserve → echo diagnostics → validate + sign → finalize →
        * anchor.
@@ -606,9 +817,8 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
           return yield* new BucketCreatePinError({
             reason: "missing_owner_pin",
             message:
-              "Cannot create a bucket without knowing which account will own it. Set " +
-              "CONSOLE_WEB_ACCOUNT_ADDRESS to your Console web-account Sui address, or run " +
-              "`walrus-console-mcp config` to write it into the config file.",
+              "Cannot create a bucket without knowing which account will own it. Pin your " +
+              `Console web-account Sui address: set ${WEB_ACCOUNT_PIN_REMEDY}.`,
           });
         }
 
@@ -740,7 +950,12 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         const reserve = yield* api.createBucket(spaceId, name, ownerAddress, roster.members);
 
         // 3. Echo diagnostics. Not the security boundary — see `checkReserveEcho`.
-        const echoProblem = checkReserveEcho(reserve, ownerAddress, managerAddress);
+        const echoProblem = checkReserveEcho(
+          reserve,
+          ownerAddress,
+          managerAddress,
+          hasAdminCredential(config),
+        );
         if (echoProblem !== undefined) return yield* echoProblem;
 
         // 4. Validate, then sign locally. The expectation is what stops these bytes
@@ -971,16 +1186,247 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
       });
 
       /**
-       * Upload a local file: read, encrypt with Seal, upload with retry + polling.
-       * Caller provides sealPolicyId (returned from createBucket).
+       * The policy an upload into `bucketId` must be encrypted under, verified
+       * locally by `resolveUploadPolicy` — or a typed refusal. Runs before the local
+       * file is read, so a refusal costs one bucket read and nothing else.
+       *
+       * Trusted creators, cheapest first: the pinned web account (buckets made in
+       * the web UI derive from it) and the creators recorded in this space's anchors
+       * (this host's current and earlier signers). This host's signing key is only
+       * loaded if neither matches — Seal encryption itself needs no key, so an
+       * upload into a web-UI bucket must not start requiring one.
+       *
+       * `requestedPolicyId` is the optional `sealPolicyId` tool argument. When the
+       * policy verifies locally it is only a cross-check: it must equal the verified
+       * policy, because a caller that names a different one is holding the wrong
+       * bucket's id.
+       *
+       * When nothing verifies — the bucket was created by a key this host does not
+       * know, such as another agent's minted key or an SDK key — the upload proceeds
+       * only if the caller's value equals the policy Console reports. That keeps
+       * multi-agent uploads into shared buckets working and still stops the
+       * wrong-bucket mix-up (COMG-1007), at the cost of trusting Console for these
+       * buckets: an endpoint that lies about the policy and also supplied the
+       * caller's copy of it is not caught. Without a confirming value, it refuses.
+       */
+      const resolveVerifiedUploadPolicy = Effect.fn(
+        "ConsoleStorageService.resolveVerifiedUploadPolicy",
+      )(function* (bucketId: BucketId, requestedPolicyId: string | undefined) {
+        // `GET /buckets/:id` sits behind the same ACL-mirror grant check as the upload
+        // itself, so a bucket created seconds ago answers 403 `mirror_missing_grant`
+        // here until the mirror catches up. Ride it out on the upload loop's budget
+        // (`MIRROR_GRANT_ATTEMPTS`) — without this, the normal `create_bucket` →
+        // `upload_file` flow fails at once instead of waiting.
+        const bucket = yield* api.getBucketById(bucketId).pipe(
+          Effect.retry({
+            while: (e) => e instanceof ConsoleApiError && e.code === "mirror_missing_grant",
+            schedule: Schedule.spaced(MIRROR_GRANT_RETRY_INTERVAL),
+            // `times` counts retries, not attempts.
+            times: MIRROR_GRANT_ATTEMPTS - 1,
+          }),
+          Effect.catchIf(
+            (e) => e instanceof ConsoleApiError && e.code === "mirror_missing_grant",
+            () =>
+              Effect.fail(
+                new MirrorGrantMissingError({ bucketId, attempt: MIRROR_GRANT_ATTEMPTS }),
+              ),
+          ),
+        );
+
+        // Each tier is only consulted if the ones before it matched nothing. A tier
+        // that cannot be read contributes no candidates rather than failing the
+        // upload — the refusal below is the fail-closed outcome. Each tier records
+        // what it tried, so the refusal can say so.
+        const tried: string[] = [];
+        let keyLoadFailure: string | undefined;
+        const creatorTiers: ReadonlyArray<Effect.Effect<readonly string[]>> = [
+          Effect.sync(() => {
+            const owner = getWebAccountAddress(config);
+            tried.push(owner ? `the pinned web account ${owner}` : "no pinned web account");
+            return owner ? [owner] : [];
+          }),
+          // Only anchors that reproduce, re-derived under the ids that produced them
+          // (see `anchorVouchesForCreator`): this tier trusts the same file
+          // `createBucket` does, and must not trust an entry it would call tampered.
+          Effect.try(() =>
+            readAnchors(bucket.space_id)
+              .filter((anchor) => anchorVouchesForCreator(packageConfig, anchor))
+              .map((anchor) => anchor.creator),
+          ).pipe(
+            Effect.orElseSucceed(() => []),
+            Effect.tap((creators) =>
+              Effect.sync(() => {
+                const unique = [...new Set(creators)];
+                tried.push(
+                  unique.length > 0
+                    ? `the ${unique.length} signer(s) recorded in this space's anchors`
+                    : "no anchors recorded for this space",
+                );
+              }),
+            ),
+          ),
+          // Suspended so the key is not even looked up unless this tier is reached.
+          // A key that fails to load is still fail-closed (no candidate), but the
+          // reason is kept: on a host with a broken service key, the refusal must say
+          // so rather than blame the bucket.
+          Effect.suspend(() => seal.getKeypair("working")).pipe(
+            Effect.map((keypair) => {
+              const address = keypair.toSuiAddress();
+              tried.push(`this host's signing key ${address}`);
+              return [address];
+            }),
+            Effect.catchAll((error) =>
+              Effect.sync(() => {
+                keyLoadFailure = error.message;
+                tried.push("this host's signing key (could not be loaded)");
+                return [];
+              }),
+            ),
+          ),
+        ];
+
+        // With no candidates yet this can only answer `no_policy` or `unverifiable`;
+        // the tiers below then try to turn `unverifiable` into `verified`.
+        let resolution = resolveUploadPolicy(packageConfig, bucketId, bucket.seal_policy_id, []);
+        for (const tier of creatorTiers) {
+          if (resolution.status !== "unverifiable") break;
+          resolution = resolveUploadPolicy(
+            packageConfig,
+            bucketId,
+            bucket.seal_policy_id,
+            yield* tier,
+          );
+        }
+
+        if (resolution.status === "no_policy") {
+          return yield* new UploadPolicyError({
+            reason: "no_policy",
+            message:
+              `Bucket ${bucketId} has no Seal policy (it may be a public bucket), so there is ` +
+              `no group to encrypt this upload to. Nothing was uploaded.`,
+          });
+        }
+        // An empty string is what agents send for an optional argument they were told
+        // to omit, so it counts as omitted rather than as a policy id.
+        let requested: string | undefined;
+        if (requestedPolicyId) {
+          if (!isValidSuiObjectId(requestedPolicyId)) {
+            return yield* new UploadPolicyError({
+              reason: "caller_mismatch",
+              message:
+                `Refusing to upload: sealPolicyId ${JSON.stringify(requestedPolicyId)} is not ` +
+                `a valid object id. Omit it, or pass bucket ${bucketId}'s policy id as ` +
+                `returned by create_bucket. Nothing was uploaded.`,
+            });
+          }
+          requested = normalizeSuiAddress(requestedPolicyId);
+        }
+
+        if (resolution.status === "verified") {
+          if (requested !== undefined && requested !== resolution.policyId) {
+            return yield* new UploadPolicyError({
+              reason: "caller_mismatch",
+              message:
+                `Refusing to upload: sealPolicyId ${requested} is not bucket ${bucketId}'s ` +
+                `Seal policy (${resolution.policyId}). Encrypting under it would bind the file ` +
+                `to a different group than the bucket's, so the bucket's own members could not ` +
+                `read it. Omit sealPolicyId — this bucket's policy is verified locally. Nothing ` +
+                `was uploaded.`,
+            });
+          }
+          return resolution.policyId;
+        }
+
+        // Unverifiable: a bucket created by a key this host does not know. A caller
+        // that names exactly the policy Console reports confirms it (see above).
+        if (requested !== undefined) {
+          if (requested === resolution.reported) return requested;
+          return yield* new UploadPolicyError({
+            reason: "caller_mismatch",
+            message:
+              `Refusing to upload: sealPolicyId ${requested} does not match the Seal policy ` +
+              `Console reports for bucket ${bucketId} (${resolution.reported}). The caller is ` +
+              `most likely holding another bucket's policy id; encrypting under it would bind ` +
+              `the file to a different group than the bucket's. Nothing was uploaded.`,
+          });
+        }
+
+        const keyHint = keyLoadFailure
+          ? ` This host's signing key could not be loaded (${keyLoadFailure}); if this ` +
+            `host created the bucket, fix CONSOLE_SERVICE_PRIVATE_KEY and retry.`
+          : "";
+        const pinHint = getWebAccountAddress(config)
+          ? ""
+          : " If the bucket was created in the Console web UI, pin the account's address — " +
+            `set ${WEB_ACCOUNT_PIN_REMEDY} — and retry.`;
+        return yield* new UploadPolicyError({
+          reason: "unverifiable",
+          message:
+            // Deliberately does not print Console's reported policy: an agent handed that
+            // value would pass it straight back as the confirmation, so a bad response
+            // would confirm itself instead of only causing a refusal.
+            `Refusing to upload: this client could not verify the Seal policy Console ` +
+            `reports for bucket ${bucketId} against the bucket id and any creator it ` +
+            `trusts. Tried: ${tried.join("; ")}. The ` +
+            `bucket was most likely created by a different key — another agent's key, an ` +
+            `SDK API key, this account's MCP on another machine, or a key this host rotated ` +
+            `away from. To confirm it, pass as sealPolicyId the id create_bucket returned to ` +
+            `the key that created the bucket, not a value from get_bucket or from this ` +
+            `error. Nothing was uploaded. The bucket is ` +
+            `unaffected and can still be written to from the key that created it.` +
+            `${keyHint}${pinHint}`,
+        });
+      });
+
+      /**
+       * What `uploadFileToBucket` returns (COMG-1019). There is only one shape:
+       * the upload has been accepted by Console and nothing more, since the
+       * function no longer waits to find out whether processing finishes. `state`
+       * is always the just-accepted state, not a live read — call get_file_status
+       * with `fileId` for the current one.
+       */
+      interface UploadAcceptedResult {
+        readonly fileId: string;
+        readonly name: string;
+        readonly state: string;
+        readonly pending: true;
+        readonly note: string;
+      }
+
+      /**
+       * Upload a local file: read, encrypt with Seal, upload with retry.
+       *
+       * The Seal policy comes from `resolveVerifiedUploadPolicy`. `requestedPolicyId`
+       * is the optional `sealPolicyId` tool argument: a cross-check when the policy
+       * verifies locally, and the confirmation that lets an upload into a bucket
+       * another key created proceed (COMG-1007).
        */
       const uploadFileToBucket = Effect.fn("ConsoleStorageService.uploadFileToBucket")(function* (
         bucketId: BucketId,
-        sealPolicyId: string,
+        requestedPolicyId: string | undefined,
         localPath: string,
         targetName?: string,
         userMetadata?: FileUserMetadata,
       ) {
+        // Before the policy lookup, the file read, or anything else that
+        // costs a request: a caller that ignores the stop instruction on a
+        // failed status gets refused here until the limit reopens.
+        const paused = uploadsPausedUntil;
+        if (paused !== undefined) {
+          if (paused.until > Date.now()) {
+            return yield* Effect.fail(
+              new UploadsPausedError({
+                condition: "daily_limit",
+                retryAt: paused.retryAt,
+                message: uploadsPausedMessage(paused),
+              }),
+            );
+          }
+          uploadsPausedUntil = undefined;
+        }
+
+        const sealPolicyId = yield* resolveVerifiedUploadPolicy(bucketId, requestedPolicyId);
+
         // Only the payload-holding phase — read, encrypt, upload — needs the
         // transfer permit (see `transferLock` above). It is released the moment
         // this returns, which is also the moment the bytes are ACCEPTED: from
@@ -1021,12 +1467,26 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
 
             const fileName = targetName ?? path.basename(localPath);
 
-            // Undefined when the caller supplied neither field, so the multipart form
-            // omits `metadata` rather than sending `{}` (COMG-662).
-            const metadata = buildUploadMetadata(userMetadata ?? {});
+            // The requested name, before any collision suffix (the row does not
+            // exist yet), in the form the server's `toNfcName` stores it.
+            const originalName = canonicalOriginalName(fileName);
+            const declaredType = contentTypeFromName(fileName);
+            const aad = encodeFileAad({
+              bucketId,
+              originalName,
+              declaredType,
+              contentSize: fileBytes.length,
+            });
+
+            // `aadVersion` is how the web app tells a row a binding client wrote. The
+            // bound columns cannot say: the server fills them for every client.
+            const metadata = {
+              ...buildUploadMetadata(userMetadata ?? {}),
+              aadVersion: FILE_AAD_VERSION,
+            };
 
             // Encrypt
-            const encrypted = yield* seal.encrypt(fileBytes, sealPolicyId);
+            const encrypted = yield* seal.encrypt(fileBytes, sealPolicyId, aad);
 
             // Upload with simple retry loop on mirror_missing_grant (pragmatic & type-safe).
             // uploadBucketFile now surfaces deny-list (415) and size-cap (413) as
@@ -1040,9 +1500,16 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
               | UnsupportedFileTypeError
               | PayloadTooLargeError
               | undefined;
-            for (let attempt = 0; attempt < 12; attempt++) {
+            for (let attempt = 0; attempt < MIRROR_GRANT_ATTEMPTS; attempt++) {
               const res = yield* api
-                .uploadBucketFile(bucketId, encrypted, fileName, metadata, fileBytes.length)
+                .uploadBucketFile(
+                  bucketId,
+                  encrypted,
+                  fileName,
+                  metadata,
+                  fileBytes.length,
+                  declaredType,
+                )
                 .pipe(Effect.either);
 
               if (res._tag === "Right") {
@@ -1052,77 +1519,198 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
 
               lastErr = res.left;
               if (lastErr instanceof ConsoleApiError && lastErr.code === "mirror_missing_grant") {
-                yield* Effect.sleep("3 seconds");
+                yield* Effect.sleep(MIRROR_GRANT_RETRY_INTERVAL);
                 continue;
               }
               return yield* Effect.fail(lastErr);
             }
 
             if (!uploadResult) {
-              return yield* Effect.fail(new MirrorGrantMissingError({ bucketId, attempt: 12 }));
+              return yield* Effect.fail(
+                new MirrorGrantMissingError({ bucketId, attempt: MIRROR_GRANT_ATTEMPTS }),
+              );
+            }
+
+            // The 202 body is the created row. Against a Console without the server
+            // half, or after any drift in name normalisation, success here would mean
+            // a file every binding client then refuses for good (columns are write-once).
+            const stored = uploadResult.data;
+            const storedSize =
+              stored.content_size === null || stored.content_size === undefined
+                ? null
+                : Number(stored.content_size);
+            if (
+              stored.original_name !== originalName ||
+              stored.declared_mime_type !== declaredType ||
+              storedSize !== fileBytes.length
+            ) {
+              return yield* new UploadBindingStoredUnreadableError({
+                fileId: stored.id,
+                bucketId,
+                message:
+                  `Upload stored file ${stored.id}, but its record does not carry the ` +
+                  `binding this client wrote into the ciphertext (expected ` +
+                  `original_name=${JSON.stringify(originalName)}, ` +
+                  `declared_mime_type=${JSON.stringify(declaredType)}, ` +
+                  `content_size=${fileBytes.length}; got ` +
+                  `original_name=${JSON.stringify(stored.original_name)}, ` +
+                  `declared_mime_type=${JSON.stringify(stored.declared_mime_type)}, ` +
+                  `content_size=${JSON.stringify(stored.content_size)}). The file is ` +
+                  `stored but unreadable to binding clients. Delete it. Do not retry.`,
+              });
             }
 
             return { fileId: uploadResult.data.id, fileName };
-          }),
-        );
-
-        // The upload is ACCEPTED at this point: the bytes are stored and the server
-        // has an id for them. Everything after this is observation. Emit the id
-        // immediately so a crash, a disconnect, or a killed session still leaves it
-        // somewhere recoverable — otherwise the only way back is to upload again,
-        // which re-encrypts and duplicates a file that already exists.
-        console.error(`[console-mcp] upload accepted — fileId=${fileId} (bucket ${bucketId})`);
-
-        // Wait for the async worker. Only a server-reported `failed` is an
-        // error here: running out of polling budget means the upload landed and
-        // is still being processed, and reporting that as a failure made agents
-        // re-upload a file that already existed (COMG-662 verification).
-        const outcome = yield* pollUntilTerminal(() =>
-          api.getFileUploadStatus(bucketId, fileId),
-        ).pipe(
-          // Anything that goes wrong from here on is a status-check problem, not an
-          // upload problem, and the caller needs the id to act on it rather than
-          // re-uploading. Re-tagged rather than swallowed: the original message is
-          // kept as a prefix.
-          Effect.mapError((error) =>
-            error instanceof ConsoleApiError
-              ? new ConsoleApiError({
+          }).pipe(
+            Effect.timeoutFail({
+              duration: UPLOAD_ACCEPT_TIMEOUT,
+              onTimeout: () =>
+                new ConsoleApiError({
                   message:
-                    `${error.message} — the upload itself was accepted as fileId=${fileId}; ` +
-                    `check it with get_file_status instead of uploading again.`,
-                  ...(error.code !== undefined ? { code: error.code } : {}),
-                  ...(error.status !== undefined ? { status: error.status } : {}),
-                  ...(error.endpoint !== undefined ? { endpoint: error.endpoint } : {}),
-                })
-              : error,
+                    `Timed out after ${UPLOAD_ACCEPT_TIMEOUT} accepting this upload; the ` +
+                    "connection to Console has been cut off. This usually means a slow or " +
+                    "stalled network, not a failed upload — Console may have already " +
+                    "received enough of the transfer to have created the file before the " +
+                    "cutoff, with no fileId reaching this call either way. Check list_files " +
+                    "for a file with this name before uploading again, to avoid creating a " +
+                    "duplicate.",
+                }),
+            }),
           ),
         );
 
-        if (outcome.kind === "failed") {
-          return yield* Effect.fail(
-            new FileStatusError({
-              fileId,
-              state: outcome.status.data.state,
-              error: outcome.status.data.error ?? { code: "unknown", message: "Upload failed" },
-            }),
-          );
-        }
+        // The upload is ACCEPTED at this point: the bytes are stored and the server
+        // has an id for them. Return immediately instead of waiting here for the
+        // async worker to finish (COMG-1019): this used to poll to a terminal state
+        // in-process, which for a large file routinely outran the MCP client's own
+        // request timeout (60s by default in the TypeScript SDK) — the client
+        // reported a hard timeout error for an upload that went on to succeed
+        // server-side with no fileId the caller ever saw, and a client that retried
+        // on that timeout uploaded (and paid for) the same file a second time.
+        // get_file_status, called separately by the caller, is now the only way to
+        // learn when processing finishes; see its own tool description for the
+        // completed/failed states it reports.
+        console.error(`[console-mcp] upload accepted — fileId=${fileId} (bucket ${bucketId})`);
 
-        return describeUploadResult(outcome, fileId, fileName);
+        return {
+          fileId,
+          name: fileName,
+          state: "queued",
+          pending: true,
+          note:
+            "Upload accepted; Console is still processing it. Poll get_file_status with " +
+            "this fileId until it reports completed or failed — do not upload again while " +
+            "waiting.",
+        } satisfies UploadAcceptedResult;
       });
 
       /**
        * Download + decrypt to a local path.
+       *
+       * The group that governs a ciphertext is read out of the ciphertext itself in
+       * `SealCryptoService.decrypt`, which is the only value `seal_approve` can accept.
+       * A file under another folder's group is refused in `decrypt` before any key is
+       * fetched. Decrypt/approve then uses only that embedded id, so a mismatched
+       * `seal_policy_id` column cannot cause the failure and must not rewrite it.
        */
       const downloadFile = Effect.fn("ConsoleStorageService.downloadFile")(function* (
         bucketId: BucketId,
         fileId: FileId,
-        sealPolicyId: string,
         destPath: string,
+        overwrite = false,
       ) {
+        // Checked before anything is fetched or decrypted. A destination name over
+        // the filesystem's 255 cap can never be written, and on Windows the open
+        // reports it only as a bare ENOENT — so name the limit, and offer the
+        // shortened name a browser would have saved it under.
+        const tooLong = checkFileNameLength(path.basename(destPath));
+        if (tooLong) {
+          return yield* Effect.fail(
+            new LocalFsError({
+              message:
+                `Destination file name is ${tooLong.length} UTF-16 units long, over the ` +
+                `${tooLong.limit}-unit limit most filesystems place on a single file name. ` +
+                `Nothing was downloaded. Save it under a shorter name, for example ` +
+                `"${tooLong.suggestion}".`,
+              path: destPath,
+              operation: "validate",
+            }),
+          );
+        }
+
+        // The record carries the bound columns, the bucket the `creator`. Neither
+        // is trusted: a wrong creator can only make the derivation refuse.
+        const [file, bucket] = yield* Effect.all(
+          [api.getBucketFile(bucketId, fileId), api.getBucketById(bucketId)],
+          // Neither read depends on the other.
+          { concurrency: 2 },
+        );
+
+        // Key on visibility, not on a missing seal_policy_id: a private folder with
+        // an empty column is not public.
+        if (bucket.visibility === "public") {
+          return yield* new FileBindingRefusedError({
+            message:
+              `Folder ${bucketId} is public, so its files are not Seal-encrypted and there is ` +
+              `nothing for download_file to decrypt.`,
+            reason: "not_private",
+            bucketId,
+            fileId,
+          });
+        }
+
+        if (!bucket.seal_policy_id) {
+          return yield* new FileBindingRefusedError({
+            message:
+              `Folder ${bucketId} is private but reports no seal_policy_id. The folder ` +
+              `record is incomplete; nothing was downloaded.`,
+            reason: "missing_policy",
+            bucketId,
+            fileId,
+          });
+        }
+
+        if (!bucket.creator) {
+          return yield* new FileBindingRefusedError({
+            message:
+              `Folder ${bucketId} reports no creator, so the group its files were encrypted ` +
+              `for cannot be recomputed and nothing can be verified against it. Either this ` +
+              `Console deployment predates the field or the folder's value is missing. ` +
+              `Nothing was downloaded.`,
+            reason: "missing_creator",
+            bucketId,
+            fileId,
+          });
+        }
+
+        // From the bucket id the caller passed, canonicalised as Console's
+        // `uuidSchema` does, so typed capitals still derive the real group.
+        const expectedGroupId = yield* Effect.try({
+          try: () =>
+            deriveBucketGroupId(
+              packageConfig,
+              bcs.string().serialize(canonicalBucketId(bucketId)).toBytes(),
+              bucket.creator as string,
+            ),
+          catch: (cause) =>
+            new FileBindingRefusedError({
+              message:
+                `Could not derive the group for folder ${bucketId} from its recorded creator ` +
+                `(${String(cause)}). Nothing was downloaded.`,
+              reason: "wrong_group",
+              bucketId,
+              fileId,
+            }),
+        });
+
         const ciphertext = yield* api.downloadBucketFile(bucketId, fileId);
 
-        const plaintext = yield* seal.decrypt(ciphertext, sealPolicyId);
+        const { plaintext, authenticatedName, bound } = yield* seal.decrypt(ciphertext, {
+          bucketId,
+          fileId,
+          expectedGroupId,
+          record: file,
+        });
 
         // Atomic replacement rather than a direct write, for two reasons that
         // happen to share one fix. A direct write can truncate an existing file and
@@ -1147,23 +1735,103 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         // `rm` in its catch, or the pre-rename signal check drops it — so waiting
         // for the promise to settle IS the guarantee that nothing was left behind.
         yield* tryPromiseSettling({
-          try: (signal) => writeFileAtomicAsync(destPath, plaintext, { mode: 0o600, signal }),
+          try: (signal) =>
+            writeFileAtomicAsync(destPath, plaintext, {
+              mode: 0o600,
+              // COMG-790: the destination is chosen by the agent, so a file
+              // already sitting there is not ours to replace. Exclusive publish
+              // refuses it in one syscall rather than checking first, which
+              // leaves no window for the file to appear in between.
+              exclusive: !overwrite,
+              // A deliberate overwrite still must not re-permission what it
+              // replaces: `rename` swaps the inode, so without this a
+              // read-only destination would come back 0o600. Clamped, because
+              // carrying the old mode across in the other direction would
+              // publish decrypted plaintext at whatever the replaced file was
+              // readable by — looser than a download to a fresh path.
+              preserveExistingMode: overwrite,
+              maxMode: 0o600,
+              signal,
+            }),
           catch: (cause) =>
             new LocalFsError({
-              message: cause instanceof Error ? cause.message : "Failed to write downloaded file",
+              message: destinationIsDirectory(destPath)
+                ? `"${destPath}" is a directory. Choose a destPath that names a file.`
+                : isEexist(cause)
+                  ? `"${destPath}" already exists. Pass overwrite: true to replace it, or choose another destPath.`
+                  : cause instanceof Error
+                    ? cause.message
+                    : "Failed to write downloaded file",
               path: destPath,
               operation: "write",
             }),
           label: "download write",
         });
 
-        return { bytesWritten: plaintext.length, destPath };
+        // A stamped row that still took the legacy lane: the web client reports
+        // this (COMG-1059), and it is distinct from a genuine pre-cutover file.
+        const stampedLegacy =
+          !bound &&
+          file.metadata !== null &&
+          typeof file.metadata === "object" &&
+          "aadVersion" in file.metadata &&
+          file.metadata["aadVersion"] != null;
+
+        return {
+          bytesWritten: plaintext.length,
+          destPath,
+          /**
+           * `false` for a ciphertext written before the binding shipped: it
+           * decrypted, but was not verified against its record.
+           */
+          bound,
+          /** Present only when the authenticated name differs from the record's. */
+          ...(bound && authenticatedName !== null && authenticatedName !== file.name
+            ? { uploadedAs: authenticatedName }
+            : {}),
+          ...(stampedLegacy
+            ? {
+                warning:
+                  "This file's record is stamped aadVersion (a binding client wrote the " +
+                  "row) but the ciphertext has no AAD — a legacy-lane decrypt on a " +
+                  "post-cutover row.",
+              }
+            : {}),
+        };
       }, transferLock.withPermits(1));
+
+      /**
+       * `get_file_status`: Console's status, plus what a failure means for
+       * the agent (`condition`, `guidance`). A daily-limit failure with a
+       * time also closes uploads in this process until then.
+       */
+      const getFileStatus = Effect.fn("ConsoleStorageService.getFileStatus")(function* (
+        bucketId: BucketId,
+        fileId: FileId,
+      ) {
+        const status = yield* api.getFileUploadStatus(bucketId, fileId);
+        if (status.data.state !== "failed") return status as FileStatusWithGuidance;
+        const { error } = status.data;
+        const pause = uploadsBlockedUntil(error);
+        // Keep the later deadline: re-reading an older failure must not
+        // shorten a block a newer one set.
+        if (
+          pause !== undefined &&
+          (uploadsPausedUntil === undefined || pause.until > uploadsPausedUntil.until)
+        ) {
+          uploadsPausedUntil = pause;
+        }
+        return {
+          ...status,
+          data: { ...status.data, ...interpretUploadFailure(error) },
+        } satisfies FileStatusWithGuidance;
+      });
 
       return {
         createBucket,
         uploadFileToBucket,
         downloadFile,
+        getFileStatus,
       } as const;
     }),
 

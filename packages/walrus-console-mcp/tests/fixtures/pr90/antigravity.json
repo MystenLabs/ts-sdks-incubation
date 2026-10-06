@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "figma-fixture": {
+      "serverUrl": "http://127.0.0.1:3845/mcp",
+      "disabled": false
+    },
+    "existing-local": { "command": "node", "args": ["/fixture/existing.js"] },
+    "walrus-console-mcp": { "command": "/fixture/old-launcher", "args": [] }
+  },
+  "fixtureSettings": { "keep": true }
+}

@@ -33,6 +33,15 @@ describe("bootstrap commands do not resolve through npx", () => {
   it("README.md's bootstrap one-liner pins npm to a fresh --prefix with scripts disabled", () => {
     expect(readText("README.md")).toMatch(/npm install --prefix \S+ .*--ignore-scripts/);
   });
+
+  // The Add to Cursor entry is the one launch that must still go through npx,
+  // and only an explicit prefix keeps npx away from the open project and its
+  // .npmrc. Guards the documented form against losing it.
+  it("README.md's Add to Cursor entry starts npx with --prefix=${userHome}", () => {
+    expect(readText("README.md")).toMatch(
+      /"command": "npx",\s*"args": \[\s*"--prefix=\$\{userHome\}"/,
+    );
+  });
 });
 
 // MCP clients spawn `command` directly (no shell in between), so a literal

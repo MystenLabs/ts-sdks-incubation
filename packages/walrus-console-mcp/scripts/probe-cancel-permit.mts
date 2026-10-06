@@ -50,6 +50,7 @@ import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/Consol
 import type { RosterChainDeps } from "../src/console/rosterVerification.js";
 import { SealCryptoService } from "../src/console/SealCryptoService.js";
 import { BucketId, FileId } from "../src/console/types.js";
+import { FIXTURE_OWNER, verifiedBucket } from "../tests/verifiedBucket.js";
 import { tryPromiseSettling } from "../src/effectPromise.js";
 
 const STUB_CONFIG: ConsoleConfig = {
@@ -58,7 +59,7 @@ const STUB_CONFIG: ConsoleConfig = {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.testnet.console.walrus.xyz",
-  webAccountAddress: "",
+  webAccountAddress: FIXTURE_OWNER,
   keyAdminAddress: "",
 };
 
@@ -118,6 +119,7 @@ function buildLayer(api: unknown, seal: unknown) {
 function stubApi() {
   let uploads = 0;
   return {
+    getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
     uploadBucketFile: () =>
       Effect.sync(() => {
         uploads += 1;
@@ -177,7 +179,7 @@ async function runCancelledRetry(
 
   const runtime = ManagedRuntime.make(buildLayer(stubApi(), seal));
   const uploadEffect = ConsoleStorageService.pipe(
-    Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), "0xpolicy", srcFile)),
+    Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), undefined, srcFile)),
   );
 
   try {

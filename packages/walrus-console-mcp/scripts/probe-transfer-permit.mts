@@ -45,6 +45,7 @@ import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/Consol
 import type { RosterChainDeps } from "../src/console/rosterVerification.js";
 import { SealCryptoService } from "../src/console/SealCryptoService.js";
 import { BucketId, FileId } from "../src/console/types.js";
+import { FIXTURE_OWNER, verifiedBucket } from "../tests/verifiedBucket.js";
 import { MAX_TRANSFER_BYTES_ENV } from "../src/transferLimits.js";
 
 const STUB_CONFIG: ConsoleConfig = {
@@ -53,7 +54,7 @@ const STUB_CONFIG: ConsoleConfig = {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.testnet.console.walrus.xyz",
-  webAccountAddress: "",
+  webAccountAddress: FIXTURE_OWNER,
   keyAdminAddress: "",
 };
 
@@ -87,6 +88,7 @@ async function runPermitDemo(tmpDir: string): Promise<number> {
 
   let uploadCount = 0;
   const api = {
+    getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
     uploadBucketFile: () =>
       Effect.sync(() => {
         uploadCount += 1;
@@ -105,7 +107,7 @@ async function runPermitDemo(tmpDir: string): Promise<number> {
   const layer = buildLayer(api, seal);
 
   const uploadEffect = ConsoleStorageService.pipe(
-    Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), "0xpolicy", srcFile)),
+    Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), undefined, srcFile)),
   );
 
   const program = Effect.gen(function* () {
@@ -149,6 +151,7 @@ async function runByteCapDemo(tmpDir: string, overrideBytes: string): Promise<nu
   );
 
   const api = {
+    getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
     uploadBucketFile: () =>
       Effect.sync(() => {
         mark("upload POST (should not be reached — cap should reject the read first)");
@@ -160,7 +163,7 @@ async function runByteCapDemo(tmpDir: string, overrideBytes: string): Promise<nu
   const layer = buildLayer(api, seal);
 
   const program = ConsoleStorageService.pipe(
-    Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), "0xpolicy", srcFile)),
+    Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), undefined, srcFile)),
     Effect.provide(layer),
   );
 

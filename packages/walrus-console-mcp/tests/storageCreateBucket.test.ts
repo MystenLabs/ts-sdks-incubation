@@ -19,6 +19,7 @@ import {
   type BucketGroupPackageConfig,
   TESTNET_PACKAGE_CONFIG,
 } from "../src/console/packageConfig";
+import { KEY_ADMIN_PIN_REMEDY, WEB_ACCOUNT_PIN_REMEDY } from "../src/console/pinRemedy";
 import type {
   MemberFieldPage,
   RosterChainDeps,
@@ -532,7 +533,7 @@ describe("createBucket — the owner pin gate", () => {
 
     expect(error._tag).toBe("BucketCreatePinError");
     expect((error as { reason?: string }).reason).toBe("missing_owner_pin");
-    expect((error as { message: string }).message).toMatch(/CONSOLE_WEB_ACCOUNT_ADDRESS/);
+    expect((error as { message: string }).message).toContain(WEB_ACCOUNT_PIN_REMEDY);
     expect(h.reserves).toEqual([]);
     expect(h.candidateCalls()).toBe(0);
   });
@@ -684,6 +685,46 @@ describe("createBucket — echo diagnostics", () => {
     expect(h.finalized).toEqual([]);
   });
 
+  it("tells a working-key host to update its Key-Admin pin when the space's admin changed", async () => {
+    // A rotated or re-created Management API key gives the space a new Key-Admin
+    // while this host still pins the old one. Its own key did not change, so there
+    // is no new bundle to install: the fix is the pin alone.
+    const h = makeHarness({
+      config: { keyAdminAddress: KEY_ADMIN },
+      echo: { admin_signer_address: STRANGER },
+    });
+
+    const error = await Effect.runPromise(create(h.layer).pipe(Effect.flip));
+
+    const { message } = error as { message: string };
+    expect(message).toContain("Management API key was rotated or re-created");
+    expect(message).toContain("walrus-console-mcp config --silent --key-admin-address");
+    expect(message).toContain("CONSOLE_KEY_ADMIN_ADDRESS");
+    expect(message).toContain("Walrus Console extension's settings (Claude Desktop)");
+    expect(message).toContain("not from this message");
+    expect(message).not.toContain("Re-run the MCP installer");
+  });
+
+  it("tells a host holding the Management API key to re-install its new bundle", async () => {
+    const h = makeHarness({
+      config: {
+        keyAdminAddress: KEY_ADMIN,
+        adminKey: Redacted.make("hbradm_ef56gh78secret"),
+        adminServicePrivateKey: Redacted.make("suiprivkey1adminsecret"),
+      },
+      echo: { admin_signer_address: STRANGER },
+    });
+
+    const error = await Effect.runPromise(create(h.layer).pipe(Effect.flip));
+
+    expect((error as { reason?: string }).reason).toBe("admin_echo_mismatch");
+    const { message } = error as { message: string };
+    expect(message).toContain(
+      "Re-run the MCP installer with the new Management API key's credential bundle",
+    );
+    expect(message).not.toContain("--key-admin-address");
+  });
+
   it("refuses on an echo that is present but not a string, with the remedy intact", async () => {
     // `owner_address` is typed `string | undefined`, but that type is an unchecked
     // cast over a JSON body. Un-guarded, `normalizeSuiAddress(42)` throws inside
@@ -696,7 +737,7 @@ describe("createBucket — echo diagnostics", () => {
 
     expect(error._tag).toBe("BucketCreatePinError");
     expect((error as { reason?: string }).reason).toBe("owner_echo_mismatch");
-    expect((error as { message: string }).message).toMatch(/CONSOLE_WEB_ACCOUNT_ADDRESS/);
+    expect((error as { message: string }).message).toContain(WEB_ACCOUNT_PIN_REMEDY);
     expect(h.seen).toEqual([]);
   });
 
@@ -710,7 +751,7 @@ describe("createBucket — echo diagnostics", () => {
 
     expect(error._tag).toBe("BucketCreatePinError");
     expect((error as { reason?: string }).reason).toBe("admin_echo_mismatch");
-    expect((error as { message: string }).message).toMatch(/CONSOLE_KEY_ADMIN_ADDRESS/);
+    expect((error as { message: string }).message).toContain(KEY_ADMIN_PIN_REMEDY);
   });
 });
 

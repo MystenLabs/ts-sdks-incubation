@@ -7,7 +7,13 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runConfigure } from "../bin/configure.js";
 import { parseArgs } from "../src/cliArgs.js";
-import { loadConfigFile, saveConfigFile } from "../src/configFile.js";
+import { stepAllowedDirs } from "../bin/install.js";
+import {
+  getAdminConfigFilePath,
+  loadConfigFile,
+  type mergeConfigFile,
+  saveConfigFile,
+} from "../src/configFile.js";
 import { toRealPath } from "../src/pathSandbox.js";
 
 /** A real, decodable signer — validateSilent now actually decodes the value. */
@@ -124,6 +130,38 @@ describe("runConfigure — silent mode", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // security review, C11: `resolveInstallBaseUrl` and the pre-write read
+  // passed to `validateSilent` as `existing` both used to call `loadConfigFile`
+  // bare — a pure read, evaluated as a plain function argument before
+  // `validateSilent` ever runs, so a corrupt admin.json threw there and masked
+  // whatever `validateSilent` would otherwise have reported. The actual WRITE
+  // (`mergeConfigFile`'s own internal load) stays correctly fail-stop on a
+  // genuinely corrupt admin.json — the review itself calls that "deliberate
+  // and right" — so this only fixes the reads that ran BEFORE any write
+  // decision exists, not the write itself. What's testable post-fix: a
+  // wrong-key-type error unrelated to admin.json now surfaces correctly
+  // instead of being pre-empted by the admin file's own corruption.
+  it("surfaces a real validation error instead of an unrelated admin.json corruption (C11)", async () => {
+    fs.mkdirSync(path.dirname(getAdminConfigFilePath()), { recursive: true });
+    fs.writeFileSync(getAdminConfigFilePath(), '{ "adminKey": "hbradm_TRUNC', "utf-8");
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    let code: number;
+    try {
+      code = await runConfigure(["--admin-key", "hbr_wrong_type", "--admin-signer", VALID_SIGNER]);
+    } finally {
+      process.stdout.write = original;
+    }
+    expect(code).toBe(1);
+    const out = chunks.join("");
+    expect(out).toMatch(/everyday API key/i); // validateSilent's real error
+    expect(out).not.toMatch(/could not be parsed as JSON/); // the masked one
   });
 
   it("returns 1 for a missing --allowed-dirs path", async () => {
@@ -610,5 +648,383 @@ describe("runConfigure — credential branch with a folder seed", () => {
       process.stdout.write = original;
     }
     expect(chunks.join("")).not.toContain("--allowed-dirs");
+  });
+});
+
+// security review, "test gap": before `RunConfigureDeps.collect` existed,
+// the interactive credential branch's onNotice wiring (loadConfigFileOrEmpty
+// at the pre-write read, and the saved-line label ignoring
+// `migratedLegacyAdmin`) had no test at all — a revert of either left the
+// whole suite green, catchable only by a live terminal run. The `collect`
+// seam drives this branch without a real prompt/probe sequence.
+describe("runConfigure — interactive credential branch (onNotice wiring)", () => {
+  /** The index of the `api` row in the chooser. */
+  const API_ROW = 1;
+
+  function openReadline() {
+    return readline.createInterface({ input: new PassThrough(), output: new PassThrough() });
+  }
+
+  it("routes the pre-write loadConfigFileOrEmpty's warning through the panel, not console.error", async () => {
+    const dir = path.join(tmpDir, "walrus-console-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not valid json", "utf-8");
+    // Without this, `resolveInstallBaseUrl()` at the top of `runConfigure`
+    // (unconditional, no onNotice) reads this same corrupt file first and
+    // consumes the per-path dedup (C16b) before the panel's own read runs —
+    // isolating THIS call site needs that earlier one to short-circuit
+    // instead (see resolveInstallBaseUrl's own `CONSOLE_API_BASE_URL || …`).
+    process.env["CONSOLE_API_BASE_URL"] = "https://api.console.walrus.xyz";
+
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const rl = openReadline();
+    try {
+      await runConfigure([], {
+        select: async () => API_ROW,
+        createReadline: () => rl,
+        collect: async () => ({ updates: {}, clear: [] }),
+      });
+      expect(warn).not.toHaveBeenCalled();
+      expect(chunks.join("")).toContain("could not be parsed as JSON");
+    } finally {
+      process.stdout.write = original;
+      rl.close();
+      warn.mockRestore();
+    }
+  });
+
+  it("names admin.json in the saved line when this write migrates a legacy inline pair as a side effect", async () => {
+    const dir = path.join(tmpDir, "walrus-console-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ adminKey: "hbradm_legacy", adminServicePrivateKey: VALID_SIGNER }),
+      "utf-8",
+    );
+
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const rl = openReadline();
+    try {
+      // Only a working-key write — no admin field in `updates` — yet the
+      // legacy pair already on disk still needs to migrate into admin.json.
+      await runConfigure([], {
+        select: async () => API_ROW,
+        createReadline: () => rl,
+        collect: async () => ({ updates: { apiKey: "hbr_new" }, clear: [] }),
+      });
+      expect(chunks.join("")).toContain("config.json + admin.json");
+      expect(fs.existsSync(getAdminConfigFilePath())).toBe(true);
+    } finally {
+      process.stdout.write = original;
+      rl.close();
+    }
+  });
+});
+
+/**
+ * COMG-1036 item 3. A beta user picked the wrong credential type and found no
+ * way out of the prompts but Ctrl-C and a fresh run. Steps 1 and 2 are a loop
+ * now: `back` at any prompt, and esc on the File access row, return to the menu.
+ */
+describe("runConfigure — back to the menu (COMG-1036)", () => {
+  /** Row indices in CHOICES: bundle, api, admin, both, paths. */
+  const API_ROW = 1;
+  const PATHS_ROW = 4;
+
+  /**
+   * Back only means anything where the menu can be drawn, and `runConfigure`
+   * checks `process.stdout.isTTY` for exactly that. A vitest worker's stdout is
+   * not a terminal, so these tests have to say they are simulating one; the
+   * non-TTY branch has its own test at the end of this block.
+   */
+  let ttyDescriptor: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  });
+  afterEach(() => {
+    if (ttyDescriptor) Object.defineProperty(process.stdout, "isTTY", ttyDescriptor);
+    else delete (process.stdout as { isTTY?: boolean }).isTTY;
+  });
+
+  const capture = () => {
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    return {
+      text: () => chunks.join(""),
+      restore: () => {
+        process.stdout.write = original;
+      },
+    };
+  };
+
+  /** A readline over pipes, plus the handle the test types into. */
+  const pipeReadline = () => {
+    const input = new PassThrough();
+    const rl = readline.createInterface({ input, output: new PassThrough() });
+    return { input, rl };
+  };
+
+  it('typing "back" at a prompt redraws the menu and writes nothing', async () => {
+    const { input, rl } = pipeReadline();
+    const rows: number[] = [];
+    const out = capture();
+    let code: number;
+    try {
+      code = await runConfigure([], {
+        // Second visit cancels, so the run ends instead of looping forever.
+        select: async () => {
+          rows.push(rows.length);
+          return rows.length === 1 ? API_ROW : null;
+        },
+        createReadline: () => rl,
+        collect: async (_choice, prompts) => {
+          const pending = prompts.ask("API key: ");
+          // Only safe after `ask` has returned: rl.question is registered
+          // synchronously inside it, and a line written before that is emitted
+          // to nobody.
+          input.write("back\n");
+          await pending;
+          throw new Error("ask resolved instead of unwinding");
+        },
+      });
+    } finally {
+      out.restore();
+      rl.close();
+    }
+    // The menu was drawn a second time, which is the whole point.
+    expect(rows.length).toBe(2);
+    expect(code).toBe(0);
+    expect(loadConfigFile()).toEqual({});
+    expect(out.text()).toContain("Back to the menu");
+  });
+
+  it("advertises the affordance inside the panel, before the first prompt", async () => {
+    const { input, rl } = pipeReadline();
+    let visits = 0;
+    const out = capture();
+    try {
+      await runConfigure([], {
+        select: async () => {
+          visits++;
+          return visits === 1 ? API_ROW : null;
+        },
+        createReadline: () => rl,
+        collect: async (_choice, prompts) => {
+          const pending = prompts.ask("API key: ");
+          input.write("back\n");
+          await pending;
+          throw new Error("ask resolved instead of unwinding");
+        },
+      });
+    } finally {
+      out.restore();
+      rl.close();
+    }
+    expect(out.text()).toContain('Type "back" at any prompt');
+  });
+
+  it("carries on with whichever row is picked next", async () => {
+    const { input, rl } = pipeReadline();
+    const picks = [API_ROW, PATHS_ROW];
+    let allowedDirsCalls = 0;
+    const out = capture();
+    let code: number;
+    try {
+      code = await runConfigure([], {
+        select: async () => picks.shift() ?? null,
+        createReadline: () => rl,
+        collect: async (_choice, prompts) => {
+          const pending = prompts.ask("API key: ");
+          input.write("back\n");
+          await pending;
+          throw new Error("ask resolved instead of unwinding");
+        },
+        allowedDirs: async () => {
+          allowedDirsCalls++;
+          return { updates: { allowedDirs: ["/tmp"] }, clear: [] };
+        },
+      });
+    } finally {
+      out.restore();
+      rl.close();
+    }
+    expect(allowedDirsCalls).toBe(1);
+    expect(code).toBe(0);
+  });
+
+  // The doc on BackRequested says unwinding mid-prompt leaves the saved config
+  // untouched. That holds because collectCredentials writes nothing, but it is
+  // only worth anything if `back` works at a prompt other than the first.
+  it("unwinds from a later prompt, after earlier answers were accepted", async () => {
+    const { input, rl } = pipeReadline();
+    let asked = 0;
+    let visits = 0;
+    const out = capture();
+    let code: number;
+    try {
+      code = await runConfigure([], {
+        select: async () => {
+          visits++;
+          return visits === 1 ? API_ROW : null;
+        },
+        createReadline: () => rl,
+        collect: async (_choice, prompts) => {
+          for (const answer of ["hbr_first_answer", "y", "back"]) {
+            asked++;
+            const pending = prompts.ask(`answer ${asked}: `);
+            input.write(`${answer}\n`);
+            await pending;
+          }
+          throw new Error("the third answer resolved instead of unwinding");
+        },
+      });
+    } finally {
+      out.restore();
+      rl.close();
+    }
+    expect(asked).toBe(3);
+    expect(visits).toBe(2);
+    expect(code).toBe(0);
+    expect(loadConfigFile()).toEqual({});
+  });
+
+  // The catch is `instanceof BackRequested` or rethrow. Without the rethrow a
+  // probe failure would be reported as a cheerful "Back to the menu" and the
+  // loop would re-enter the step rather than surfacing it.
+  it("reports a real failure as a failure, not as a back", async () => {
+    const { rl } = pipeReadline();
+    const out = capture();
+    let thrown: unknown;
+    let visits = 0;
+    try {
+      await runConfigure([], {
+        // Bounded: without the rethrow the error reads as a back, and the loop
+        // re-enters the step forever. A stub that answers for ever would turn
+        // that regression into a hung CI job instead of a failure.
+        select: async () => {
+          if (++visits > 2) throw new Error("the error was swallowed as a back");
+          return API_ROW;
+        },
+        createReadline: () => rl,
+        collect: async () => {
+          throw new Error("probe exploded");
+        },
+      });
+    } catch (err) {
+      thrown = err;
+    } finally {
+      out.restore();
+      rl.close();
+    }
+    expect(visits).toBe(1);
+    expect((thrown as Error | undefined)?.message).toBe("probe exploded");
+    expect(out.text()).not.toContain("Back to the menu");
+    // And not as a cancel either: `phase` is set before the instanceof check,
+    // so the deliberate rl.close() below does not print over the real message.
+    expect(out.text()).not.toContain("Cancelled");
+  });
+
+  // Without a terminal, selectOne resolves the first row without drawing
+  // anything, so looping would re-enter the same step with the menu never
+  // shown and no exit but Ctrl-C.
+  it("stops, and says why, when there is no terminal to draw the menu on", async () => {
+    Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+    const { input, rl } = pipeReadline();
+    let visits = 0;
+    const out = capture();
+    let code: number;
+    try {
+      code = await runConfigure([], {
+        select: async () => {
+          visits++;
+          return API_ROW;
+        },
+        createReadline: () => rl,
+        collect: async (_choice, prompts) => {
+          const pending = prompts.ask("API key: ");
+          input.write("back\n");
+          await pending;
+          throw new Error("ask resolved instead of unwinding");
+        },
+      });
+    } finally {
+      out.restore();
+      rl.close();
+    }
+    expect(visits).toBe(1);
+    expect(code).toBe(0);
+    expect(out.text()).toContain("needs a terminal");
+  });
+
+  it("treats esc on the File access row as back, not as the end of the run", async () => {
+    let visits = 0;
+    let sawBackFlag: boolean | undefined;
+    const out = capture();
+    let code: number;
+    try {
+      code = await runConfigure([], {
+        select: async () => {
+          visits++;
+          return visits === 1 ? PATHS_ROW : null;
+        },
+        allowedDirs: async (deps) => {
+          sawBackFlag = deps?.back;
+          return { updates: {}, clear: [], backRequested: true };
+        },
+      });
+    } finally {
+      out.restore();
+    }
+    // `config` reaches this step from a menu, so esc has somewhere to return to.
+    expect(sawBackFlag).toBe(true);
+    expect(visits).toBe(2);
+    expect(code).toBe(0);
+  });
+
+  // The test above fabricates `backRequested`; this one makes the real step
+  // produce it. Only the selector is faked, so the production branch that turns
+  // esc into a back under `deps.back` is the thing being exercised.
+  it("and the real step is what produces that, end to end", async () => {
+    let visits = 0;
+    const out = capture();
+    let code: number;
+    try {
+      code = await runConfigure([], {
+        select: async () => {
+          visits++;
+          return visits === 1 ? PATHS_ROW : null;
+        },
+        allowedDirs: (deps) =>
+          stepAllowedDirs({
+            ...deps,
+            select: async () => null,
+            cwd: tmpDir,
+            home: tmpDir,
+            merge: (() => {}) as unknown as typeof mergeConfigFile,
+          }),
+      });
+    } finally {
+      out.restore();
+    }
+    expect(visits).toBe(2);
+    expect(code).toBe(0);
+    // Back prints nothing: the menu it returns to is drawn straight after.
+    expect(out.text()).not.toContain("File access skipped");
   });
 });

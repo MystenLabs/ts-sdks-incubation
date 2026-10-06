@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -9,9 +9,11 @@ import {
   allowedDirsFromEnv,
   isWithinRoots,
   type RootsCapableServer,
+  resolveDownloadDestWithinRoots,
   resolvePathWithinRoots,
   rootsToDirs,
   readFileWithinRoot,
+  selectAllowedDirs,
   splitAllowedDirList,
   toRealPath,
   toRealPathAsync,
@@ -187,6 +189,18 @@ describe("allowedDirsFromEnv", () => {
   });
 });
 
+/** Capture one rejection's message — mirrors `rejectionOf` in tests/toolErrors.test.ts,
+ * so an assertion needing several substrings of the same message doesn't re-run the
+ * (async, filesystem-touching) call once per substring. */
+async function rejectionMessageOf(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+    throw new Error("expected the call to reject");
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 describe("resolvePathWithinRoots (synthetic roots)", () => {
   const workspace = join("/home", "me", "project");
 
@@ -239,6 +253,56 @@ describe("resolvePathWithinRoots (synthetic roots)", () => {
     ).rejects.toThrow(/outside the/);
   });
 
+  // COMG-847: names the refused path and the folders that ARE allowed. This
+  // fixture's client advertises roots, so per review on PR #58 the remedy
+  // must NOT tell the reader to run `config --allowed-dirs` as if it would
+  // fix things — client roots beat the saved list outright, so that command
+  // would be a no-op here. It's still fine for the message to name the
+  // command while explaining why (see the "would not change this" case
+  // below); what must not appear is the file-source round-trip remedy, which
+  // only makes sense when the saved list is the thing actually in effect.
+  it("names the refused path and the allowed folders when rejecting a path outside client-advertised roots", async () => {
+    const message = await rejectionMessageOf(
+      resolvePathWithinRoots(fakeServer([workspace]), "/etc/passwd", "Source", NO_ENV),
+    );
+    expect(message).toContain('"/etc/passwd"');
+    expect(message).toContain(toRealPath(workspace));
+    expect(message).toMatch(/workspace folders are the sandbox/);
+    expect(message).not.toMatch(/Add its folder without dropping/);
+  });
+
+  // COMG-847 review (PR #58, finding 1): the ONLY source `config --allowed-dirs`
+  // can actually change is the saved-file fallback — client roots and the env
+  // var both beat it outright (see `describeAllowedDirsRemedy`). This is the
+  // real "npx ... install" story: no client roots, no env var, just a saved
+  // list — the remedy must be actionable here, and per finding 2 it must
+  // carry the folder that's ALREADY saved forward (`config --allowed-dirs`
+  // replaces the list rather than appending to it).
+  it("recommends the round-trip config --allowed-dirs command, naming the folder already saved, when the saved list is the active source", async () => {
+    const message = await rejectionMessageOf(
+      resolvePathWithinRoots(fakeServer(null), "/etc/passwd", "Source", NO_ENV, [workspace]),
+    );
+    expect(message).toContain('"/etc/passwd"');
+    expect(message).toContain(toRealPath(workspace));
+    expect(message).toMatch(/Add its folder without dropping the others already saved/);
+    // The existing folder must be carried forward, not just a bare placeholder.
+    expect(message).toMatch(/config --allowed-dirs '.*' --allowed-dirs <dir>/);
+  });
+
+  // COMG-847 review (PR #58, finding 3): the env var beats the saved list too,
+  // so the same no-op problem applies to it — the remedy here must point at
+  // the env var itself, not at a `config --allowed-dirs` command it would
+  // silently override.
+  it("points at CONSOLE_MCP_ALLOWED_DIRS, not config --allowed-dirs, when the env var is the active source", async () => {
+    const env = { [ALLOWED_DIRS_ENV]: workspace };
+    const message = await rejectionMessageOf(
+      resolvePathWithinRoots(fakeServer(null), "/etc/passwd", "Source", env, []),
+    );
+    expect(message).toContain('"/etc/passwd"');
+    expect(message).toMatch(new RegExp(`${ALLOWED_DIRS_ENV}.*beats the saved folder list`));
+    expect(message).not.toMatch(/Add its folder without dropping/);
+  });
+
   it("fails closed when the client does not support roots and no env fallback", async () => {
     await expect(
       resolvePathWithinRoots(fakeServer(null), join("/tmp", "anywhere.txt"), "Source", NO_ENV, []),
@@ -261,6 +325,62 @@ describe("resolvePathWithinRoots (synthetic roots)", () => {
     await expect(
       resolvePathWithinRoots(fakeServer(null), join("/tmp", "anywhere.txt"), "Source", NO_ENV, []),
     ).rejects.toThrow(/config --allowed-dirs/);
+  });
+});
+
+// The one source-selection step the sandbox and `ping_console` share: client
+// roots, then the env var, then the saved list.
+describe("selectAllowedDirs", () => {
+  const rootsDir = resolve("/srv", "client-root");
+  const envDir = resolve("/srv", "env-dir");
+  const fileDir = resolve("/srv", "file-dir");
+  const env: NodeJS.ProcessEnv = { [ALLOWED_DIRS_ENV]: envDir };
+
+  it("client roots win over both the env var and the saved list", async () => {
+    expect(await selectAllowedDirs(fakeServer([rootsDir]), "Source", env, [fileDir])).toEqual({
+      source: "clientRoots",
+      rootDirs: [rootsDir],
+    });
+  });
+
+  it("a roots-capable client that declares no roots falls through to the env var", async () => {
+    expect(await selectAllowedDirs(fakeServer([]), "Source", env, [fileDir])).toEqual({
+      source: "env",
+      rootDirs: [envDir],
+    });
+  });
+
+  it("the env var wins over the saved list", async () => {
+    expect(await selectAllowedDirs(fakeServer(null), "Source", env, [fileDir])).toEqual({
+      source: "env",
+      rootDirs: [envDir],
+    });
+  });
+
+  it("the saved list is the fallback when neither client roots nor the env var yields a folder", async () => {
+    expect(await selectAllowedDirs(fakeServer(null), "Source", NO_ENV, [fileDir])).toEqual({
+      source: "file",
+      rootDirs: [fileDir],
+    });
+  });
+
+  // ping_console is "safe to call first": a client whose roots/list request
+  // fails must not make it throw, only fall through to the next source.
+  it("a listRoots() failure falls through to the next source instead of throwing", async () => {
+    expect(await selectAllowedDirs(fakeServerListRootsThrows(), "Source", env, [fileDir])).toEqual({
+      source: "env",
+      rootDirs: [envDir],
+    });
+    expect(
+      await selectAllowedDirs(fakeServerListRootsThrows(), "Source", NO_ENV, [fileDir]),
+    ).toEqual({ source: "file", rootDirs: [fileDir] });
+  });
+
+  it("nothing configured anywhere yields an empty list", async () => {
+    expect(await selectAllowedDirs(fakeServer(null), "Source", NO_ENV, [])).toEqual({
+      source: "file",
+      rootDirs: [],
+    });
   });
 });
 
@@ -461,10 +581,12 @@ describe("resolvePathWithinRoots (real filesystem: symlinks + env fallback)", ()
     ).rejects.toThrow(/broken symlink/);
   });
 
-  // The rejection is scoped to BROKEN links only. Widening it to "reject every
-  // symlink" would be a plausible-looking simplification and would break macOS
-  // outright — /tmp -> /private/tmp, /var, and symlinked home directories are
-  // all live links that must still resolve. This test fails if anyone tries it.
+  // The rejection is scoped to BROKEN links only for resolvePathWithinRoots
+  // (upload). Widening THAT to "reject every symlink" would break macOS —
+  // /tmp -> /private/tmp, /var, and symlinked home directories are live links
+  // that must still resolve. download_file uses resolveDownloadDestWithinRoots
+  // instead (COMG-1039) and refuses a dest whose final component is a live
+  // symlink; the next test pins that split.
   it("still follows a live symlink that stays inside the root", async () => {
     const out = await resolvePathWithinRoots(
       fakeServer([allowed]),
@@ -473,6 +595,123 @@ describe("resolvePathWithinRoots (real filesystem: symlinks + env fallback)", ()
       NO_ENV,
     );
     expect(out).toBe(join(allowed, "target.txt"));
+  });
+
+  it("refuses a reserved device name before any lstat, on this platform whatever it is", async () => {
+    // Checked ahead of the symlink/directory/regular-file checks below, which
+    // all need the destination to be lstat-able — a reserved name never
+    // reaches that far.
+    await expect(
+      resolveDownloadDestWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "NUL.txt"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/reserves as the NUL device/);
+  });
+
+  it("refuses a reserved name case-insensitively and without an extension", async () => {
+    await expect(
+      resolveDownloadDestWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "com3"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/reserves as the COM3 device/);
+  });
+
+  it("suggests an underscore-prefixed alternative, browser-style", async () => {
+    await expect(
+      resolveDownloadDestWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "con.txt"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/"_con\.txt"/);
+  });
+
+  it("does not flag an ordinary name that merely contains a reserved word", async () => {
+    const out = await resolveDownloadDestWithinRoots(
+      fakeServer([allowed]),
+      join(allowed, "console-report.txt"),
+      "Destination",
+      NO_ENV,
+    );
+    expect(out).toBe(join(allowed, "console-report.txt"));
+  });
+
+  it("does not flag a reserved name that is not the final path component", async () => {
+    // "NUL" as an ANCESTOR directory, not the file itself: only the file
+    // being written to is checked, so this must still resolve. A path with
+    // no reserved word anywhere in it (e.g. "newsub/report.txt") would pass
+    // this test even if the check mistakenly scanned every path segment —
+    // it has to be a real reserved word placed somewhere other than the
+    // final component to actually exercise the "final component only" scope.
+    const out = await resolveDownloadDestWithinRoots(
+      fakeServer([allowed]),
+      join(allowed, "NUL", "report.txt"),
+      "Destination",
+      NO_ENV,
+    );
+    expect(out).toBe(join(allowed, "NUL", "report.txt"));
+  });
+
+  it("still refuses a reserved name outside the root as outside the root, not as reserved", async () => {
+    // Containment is checked first inside resolveCandidateWithinRoots, so an
+    // attacker cannot use a reserved-looking name to learn anything about
+    // folders they are not allowed to write to.
+    await expect(
+      resolveDownloadDestWithinRoots(
+        fakeServer([allowed]),
+        join(outside, "NUL.txt"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/outside the/);
+  });
+
+  it("flags a caller-named symlink by the symlink error, not the reserved-name error of its target", async () => {
+    // `innocuous-name.txt` is not itself reserved; it happens to be a live
+    // symlink to `NUL.txt`. Checking the resolved TARGET's name here (rather
+    // than the name the caller actually typed) would misreport this as "path
+    // innocuous-name.txt ends in NUL.txt" — nonsensical, since it does not —
+    // and would suppress the symlink refusal a few lines below, which is the
+    // actual problem. Named distinctly from "ok.txt": this describe shares one
+    // `allowed` directory across every test via `beforeAll`, and several later
+    // tests reuse "ok.txt" as an ordinary, non-symlink destination.
+    writeFileSync(join(allowed, "NUL.txt"), "reserved target");
+    symlinkSync(join(allowed, "NUL.txt"), join(allowed, "symlink-to-reserved.txt"), "file");
+
+    await expect(
+      resolveDownloadDestWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "symlink-to-reserved.txt"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/Refusing to write through a symlink/);
+  });
+
+  it("refuses a live dest symlink even when the target stays inside the root", async () => {
+    await expect(
+      resolveDownloadDestWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "live-in"),
+        "Destination",
+        NO_ENV,
+      ),
+    ).rejects.toThrow(/Refusing to write through a symlink/);
+    expect(
+      await resolvePathWithinRoots(
+        fakeServer([allowed]),
+        join(allowed, "live-in"),
+        "Source",
+        NO_ENV,
+      ),
+    ).toBe(join(allowed, "target.txt"));
   });
 
   // Names the target so the user can act on it, rather than only saying "no".

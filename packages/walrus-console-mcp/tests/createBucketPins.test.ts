@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ConsoleConfig, ConsoleConfigTag } from "../src/config";
 import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
 import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/ConsoleStorageService";
+import { WEB_ACCOUNT_PIN_REMEDY } from "../src/console/pinRemedy";
 import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
 import { SpaceId } from "../src/console/types";
@@ -159,7 +160,7 @@ describe("createBucket — the identity pins reach the validator", () => {
     expect(error._tag).toBe("BucketCreatePinError");
     if (error._tag !== "BucketCreatePinError") throw new Error("expected a BucketCreatePinError");
     expect(error.reason).toBe("missing_owner_pin");
-    expect(error.message).toMatch(/CONSOLE_WEB_ACCOUNT_ADDRESS/);
+    expect(error.message).toContain(WEB_ACCOUNT_PIN_REMEDY);
     expect(reserved).toEqual([]);
   });
 });

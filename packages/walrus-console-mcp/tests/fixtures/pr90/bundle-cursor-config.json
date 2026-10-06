@@ -1,0 +1,14 @@
+{
+  "fixtureNote": "Synthetic Cursor credential bundle roundtrip; no user configuration",
+  "mcpServers": {
+    "unrelated-before": {
+      "command": "node",
+      "args": ["/fixture/unrelated-server.js"],
+      "env": { "UNRELATED_MARKER": "keep-this" }
+    },
+    "unrelated-after": {
+      "command": "npx",
+      "args": ["-y", "unrelated-fixture-package"]
+    }
+  }
+}

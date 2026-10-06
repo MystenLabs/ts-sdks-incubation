@@ -61,6 +61,7 @@ const CREDENTIAL: MintedSecrets = {
   permission: "read_write",
   spaceId: "sp_1",
   keyId: "key_1",
+  name: "worker [mcp-mint-0123456789ab]",
   privateBuckets: [{ bucketId: "b1", groupId: "g1" }],
 };
 
@@ -76,6 +77,9 @@ describe("persistMintedCredential", () => {
     expect("apiKey" in redacted).toBe(false);
     expect("privateKey" in redacted).toBe(false);
     expect(redacted.keyId).toBe("key_1");
+    // The name survives onto the pointer: it is how a human finds this key in
+    // the Console UI, which lists keys by name and never shows the id.
+    expect(redacted.name).toBe("worker [mcp-mint-0123456789ab]");
     expect(redacted.privateBuckets).toEqual([{ bucketId: "b1", groupId: "g1" }]);
 
     const mode = fs.statSync(expectedPath).mode & 0o777;

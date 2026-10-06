@@ -4,6 +4,7 @@ import {
   CONSOLE_WEB_URLS,
   DEFAULT_CONSOLE_API_BASE_URL,
   isAllowedBaseUrl,
+  isLoopbackUrl,
 } from "../src/baseUrl";
 
 describe("canonical Console URLs", () => {
@@ -66,5 +67,38 @@ describe("isAllowedBaseUrl", () => {
   it("rejects unparseable input", () => {
     expect(isAllowedBaseUrl("not a url")).toBe(false);
     expect(isAllowedBaseUrl("")).toBe(false);
+  });
+});
+
+describe("isLoopbackUrl", () => {
+  it("recognizes localhost, 127.0.0.1, and ::1 regardless of scheme", () => {
+    expect(isLoopbackUrl("http://localhost:3000")).toBe(true);
+    expect(isLoopbackUrl("https://localhost")).toBe(true);
+    expect(isLoopbackUrl("http://127.0.0.1:8080")).toBe(true);
+    expect(isLoopbackUrl("http://[::1]:3000")).toBe(true);
+  });
+
+  it("rejects a real host, including one isAllowedBaseUrl itself accepts", () => {
+    expect(isLoopbackUrl("https://api.testnet.console.walrus.xyz")).toBe(false);
+    expect(isLoopbackUrl("https://walrus.xyz")).toBe(false);
+  });
+
+  // The whole 127.0.0.0/8 block is loopback (RFC 5735), not just 127.0.0.1 —
+  // matching only the one address would wrongly treat a dev server bound to
+  // a different loopback address as a normal, non-loopback host.
+  it("recognizes the whole 127.0.0.0/8 block, not just 127.0.0.1", () => {
+    expect(isLoopbackUrl("http://127.0.0.2:3000")).toBe(true);
+    expect(isLoopbackUrl("http://127.1.2.3")).toBe(true);
+    expect(isLoopbackUrl("http://127.255.255.255")).toBe(true);
+  });
+
+  it("rejects a host that merely starts with 127 but is not in 127.0.0.0/8", () => {
+    expect(isLoopbackUrl("http://127.0.0.1.evil.example.com")).toBe(false);
+    expect(isLoopbackUrl("http://1270.0.0.1")).toBe(false);
+  });
+
+  it("rejects unparseable input", () => {
+    expect(isLoopbackUrl("not a url")).toBe(false);
+    expect(isLoopbackUrl("")).toBe(false);
   });
 });

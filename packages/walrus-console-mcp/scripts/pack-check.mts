@@ -29,7 +29,30 @@ import { readFileSync } from "node:fs";
  * deliberate act. `package.json` is always included by npm regardless of
  * `files`, so it belongs in this list.
  */
-const EXPECTED_TOP_LEVEL = ["LICENSE", "README.md", "dist", "npm-shrinkwrap.json", "package.json"];
+const EXPECTED_TOP_LEVEL = [
+  "LICENSE",
+  "README.md",
+  "dist",
+  "npm-shrinkwrap.json",
+  "package.json",
+  "walrus-console-mcp.mcpb",
+];
+
+// The .mcpb ships inside the tarball so jsdelivr can serve it at a stable URL
+// (COMG-1140). The bundle inlines its own copy of the code, so a version skew
+// between manifest.json and package.json would publish an extension that
+// reports (and is) a different version than the npm release carrying it.
+{
+  const manifestVersion = JSON.parse(readFileSync("manifest.json", "utf8")).version;
+  const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
+  if (manifestVersion !== packageVersion) {
+    console.error(
+      `pack-check: manifest.json version (${manifestVersion}) does not match ` +
+        `package.json version (${packageVersion}). Update manifest.json before publishing.`,
+    );
+    process.exit(1);
+  }
+}
 
 interface PackFile {
   readonly path: string;

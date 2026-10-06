@@ -1,6 +1,7 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { fromBase64, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import type { BucketGroupPackageConfig } from "./packageConfig";
+import { KEY_ADMIN_PIN, KEY_ADMIN_PIN_REMEDY } from "./pinRemedy";
 
 /**
  * Validate a sponsored transaction before signing it.
@@ -304,6 +305,30 @@ function isCreateBucketGroupResult(arg: unknown): boolean {
 }
 
 /**
+ * How to fix a Key-Admin pin that no longer matches the space. The usual cause is
+ * that the space's Management API key was rotated or re-created, which gives the
+ * space a new Key-Admin address while the pin keeps the old one. A host holding
+ * the Management API key re-installs its new bundle; a host with only a working
+ * key has no new bundle (its key did not change), so it updates the pin alone.
+ * The new address must come from Console, never from the refusal itself: that
+ * address is what the endpoint under check claims.
+ */
+export function keyAdminPinRemedy(hasAdminCredential: boolean): string {
+  return (
+    `If the space's Management API key was rotated or re-created, its Key-Admin address ` +
+    `changed. ` +
+    (hasAdminCredential
+      ? `Re-run the MCP installer with the new Management API key's credential bundle. `
+      : `Update this host's pin: ${KEY_ADMIN_PIN.field} in the Walrus Console extension's ` +
+        `settings (Claude Desktop), ${KEY_ADMIN_PIN.envVar} if it is set (it wins over the ` +
+        `saved pin), or \`walrus-console-mcp config --silent --key-admin-address ` +
+        `<new address>\`. `) +
+    `Take the new address from the credential bundle Console showed when that key was created ` +
+    `or rotated, not from this message.`
+  );
+}
+
+/**
  * Resolve the one Key-Admin address the `grant_permission` recipient is pinned to.
  *
  * Two sources exist and they are ranked, not merged: a config pin
@@ -332,9 +357,8 @@ function resolveManager(
     throw new UnexpectedTransactionError(
       `this flow cannot resolve a Key-Admin address to check a management grant against: the ` +
         `Key-Admin address pinned in configuration (${pin}) is not the address this host's admin ` +
-        `key derives (${local}). One of the two is stale — correct CONSOLE_KEY_ADMIN_ADDRESS (or ` +
-        `\`keyAdminAddress\` in the config file), re-provision the admin credential bundle, or ` +
-        `re-run \`walrus-console-mcp config\``,
+        `key derives (${local}). One of the two is stale — correct ${KEY_ADMIN_PIN_REMEDY}. ` +
+        keyAdminPinRemedy(true),
     );
   }
   return pin ?? local;
@@ -871,13 +895,13 @@ function assertCreateBucketIdentityStructure(
     if (effectiveManager === undefined) {
       throw new UnexpectedTransactionError(
         `it hands group management to ${grantedTo} and this host has no Key-Admin address to ` +
-          `check that against. Supply one — provision the admin credential via the credential ` +
-          `bundle, set CONSOLE_KEY_ADMIN_ADDRESS, or run \`walrus-console-mcp config\``,
+          `check that against. Supply one — set ${KEY_ADMIN_PIN_REMEDY}`,
       );
     }
     if (grantedTo !== effectiveManager) {
       throw new UnexpectedTransactionError(
-        `it hands group management to ${grantedTo}, not the Key-Admin ${effectiveManager}`,
+        `it hands group management to ${grantedTo}, not the Key-Admin ${effectiveManager}. ` +
+          keyAdminPinRemedy(derivedManagerAddress !== undefined),
       );
     }
   }

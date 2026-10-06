@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { styleText } from "node:util";
 import { writeFileAtomic } from "./atomicWrite.js";
+import { toRealPath } from "./pathSandbox.js";
+import { runCommand } from "./spawnCommand.js";
 import {
   hintLine,
   panelBottom,
@@ -32,23 +33,39 @@ export interface Client {
   detect: () => boolean;
   register: (command: string) => void;
   manualHint: (command: string) => string;
+  /** Printed after a successful `register`, for clients that need a manual reload. */
+  nextStep?: string;
+  /**
+   * Re-check, some time after `register`, that the entry is still there.
+   * Returns why not, or `undefined` when it is. For clients whose config another
+   * application also writes: a save from settings it loaded before we wrote
+   * drops our entry without any error on our side.
+   */
+  verify?: (command: string) => string | undefined;
 }
 
 /** Runs a subprocess, throwing on non-zero exit. Injectable for tests. */
 export type CommandRunner = (bin: string, args: string[]) => void;
 
+// runCommand, not execFileSync: an npm-installed `claude`/`codex`/`gemini` is a
+// `.cmd` shim on Windows, which a bare execFileSync cannot spawn.
 const defaultRun: CommandRunner = (bin, args) => {
-  execFileSync(bin, args, { stdio: "ignore" });
+  runCommand(bin, args, { stdio: "ignore" });
 };
 
 /**
  * Client registry for the installer's Register step.
  *
- * Each supported agent (Claude Desktop, Cursor, Claude Code, Codex, Gemini) is
- * modelled as a `Client`: it knows how to detect whether it's installed and how
- * to register the walrus-console-mcp stdio launcher with itself. Clients that
- * ship an `mcp add` CLI shell out to it; the rest merge a `mcpServers` entry
- * into a JSON config file.
+ * Each supported agent (Claude Code, Cursor, Codex, Gemini, Antigravity) is modelled as a
+ * `Client`: it knows how to detect whether it's installed and how to register
+ * the walrus-console-mcp stdio launcher with itself. Clients that ship an
+ * `mcp add` CLI shell out to it; Cursor and Antigravity, which do not (or
+ * whose CLI we deliberately avoid), get a `mcpServers` entry merged into their
+ * JSON config file.
+ *
+ * Claude Desktop is deliberately absent (COMG-1133): it is set up by hand (see
+ * the README's "Claude Desktop" section) until the `.mcpb` desktop extension
+ * (COMG-851) is published.
  *
  * Credentials are never written here — they live in the shared config file from
  * Step 1. Registration only wires up how to *launch* the server.
@@ -161,16 +178,39 @@ export function cliClient(
   };
 }
 
+/** How many times `register` re-merges after another writer changed the file. */
+const MAX_MERGE_ATTEMPTS = 3;
+
+/** Thrown by the pre-publish check when the file changed after it was read. */
+class ConfigChangedError extends Error {}
+
 /**
  * Build a `Client` that registers by merging our `mcpServers` entry into a JSON
  * config file (for clients without an `mcp add` CLI). Preserves existing
  * servers and other keys; creates the parent directory as needed.
+ *
+ * The file belongs to another application, which may be running, so three
+ * things are handled beyond the merge itself:
+ *
+ *  - **A symlinked config** (a dotfiles manager) is written through to its
+ *    target. Renaming over the link would replace it with a regular file and
+ *    fork the user's config from its source. A link that does not resolve is
+ *    refused rather than guessed at.
+ *  - **Only a regular file is read.** A FIFO at the path would block the read
+ *    forever; anything else would be replaced by our rename.
+ *  - **Another writer saving between our read and our rename** would have its
+ *    save silently undone. Just before publishing (`writeFileAtomic`'s
+ *    `precondition`, which says what it cannot close) the file is read again;
+ *    if it changed, the merge is redone from the new version, up to
+ *    `MAX_MERGE_ATTEMPTS` times. A lock would not help: the other writer never
+ *    takes ours. `verify` checks for the other direction, the app saving older
+ *    settings over us.
  */
 export function jsonFileClient(opts: {
   id: string;
   label: string;
-  /** Resolve the client's config path, or null if this platform is unsupported. */
-  configPath: () => string | null;
+  /** Resolve the client's config path. */
+  configPath: () => string;
   detect: () => boolean;
   /**
    * Read a config file as UTF-8. Defaults to `fs.readFileSync`; injectable so a
@@ -178,10 +218,64 @@ export function jsonFileClient(opts: {
    * on `chmod 000` (which a root/Windows test runner reads straight through).
    */
   readFile?: (p: string) => string;
+  /**
+   * Test seam, passed to `writeFileAtomic`: runs after the replacement is
+   * written and before the pre-publish check, so a test can land a competing
+   * write inside the real window.
+   */
+  onTempCreated?: (tmpPath: string) => void;
 }): Client {
   const readFile = opts.readFile ?? ((p: string) => fs.readFileSync(p, "utf-8"));
+
+  const unreadable = (p: string, err: unknown) =>
+    new Error(
+      `${opts.label}'s config at ${p} could not be read (${(err as Error).message}). ` +
+        `Fix the file's permissions and re-run, or add the entry manually.`,
+    );
+
   /**
-   * Read the client's existing config, or `{}` if there is genuinely nothing
+   * The file to read and replace: `configPath` with any symlinks resolved, so a
+   * linked config is written through rather than replaced. Must be a regular
+   * file, or not exist yet.
+   */
+  const resolveTarget = (configPath: string): string => {
+    let target: string;
+    try {
+      target = toRealPath(configPath);
+    } catch (err) {
+      throw new Error(
+        `${opts.label}'s config at ${configPath} is a symlink that does not resolve ` +
+          `(${(err as Error).message}). Refusing to replace the link — add the entry manually.`,
+      );
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(target);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return target;
+      throw unreadable(target, err);
+    }
+    if (!stat.isFile()) {
+      throw new Error(
+        `${opts.label}'s config at ${target} is not a regular file. Refusing to read or ` +
+          `replace it — add the entry manually.`,
+      );
+    }
+    return target;
+  };
+
+  /** The file's raw text, or `undefined` if it does not exist. */
+  const readRaw = (p: string): string | undefined => {
+    try {
+      return readFile(p);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw unreadable(p, err);
+    }
+  };
+
+  /**
+   * Parse the client's existing config, or `{}` if there is genuinely nothing
    * there.
    *
    * ONLY a missing file counts as empty. A catch-all here is a data-loss bug:
@@ -190,17 +284,8 @@ export function jsonFileClient(opts: {
    * silent wipe of every setting the client keeps, ours and theirs alike.
    * Refusing leaves the file untouched and says why.
    */
-  const readConfig = (p: string): Record<string, unknown> => {
-    let raw: string;
-    try {
-      raw = readFile(p);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-      throw new Error(
-        `${opts.label}'s config at ${p} could not be read (${(err as Error).message}). ` +
-          `Fix the file's permissions and re-run, or add the entry manually.`,
-      );
-    }
+  const parseConfig = (p: string, raw: string | undefined): Record<string, unknown> => {
+    if (raw === undefined) return {};
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
@@ -210,39 +295,90 @@ export function jsonFileClient(opts: {
           `Refusing to overwrite it — repair the file and re-run, or add the entry manually.`,
       );
     }
-    // `null` and arrays are valid JSON but not config objects; spreading either
-    // would produce nonsense rather than preserving anything.
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, unknown>;
+    // Valid JSON is not necessarily a config object. Only a missing file can
+    // be initialized; replacing an existing non-object would discard its bytes.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(
+        `${opts.label}'s config at ${p} has a top-level JSON value that is not an object. ` +
+          `Refusing to overwrite it — repair the file and re-run, or add the entry manually.`,
+      );
+    }
+    const config = parsed as Record<string, unknown>;
+    // A non-object `mcpServers` would be spread key by key (a string becomes
+    // {"0": …, "1": …}), corrupting a key the client owns. Refuse, as for bad JSON.
+    const servers = config["mcpServers"];
+    if (
+      servers !== undefined &&
+      (servers === null || typeof servers !== "object" || Array.isArray(servers))
+    ) {
+      throw new Error(
+        `${opts.label}'s config at ${p} has an "mcpServers" value that is not an object. ` +
+          `Refusing to overwrite it — repair the file and re-run, or add the entry manually.`,
+      );
+    }
+    return config;
   };
+
   return {
     id: opts.id,
     label: opts.label,
     detect: opts.detect,
     register(command) {
       const configPath = opts.configPath();
-      if (!configPath) {
-        throw new Error(`${opts.label} is not supported on this platform`);
+      for (let attempt = 1; attempt <= MAX_MERGE_ATTEMPTS; attempt++) {
+        const target = resolveTarget(configPath);
+        const raw = readRaw(target);
+        const merged = upsertMcpServer(parseConfig(target, raw), SERVER_NAME, command);
+        try {
+          // Atomic replacement: a direct write can truncate the target and then
+          // fail (full disk, SIGTERM, competing writer), leaving the user with an
+          // empty or half-written config for an application that is not ours.
+          writeFileAtomic(target, `${JSON.stringify(merged, null, 2)}\n`, {
+            mode: 0o600,
+            mkdirMode: 0o700,
+            // Their file, their mode.
+            preserveExistingMode: true,
+            ...(opts.onTempCreated ? { onTempCreated: opts.onTempCreated } : {}),
+            precondition: () => {
+              // A repointed link would leave us publishing to a file it no longer names.
+              if (resolveTarget(configPath) !== target || readRaw(target) !== raw) {
+                throw new ConfigChangedError();
+              }
+            },
+          });
+          return;
+        } catch (err) {
+          if (!(err instanceof ConfigChangedError)) throw err;
+        }
       }
-      const merged = upsertMcpServer(readConfig(configPath), SERVER_NAME, command);
-      // Atomic replacement: a direct write can truncate the target and then fail
-      // (full disk, SIGTERM, competing writer), leaving the user with an empty or
-      // half-written config for an application that is not ours.
-      //
-      // Deliberately NOT lock-protected. A lock only helps if every writer takes
-      // it, and the other writer here is a third-party client that has never heard
-      // of ours — so a lockfile would clutter someone else's config directory
-      // while closing nothing. The atomic rename is the part that actually holds.
-      writeFileAtomic(configPath, `${JSON.stringify(merged, null, 2)}\n`, {
-        mode: 0o600,
-        mkdirMode: 0o700,
-        // Their file, their mode.
-        preserveExistingMode: true,
-      });
+      throw new Error(
+        `${opts.label}'s config at ${configPath} kept changing while it was being updated ` +
+          `(${MAX_MERGE_ATTEMPTS} attempts). Nothing was written — close ${opts.label} and re-run.`,
+      );
+    },
+    verify(command) {
+      const configPath = opts.configPath();
+      let entry: unknown;
+      try {
+        const target = resolveTarget(configPath);
+        const servers = parseConfig(target, readRaw(target))["mcpServers"] as
+          | Record<string, unknown>
+          | undefined;
+        entry = servers?.[SERVER_NAME];
+      } catch (err) {
+        return `${configPath} could not be read back (${(err as Error).message})`;
+      }
+      // An app's own rewrite may drop an empty `args` or add `disabled: false`;
+      // that is our entry, kept. A different command or any argument is not.
+      const { command: actual, args } = (entry ?? {}) as { command?: unknown; args?: unknown };
+      const noArgs = args === undefined || (Array.isArray(args) && args.length === 0);
+      return actual === command && noArgs
+        ? undefined
+        : `the "${SERVER_NAME}" entry in ${configPath} is no longer there, or no longer ` +
+            `points at ${command} — ${opts.label} may have saved older settings over it`;
     },
     manualHint() {
-      const configPath = opts.configPath();
-      return `add "${SERVER_NAME}" to ${configPath ?? "the client's mcp config"}`;
+      return `add "${SERVER_NAME}" to ${opts.configPath()}`;
     },
   };
 }
@@ -319,7 +455,12 @@ export function selectClients(
     return Promise.resolve(state.filter((s) => s.checked).map((s) => s.client));
   }
 
-  const width = panelWidth(opts.columns ?? process.stdout.columns ?? 80);
+  // `panelWidth`'s own default, not `?? 80`: a pty with no window size reports
+  // `columns` as 0, and `0 ?? 80` is 0, which sizes the panel to nothing and
+  // drops the frame, the title and the notice while every other panel in the
+  // same run still frames at 72. Passing `undefined` through lets panelWidth
+  // apply `|| 80` once, in one place.
+  const width = panelWidth(opts.columns);
   const confirmIndex = state.length; // the confirm row sits after the client rows
   const total = state.length + 1;
   let cursor = 0;
@@ -411,31 +552,6 @@ export function dirExists(p: string): boolean {
   }
 }
 
-/** Platform-specific path to Claude Desktop's config, or null if unsupported. */
-export function claudeDesktopConfigPath(
-  platform: NodeJS.Platform = process.platform,
-  home: string = os.homedir(),
-): string | null {
-  if (platform === "darwin") {
-    return path.join(
-      home,
-      "Library",
-      "Application Support",
-      "Claude",
-      "claude_desktop_config.json",
-    );
-  }
-  if (platform === "win32") {
-    const { APPDATA } = process.env;
-    const appData = APPDATA ?? path.join(home, "AppData", "Roaming");
-    return path.join(appData, "Claude", "claude_desktop_config.json");
-  }
-  if (platform === "linux") {
-    return path.join(home, ".config", "Claude", "claude_desktop_config.json");
-  }
-  return null;
-}
-
 /** Path to Cursor's global MCP config (`~/.cursor/mcp.json`) on every platform. */
 export function cursorConfigPath(
   _platform: NodeJS.Platform = process.platform,
@@ -445,8 +561,64 @@ export function cursorConfigPath(
 }
 
 /**
+ * Path to the MCP config shared by the Antigravity desktop app, IDE and `agy`
+ * CLI (`~/.gemini/config/mcp_config.json`) on every platform; no env override.
+ */
+export function antigravityConfigPath(home: string = os.homedir()): string {
+  return path.join(home, ".gemini", "config", "mcp_config.json");
+}
+
+/**
+ * One entry for all three Antigravity surfaces, which read the same file.
+ *
+ * Found if any of the per-surface state dirs exists, or `agy` is on PATH. A bare
+ * `~/.gemini` does not count: Gemini CLI owns that too.
+ *
+ * Register refuses until `~/.gemini/config/.migrated` exists: Antigravity's first
+ * launch replaces the global config and would drop an entry written before it.
+ * The check-then-write gap is accepted; the worst case is the entry being dropped
+ * by that migration, which re-running the installer repairs.
+ */
+export function antigravityClient(opts: { home?: string; hasAgy?: () => boolean } = {}): Client {
+  const home = opts.home ?? os.homedir();
+  const hasAgy = opts.hasAgy ?? (() => commandExists("agy"));
+  const base = jsonFileClient({
+    id: "antigravity",
+    label: "Antigravity",
+    configPath: () => antigravityConfigPath(home),
+    detect: () =>
+      ["antigravity", "antigravity-cli", "antigravity-ide"].some((d) =>
+        dirExists(path.join(home, ".gemini", d)),
+      ) || hasAgy(),
+  });
+  const migrated = () =>
+    fs.existsSync(path.join(path.dirname(antigravityConfigPath(home)), ".migrated"));
+  return {
+    ...base,
+    register(command) {
+      if (!migrated()) {
+        throw new Error(
+          "Antigravity hasn't finished its first start yet (~/.gemini/config/.migrated is missing), " +
+            "so it would replace this entry. Open the Antigravity app or run `agy` once, then re-run the installer.",
+        );
+      }
+      base.register(command);
+    },
+    // Printed straight after a refused register: before the migration a hand-written
+    // entry is dropped too, so don't point at the file yet.
+    manualHint: (command) =>
+      migrated()
+        ? base.manualHint(command)
+        : "open the Antigravity app or run `agy` once, then re-run `walrus-console-mcp install`",
+    nextStep:
+      "In agy, open /mcp and reload; in the Antigravity app, press refresh under Installed MCP Servers. " +
+      "Tools run in Ask mode until you allow them.",
+  };
+}
+
+/**
  * The full client registry, in checklist order. CLI clients shell out to their
- * own `mcp add`; Claude Desktop and Cursor merge a JSON config file.
+ * own `mcp add`; Cursor and Antigravity merge a JSON config file.
  */
 export function getClients(opts: { run?: CommandRunner } = {}): Client[] {
   const cli = (id: string): Client => {
@@ -457,15 +629,6 @@ export function getClients(opts: { run?: CommandRunner } = {}): Client[] {
   return [
     cli("claude-code"),
     jsonFileClient({
-      id: "claude-desktop",
-      label: "Claude Desktop",
-      configPath: () => claudeDesktopConfigPath(),
-      detect: () => {
-        const p = claudeDesktopConfigPath();
-        return p != null && dirExists(path.dirname(p));
-      },
-    }),
-    jsonFileClient({
       id: "cursor",
       label: "Cursor",
       configPath: () => cursorConfigPath(),
@@ -473,6 +636,7 @@ export function getClients(opts: { run?: CommandRunner } = {}): Client[] {
     }),
     cli("codex"),
     cli("gemini"),
+    antigravityClient(),
   ];
 }
 

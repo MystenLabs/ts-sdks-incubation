@@ -169,6 +169,9 @@ describe("interpretSealProxyFailure", () => {
     ["unauthorized", 401, "credential"],
     ["read_only_api_key", 403, "credential"],
     ["api_key_registering", 403, "credential"],
+    ["api_key_revoked", 401, "credential"],
+    ["api_key_rotation_incomplete", 401, "credential"],
+    ["api_key_replaced", 401, "credential"],
     ["mirror_missing_grant", 403, "credential"],
     ["sessionkey_address_mismatch", 400, "credential"],
     ["invalid_request", 400, "request"],
@@ -177,6 +180,32 @@ describe("interpretSealProxyFailure", () => {
     expect(mapped?._tag).toBe("SealProxyError");
     expect(mapped?.condition).toBe(condition);
     expect(mapped?.code).toBe(code);
+  });
+
+  // A key rotated after a download fetched its ciphertext fails here, at fetch_key,
+  // rather than on an earlier Console call. It must get the same per-state remedy.
+  it.each([
+    ["api_key_revoked", "was revoked and will not work again"],
+    [
+      "api_key_rotation_incomplete",
+      "finish the rotation if Console offers it, or create a new key",
+    ],
+    ["api_key_replaced", "credential bundle Console showed when that rotation finished"],
+  ])("gives %s the revoked-key remedy, naming the working key", async (code, remedy) => {
+    const mapped = interpretSealProxyFailure(await throwFrom(401, consoleBody(code)), {
+      rawKey: "hbr_ab12cd34secretsecret",
+      baseUrl: "https://api.console.testnet.walrus.space",
+    });
+    expect(mapped?.condition).toBe("credential");
+    expect(mapped?.message).toContain("hbr_ab12cd34…");
+    expect(mapped?.message).toContain(remedy);
+    expect(mapped?.message).not.toContain("secretsecret");
+  });
+
+  it("keeps the generic credential guidance when no credential is passed", async () => {
+    const mapped = interpretSealProxyFailure(await throwFrom(401, consoleBody("api_key_replaced")));
+    expect(mapped?.condition).toBe("credential");
+    expect(mapped?.message).toContain("Check that CONSOLE_API_KEY is active");
   });
 
   it("keeps an unrecognised console code addressable instead of guessing a condition", async () => {

@@ -13,6 +13,7 @@ const stubHttp = HttpClient.make((request) =>
       new Response(
         JSON.stringify({
           data: {
+            scope: "api_key",
             storage_used: 2147483648,
             storage_cap: 10737418240,
             available: 8589934592,
@@ -65,6 +66,7 @@ describe("ConsoleApiClient.getStorageUsage", () => {
       }).pipe(Effect.provide(TestLayer)),
     );
     expect(result).toEqual({
+      scope: "api_key",
       storage_used: 2147483648,
       storage_cap: 10737418240,
       available: 8589934592,

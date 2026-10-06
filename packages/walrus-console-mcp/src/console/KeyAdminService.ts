@@ -6,6 +6,7 @@ import { registerSecret } from "../redaction";
 import type { ApiKeyPermission, ApiKeyStatusResponse } from "./ConsoleApiClient";
 import { ConsoleApiClient } from "./ConsoleApiClient";
 import { AdminCredentialMissingError, ConsoleApiError, ConsoleAuthError } from "./errors";
+import { isRevokedKeyCode } from "./revokedKey";
 import { mintedCredentialFilePath, persistMintedCredential } from "./mintedCredentialStore";
 import { SealCryptoService } from "./SealCryptoService";
 
@@ -23,7 +24,11 @@ import { SealCryptoService } from "./SealCryptoService";
  * The admin seed never leaves the host; all four secrets stay Redacted.
  */
 
-const ADMIN_MISSING_MESSAGE =
+// Exported so bin/console-mcp.ts's pre-flight (asked before the elicitation
+// prompt, so a human isn't asked to approve a mint that cannot run) can reuse
+// the exact same guard and text this service enforces as defense in depth,
+// rather than keeping a second copy of both free to drift.
+export const ADMIN_MISSING_MESSAGE =
   "generate_api_key requires a Key-Admin credential. " +
   "Set CONSOLE_ADMIN_KEY (hbradm_…) and CONSOLE_ADMIN_SERVICE_PRIVATE_KEY. " +
   "A working key cannot mint.";
@@ -61,6 +66,32 @@ function clampKeyName(name: string): string {
 const withHint = (message: string) => `${message} ${ADMIN_SIGNER_HINT}`;
 
 /**
+ * How to undo a mint. Attached to every completed mint, because no credential
+ * this client holds can do it, and nothing else in the response says so.
+ *
+ * A revoke endpoint does exist — `DELETE /api/v1/api-keys/:id` — but it, the key
+ * list, and the revocation-plan pre-check are all session-only: they answer 403
+ * "This endpoint requires session authentication" to the working key and the
+ * Key-Admin key alike. That is not an oversight to route around. Revoking runs an
+ * on-chain unshare over the key's buckets, which needs a wallet, which is why it
+ * is gated to a browser session. So a human in the Console UI really is the only
+ * path from here, and a caller that does not know it will assume a tool call can
+ * clean up after itself.
+ *
+ * Takes the key's NAME rather than naming its id, because the id is not a value
+ * the destination renders: the Integrations table lists keys by label and uses
+ * the id only as a React key. Guidance built around the id would send an agent
+ * hunting for the one field that never appears on screen — so the mint marker
+ * lives in the name, and the name is what this points at.
+ */
+export const revocationGuidance = (keyName: string) =>
+  `To revoke this key, open the Console UI → Integrations and delete the key named ` +
+  `"${keyName}". Match on that name, NOT on the key id: the Integrations table lists keys by ` +
+  `name and never renders the id, which is why the mint marker is embedded in the name. No ` +
+  `credential this client holds can list or revoke keys — those endpoints require a browser ` +
+  `session — so this is the only way to remove it.`;
+
+/**
  * The raw shape `createApiKey` mints: the one-time secrets plus everything
  * else about the key. NEVER returned from `generateApiKey` — it exists only
  * long enough to be handed to `persistMintedCredential`, which writes it to
@@ -81,6 +112,14 @@ export interface MintedSecrets {
   readonly permission: string;
   readonly spaceId: string;
   readonly keyId: string;
+  /**
+   * The name the key was minted under — the operator's label plus the mint
+   * marker, clamped to Console's limit. This is the only field of the key that
+   * the Console UI actually displays, so it is the handle a human uses to find
+   * this key by eye. Carried here (and therefore persisted, and returned on the
+   * result) so the caller never has to reconstruct it.
+   */
+  readonly name: string;
   /**
    * `[]` here means one of two different things — "this space genuinely has
    * no private buckets" or "Console's response didn't say" — and this array
@@ -103,13 +142,25 @@ export interface GenerateApiKeyResult {
   readonly permission: string;
   readonly spaceId: string;
   readonly keyId: string;
+  /**
+   * See `MintedSecrets.name`. The one field of this key the Console UI renders,
+   * and therefore the handle for finding it there — the id is not displayed.
+   */
+  readonly name: string;
   /** See `MintedSecrets.privateBuckets` — `[]` is ambiguous on its own; check `stage`. */
   readonly privateBuckets: readonly { bucketId: string; groupId: string }[];
   /** Where the one-time secrets were written — 0600, parent dir 0700. Read them from here. */
   readonly credentialFile: string;
 }
 
-/** Which step failed. Named for the caller, not for the code path. */
+/**
+ * Which step failed. Named for the caller, not for the code path.
+ *
+ * A space *mismatch* no longer lands here: it is a warning on an otherwise
+ * complete mint (see `SpaceMismatchWarning`), not a failure. `"space-check"`
+ * stays in the union because it is still the name of the step, and a defect
+ * raised while it runs is attributed to it.
+ */
 export type MintStage =
   | "mint"
   | "persist"
@@ -142,6 +193,35 @@ export interface MintFailureDetail {
   readonly code?: string;
   readonly status?: number;
 }
+
+/**
+ * The caller passed a `spaceId` and the mint landed somewhere else.
+ *
+ * This is NOT a failed mint. `spaceId` never reaches Console — `createApiKey`
+ * sends only `permissions`, `serviceSignerAddress` and `name`, and the space is
+ * derived server-side from the Key-Admin credential. So a mismatch does not mean
+ * "a key was created in the wrong place"; it means the admin credential this host
+ * is configured with belongs to a different space than the caller believed. The
+ * key itself is valid, scoped, and grantable — just not in the space that was
+ * asserted.
+ *
+ * Reporting that as `ok: false` was the actual defect behind COMG-849: the mint
+ * had succeeded, the secrets were on disk, and the only thing wrong was the
+ * caller's expectation — but the failure label invited a retry, and every retry
+ * mints another key against the 25-key-per-user cap, with no way for this client
+ * to revoke any of them (see `REVOCATION_GUIDANCE`).
+ */
+export interface SpaceMismatchWarning {
+  readonly kind: "space-mismatch";
+  /** What the caller asserted the admin credential's space would be. */
+  readonly expected: string;
+  /** Where the key was actually minted — the admin credential's real space. */
+  readonly actual: string;
+  readonly message: string;
+}
+
+/** Non-fatal observations about a mint that nonetheless completed. */
+export type MintWarning = SpaceMismatchWarning;
 
 /**
  * The result of a mint attempt.
@@ -177,9 +257,32 @@ export interface MintFailureDetail {
  * failures flagged with `isError`. An `isError` result invites the one response
  * that makes this strictly worse: a retry, which mints a *second* orphan. A
  * caller must read `ok` and act on `recovery`, not re-run the tool.
+ *
+ * For the same reason, this service's `ok: false` results are reserved for a
+ * mint that genuinely did not finish. The MCP handler may additionally return
+ * `stage: "declined"` before it calls this service; that result minted nothing
+ * and is safe to retry only after a fresh confirmation. A completed mint with
+ * a caveat — the caller's `spaceId` assertion not matching where the admin
+ * credential actually minted — reports `ok: true` and carries a `warnings`
+ * entry (COMG-849). Labelling that case a failure was the retry bait; the key
+ * was always valid.
  */
 export type GenerateApiKeyOutcome =
-  | { readonly ok: true; readonly credential: GenerateApiKeyResult }
+  | {
+      readonly ok: true;
+      readonly credential: GenerateApiKeyResult;
+      /**
+       * Present only when there is something to say. A completed mint can still
+       * carry a caveat — today, only that the key landed in a different space
+       * than the caller asserted (`SpaceMismatchWarning`).
+       */
+      readonly warnings?: readonly MintWarning[];
+      /**
+       * How to get rid of this key. No credential this client holds can do it —
+       * the revoke endpoint requires a browser session. See `revocationGuidance`.
+       */
+      readonly revocation: string;
+    }
   | {
       readonly ok: false;
       readonly stage: PostPersistStage;
@@ -189,6 +292,18 @@ export type GenerateApiKeyOutcome =
       readonly detail?: MintFailureDetail;
       /** Where the one-time secrets live. Present because persist already succeeded. */
       readonly credential: GenerateApiKeyResult;
+      /**
+       * Caveats gathered before this step failed — a space mismatch is detected
+       * before the grant and activation steps run, so a later failure must not
+       * swallow it.
+       */
+      readonly warnings?: readonly MintWarning[];
+      /**
+       * How to get rid of this key. Present here as well as on the clean
+       * branch, because this is the outcome most likely to need it: the key is
+       * live and the flow behind it is half-built.
+       */
+      readonly revocation: string;
       /** What the caller must do now — and what it must not do. */
       readonly recovery: string;
     }
@@ -221,6 +336,16 @@ export type GenerateApiKeyOutcome =
       readonly recovery: string;
     };
 
+/** A mint confirmation that ended before KeyAdminService began a mint. */
+export interface GenerateApiKeyDeclinedOutcome {
+  readonly ok: false;
+  readonly stage: "declined";
+  readonly reason: string;
+}
+
+/** The generate_api_key tool's full result set, including a pre-mint decline. */
+export type GenerateApiKeyToolOutcome = GenerateApiKeyOutcome | GenerateApiKeyDeclinedOutcome;
+
 /** Terminal result of waiting for a minted key to register. */
 export type ActivationOutcome =
   | { readonly kind: "active" }
@@ -233,9 +358,8 @@ export type ActivationOutcome =
 /**
  * Poll until the minted key reports "active", or the budget runs out.
  *
- * Exported with its cadence as parameters for the same reason `pollUntilTerminal`
- * is: the budget and the active/stalled decision are worth asserting without
- * waiting out a real 30-second registration.
+ * Exported with its cadence as parameters so the budget and the active/stalled
+ * decision are worth asserting without waiting out a real 30-second registration.
  *
  * Running out is NOT an error here. The key exists either way; "stalled" only
  * means registration had not landed yet, and the caller needs its credential
@@ -382,16 +506,27 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
                 ...(error.endpoint !== undefined ? { endpoint: error.endpoint } : {}),
               }),
             ),
+          // A revoked key already carries its own remedy; a signer hint would
+          // send the caller looking in the wrong place.
           ConsoleAuthError: (error) =>
             Effect.fail(
-              new ConsoleAuthError({ message: withHint(error.message), code: error.code }),
+              isRevokedKeyCode(error.code)
+                ? error
+                : new ConsoleAuthError({ message: withHint(error.message), code: error.code }),
             ),
         }),
       );
     });
 
     const generateApiKey = Effect.fn("KeyAdminService.generateApiKey")(function* (args: {
-      spaceId: string;
+      /**
+       * Optional. NOT a selector — it never reaches Console, which derives the
+       * space from the Key-Admin credential. It is an assertion: "I believe the
+       * admin bundle on this host is for this space." Omit it and no assertion
+       * is made; pass it and a mismatch comes back as a warning on a completed
+       * mint (see `SpaceMismatchWarning`).
+       */
+      spaceId?: string | undefined;
       permission: ApiKeyPermission;
       label?: string | undefined;
     }) {
@@ -407,9 +542,10 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
 
       // A unique client-side marker embedded in the mint's name. `createApiKey` is
       // a point of no return whose 201 can be lost in flight (a crash, a dropped
-      // connection) AFTER the key was created server-side. There is no API to list
-      // or revoke keys, so a lost key becomes an orphan findable only by eye in the
-      // Console UI — this marker is what makes it findable. It does NOT make the
+      // connection) AFTER the key was created server-side. No credential this
+      // client holds can list or revoke keys, so a lost key becomes an orphan
+      // findable only by eye in the Console UI — this marker is what makes it
+      // findable. It does NOT make the
       // mint idempotent: a retry still mints a second key. It only ensures the
       // first one can be identified. Server-stored idempotency is the real fix
       // (tracked separately).
@@ -518,6 +654,11 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
         permission: minted.permissions,
         spaceId: minted.space_id,
         keyId: minted.id,
+        // The composed, clamped name that was actually sent — Console stores it
+        // verbatim as the key's label, which is what the Integrations table
+        // shows. Taken from the request rather than the 201 body because the
+        // response schema does not parse `name` at all.
+        name,
         // `minted.private_buckets` is `null` when Console's response didn't say
         // (see createApiKeyResponseSchema's doc comment) — persisted as `[]`
         // either way, since the secrets themselves (apiKey/privateKey) are valid
@@ -600,6 +741,12 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
         return persistFailure;
       }
 
+      // Caveats that do not stop the mint. Collected as the flow runs, and
+      // attached to whatever outcome it ends on: the space check happens before
+      // the grant and activation steps, so a later failure must not swallow a
+      // warning already raised.
+      const warnings: MintWarning[] = [];
+
       const incomplete = (
         stage: PostPersistStage,
         reason: string,
@@ -610,14 +757,20 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
         reason,
         ...(detail ? { detail } : {}),
         credential,
+        ...(warnings.length > 0 ? { warnings } : {}),
+        // Present on this branch too, and not as an afterthought: an incomplete
+        // mint is the case MOST likely to need revoking — a live key with a
+        // half-built flow behind it — so it must carry the same specific path
+        // as a clean one, not vaguer prose.
+        revocation: revocationGuidance(credential.name),
         recovery:
           `The key ${minted.id} already exists in space ${minted.space_id}, and its one-time ` +
           `secrets are the ONLY copy — they will not be shown again. They have already been ` +
           `saved to credential.credentialFile; read them from there. Do NOT call ` +
           `generate_api_key again to "retry": the mint already succeeded, so a second call mints ` +
-          `a second key and orphans this one. There is no API to list or revoke keys (that ` +
-          `endpoint requires a browser session), so an orphan can only be cleaned up by hand in ` +
-          `the Console UI.`,
+          `a second key and orphans this one. No credential this client holds can list or revoke ` +
+          `keys (those endpoints require a browser session), so an orphan can only be cleaned up ` +
+          `by hand in the Console UI.`,
       });
 
       // Which step is running, so a failure caught below can name it. A mutable
@@ -635,11 +788,42 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
         // access"), and the working key's space list would not describe the
         // admin's scope even where a working key exists — which on a provisioning
         // host it need not.
-        if (minted.space_id !== args.spaceId) {
-          return incomplete(
-            "space-check",
-            `The Key-Admin credential minted into space ${minted.space_id}, not the requested ` +
-              `${args.spaceId}. The key is valid, but for a different space.`,
+        //
+        // So this is a WARNING, not a failure (COMG-849). `args.spaceId` never
+        // reached Console; the key was minted into the admin credential's own
+        // space and is entirely valid there. The only thing a mismatch proves is
+        // that this host's admin bundle is not the one the caller assumed — worth
+        // saying loudly, but reporting it as `ok: false` was itself the bug: it
+        // invited the retry that mints a second key against the 25-key cap, with
+        // no way for this client to revoke either one. The mint continues so the key is
+        // granted and activated like any other, rather than left half-built.
+        // Trimmed, not just `!== undefined`: a blank string is what a caller
+        // writes when it means "nothing to assert" but reaches for the field
+        // anyway. Comparing it yields a warning with holes where the space ids
+        // belong, ending in advice to revoke a key that is perfectly correct.
+        // The tool schema rejects blanks at the boundary; this makes the
+        // nonsense unreachable for any caller, including a direct one.
+        const asserted = args.spaceId?.trim();
+        if (asserted !== undefined && asserted !== "" && minted.space_id !== asserted) {
+          warnings.push({
+            kind: "space-mismatch",
+            expected: asserted,
+            actual: minted.space_id,
+            message:
+              `This key was minted into space ${minted.space_id}, not the ${asserted} you ` +
+              `passed. spaceId does not select the space — the Key-Admin credential does — so ` +
+              `this means the CONSOLE_ADMIN_KEY configured on this host belongs to a different ` +
+              `space than you expected. The key is valid and usable in ${minted.space_id}. If ` +
+              `you needed a key for ${asserted}, do NOT retry: configure the admin bundle ` +
+              `for that space first, then mint, and revoke this key.`,
+          });
+          // Also to stderr: a misconfigured admin bundle is an operator problem,
+          // and the operator is not necessarily whoever reads this tool result.
+          console.error(
+            `[console-mcp] generate_api_key: minted key ${minted.id} into space ` +
+              `${minted.space_id}, but the caller asserted ${asserted}. The CONSOLE_ADMIN_KEY ` +
+              `on this host is scoped to ${minted.space_id}. The key is valid; the expectation ` +
+              `was wrong.`,
           );
         }
 
@@ -687,7 +871,12 @@ export class KeyAdminService extends Effect.Service<KeyAdminService>()("KeyAdmin
           );
         }
 
-        const done: GenerateApiKeyOutcome = { ok: true, credential };
+        const done: GenerateApiKeyOutcome = {
+          ok: true,
+          credential,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          revocation: revocationGuidance(credential.name),
+        };
         return done;
       }).pipe(
         // Interruption is the one failure that cannot be turned into a result.

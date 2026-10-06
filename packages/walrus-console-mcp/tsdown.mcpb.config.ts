@@ -8,9 +8,11 @@ import { defineConfig } from "tsdown";
  * node_modules required inside the .mcpb. Seal/Sui are pure JS (no WASM), so
  * they bundle cleanly.
  *
- * The Node floor is stated in three places that must agree — this `target`,
- * package.json `engines.node`, and manifest.json `compatibility.runtimes.node`.
- * They disagreed once (manifest ≥22 / target node22 / engines ≥24), which let a
+ * The Node floor is stated in several places that must agree — this `target`,
+ * package.json `engines.node`, manifest.json `compatibility.runtimes.node`, the
+ * CI matrix, and `MIN_NODE_MAJOR` in src/nodeVersion.ts, which is the one that
+ * refuses an old host at startup. tests/nodeVersion.test.ts holds them
+ * together. They disagreed once (manifest ≥22 / target node22 / engines ≥24), which let a
  * Node 22 host pass the .mcpb compatibility gate, fail the npx one, and run code
  * that had been typechecked against a newer API than it shipped.
  *
@@ -18,14 +20,14 @@ import { defineConfig } from "tsdown";
  * ts-sdks-incubation catalog (^25), which is the point of the alignment this
  * branch does. The gap is a real if narrow hazard — a Node 25-only API would
  * compile clean and die at runtime on the supported floor — and is accepted
- * because CI builds and tests on the floor itself (Node 24), so anything that
+ * because CI builds and tests on the floor itself (Node 22), so anything that
  * reaches for a newer runtime API fails there rather than in a user's stdio log.
  */
 export default defineConfig({
   entry: ["bin/console-mcp.ts"],
   format: "esm",
   platform: "node",
-  target: "node24",
+  target: "node22",
   outDir: "dist",
   clean: true,
   sourcemap: false,

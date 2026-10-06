@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "existing-local": {
+      "command": "node",
+      "args": ["/fixture/existing.js"],
+      "env": { "FIXTURE_LABEL": "preserve-me" }
+    },
+    "existing-remote": {
+      "url": "https://example.invalid/mcp",
+      "headers": { "X-Fixture": "non-secret" }
+    },
+    "walrus-console-mcp": { "command": "/fixture/old-launcher", "args": [] }
+  },
+  "fixtureSettings": { "keep": true }
+}

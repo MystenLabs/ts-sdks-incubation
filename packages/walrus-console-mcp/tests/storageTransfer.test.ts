@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Effect, Fiber, Layer, Redacted } from "effect";
+import { Effect, Fiber, Layer, Redacted, TestClock, TestContext } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { type ConsoleConfig, ConsoleConfigTag } from "../src/config";
 import { ConsoleApiError } from "../src/console/errors";
@@ -10,6 +10,7 @@ import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/Consol
 import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
 import { BucketId, FileId } from "../src/console/types";
+import { boundFile, FIXTURE_OWNER, verifiedBucket } from "./verifiedBucket";
 import { tryPromiseSettling } from "../src/effectPromise";
 
 /**
@@ -17,8 +18,9 @@ import { tryPromiseSettling } from "../src/effectPromise";
  *
  *  - concurrent transfers must not each buffer a payload (F11), because every one
  *    of them holds plaintext AND Seal ciphertext at the same time;
- *  - the id of an ACCEPTED upload must survive whatever happens next (F14), or a
- *    retry re-encrypts and duplicates a file that already exists server-side.
+ *  - an ACCEPTED upload's id is what `uploadFileToBucket` returns, full stop
+ *    (F14, COMG-1019) — it no longer polls to a terminal state in-process, so
+ *    there is no later step for that id to fail to survive.
  */
 
 let tmpDir: string;
@@ -45,7 +47,7 @@ const STUB_CONFIG: ConsoleConfig = {
   adminKey: Redacted.make(""),
   adminServicePrivateKey: Redacted.make(""),
   baseUrl: "https://api.testnet.console.walrus.xyz",
-  webAccountAddress: "",
+  webAccountAddress: FIXTURE_OWNER,
   keyAdminAddress: "",
 };
 
@@ -58,23 +60,38 @@ const STUB_CONFIG: ConsoleConfig = {
 const NO_CHAIN_READS = Layer.succeed(RosterChainDepsTag, {} as RosterChainDeps);
 
 interface HarnessOptions {
-  onUpload?: () => Effect.Effect<void>;
-  statusResult?: () => Effect.Effect<{ data: { state: string } }, ConsoleApiError>;
+  onUpload?: () => Effect.Effect<void, ConsoleApiError>;
 }
 
 function makeHarness(opts: HarnessOptions = {}) {
   const events: string[] = [];
 
   const api = {
-    uploadBucketFile: () =>
+    getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
+    // Read before the bytes are, so it is deliberately NOT one of the
+    // `events` below — those trace the payload phase the transfer lock bounds.
+    getBucketFile: (_b: string, f: string) => Effect.succeed(boundFile(f)),
+    uploadBucketFile: (
+      _bucketId: string,
+      _bytes: Uint8Array,
+      fileName: string,
+      _metadata?: unknown,
+      contentSize?: number,
+      declaredType?: string,
+    ) =>
       Effect.gen(function* () {
         events.push("upload:start");
         if (opts.onUpload) yield* opts.onUpload();
         events.push("upload:end");
-        return { data: { id: FileId.make("file-accepted-1") } };
+        return {
+          data: {
+            id: FileId.make("file-accepted-1"),
+            original_name: fileName.trim().normalize("NFC"),
+            declared_mime_type: declaredType ?? null,
+            content_size: contentSize ?? null,
+          },
+        };
       }),
-    getFileUploadStatus: () =>
-      opts.statusResult?.() ?? Effect.succeed({ data: { state: "completed" as const } }),
     downloadBucketFile: () =>
       Effect.gen(function* () {
         events.push("download:start");
@@ -86,7 +103,8 @@ function makeHarness(opts: HarnessOptions = {}) {
 
   const seal = {
     encrypt: (plaintext: Uint8Array) => Effect.succeed(plaintext),
-    decrypt: (ciphertext: Uint8Array) => Effect.succeed(ciphertext),
+    decrypt: (ciphertext: Uint8Array) =>
+      Effect.succeed({ plaintext: ciphertext, authenticatedName: null, bound: false }),
   };
 
   const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
@@ -94,8 +112,8 @@ function makeHarness(opts: HarnessOptions = {}) {
       Layer.mergeAll(
         Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
         Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
-        // Only createBucket reads it (for the owner pin); the transfers below do
-        // not, so the address fields stay empty.
+        // Uploads verify the bucket's policy against the pinned owner
+        // (COMG-1007), which `getBucketById` above derives from.
         Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
         NO_CHAIN_READS,
       ),
@@ -113,7 +131,7 @@ function makeHarness(opts: HarnessOptions = {}) {
  * once, around both transfers.
  */
 const uploadEffect = ConsoleStorageService.pipe(
-  Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), "0xpolicy", tmpFile)),
+  Effect.flatMap((s) => s.uploadFileToBucket(BucketId.make("bucket-1"), undefined, tmpFile)),
 );
 
 const uploadWith = (layer: Layer.Layer<ConsoleStorageService>) =>
@@ -144,7 +162,6 @@ describe("transfer concurrency (F11)", () => {
         s.downloadFile(
           BucketId.make("bucket-1"),
           FileId.make("file-1"),
-          "0xpolicy",
           path.join(tmpDir, "out.bin"),
         ),
       ),
@@ -165,7 +182,7 @@ describe("transfer concurrency (F11)", () => {
 
   it("releases the permit when a transfer fails", async () => {
     const { events, layer } = makeHarness({
-      statusResult: () => Effect.fail(new ConsoleApiError({ message: "status boom" })),
+      onUpload: () => Effect.fail(new ConsoleApiError({ message: "upload boom" })),
     });
 
     await Effect.runPromise(Effect.either(uploadWith(layer)));
@@ -175,65 +192,13 @@ describe("transfer concurrency (F11)", () => {
     expect(events.filter((e) => e === "upload:start")).toHaveLength(2);
   });
 
-  it("releases the permit once the upload is accepted, before polling (M12)", async () => {
-    // Bespoke layer, keyed by fileId rather than makeHarness's shared onUpload
-    // hook: this test needs upload A to poll forever while upload B's own poll
-    // completes immediately, and only the fileId each one is issued tells them
-    // apart.
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const events: string[] = [];
-    let uploadCount = 0;
-
-    const api = {
-      uploadBucketFile: () =>
-        Effect.sync(() => {
-          uploadCount += 1;
-          const n = uploadCount;
-          events.push(`upload:${n}`);
-          return { data: { id: FileId.make(`file-${n}`) } };
-        }),
-      // file-1 (upload A) never reaches a terminal state — if the permit were
-      // still held across the poll (pre-fix), upload B could never even start.
-      getFileUploadStatus: (_bucketId: BucketId, fileId: FileId) =>
-        fileId === FileId.make("file-1")
-          ? Effect.never
-          : Effect.succeed({ data: { state: "completed" as const } }),
-    };
-    const seal = {
-      encrypt: (plaintext: Uint8Array) => Effect.succeed(plaintext),
-    };
-
-    const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
-          Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
-          Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
-          NO_CHAIN_READS,
-        ),
-      ),
-    );
-
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const a = yield* Effect.fork(uploadEffect);
-        // Give A time to clear its payload phase and start (never-ending) polling
-        // before B is forked, so a leaked permit shows up as B never starting.
-        yield* Effect.sleep("20 millis");
-        const b = yield* Effect.fork(uploadEffect);
-
-        // Post-fix, B's upload is accepted and polled to completion in
-        // milliseconds. Pre-fix, B is stuck waiting on A's permit, which A never
-        // releases (its poll never terminates) — bounding the wait turns that
-        // deadlock into an observed TimeoutException instead of a hung test.
-        yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"));
-
-        yield* Fiber.interrupt(a);
-      }).pipe(Effect.provide(layer)),
-    );
-
-    expect(events).toEqual(["upload:1", "upload:2"]);
-  });
+  // "releases the permit once the upload is accepted, before polling (M12)" was
+  // removed here (COMG-1019): it relied on upload A polling forever after accept
+  // to prove the permit wasn't held through that poll. `uploadFileToBucket` no
+  // longer polls in-process at all — it returns right after accept — so nothing
+  // after accept can hold the permit, structurally, for any upload. The
+  // remaining concurrency tests above already cover the phase that still holds
+  // it (payload read/encrypt/upload).
 
   it("holds the permit until a cancelled upload's abandoned encrypt settles (M8)", async () => {
     // Cancelling an MCP request interrupts the fiber, but no Seal API takes a
@@ -256,8 +221,23 @@ describe("transfer concurrency (F11)", () => {
     });
 
     const api = {
-      uploadBucketFile: () =>
-        Effect.sync(() => ({ data: { id: FileId.make(`file-${encryptCalls}`) } })),
+      getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
+      uploadBucketFile: (
+        _bucketId: string,
+        _bytes: Uint8Array,
+        fileName: string,
+        _metadata?: unknown,
+        contentSize?: number,
+        declaredType?: string,
+      ) =>
+        Effect.sync(() => ({
+          data: {
+            id: FileId.make(`file-${encryptCalls}`),
+            original_name: fileName.trim().normalize("NFC"),
+            declared_mime_type: declaredType ?? null,
+            content_size: contentSize ?? null,
+          },
+        })),
       getFileUploadStatus: () => Effect.succeed({ data: { state: "completed" as const } }),
     };
     const seal = {
@@ -321,19 +301,107 @@ describe("transfer concurrency (F11)", () => {
   });
 });
 
-describe("accepted upload id survives a later failure (F14)", () => {
-  it("names the accepted file id in an error raised during polling", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const { layer } = makeHarness({
-      statusResult: () => Effect.fail(new ConsoleApiError({ message: "status boom" })),
-    });
+describe("upload_file returns as soon as the upload is accepted (COMG-1019)", () => {
+  it("never calls get_file_status, even once, before resolving", async () => {
+    // A beta user's 99 MiB upload timed out client-side (the MCP TS SDK's
+    // default 60s request timeout) while uploadFileToBucket was still polling
+    // get_file_status in-process, waiting for a terminal state that can take
+    // minutes on a real upload. get_file_status here is Effect.never — if a
+    // regression reintroduces even one poll call before returning, this hangs
+    // past the bounded timeout below instead of the process just running long,
+    // so it fails loudly rather than only showing up as a slow CI run.
+    let statusCalls = 0;
+    const api = {
+      getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
+      uploadBucketFile: (
+        _bucketId: string,
+        _bytes: Uint8Array,
+        fileName: string,
+        _metadata?: unknown,
+        contentSize?: number,
+        declaredType?: string,
+      ) =>
+        Effect.succeed({
+          data: {
+            id: FileId.make("file-1"),
+            original_name: fileName.trim().normalize("NFC"),
+            declared_mime_type: declaredType ?? null,
+            content_size: contentSize ?? null,
+          },
+        }),
+      getFileUploadStatus: () => {
+        statusCalls += 1;
+        return Effect.never;
+      },
+    };
+    const seal = { encrypt: (plaintext: Uint8Array) => Effect.succeed(plaintext) };
+    const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
+          Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+          Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+          NO_CHAIN_READS,
+        ),
+      ),
+    );
 
-    const error = await Effect.runPromise(Effect.flip(uploadWith(layer)));
+    const result = await Effect.runPromise(
+      uploadEffect.pipe(Effect.provide(layer), Effect.timeout("500 millis")),
+    );
 
-    // Without the id the caller's only recovery is to upload again, which
-    // re-encrypts and duplicates a file the server already has.
-    expect(JSON.stringify(error)).toContain("file-accepted-1");
+    expect(statusCalls).toBe(0);
+    expect(result).toMatchObject({ fileId: "file-1", pending: true });
   });
+
+  it("gives up after UPLOAD_ACCEPT_TIMEOUT instead of hanging on a stalled connection to Console", async () => {
+    // COMG-1019 review (nikola0x0): returning right after accept fixes the
+    // reported bug, but nothing bounded the accept step itself — a stalled
+    // `fetch` to Console (uploadBucketFile here is Effect.never) would have
+    // hung the tool call indefinitely, with no server-side signal at all
+    // until whatever the MCP client's own transport does. TestClock, not a
+    // real wait, per the same reasoning uploadPolicy.test.ts already uses
+    // for the mirror-grant budget: assert the real 4-minute constant
+    // without a slow test.
+    const api = {
+      getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
+      uploadBucketFile: () => Effect.never,
+    };
+    const seal = { encrypt: (plaintext: Uint8Array) => Effect.succeed(plaintext) };
+    const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
+          Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+          Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+          NO_CHAIN_READS,
+        ),
+      ),
+    );
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(uploadEffect.pipe(Effect.either));
+        yield* TestClock.adjust("4 minutes");
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(layer), Effect.provide(TestContext.TestContext)),
+    );
+
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConsoleApiError);
+      expect((result.left as ConsoleApiError).message).toContain(
+        "Timed out after 4 minutes accepting this upload",
+      );
+    }
+  });
+});
+
+describe("accepted upload id survives a later failure (F14)", () => {
+  // "names the accepted file id in an error raised during polling" was removed
+  // here (COMG-1019): `uploadFileToBucket` no longer polls in-process, so there
+  // is no post-accept status-check failure left for the id to need surviving —
+  // the two tests below cover what's left of F14's concern instead.
 
   it("logs the accepted file id as soon as the upload is accepted", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -341,8 +409,9 @@ describe("accepted upload id survives a later failure (F14)", () => {
 
     await Effect.runPromise(uploadWith(layer));
 
-    // Polling can outlast the process; a crash mid-poll must still leave the id
-    // somewhere the user can find it.
+    // A crash right after accept must still leave the id somewhere the user
+    // can find it, even though the tool call itself has already returned by
+    // then.
     expect(spy.mock.calls.flat().join(" ")).toContain("file-accepted-1");
   });
 
@@ -361,12 +430,17 @@ describe("an aborted download leaves nothing behind (F10)", () => {
     const dest = path.join(tmpDir, "aborted-dl.bin");
 
     const api = {
+      getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
+      getBucketFile: (_b: string, f: string) => Effect.succeed(boundFile(f)),
       downloadBucketFile: () => Effect.succeed(new Uint8Array([9, 9, 9])),
     };
     const seal = {
       // A slow decrypt gives the test a window to cancel after the download but
       // before the write lands — the point of the async, signal-aware writer.
-      decrypt: (ct: Uint8Array) => Effect.sleep("200 millis").pipe(Effect.as(ct)),
+      decrypt: (ct: Uint8Array) =>
+        Effect.sleep("200 millis").pipe(
+          Effect.as({ plaintext: ct, authenticatedName: null, bound: false }),
+        ),
     };
     const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
       Layer.provide(
@@ -383,7 +457,7 @@ describe("an aborted download leaves nothing behind (F10)", () => {
       Effect.gen(function* () {
         const svc = yield* ConsoleStorageService;
         const fiber = yield* Effect.fork(
-          svc.downloadFile(BucketId.make("bucket-1"), FileId.make("file-1"), "0xpolicy", dest),
+          svc.downloadFile(BucketId.make("bucket-1"), FileId.make("file-1"), dest),
         );
         yield* Effect.sleep("20 millis");
         yield* Fiber.interrupt(fiber);

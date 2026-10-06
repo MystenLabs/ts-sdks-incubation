@@ -1,9 +1,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeFileAtomic } from "../src/atomicWrite.js";
 import {
   type ConfigFileData,
+  getAdminConfigFilePath,
   getConfigDir,
   getConfigFilePath,
   loadConfigFile,
@@ -11,6 +13,15 @@ import {
   mergeConfigFile,
   saveConfigFile,
 } from "../src/configFile.js";
+
+/**
+ * Spies on `writeFileAtomic` (`{ spy: true }` keeps every call's real
+ * behaviour by default) so the C1 regression test below can fail one
+ * specific write in a two-write sequence with `mockImplementationOnce`,
+ * the same seam `mintedCredentialStore.test.ts` uses — see its doc comment
+ * for why this replaced `chmod`-based failure injection.
+ */
+vi.mock("../src/atomicWrite.js", { spy: true });
 
 // Use a temp directory so tests don't touch the real ~/.config
 let tmpDir: string;
@@ -26,6 +37,12 @@ beforeEach(() => {
 afterEach(() => {
   process.env = originalEnv;
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  // A leaked `mockImplementationOnce` from a test that failed before
+  // consuming it would otherwise fail the NEXT write in the NEXT test —
+  // `mockReset` clears the once-queue and, because this is a real spy,
+  // falls back to the original `writeFileAtomic` rather than a permanent
+  // no-op.
+  vi.mocked(writeFileAtomic).mockReset();
 });
 
 describe("getConfigDir", () => {
@@ -371,5 +388,614 @@ describe("mergeConfigFile — clearing fields", () => {
     expect(after.apiKey).toBe("hbr_key");
     expect(after.baseUrl).toBe("http://localhost:3000");
     expect(after.adminKey).toBe("hbradm_key");
+  });
+});
+
+describe("admin credential file separation", () => {
+  it("writes adminKey/adminServicePrivateKey to admin.json, never to config.json", () => {
+    saveConfigFile({
+      apiKey: "hbr_working",
+      adminKey: "hbradm_secret",
+      adminServicePrivateKey: "suiprivkey1_admin_secret",
+    });
+
+    const onDiskConfig = JSON.parse(fs.readFileSync(getConfigFilePath(), "utf-8"));
+    expect(onDiskConfig.apiKey).toBe("hbr_working");
+    expect(onDiskConfig.adminKey).toBeUndefined();
+    expect(onDiskConfig.adminServicePrivateKey).toBeUndefined();
+
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBe("hbradm_secret");
+    expect(onDiskAdmin.adminServicePrivateKey).toBe("suiprivkey1_admin_secret");
+
+    // The public read contract is unchanged: both fields still come back
+    // merged into one object, regardless of which file they live in.
+    const loaded = loadConfigFile();
+    expect(loaded.apiKey).toBe("hbr_working");
+    expect(loaded.adminKey).toBe("hbradm_secret");
+    expect(loaded.adminServicePrivateKey).toBe("suiprivkey1_admin_secret");
+  });
+
+  it("mergeConfigFile also routes admin fields to admin.json, not config.json", () => {
+    saveConfigFile({ apiKey: "hbr_working" });
+    mergeConfigFile({ adminKey: "hbradm_via_merge" });
+
+    const onDiskConfig = JSON.parse(fs.readFileSync(getConfigFilePath(), "utf-8"));
+    expect(onDiskConfig.adminKey).toBeUndefined();
+
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBe("hbradm_via_merge");
+  });
+
+  it("clearing adminKey removes it from admin.json, not just from the merged object", () => {
+    saveConfigFile({ apiKey: "hbr_working", adminKey: "hbradm_old" });
+
+    mergeConfigFile({}, ["adminKey"]);
+
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBeUndefined();
+    expect(loadConfigFile().adminKey).toBeUndefined();
+  });
+
+  it("a legacy config.json with inline admin fields still reads correctly (no admin.json yet)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({
+        apiKey: "hbr_legacy",
+        adminKey: "hbradm_legacy",
+        adminServicePrivateKey: "suiprivkey1_legacy",
+      }),
+      "utf-8",
+    );
+
+    const loaded = loadConfigFile();
+    expect(loaded.apiKey).toBe("hbr_legacy");
+    expect(loaded.adminKey).toBe("hbradm_legacy");
+    expect(loaded.adminServicePrivateKey).toBe("suiprivkey1_legacy");
+  });
+
+  it("self-heals a legacy config.json on the next write: admin fields relocate to admin.json", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_legacy", adminKey: "hbradm_legacy" }),
+      "utf-8",
+    );
+
+    // Any write at all — not a dedicated migration step — triggers the split,
+    // because mergeConfigFile reads the full (merged) state and saveConfigFile
+    // always routes admin fields to admin.json from then on.
+    mergeConfigFile({});
+
+    const onDiskConfig = JSON.parse(fs.readFileSync(getConfigFilePath(), "utf-8"));
+    expect(onDiskConfig.adminKey).toBeUndefined();
+    expect(onDiskConfig.apiKey).toBe("hbr_legacy");
+
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBe("hbradm_legacy");
+    expect(loadConfigFile().adminKey).toBe("hbradm_legacy");
+  });
+
+  // security review, C8: this exact migration used to happen with zero
+  // sign it occurred — an operator asking only to add an allowed-dirs folder
+  // had their management credential relocated with nothing printed about it.
+  it("warns once when an unrelated write migrates a legacy inline admin pair (C8)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_legacy", adminKey: "hbradm_legacy" }),
+      "utf-8",
+    );
+
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // An unrelated write — not a credential change — is what the C8 review
+      // fixture used, precisely because it should be the LEAST expected
+      // trigger for a credential to move.
+      mergeConfigFile({ allowedDirs: [os.tmpdir()] });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain(getAdminConfigFilePath());
+      // The default notice keeps the `[console-mcp]` prefix a plain script or
+      // --silent run expects on stderr.
+      expect(warn.mock.calls[0]?.[0]).toContain("[console-mcp]");
+
+      // The very next write finds admin.json already there and stays silent.
+      warn.mockClear();
+      mergeConfigFile({ allowedDirs: [os.tmpdir()] });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The interactive `install`/`config` panels print their own bordered lines
+  // and pass this instead of letting the notice fall through to the default
+  // console.error — a bare stderr write mid-render breaks the panel's `│`
+  // border (see the doc comment on mergeConfigFile's `onNotice` param). This
+  // proves the seam those callers rely on: a custom `onNotice` receives
+  // exactly the migration message, unprefixed, and console.error is never
+  // touched at all.
+  it("routes the migration notice through a custom onNotice instead of console.error", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_legacy", adminKey: "hbradm_legacy" }),
+      "utf-8",
+    );
+
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onNotice = vi.fn();
+    try {
+      mergeConfigFile({ allowedDirs: [os.tmpdir()] }, [], onNotice);
+      expect(warn).not.toHaveBeenCalled();
+      expect(onNotice).toHaveBeenCalledTimes(1);
+      expect(onNotice.mock.calls[0]?.[0]).toContain(getAdminConfigFilePath());
+      // Unprefixed: the caller's own line-printer supplies its own framing
+      // (a bullet inside a bordered panel row), not the bare-stderr prefix.
+      expect(onNotice.mock.calls[0]?.[0]).not.toContain("[console-mcp]");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The same migration trigger must NOT fire the notice when the admin pair
+  // is a deliberately NEW credential this call itself is writing — that is
+  // an ordinary save, not a migration, and warning about it would be noise
+  // (or actively misleading: nothing was "moved", it was configured for the
+  // first time).
+  it("does not warn when writing a brand-new admin credential (not a migration)", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mergeConfigFile({ adminKey: "hbradm_new", adminServicePrivateKey: "suiprivkey1_new" });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // security review, C15: unlike the "brand-new credential" case above,
+  // there WAS a legacy pair here (`before.adminKey` came from config.json's
+  // inline fallback, since admin.json doesn't exist yet) — this call is
+  // rotating it, not configuring one for the first time. The relocation to
+  // admin.json still happens on this exact save, so the compatibility
+  // warning (an older binary won't see it there) is exactly as relevant as
+  // in the C8 test above; only requiring `updates.adminKey === undefined`
+  // wrongly treated "rotated while migrating" the same as "brand-new".
+  it("warns on the first post-upgrade write even when that write is itself a rotation (C15)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_legacy", adminKey: "hbradm_old" }),
+      "utf-8",
+    );
+
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mergeConfigFile({ adminKey: "hbradm_rotated", adminServicePrivateKey: "suiprivkey1_new" });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain(getAdminConfigFilePath());
+    } finally {
+      warn.mockRestore();
+    }
+
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBe("hbradm_rotated");
+  });
+
+  it("admin.json wins when an inline admin field left in config.json agrees with it", () => {
+    saveConfigFile({ apiKey: "hbr_x", adminKey: "hbradm_current" });
+    // A duplicate left by a C1 partial-write recovery: config.json still
+    // carries the same value admin.json holds. Which one "wins" is not
+    // observable here, but the read must still succeed and return it.
+    const configPath = getConfigFilePath();
+    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ ...onDisk, adminKey: "hbradm_current" }),
+      "utf-8",
+    );
+
+    expect(loadConfigFile().adminKey).toBe("hbradm_current");
+  });
+
+  // security review, C7: a management key rotated with a binary that
+  // predates this split writes the WHOLE pair inline into config.json (it has
+  // no concept of admin.json), so the inline value ends up NEWER than
+  // admin.json's. The old unconditional "admin.json always wins" precedence
+  // discarded that rotation on the very next unrelated write — mergeConfigFile
+  // reads through loadConfigFile, splitAdminFields strips the inline pair
+  // before saving config.json, and the superseded admin.json value is all
+  // that survives in either file. Verified by reproducing exactly that: write
+  // a disagreeing inline value, then perform an unrelated merge and confirm
+  // the ROTATED (inline) value is what ends up in admin.json.
+  it("keeps a disagreeing inline admin field, letting the next write migrate a rotation instead of discarding it (C7)", () => {
+    saveConfigFile({ apiKey: "hbr_x", adminKey: "hbradm_superseded" });
+    const configPath = getConfigFilePath();
+    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    // Simulate an older binary rotating the key: it knows only config.json, so
+    // the new value lands inline there, while admin.json still holds the old one.
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ ...onDisk, adminKey: "hbradm_rotated" }),
+      "utf-8",
+    );
+
+    // The read alone must prefer the inline (newer) value...
+    expect(loadConfigFile().adminKey).toBe("hbradm_rotated");
+
+    // ...and an unrelated write must migrate it into admin.json rather than
+    // overwrite it with the superseded value — the exact failure C7 reported.
+    mergeConfigFile({ allowedDirs: [os.tmpdir()] });
+
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBe("hbradm_rotated");
+    const onDiskConfigAfter = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    expect(onDiskConfigAfter.adminKey).toBeUndefined();
+  });
+
+  // security review, C12 (introduced by the C7 fix above, 8b9f4d5c) and
+  // C17 (the mtime-based fix that originally closed C12 — mtimes survive a
+  // directory copy unreliably, e.g. `cp -R` or `rsync` without `-t` can tie
+  // or reorder them independently of which file was genuinely written more
+  // recently): "inline wins whenever present" cannot tell C7's case
+  // (config.json genuinely rotated by an older binary) from a C1
+  // partial-write failure (admin.json's write succeeded; config.json's
+  // failed write left a now-superseded inline pair behind). Both look
+  // identical to `applyAdminFile` as "inline present, differs from
+  // admin.json". Reproduced through the real `mergeConfigFile` →
+  // `saveConfigFile` path (not hand-written files) so `admin.json` actually
+  // records the `supersedes` digest a real rotation would, and the second
+  // (config.json) write genuinely fails via the same `vi.mock` seam the C1
+  // test above uses — no mtime manipulation anywhere.
+  it("admin.json (with the matching supersedes digest) wins over a stale inline duplicate left by a failed second write, not the reverse (C12)", async () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const configPath = getConfigFilePath();
+    const adminPath = getAdminConfigFilePath();
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        apiKey: "hbr_x",
+        adminKey: "hbradm_superseded",
+        adminServicePrivateKey: "suiprivkey1_superseded",
+      }),
+      "utf-8",
+    );
+
+    const { writeFileAtomic: realWriteFileAtomic } =
+      await vi.importActual<typeof import("../src/atomicWrite.js")>("../src/atomicWrite.js");
+    vi.mocked(writeFileAtomic)
+      .mockImplementationOnce(realWriteFileAtomic) // admin.json: real write, succeeds
+      .mockImplementationOnce(() => {
+        // config.json: fails, leaving the OLD inline pair on disk
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+    expect(() =>
+      mergeConfigFile({
+        adminKey: "hbradm_rotated",
+        adminServicePrivateKey: "suiprivkey1_rotated",
+      }),
+    ).toThrow();
+
+    // Precondition: exactly the duplicated state C1 promises to leave behind.
+    expect(JSON.parse(fs.readFileSync(adminPath, "utf-8")).adminKey).toBe("hbradm_rotated");
+    expect(JSON.parse(fs.readFileSync(configPath, "utf-8")).adminKey).toBe("hbradm_superseded");
+
+    expect(loadConfigFile().adminKey).toBe("hbradm_rotated");
+
+    // The next unrelated write must not resurrect the stale duplicate — it
+    // should keep the fresher admin.json value and self-heal by stripping
+    // the leftover inline copy.
+    mergeConfigFile({ allowedDirs: [os.tmpdir()] });
+    const onDiskAdmin = JSON.parse(fs.readFileSync(adminPath, "utf-8"));
+    expect(onDiskAdmin.adminKey).toBe("hbradm_rotated");
+    const onDiskConfigAfter = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    expect(onDiskConfigAfter.adminKey).toBeUndefined();
+  });
+
+  // C17's actual repro: a directory copy (cp -R, rsync without -t…) can tie
+  // or reorder the two files' mtimes regardless of which was really written
+  // last. Proves the fix no longer looks at mtime at all — explicitly
+  // stamping admin.json OLDER than config.json (the opposite of what C12's
+  // fix relied on) must not change the outcome.
+  it("still picks admin.json correctly even when a directory copy makes it look OLDER than the stale inline duplicate (C17)", async () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const configPath = getConfigFilePath();
+    const adminPath = getAdminConfigFilePath();
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ apiKey: "hbr_x", adminKey: "hbradm_superseded" }),
+      "utf-8",
+    );
+    const { writeFileAtomic: realWriteFileAtomic } =
+      await vi.importActual<typeof import("../src/atomicWrite.js")>("../src/atomicWrite.js");
+    vi.mocked(writeFileAtomic)
+      .mockImplementationOnce(realWriteFileAtomic)
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+      });
+    expect(() => mergeConfigFile({ adminKey: "hbradm_rotated" })).toThrow();
+
+    // Simulate a `cp -R`-style copy that rewrites both mtimes in write order,
+    // making admin.json look OLDER than the stale inline duplicate — the
+    // exact inversion that broke the mtime-based fix.
+    const past = new Date(Date.now() - 60_000);
+    const now = new Date();
+    fs.utimesSync(adminPath, past, past);
+    fs.utimesSync(configPath, now, now);
+
+    expect(loadConfigFile().adminKey).toBe("hbradm_rotated");
+  });
+
+  it("ignores non-string admin fields in admin.json", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "admin.json"),
+      JSON.stringify({ adminKey: 42, adminServicePrivateKey: { nested: true } }),
+      "utf-8",
+    );
+    const loaded = loadConfigFile();
+    expect(loaded.adminKey).toBeUndefined();
+    expect(loaded.adminServicePrivateKey).toBeUndefined();
+  });
+
+  it("throws a path-named error when admin.json contains invalid JSON", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "admin.json"), "not json", "utf-8");
+    expect(() => loadConfigFile()).toThrow(/could not be parsed/i);
+    expect(() => loadConfigFile()).toThrow(getAdminConfigFilePath());
+  });
+
+  // security review, C14: `null`, an array, or a bare primitive all parse
+  // as valid JSON but are not a config object — the old code treated that the
+  // SAME as a missing file (silent `{}`), which is exactly the "phantom {}
+  // from a corrupt file" the fail-loud discipline exists to prevent (see
+  // `readJsonFileOrThrow`'s own doc comment). Left uncaught, a save right
+  // after would treat the file as never having held anything and overwrite
+  // it with no error and no warning at all — worse than the loud "corrupt
+  // JSON" case, which at least stops the write.
+  it("throws, rather than silently reading as empty, when admin.json is valid JSON but not an object (C14)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "admin.json"), "null", "utf-8");
+    expect(() => loadConfigFile()).toThrow(/does not contain a json object/i);
+    expect(() => loadConfigFile()).toThrow(getAdminConfigFilePath());
+  });
+
+  it("throws, rather than silently reading as empty, when config.json is a JSON array (C14)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "[1,2,3]", "utf-8");
+    expect(() => loadConfigFile()).toThrow(/does not contain a json object/i);
+    expect(() => loadConfigFile()).toThrow(getConfigFilePath());
+  });
+
+  it("a non-object admin.json does not get silently overwritten by the next save (C14)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "admin.json"), "null", "utf-8");
+    expect(() => mergeConfigFile({ allowedDirs: [os.tmpdir()] })).toThrow(
+      /does not contain a json object/i,
+    );
+    // The write must not have happened — the operator still has a chance to
+    // hand-repair the file instead of finding it silently replaced.
+    expect(fs.readFileSync(path.join(dir, "admin.json"), "utf-8")).toBe("null");
+  });
+
+  it("loadConfigFileOrEmpty keeps a healthy config.json when admin.json is corrupt", () => {
+    // The two files degrade independently: admin.json corruption must not
+    // discard a perfectly healthy working key that has nothing to do with
+    // it. loadConfigFile (the write-path reader) still throws on either
+    // file, same as before — mergeConfigFile must never RMW over a damaged
+    // one.
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ apiKey: "hbr_ok" }), "utf-8");
+    fs.writeFileSync(path.join(dir, "admin.json"), "{ not json", "utf-8");
+    expect(() => loadConfigFile()).toThrow();
+    expect(loadConfigFileOrEmpty()).toEqual({ apiKey: "hbr_ok" });
+  });
+
+  // security review, C13: degradation must work in BOTH directions. The
+  // C2 test above proves a corrupt admin.json doesn't discard a healthy
+  // config.json; this is the mirror case, which used to return {} and drop
+  // a perfectly healthy admin.json purely because the UNRELATED config.json
+  // failed to parse — the same bug C2 fixed, just on the other file.
+  it("loadConfigFileOrEmpty keeps a healthy admin.json when config.json itself is corrupt (C13)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not json", "utf-8");
+    fs.writeFileSync(
+      path.join(dir, "admin.json"),
+      JSON.stringify({ adminKey: "hbradm_ok" }),
+      "utf-8",
+    );
+    expect(loadConfigFileOrEmpty()).toEqual({ adminKey: "hbradm_ok" });
+  });
+
+  it("loadConfigFileOrEmpty returns {} when both files are corrupt", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not json", "utf-8");
+    fs.writeFileSync(path.join(dir, "admin.json"), "{ also not json", "utf-8");
+    expect(loadConfigFileOrEmpty()).toEqual({});
+  });
+
+  it("supports a custom onNotice for its own warnings, not just mergeConfigFile's (C18)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not json", "utf-8");
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onNotice = vi.fn();
+    try {
+      loadConfigFileOrEmpty(onNotice);
+      expect(warn).not.toHaveBeenCalled();
+      expect(onNotice).toHaveBeenCalledTimes(1);
+      expect(onNotice.mock.calls[0]?.[0]).toContain(getConfigFilePath());
+      expect(onNotice.mock.calls[0]?.[0]).not.toContain("[console-mcp]");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // security review, C16b: every independent loadConfigFileOrEmpty caller
+  // (server startup, each interactive step's pre-write check, base-URL
+  // resolution…) used to re-read and re-warn about the same corrupt file, so
+  // one `config` run could print the identical warning 3-4 times. A distinct
+  // file gets its own warning; the SAME file, read repeatedly, warns once.
+  it("warns about a given corrupt file at most once per process (C16b)", () => {
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "config.json"), "{ not json", "utf-8");
+    const onNotice = vi.fn();
+    loadConfigFileOrEmpty(onNotice);
+    loadConfigFileOrEmpty(onNotice);
+    loadConfigFileOrEmpty(onNotice);
+    expect(onNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not create admin.json on a host that never configured a management key", () => {
+    // Writing an empty admin.json unconditionally would (a) give every host a
+    // file that can fail to parse, turning admin.json corruption from a
+    // provisioning-host problem into a fleet-wide one, and (b) destroy the
+    // file's value as a signal for "does this host hold a management
+    // credential?", which the README's worker-host guidance relies on.
+    saveConfigFile({ apiKey: "hbr_only" });
+    expect(fs.existsSync(getAdminConfigFilePath())).toBe(false);
+    expect(loadConfigFile()).toEqual({ apiKey: "hbr_only" });
+  });
+
+  it("still writes an empty admin.json when clearing an existing one", () => {
+    // The whole-file-replacement contract config.json has is preserved for
+    // admin.json too: a caller that explicitly clears the admin pair gets a
+    // real (empty) file back, not a stale one with the old secret still on
+    // disk.
+    saveConfigFile({ apiKey: "hbr_only", adminKey: "hbradm_old" });
+    expect(fs.existsSync(getAdminConfigFilePath())).toBe(true);
+
+    mergeConfigFile({}, ["adminKey"]);
+
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBeUndefined();
+  });
+
+  it("survives a failure on the second (config.json) write during a legacy migration", async () => {
+    // admin.json is written FIRST, config.json second: if the second write
+    // fails, the pair is still safely on disk in admin.json rather than lost
+    // entirely. Reproduce the reviewer's exact scenario on a legacy
+    // (pre-split) config.json that still carries the admin pair inline —
+    // only the SECOND writeFileAtomic call (config.json) fails; the first
+    // (admin.json) runs for real via `vi.importActual`.
+    const dir = getConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      JSON.stringify({ apiKey: "hbr_legacy", adminKey: "hbradm_legacy" }),
+      "utf-8",
+    );
+    const { writeFileAtomic: realWriteFileAtomic } =
+      await vi.importActual<typeof import("../src/atomicWrite.js")>("../src/atomicWrite.js");
+    vi.mocked(writeFileAtomic)
+      .mockImplementationOnce(realWriteFileAtomic)
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+
+    expect(() => mergeConfigFile({ apiKey: "hbr_L2" })).toThrow();
+
+    // The credential must still be recoverable from disk — either file is
+    // fine, since loadConfigFile merges them and admin.json (written first,
+    // and unaffected by config.json's failed write) already has it.
+    expect(loadConfigFile().adminKey).toBe("hbradm_legacy");
+    const onDiskAdmin = JSON.parse(fs.readFileSync(getAdminConfigFilePath(), "utf-8"));
+    expect(onDiskAdmin.adminKey).toBe("hbradm_legacy");
+  });
+
+  // security review, N1 [High] (introduced by the C17 digest fix):
+  // digesting the RESOLVED `before` pair instead of config.json's actual
+  // on-disk inline pair only agrees on the first attempt. On a retry after
+  // an earlier failed config.json write, `before` already resolves to the
+  // value THIS save is about to write again (admin.json succeeded last
+  // time), so digesting it records the wrong "superseded" value — the next
+  // read then treats the real stale inline leftover as a genuinely newer
+  // rotation and loses the rotated key on the following save.
+  it("N1: retrying a rotation whose config.json write keeps failing still keeps the rotated key", async () => {
+    fs.mkdirSync(getConfigDir(), { recursive: true });
+    fs.writeFileSync(
+      getConfigFilePath(),
+      JSON.stringify({
+        apiKey: "hbr_x",
+        adminKey: "hbradm_superseded",
+        adminServicePrivateKey: "suiprivkey1_superseded",
+      }),
+      "utf-8",
+    );
+    const { writeFileAtomic: realWriteFileAtomic } =
+      await vi.importActual<typeof import("../src/atomicWrite.js")>("../src/atomicWrite.js");
+    const failConfigWrite = () => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    };
+    // Two attempts, each admin.json write real and each config.json write
+    // failing — a persistent failure (an immutable flag, an ACL, a
+    // read-only file), not a one-off.
+    vi.mocked(writeFileAtomic)
+      .mockImplementationOnce(realWriteFileAtomic)
+      .mockImplementationOnce(failConfigWrite)
+      .mockImplementationOnce(realWriteFileAtomic)
+      .mockImplementationOnce(failConfigWrite);
+    const rotate = () =>
+      mergeConfigFile({
+        adminKey: "hbradm_rotated",
+        adminServicePrivateKey: "suiprivkey1_rotated",
+      });
+    expect(rotate).toThrow();
+    expect(rotate).toThrow();
+    expect(loadConfigFile().adminKey).toBe("hbradm_rotated");
+  });
+
+  // security review, N2 [Low] (introduced by the C17 digest fix): the
+  // `supersedes` marker used to outlive the save it protects. Right after a
+  // successful rotation OLD -> NEW, admin.json kept `supersedes: H(OLD)`
+  // indefinitely — so if the operator then deliberately rolled back to OLD
+  // with the older, pre-split installed binary (README.md points
+  // management-key setup at that installed launcher), the inline OLD still
+  // matched the digest and was wrongly treated as the C12 leftover this
+  // save had already resolved, rather than as the rollback it actually is,
+  // and got discarded on the next save.
+  it("N2: an older binary's rollback to the previous pair is honoured", () => {
+    fs.mkdirSync(getConfigDir(), { recursive: true });
+    const configPath = getConfigFilePath();
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        apiKey: "hbr_x",
+        adminKey: "hbradm_previous",
+        adminServicePrivateKey: "suiprivkey1_previous",
+      }),
+      "utf-8",
+    );
+    mergeConfigFile({ adminKey: "hbradm_rotated", adminServicePrivateKey: "suiprivkey1_rotated" });
+    // The installed pre-split binary rolls back: it writes the previous pair
+    // inline, the only way it knows how to write anything.
+    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        ...onDisk,
+        adminKey: "hbradm_previous",
+        adminServicePrivateKey: "suiprivkey1_previous",
+      }),
+      "utf-8",
+    );
+    expect(loadConfigFile().adminKey).toBe("hbradm_previous");
   });
 });
