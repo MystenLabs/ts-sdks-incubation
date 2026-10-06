@@ -3,27 +3,37 @@
 
 import type { DAppKit } from '@mysten/dapp-kit-core';
 import type { ChainFilter, ChainIconOverrides, Direction, RpcOverrides } from '../chains/index.js';
-import type { ChainKey, Network } from '../chains/types.js';
+import type { ChainDefinition, ChainKey, Network } from '../chains/types.js';
 import type { IrisClientOptions } from '../iris/client.js';
 import type { StateStorage } from '../utils/storage.js';
-import type { AppKitWalletOptions } from '../wallets/appkit.js';
-import type { EvmWalletAdapter, SolanaWalletAdapter } from '../wallets/types.js';
+import type { EvmWalletAdapter, SolanaWalletAdapter, WalletAdapters } from '../wallets/types.js';
 
 export type TransferSpeed = 'fast' | 'standard';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyDAppKit = DAppKit<any, any>;
 
+/**
+ * Supplies the EVM and Solana wallets, loaded the first time one is needed. The ready-made one is
+ * `appKitWallets()` from `@mysten-incubation/cctp-kit/appkit`.
+ */
+export type WalletLayer = (context: {
+	network: Network;
+	chains: ChainDefinition[];
+}) => Promise<WalletAdapters>;
+
 export interface CctpKitWalletConfig {
-	/**
-	 * Inject the host's existing EVM connection (e.g. `createEvmWalletFromWagmiConfig(config)`).
-	 * When omitted the widget mounts its own AppKit-backed connection.
-	 */
+	/** The host's existing EVM connection (e.g. `createEvmWalletFromWagmiConfig(config)`). */
 	evm?: EvmWalletAdapter;
-	/** Inject the host's existing Solana connection. */
+	/** The host's existing Solana connection. */
 	solana?: SolanaWalletAdapter;
-	/** Options for the built-in AppKit wallet layer (ignored for injected ecosystems). */
-	appKit?: AppKitWalletOptions;
+	/**
+	 * Supplies whichever of the two is not given above. It lives behind its own entry point so
+	 * that a host which brings its own wallets does not have to install, or bundle, the packages
+	 * the ready-made one is built on. Without it, and without an adapter, that ecosystem's
+	 * chains are listed but cannot be connected.
+	 */
+	layer?: WalletLayer;
 }
 
 export interface CctpKitConfig {

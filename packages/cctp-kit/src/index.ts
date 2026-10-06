@@ -9,6 +9,7 @@ export type {
 	CctpKitConfig,
 	CctpKitEvent,
 	CctpKitWalletConfig,
+	WalletLayer,
 	Quote,
 	TransferRecord,
 	TransferSpeed,
@@ -45,8 +46,6 @@ export { createEvmWalletFromWagmiConfig } from './wallets/wagmi.js';
 export type { WagmiEvmWalletOptions } from './wallets/wagmi.js';
 export { signAndSendSolanaTransaction } from './wallets/solana.js';
 export type { SolanaProviderLike } from './wallets/solana.js';
-export { createAppKitWallets } from './wallets/appkit.js';
-export type { AppKitWalletOptions } from './wallets/appkit.js';
 export type {
 	EvmWalletAdapter,
 	SolanaWalletAdapter,

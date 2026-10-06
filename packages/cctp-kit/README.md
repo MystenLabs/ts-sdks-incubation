@@ -8,7 +8,7 @@ nanostores) with React bindings under `@mysten-incubation/cctp-kit/react`. Pairs
 
 ```sh
 npm i @mysten-incubation/cctp-kit @mysten/dapp-kit-core @mysten/sui @wagmi/core   # React apps: @mysten/dapp-kit-react instead of -core
-# default EVM + Solana wallet layer (optional if you inject your own):
+# the ready-made EVM + Solana wallet layer (skip it if you pass your own adapters):
 npm i @reown/appkit @reown/appkit-adapter-wagmi @reown/appkit-adapter-solana
 ```
 
@@ -17,9 +17,14 @@ npm i @reown/appkit @reown/appkit-adapter-wagmi @reown/appkit-adapter-solana
 ```ts
 import { createDAppKit } from '@mysten/dapp-kit-core';
 import { createCctpKit } from '@mysten-incubation/cctp-kit';
+import { appKitWallets } from '@mysten-incubation/cctp-kit/appkit';
 import '@mysten-incubation/cctp-kit/web'; // registers <mysten-cctp-bridge>
 
-const kit = createCctpKit({ dAppKit, direction: 'both' });
+const kit = createCctpKit({
+	dAppKit,
+	direction: 'both',
+	wallets: { layer: appKitWallets({ projectId }) },
+});
 
 const el = document.querySelector('mysten-cctp-bridge')!;
 el.instance = kit;
@@ -33,9 +38,10 @@ import {
 	CctpKitProvider,
 	useActiveCctpTransfer,
 } from '@mysten-incubation/cctp-kit/react';
+import { appKitWallets } from '@mysten-incubation/cctp-kit/appkit';
 import { CctpBridge } from '@mysten-incubation/cctp-kit/react/ui';
 
-const kit = createCctpKit({ dAppKit });
+const kit = createCctpKit({ dAppKit, wallets: { layer: appKitWallets({ projectId }) } });
 
 export function App() {
 	return (
@@ -51,20 +57,20 @@ Every hook accepts an optional `{ kit }` to bypass context, mirroring dapp-kit's
 
 ### Configuration
 
-| Option                   | Description                                                                                                                                           |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| `dAppKit`                | The host's dapp-kit 2.0 instance (required).                                                                                                          |
-| `network`                | `'mainnet'` or `'testnet'`; inferred from dapp-kit's current network.                                                                                 |
-| `direction`              | `'both'`, `'inflow'` (all routes end on Sui) or `'outflow'`.                                                                                          |
-| `chains`                 | `{ allow, deny, from: { allow, deny }, to: { allow, deny } }` by chain key.                                                                           |
-| `transferSpeed`          | `{ default, allow }` with `'fast'` and/or `'standard'`.                                                                                               |
-| `rpc`                    | `{ urls: { base: ['https://a', 'https://b'] }, mode: 'prepend'                                                                                        | 'replace' }` |
-| `icons`                  | Override chain icons by key (URL / data URI), or `null` for a text monogram. Defaults load from `icons.llamao.fi`; allow it in `img-src` or override. |
-| `wallets.evm`            | Inject an EVM adapter, e.g. `createEvmWalletFromWagmiConfig(config)`.                                                                                 |
-| `wallets.solana`         | Inject a Solana adapter.                                                                                                                              |
-| `wallets.appKit`         | `{ projectId, metadata, themeMode }` for the built-in AppKit layer.                                                                                   |
-| `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                  |
-| `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                 |
+| Option                   | Description                                                                                                                                                             |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `dAppKit`                | The host's dapp-kit 2.0 instance (required).                                                                                                                            |
+| `network`                | `'mainnet'` or `'testnet'`; inferred from dapp-kit's current network.                                                                                                   |
+| `direction`              | `'both'`, `'inflow'` (all routes end on Sui) or `'outflow'`.                                                                                                            |
+| `chains`                 | `{ allow, deny, from: { allow, deny }, to: { allow, deny } }` by chain key.                                                                                             |
+| `transferSpeed`          | `{ default, allow }` with `'fast'` and/or `'standard'`.                                                                                                                 |
+| `rpc`                    | `{ urls: { base: ['https://a', 'https://b'] }, mode: 'prepend'                                                                                                          | 'replace' }` |
+| `icons`                  | Override chain icons by key (URL / data URI), or `null` for a text monogram. Defaults load from `icons.llamao.fi`; allow it in `img-src` or override.                   |
+| `wallets.evm`            | Inject an EVM adapter, e.g. `createEvmWalletFromWagmiConfig(config)`.                                                                                                   |
+| `wallets.solana`         | Inject a Solana adapter.                                                                                                                                                |
+| `wallets.layer`          | Supplies the EVM and Solana wallets you do not inject. `appKitWallets({ projectId, metadata, themeMode })` from `/appkit` is the ready-made one, built on Reown AppKit. |
+| `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                                    |
+| `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                                   |
 
 ### Theming
 

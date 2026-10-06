@@ -26,7 +26,6 @@ import { feeFromBps, parseUsdc } from '../utils/amount.js';
 import { hexToBytes, isValidAddress, normalizeAddress } from '../utils/bytes.js';
 import { DEFAULT_STORAGE_KEY, getDefaultStorage } from '../utils/storage.js';
 import type { StateStorage } from '../utils/storage.js';
-import { createAppKitWallets } from '../wallets/appkit.js';
 import type {
 	EvmWalletAdapter,
 	SolanaWalletAdapter,
@@ -109,6 +108,25 @@ const LEASE_MS = 90_000;
 const LEASE_RENEW_MS = 20_000;
 
 const QUOTE_PENDING = 'Fetching quote…';
+
+/** Stands in for a wallet the host did not configure: nothing is connected, and asking says why. */
+function missingWallet<E extends 'evm' | 'solana'>(ecosystem: E): WalletAdapters[E] {
+	const fail = async (): Promise<never> => {
+		throw new Error(
+			`No ${ecosystem === 'evm' ? 'EVM' : 'Solana'} wallet is configured. Pass \`wallets: { layer: appKitWallets() }\` from '@mysten-incubation/cctp-kit/appkit', or an adapter of your own.`,
+		);
+	};
+	const stub = {
+		ecosystem,
+		getAccount: () => null,
+		subscribe: () => () => undefined,
+		connect: fail,
+		disconnect: async () => undefined,
+		getWalletClient: fail,
+		signAndSendTransaction: fail,
+	};
+	return stub as unknown as WalletAdapters[E];
+}
 
 export function createCctpKit(config: CctpKitConfig): CctpKit {
 	const dAppKit = config.dAppKit;
@@ -268,23 +286,20 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	// Balance reads depend on the network dapp-kit is on; re-read when it changes.
 	cleanups.push(dAppKit.stores.$currentNetwork.subscribe(() => void refreshBalance()));
 
-	// --- Non-Sui wallets: injected adapters win, otherwise AppKit (lazy). --------------
+	// --- Non-Sui wallets: the host's adapters win, otherwise its wallet layer (lazy). ----
 	let walletsPromise: Promise<WalletAdapters> | undefined;
 	const wallets = () => {
 		walletsPromise ??= (async () => {
 			const injectedEvm = config.wallets?.evm;
 			const injectedSolana = config.wallets?.solana;
-			let adapters: WalletAdapters;
-			if (injectedEvm && injectedSolana) {
-				adapters = { evm: injectedEvm, solana: injectedSolana };
-			} else {
-				const defaults = await createAppKitWallets({
-					network,
-					chains,
-					...config.wallets?.appKit,
-				});
-				adapters = { evm: injectedEvm ?? defaults.evm, solana: injectedSolana ?? defaults.solana };
-			}
+			const layer =
+				(!injectedEvm || !injectedSolana) && config.wallets?.layer
+					? await config.wallets.layer({ network, chains })
+					: null;
+			const adapters: WalletAdapters = {
+				evm: injectedEvm ?? layer?.evm ?? missingWallet('evm'),
+				solana: injectedSolana ?? layer?.solana ?? missingWallet('solana'),
+			};
 			if (!destroyed) {
 				bindWallet('evm', adapters.evm);
 				bindWallet('solana', adapters.solana);
