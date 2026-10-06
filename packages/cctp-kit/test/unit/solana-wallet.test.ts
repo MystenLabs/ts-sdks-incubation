@@ -129,23 +129,25 @@ describe('signing a Solana transaction that needs a second signer', () => {
 		}
 	});
 
-	it('gives up, without a signature, when no send gets an answer', async () => {
-		// Recording a signature for a transaction that may never have left would leave a
-		// transfer waiting on a burn that did not happen.
+	it('hands back the signature when no send gets an answer', async () => {
+		// The node may have passed the transaction on before the connection dropped. Reporting a
+		// failure would invite a second burn beside one that may still land; with the signature
+		// the caller watches the chain until it shows what became of the first.
 		vi.useFakeTimers();
 		try {
 			const built = await burn();
-			const dropped = new TypeError('Failed to fetch');
-			const sendRawTransaction = vi.fn().mockRejectedValue(dropped);
+			const sendRawTransaction = vi
+				.fn<(raw: Buffer | Uint8Array | number[]) => Promise<string>>()
+				.mockRejectedValue(new TypeError('Failed to fetch'));
 			const outcome = signAndSendSolanaTransaction(
 				{ signTransaction: vi.fn(signLikeAWallet), signAndSendTransaction: vi.fn() },
 				built.transaction,
 				{ sendRawTransaction } as unknown as Connection,
 				built.signers,
 			);
-			const settled = expect(outcome).rejects.toBe(dropped);
 			await vi.runAllTimersAsync();
-			await settled;
+			const sent = Transaction.from(sendRawTransaction.mock.calls[0]![0] as Buffer);
+			expect(await outcome).toBe(bs58.encode(sent.signature!));
 			expect(sendRawTransaction).toHaveBeenCalledTimes(3);
 		} finally {
 			vi.useRealTimers();

@@ -53,14 +53,18 @@ export async function signAndSendSolanaTransaction(
 			try {
 				return await connection.sendRawTransaction(raw);
 			} catch (error) {
-				// An earlier attempt got through although its answer never arrived.
-				if (signed.signature && /already been processed/i.test(messageOf(error))) {
+				if (wasRefusedByTheNode(error) && !/already been processed/i.test(messageOf(error))) {
+					throw error;
+				}
+				// No answer (the connection dropped), or the node says it has already seen this
+				// transaction: it may be on its way. Sending the same signed bytes again cannot
+				// burn twice. After that, hand back the signature, which is known before anything
+				// is sent, so the caller tracks it until the chain shows what became of it. To
+				// report a failure here would invite a second burn beside one that may land.
+				if (attempt === SEND_ATTEMPTS || /already been processed/i.test(messageOf(error))) {
+					if (!signed.signature) throw error;
 					return bs58.encode(signed.signature);
 				}
-				// No answer at all (the connection dropped): the node may or may not have taken
-				// the transaction. Sending the same signed bytes again cannot burn twice, and it
-				// saves asking the wallet a second time.
-				if (wasRefusedByTheNode(error) || attempt === SEND_ATTEMPTS) throw error;
 				await sleep(SEND_RETRY_MS);
 			}
 		}

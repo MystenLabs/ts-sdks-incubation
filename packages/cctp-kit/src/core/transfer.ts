@@ -24,6 +24,7 @@ import {
 	getAssociatedTokenAddress,
 	getSolanaClaimFunds,
 	getSolanaConnection,
+	getSolanaLastPossibleBlock,
 	getSolanaUsdcBalance,
 	hasSolanaTransactionSucceeded,
 	solanaIsNonceUsed,
@@ -35,11 +36,12 @@ import {
 	getSuiUsdcBalance,
 	suiIsNonceUsed,
 } from '../engine/sui.js';
-import type { IrisClient } from '../iris/client.js';
+import type { IrisClient, IrisMessage } from '../iris/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { bytesToHex, hexToBytes, parseMessageV2, toBytes32 } from '../utils/bytes.js';
 import type { Hex } from '../utils/bytes.js';
 import { TransactionRevertedError } from '../utils/errors.js';
+import { sleep } from '../utils/sleep.js';
 import type { WalletAdapters } from '../wallets/types.js';
 import type { AnyDAppKit, TransferRecord } from './types.js';
 
@@ -58,6 +60,8 @@ export interface TransferContext {
 	checkNonce?: boolean;
 	/** Attestation polling interval (defaults to 5 s). */
 	pollIntervalMs?: number;
+	/** How long to wait before asking the source chain again about a burn it could not vouch for (defaults to 15 s). */
+	confirmRetryMs?: number;
 	/** Called after every state change; the caller persists and re-renders. */
 	onUpdate: (transfer: TransferRecord) => void;
 }
@@ -83,32 +87,20 @@ export async function runTransfer(
 
 	try {
 		if (!transfer.sourceTxHash) {
-			const sourceTxHash = await burn(transfer, from, to, ctx, update);
-			const burnedAt = Date.now();
-			update({ status: 'attesting', sourceTxHash, burnedAt, attestingSince: burnedAt });
-		} else if (
-			transfer.status === 'pending' ||
-			transfer.status === 'approving' ||
-			transfer.status === 'burning'
-		) {
-			update({ status: 'attesting', attestingSince: transfer.attestingSince ?? Date.now() });
+			// Sends the burn and records its hash. Whether it is on chain is settled below, the
+			// same way for a burn just sent and for one found in a record after a reload.
+			await burn(transfer, from, to, ctx, update);
 		}
 
 		if (!transfer.attestation || !transfer.message) {
 			ctx.signal?.throwIfAborted();
-			if (transfer.status !== 'attesting' || !transfer.attestingSince) {
-				update({ status: 'attesting', attestingSince: transfer.attestingSince ?? Date.now() });
-			}
-			const attested = await ctx.iris.waitForAttestation(from.domain, transfer.sourceTxHash!, {
-				signal: ctx.signal,
-				intervalMs: ctx.pollIntervalMs,
-			});
+			const attested = await attest(() => transfer, from, ctx, update);
 			update({
 				status: 'readyToMint',
 				message: attested.message,
 				attestation: attested.attestation,
 			});
-		} else if (transfer.status === 'attesting') {
+		} else if (transfer.status !== 'readyToMint' && transfer.status !== 'minting') {
 			update({ status: 'readyToMint' });
 		}
 
@@ -221,7 +213,7 @@ async function burn(
 	to: ChainDefinition,
 	ctx: TransferContext,
 	update: (patch: Partial<TransferRecord>) => TransferRecord,
-): Promise<string> {
+): Promise<void> {
 	const amount = BigInt(transfer.amount);
 	const maxFee = BigInt(transfer.maxFee);
 	const minFinalityThreshold = transfer.speed === 'fast' ? 1000 : 2000;
@@ -242,7 +234,8 @@ async function burn(
 				maxFee,
 				minFinalityThreshold,
 			});
-			return executeSui(ctx, from, tx, (digest) => update({ sourceTxHash: digest }));
+			await executeSui(ctx, from, tx, (digest) => update({ sourceTxHash: digest }));
+			return;
 		}
 		case 'evm': {
 			const wallets = await ctx.wallets();
@@ -268,25 +261,7 @@ async function burn(
 				minFinalityThreshold,
 			});
 			update({ sourceTxHash: hash });
-			try {
-				// Sped up in the wallet, the burn is mined under another hash: that is the one
-				// Circle knows.
-				const mined = await waitForEvmReceipt(from, hash);
-				if (mined !== hash) update({ sourceTxHash: mined });
-				return mined;
-			} catch (error) {
-				if (error instanceof TransactionRevertedError) {
-					// A reverted burn moved no funds; drop the hash so a retry burns again instead
-					// of waiting on an attestation that will never come.
-					update({ sourceTxHash: undefined });
-					throw error;
-				}
-				// The receipt could not be read: a slow chain, an RPC outage, or viem's
-				// three-minute limit. The burn may well be mined, so keep its hash and go on to
-				// wait for Circle, which only ever attests a burn that happened. Forgetting the
-				// hash here would make the next attempt burn a second time.
-			}
-			return hash;
+			return;
 		}
 		case 'solana': {
 			const wallets = await ctx.wallets();
@@ -305,7 +280,7 @@ async function burn(
 				}
 				if (landed) {
 					update({ sourceTxHash: dropped, droppedSourceTxHash: undefined });
-					return dropped;
+					return;
 				}
 			}
 			await assertSourceBalance(from, transfer.sender, amount, ctx);
@@ -323,19 +298,120 @@ async function burn(
 				getSolanaConnection(from),
 				built.signers,
 			);
-			update({ sourceTxHash: signature });
-			try {
-				await waitForSolanaConfirmation(from, signature, { signal: ctx.signal });
-			} catch (error) {
-				if (error instanceof TransactionRevertedError) {
-					update({ sourceTxHash: undefined, droppedSourceTxHash: signature });
-					throw error;
-				}
-				ctx.signal?.throwIfAborted();
-				// Outcome unknown: keep the signature and wait for Circle (see the EVM case).
-			}
-			return signature;
+			update({ sourceTxHash: signature, droppedSourceTxHash: undefined });
+			// Taken after the wallet has signed, so it holds whatever blockhash the wallet used.
+			const lastBlock = await getSolanaLastPossibleBlock(from);
+			if (lastBlock !== null) update({ sourceTxLastBlock: lastBlock });
+			return;
 		}
+	}
+}
+
+/**
+ * Wait for Circle to attest the burn, and meanwhile make sure the burn is really there.
+ *
+ * A recorded hash only says a burn was sent. Until the source chain has shown it, the chain is
+ * watched alongside Circle: a burn that reverted, was cancelled or replaced in the wallet, or
+ * expired is taken out of the record so the transfer can be tried again, and one that was sped
+ * up is followed to the hash it was mined under. Circle attesting it settles the question too.
+ * This runs the same for a burn sent a moment ago and for one found in a record after a reload.
+ */
+async function attest(
+	current: () => TransferRecord,
+	from: ChainDefinition,
+	ctx: TransferContext,
+	update: (patch: Partial<TransferRecord>) => TransferRecord,
+): Promise<IrisMessage> {
+	for (;;) {
+		const transfer = current();
+		const hash = transfer.sourceTxHash!;
+		const waitForCircle = (signal?: AbortSignal) =>
+			ctx.iris.waitForAttestation(from.domain, hash, { signal, intervalMs: ctx.pollIntervalMs });
+
+		if (transfer.burnedAt) {
+			if (transfer.status !== 'attesting' || !transfer.attestingSince) {
+				update({ status: 'attesting', attestingSince: transfer.attestingSince ?? Date.now() });
+			}
+			return waitForCircle(ctx.signal);
+		}
+
+		if (transfer.status !== 'burning') update({ status: 'burning' });
+		const stop = new AbortController();
+		const stopWithCaller = () => stop.abort(ctx.signal?.reason);
+		if (ctx.signal?.aborted) stopWithCaller();
+		else ctx.signal?.addEventListener('abort', stopWithCaller, { once: true });
+		const circle = waitForCircle(stop.signal).then((attested) => ({ attested }));
+		const chain = confirmSource(transfer, from, ctx, stop.signal).then((mined) => ({ mined }));
+		// Whichever loses the race is stopped below; its rejection is expected.
+		circle.catch(() => undefined);
+		chain.catch(() => undefined);
+		try {
+			const first = await Promise.race([circle, chain]);
+			const now = Date.now();
+			if ('attested' in first) {
+				// Circle only attests a burn that happened.
+				update({ burnedAt: now, attestingSince: transfer.attestingSince ?? now });
+				return first.attested;
+			}
+			update({
+				sourceTxHash: first.mined,
+				burnedAt: now,
+				status: 'attesting',
+				attestingSince: transfer.attestingSince ?? now,
+			});
+			if (first.mined === hash) return (await circle).attested;
+			// Mined under another hash: go round again and ask Circle for that one.
+		} catch (error) {
+			if (error instanceof TransactionRevertedError) {
+				// The burn moved no funds and never will. Drop the hash so the transfer can be
+				// tried again, instead of waiting on an attestation that cannot come.
+				update({
+					sourceTxHash: undefined,
+					sourceTxLastBlock: undefined,
+					...(from.ecosystem === 'solana' ? { droppedSourceTxHash: hash } : {}),
+				});
+			}
+			throw error;
+		} finally {
+			ctx.signal?.removeEventListener('abort', stopWithCaller);
+			stop.abort();
+		}
+	}
+}
+
+/**
+ * Resolve with the hash the burn was confirmed under once the source chain shows it. Rejects
+ * with `TransactionRevertedError` when the chain rules it out. While the chain cannot say, as
+ * when its RPC is failing or the burn is not mined within one wait, it asks again.
+ */
+async function confirmSource(
+	transfer: TransferRecord,
+	from: ChainDefinition,
+	ctx: TransferContext,
+	signal: AbortSignal,
+): Promise<string> {
+	const hash = transfer.sourceTxHash!;
+	for (;;) {
+		signal.throwIfAborted();
+		try {
+			switch (from.ecosystem) {
+				case 'sui':
+					// A Sui digest exists only once the transaction has executed.
+					return hash;
+				case 'evm':
+					return await waitForEvmReceipt(from, hash as Hex);
+				case 'solana':
+					await waitForSolanaConfirmation(from, hash, {
+						signal,
+						lastPossibleBlock: transfer.sourceTxLastBlock,
+					});
+					return hash;
+			}
+		} catch (error) {
+			if (error instanceof TransactionRevertedError) throw error;
+			signal.throwIfAborted();
+		}
+		await sleep(ctx.confirmRetryMs ?? 15_000, signal);
 	}
 }
 

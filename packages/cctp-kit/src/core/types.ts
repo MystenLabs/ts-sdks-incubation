@@ -92,17 +92,25 @@ export interface TransferRecord {
 	status: TransferStatus;
 	sourceTxHash?: string;
 	/**
-	 * A Solana burn that was sent and then written off as expired. It is looked up once more
-	 * before the transfer burns again.
+	 * A Solana burn that the chain has ruled out: it failed, or it can no longer be included.
+	 * It is looked up once more before the transfer burns again.
 	 */
 	droppedSourceTxHash?: string;
+	/**
+	 * For a Solana burn: the last block that could include `sourceTxHash`. Kept so that a
+	 * transfer resumed later can tell a burn that is still on its way from one that is gone.
+	 */
+	sourceTxLastBlock?: number;
 	message?: string;
 	attestation?: string;
 	destinationTxHash?: string;
 	error?: string;
 	createdAt: number;
 	updatedAt: number;
-	/** When the burn was confirmed on the source chain (block / checkpoint time). */
+	/**
+	 * When the burn was seen on the source chain. Until this is set the burn has been sent but
+	 * not confirmed, and the transfer keeps checking the chain for it.
+	 */
 	burnedAt?: number;
 	/** When the attestation wait started (first time the status became `attesting`). */
 	attestingSince?: number;

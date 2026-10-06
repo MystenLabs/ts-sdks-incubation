@@ -418,10 +418,13 @@ describe('a Solana burn that was written off as expired', () => {
 		solanaChainIs({ finalized: 1_000 + 150 + 150 + 1 });
 		const updates: TransferRecord[] = [];
 		await expect(
-			runTransfer(
-				record({ from: 'solana', sender: owner }),
-				context(async () => 'first-signature', updates),
-			),
+			runTransfer(record({ from: 'solana', sender: owner }), {
+				...context(async () => 'first-signature', updates),
+				// Circle has nothing to say about a burn that never landed.
+				iris: new IrisClient('mainnet', {
+					fetch: vi.fn<typeof fetch>(async () => json(404, { error: 'not found' })),
+				}),
+			}),
 		).rejects.toThrow(/expired before it was included/);
 		expect(updates.at(-1)).toMatchObject({
 			status: 'failed',
@@ -746,5 +749,136 @@ describe('a claim on Sui', () => {
 			expect(result.status).toBe('complete');
 			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
 		}
+	});
+});
+
+describe('a burn that was sent but not yet seen on its chain', () => {
+	const circleKnowsNothing = () =>
+		new IrisClient('mainnet', {
+			fetch: vi.fn<typeof fetch>(async () => json(404, { error: 'not found' })),
+		});
+	const circleAttests = () =>
+		new IrisClient('mainnet', {
+			fetch: vi.fn<typeof fetch>(async () =>
+				json(200, {
+					messages: [
+						{ status: 'complete', message: message(0n), attestation: `0x${'bb'.repeat(65)}` },
+					],
+				}),
+			),
+		});
+	/** As a reload leaves it: the hash is recorded, the chain was never heard from. */
+	const sentNotConfirmed = (over: Partial<TransferRecord> = {}) =>
+		record({ status: 'burning', sourceTxHash: BURN_HASH, ...over });
+	const context = (iris: IrisClient, updates: TransferRecord[] = []) => ({
+		dAppKit: suiDAppKit().dAppKit,
+		wallets: evmWallets(),
+		iris,
+		chains,
+		// What resuming on load passes: it must not need the user's wallet.
+		stopAfterAttestation: true,
+		pollIntervalMs: 1,
+		confirmRetryMs: 1,
+		onUpdate: (t: TransferRecord) => updates.push(t),
+	});
+
+	it('is checked again after a reload, and released when it was cancelled or reverted', async () => {
+		// Without this the transfer went straight to waiting for Circle, for a hash Circle will
+		// never know.
+		vi.mocked(evm.evmDepositForBurn).mockClear();
+		vi.mocked(evm.waitForEvmReceipt).mockRejectedValue(
+			new TransactionRevertedError('Transaction was cancelled in the wallet'),
+		);
+		const updates: TransferRecord[] = [];
+		await expect(
+			runTransfer(sentNotConfirmed(), context(circleKnowsNothing(), updates)),
+		).rejects.toThrow(/cancelled in the wallet/);
+		expect(updates.at(-1)!.status).toBe('failed');
+		expect(updates.at(-1)!.sourceTxHash).toBeUndefined();
+		expect(evm.evmDepositForBurn).not.toHaveBeenCalled();
+	});
+
+	it('stays "burning" until the chain shows it, then waits for Circle', async () => {
+		vi.mocked(evm.waitForEvmReceipt).mockImplementation(async (_chain, hash) => hash);
+		const updates: TransferRecord[] = [];
+		const result = await runTransfer(sentNotConfirmed(), context(circleAttests(), updates));
+		expect(result.status).toBe('readyToMint');
+		expect(result.burnedAt).toBeTypeOf('number');
+		expect(updates.every((u) => u.sourceTxHash === BURN_HASH)).toBe(true);
+	});
+
+	it('keeps asking the chain while it cannot say, and is not given up meanwhile', async () => {
+		vi.mocked(evm.waitForEvmReceipt)
+			.mockReset()
+			.mockRejectedValueOnce(new Error('Timed out while waiting for transaction to be confirmed'))
+			.mockRejectedValueOnce(new Error('HTTP request failed'))
+			.mockRejectedValue(new TransactionRevertedError('Transaction reverted on Ethereum'));
+		const updates: TransferRecord[] = [];
+		await expect(
+			runTransfer(sentNotConfirmed(), context(circleKnowsNothing(), updates)),
+		).rejects.toThrow(/reverted/);
+		expect(evm.waitForEvmReceipt).toHaveBeenCalledTimes(3);
+		// The hash was only dropped by the answer that ruled the burn out.
+		const dropped = updates.findIndex((u) => !u.sourceTxHash);
+		expect(dropped).toBe(updates.length - 2);
+		vi.mocked(evm.waitForEvmReceipt)
+			.mockReset()
+			.mockImplementation(async (_chain, hash) => hash);
+	});
+
+	it('counts as seen once Circle attests it, whatever the chain could say', async () => {
+		vi.mocked(evm.waitForEvmReceipt).mockRejectedValue(new Error('HTTP request failed'));
+		const result = await runTransfer(sentNotConfirmed(), context(circleAttests()));
+		expect(result).toMatchObject({ status: 'readyToMint', sourceTxHash: BURN_HASH });
+		expect(result.burnedAt).toBeTypeOf('number');
+		vi.mocked(evm.waitForEvmReceipt)
+			.mockReset()
+			.mockImplementation(async (_chain, hash) => hash);
+	});
+
+	it('is not asked about again once the chain has shown it', async () => {
+		vi.mocked(evm.waitForEvmReceipt).mockClear();
+		const result = await runTransfer(
+			sentNotConfirmed({ status: 'attesting', burnedAt: 5 }),
+			context(circleAttests()),
+		);
+		expect(result.status).toBe('readyToMint');
+		expect(evm.waitForEvmReceipt).not.toHaveBeenCalled();
+	});
+
+	it('on Solana, is released at once when the chain is already past its last block', async () => {
+		// The bound recorded when it was sent lets a later session rule it out without waiting.
+		solanaChainIs({ finalized: 5_000 });
+		solanaSays(null);
+		const owner = Keypair.generate().publicKey.toBase58();
+		const updates: TransferRecord[] = [];
+		await expect(
+			runTransfer(
+				sentNotConfirmed({
+					from: 'solana',
+					sender: owner,
+					sourceTxHash: 'sent-signature',
+					sourceTxLastBlock: 1_300,
+				}),
+				{ ...context(circleKnowsNothing(), updates), wallets: solanaWallets(owner, vi.fn()) },
+			),
+		).rejects.toThrow(/expired before it was included/);
+		expect(updates.at(-1)).toMatchObject({
+			status: 'failed',
+			droppedSourceTxHash: 'sent-signature',
+		});
+		expect(updates.at(-1)!.sourceTxHash).toBeUndefined();
+	});
+
+	it('on Solana, records the last block that can carry it when it is sent', async () => {
+		solanaAcceptsEverything();
+		solanaWalletHolds(5_000_000n);
+		const owner = Keypair.generate().publicKey.toBase58();
+		const result = await runTransfer(record({ from: 'solana', sender: owner }), {
+			...context(circleAttests()),
+			wallets: solanaWallets(owner, async () => 'solana-signature'),
+		});
+		// The chain was at block 1000: 150 for the blockhash, 150 for not knowing which one.
+		expect(result.sourceTxLastBlock).toBe(1_300);
 	});
 });

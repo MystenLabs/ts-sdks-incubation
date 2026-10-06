@@ -441,6 +441,29 @@ export interface SolanaConfirmationOptions {
 	signal?: AbortSignal;
 	pollIntervalMs?: number;
 	timeoutMs?: number;
+	/**
+	 * The last block that could carry the transaction, from `getSolanaLastPossibleBlock` taken
+	 * after it was signed. Read at the start of the wait when it is not given.
+	 */
+	lastPossibleBlock?: number;
+}
+
+/**
+ * The last block a transaction signed before now could be included in, or null when the chain
+ * could not be asked.
+ *
+ * Whichever blockhash the transaction carries, it existed before now. So it comes from a block
+ * no higher than the current one, give or take the slack, and cannot be used more than 150
+ * blocks after that. Take the reading after the wallet has signed: a wallet can replace the
+ * blockhash while its prompt is open.
+ */
+export async function getSolanaLastPossibleBlock(
+	chain: SolanaChainDefinition,
+): Promise<number | null> {
+	const now = await withSolanaConnection(chain, (c) => c.getEpochInfo('processed')).catch(
+		() => null,
+	);
+	return now?.blockHeight ? now.blockHeight + BLOCKHASH_LIFETIME_BLOCKS + BLOCK_HEIGHT_SLACK : null;
 }
 
 /**
@@ -460,21 +483,12 @@ export async function waitForSolanaConfirmation(
 ): Promise<void> {
 	const pollMs = options.pollIntervalMs ?? CONFIRMATION_POLL_MS;
 	const deadline = Date.now() + (options.timeoutMs ?? CONFIRMATION_TIMEOUT_MS);
-	let lastPossibleHeight: number | null = null;
+	let lastPossibleHeight: number | null = options.lastPossibleBlock ?? null;
 	for (;;) {
 		options.signal?.throwIfAborted();
-		if (lastPossibleHeight === null) {
-			// Whichever blockhash the transaction carries, it existed before now. So it comes
-			// from a block no higher than the current one, give or take the slack, and cannot be
-			// used more than 150 blocks after that. A reading taken on a later pass is still an
-			// upper bound; without one nothing can be said about expiry.
-			const now = await withSolanaConnection(chain, (c) => c.getEpochInfo('processed')).catch(
-				() => null,
-			);
-			if (now?.blockHeight) {
-				lastPossibleHeight = now.blockHeight + BLOCKHASH_LIFETIME_BLOCKS + BLOCK_HEIGHT_SLACK;
-			}
-		}
+		// A reading taken on a later pass is still an upper bound; without one nothing can be
+		// said about expiry.
+		lastPossibleHeight ??= await getSolanaLastPossibleBlock(chain);
 		const status = await getSolanaSignatureStatus(chain, signature);
 		if (status?.value) {
 			if (status.value.err) {
