@@ -34,7 +34,7 @@ const unusedWallet = (ecosystem: 'evm' | 'solana') => ({
 });
 
 /** A kit sending from Sui to Avalanche, with a Sui wallet that holds 5 USDC. */
-function suiKit(storage = createInMemoryStorage()) {
+function suiKit(storage = createInMemoryStorage(), circle?: typeof fetch) {
 	const signAndExecuteTransaction = vi.fn(async () => ({
 		$kind: 'Transaction',
 		Transaction: { digest: DIGEST },
@@ -63,10 +63,12 @@ function suiKit(storage = createInMemoryStorage()) {
 		defaults: { to: 'avalanche' },
 		storage,
 		iris: {
-			fetch: vi.fn<typeof fetch>(async (input) =>
+			fetch: vi.fn<typeof fetch>(async (input, init) =>
 				String(input).includes('/fees/')
 					? json(400, { error: 'Invalid source/destination domain id' })
-					: json(404, { error: 'not found' }),
+					: circle
+						? circle(input, init)
+						: json(404, { error: 'not found' }),
 			),
 		},
 		wallets: {
@@ -91,6 +93,16 @@ const failedBeforeBurning: TransferRecord = {
 	error: 'User rejected the request',
 	createdAt: 1,
 	updatedAt: 1,
+};
+
+/** Burned and seen on Sui, waiting for Circle: what a page finds and picks up when it loads. */
+const waitingForCircle: TransferRecord = {
+	...failedBeforeBurning,
+	status: 'attesting',
+	sourceTxHash: DIGEST,
+	sourceConfirmed: true,
+	burnedAt: 1,
+	error: undefined,
 };
 
 describe('a burn from Sui', () => {
@@ -254,6 +266,50 @@ describe('dismissing a transfer', () => {
 		expect(element.pendingTransfers(kit)).toHaveLength(1);
 		kit.destroy();
 	});
+
+	it('stays dismissed when the transfer moves on afterwards', async () => {
+		// The run that is waiting for Circle holds the record as it was before the dismissal.
+		// Writing that copy back with its next step brought the card back.
+		vi.useFakeTimers();
+		try {
+			const storage = createInMemoryStorage();
+			storage.setItem(KEY, JSON.stringify([waitingForCircle]));
+			let attested = false;
+			const { kit } = suiKit(storage, async () =>
+				attested
+					? json(200, {
+							messages: [
+								{
+									status: 'complete',
+									message: `0x${'aa'.repeat(376)}`,
+									attestation: `0x${'bb'.repeat(65)}`,
+								},
+							],
+						})
+					: json(404, { error: 'not found' }),
+			);
+			const element = new CctpBridge() as unknown as {
+				instance: unknown;
+				pendingTransfers(kit: unknown): TransferRecord[];
+			};
+			element.instance = kit;
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(kit.isRunning(waitingForCircle.id)).toBe(true);
+			kit.dismiss(waitingForCircle.id);
+			expect(element.pendingTransfers(kit)).toEqual([]);
+
+			attested = true;
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(kit.stores.$transfers.get()[0]).toMatchObject({
+				status: 'readyToMint',
+				hidden: true,
+			});
+			expect(element.pendingTransfers(kit)).toEqual([]);
+			kit.destroy();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe('a transfer that another tab is driving', () => {
@@ -320,14 +376,7 @@ describe('a transfer that another tab is driving', () => {
 	it("is picked up once a dead tab's claim has lapsed", async () => {
 		vi.useFakeTimers();
 		const storage = createInMemoryStorage();
-		const waiting = {
-			...failedBeforeBurning,
-			status: 'attesting',
-			sourceTxHash: DIGEST,
-			sourceConfirmed: true,
-			burnedAt: 1,
-			error: undefined,
-		};
+		const waiting = waitingForCircle;
 		storage.setItem(KEY, JSON.stringify([waiting]));
 		// A tab that crashed left its claim behind; it has 30 seconds to run.
 		storage.setItem(

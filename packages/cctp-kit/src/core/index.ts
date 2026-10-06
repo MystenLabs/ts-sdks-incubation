@@ -598,6 +598,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		controllers.set(record.id, controller);
 		stores.$activeTransferId.set(record.id);
 		let burned = !!record.sourceTxHash;
+		const stored = () => readStored().find((t) => t.id === record.id);
 		try {
 			const result = await runTransfer(record, {
 				dAppKit,
@@ -607,7 +608,10 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 				signal: controller.signal,
 				stopAfterAttestation: options.stopAfterAttestation,
 				onUpdate: (transfer) => {
-					upsert(transfer);
+					// The run works on the copy of the record it started with. Whether the user has
+					// dismissed the transfer since then is not the run's to say: keep what is stored.
+					const now = stored();
+					upsert(now ? { ...transfer, hidden: now.hidden } : transfer);
 					// The balance changed when the burn confirmed. Show that now: the form is free
 					// again from this point, and the rest of the transfer can take minutes.
 					if (!burned && transfer.sourceTxHash && transfer.status === 'attesting') {
@@ -616,11 +620,12 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 					}
 				},
 			});
-			if (result.status === 'complete') emit({ type: 'transfer:complete', transfer: result });
+			const latest = stored() ?? result;
+			if (latest.status === 'complete') emit({ type: 'transfer:complete', transfer: latest });
 			void refreshBalance();
-			return result;
+			return latest;
 		} catch (error) {
-			const latest = readStored().find((t) => t.id === record.id) ?? record;
+			const latest = stored() ?? record;
 			emit({ type: 'transfer:failed', transfer: latest, error });
 			void refreshBalance();
 			throw error;
