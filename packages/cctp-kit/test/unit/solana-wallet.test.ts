@@ -154,6 +154,41 @@ describe('signing a Solana transaction that needs a second signer', () => {
 		}
 	});
 
+	it('keeps the signature when a send is refused after one that got no answer', async () => {
+		// The first send may have reached the node before the connection dropped. Being turned
+		// away afterwards says nothing about it, so the burn is still tracked, not reported as
+		// failed with a Retry beside it.
+		const refusals = [
+			new Error('429 Too Many Requests: slow down'),
+			new SendTransactionError({
+				action: 'simulate',
+				signature: '',
+				transactionMessage: 'Blockhash not found',
+			}),
+		];
+		for (const refusal of refusals) {
+			vi.useFakeTimers();
+			try {
+				const built = await burn();
+				const sendRawTransaction = vi
+					.fn<(raw: Buffer | Uint8Array | number[]) => Promise<string>>()
+					.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+					.mockRejectedValue(refusal);
+				const outcome = signAndSendSolanaTransaction(
+					{ signTransaction: vi.fn(signLikeAWallet), signAndSendTransaction: vi.fn() },
+					built.transaction,
+					{ sendRawTransaction } as unknown as Connection,
+					built.signers,
+				);
+				await vi.runAllTimersAsync();
+				const sent = Transaction.from(sendRawTransaction.mock.calls[0]![0] as Buffer);
+				expect(await outcome).toBe(bs58.encode(sent.signature!));
+			} finally {
+				vi.useRealTimers();
+			}
+		}
+	});
+
 	it('reports a send that the node refused, without sending again', async () => {
 		const refusals = [
 			new SendTransactionError({

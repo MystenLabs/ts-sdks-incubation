@@ -49,19 +49,24 @@ export async function signAndSendSolanaTransaction(
 		signed.partialSign(...signers);
 		// `serialize` checks every signature against the message that is about to be sent.
 		const raw = signed.serialize();
+		// Set once a send has ended without an answer. From then on the transaction may be on
+		// its way, whatever a later send is told.
+		let unanswered = false;
 		for (let attempt = 1; ; attempt++) {
 			try {
 				return await connection.sendRawTransaction(raw);
 			} catch (error) {
-				if (wasRefusedByTheNode(error) && !/already been processed/i.test(messageOf(error))) {
-					throw error;
-				}
+				const alreadySeen = /already been processed/i.test(messageOf(error));
+				// The node saying no settles it only while nothing else has been sent. After a
+				// send that got no answer, a refusal says nothing about that earlier send.
+				if (wasRefusedByTheNode(error) && !alreadySeen && !unanswered) throw error;
+				unanswered = true;
 				// No answer (the connection dropped), or the node says it has already seen this
 				// transaction: it may be on its way. Sending the same signed bytes again cannot
 				// burn twice. After that, hand back the signature, which is known before anything
 				// is sent, so the caller tracks it until the chain shows what became of it. To
 				// report a failure here would invite a second burn beside one that may land.
-				if (attempt === SEND_ATTEMPTS || /already been processed/i.test(messageOf(error))) {
+				if (attempt === SEND_ATTEMPTS || alreadySeen) {
 					if (!signed.signature) throw error;
 					return bs58.encode(signed.signature);
 				}
