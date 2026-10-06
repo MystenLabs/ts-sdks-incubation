@@ -328,7 +328,7 @@ async function attest(
 		const waitForCircle = (signal?: AbortSignal) =>
 			ctx.iris.waitForAttestation(from.domain, hash, { signal, intervalMs: ctx.pollIntervalMs });
 
-		if (transfer.burnedAt) {
+		if (transfer.sourceConfirmed) {
 			if (transfer.status !== 'attesting' || !transfer.attestingSince) {
 				update({ status: 'attesting', attestingSince: transfer.attestingSince ?? Date.now() });
 			}
@@ -360,16 +360,18 @@ async function attest(
 		try {
 			const first = await Promise.race([circle, chain]);
 			const now = Date.now();
+			const { burnedAt = now, attestingSince = now } = current();
 			if ('attested' in first) {
 				// Circle only attests a burn that happened.
-				update({ burnedAt: now, attestingSince: transfer.attestingSince ?? now });
+				update({ sourceConfirmed: true, burnedAt, attestingSince });
 				return first.attested;
 			}
 			update({
 				sourceTxHash: first.mined,
-				burnedAt: now,
+				sourceConfirmed: true,
+				burnedAt,
 				status: 'attesting',
-				attestingSince: transfer.attestingSince ?? now,
+				attestingSince,
 			});
 			if (first.mined === hash) return (await circle).attested;
 			// Mined under another hash: go round again and ask Circle for that one.
@@ -380,6 +382,7 @@ async function attest(
 				update({
 					sourceTxHash: undefined,
 					sourceTxLastBlock: undefined,
+					burnedAt: undefined,
 					...(from.ecosystem === 'solana' ? { droppedSourceTxHash: hash } : {}),
 				});
 			}
@@ -417,6 +420,10 @@ async function confirmSource(
 					await waitForSolanaConfirmation(from, hash, {
 						signal,
 						lastPossibleBlock: transfer.sourceTxLastBlock,
+						// An earlier version stamped a time on a burn it had only sent, and kept no
+						// last block. Nothing in such a record says when the burn was sent, so a
+						// node that does not know it proves nothing: it may not reach back that far.
+						canExpire: transfer.sourceTxLastBlock !== undefined || !transfer.burnedAt,
 					});
 					return hash;
 			}

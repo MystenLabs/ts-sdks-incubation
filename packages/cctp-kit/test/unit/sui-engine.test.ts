@@ -8,6 +8,7 @@ import { SUI_MAINNET } from '../../src/chains/sui.js';
 import {
 	buildSuiBurnTransaction,
 	buildSuiReceiveTransaction,
+	getSuiTransactionTime,
 	suiIsNonceUsed,
 } from '../../src/engine/sui.js';
 import { toBytes32 } from '../../src/utils/bytes.js';
@@ -60,6 +61,28 @@ describe('Sui CCTP v2 PTB builders', () => {
 			`${packages.stablecoinHandler}::handler::mint`,
 			`${packages.tokenMessengerMinterV2}::handle_receive_message::complete_mint`,
 		]);
+	});
+});
+
+describe('the time of a Sui burn', () => {
+	it('is the checkpoint time of a transaction that succeeded, and nothing for one that failed', async () => {
+		const found = (result: unknown) =>
+			({ core: { getTransaction: vi.fn(async () => result) } }) as unknown as ClientWithCoreApi;
+		expect(
+			await getSuiTransactionTime(
+				found({ $kind: 'Transaction', Transaction: { timestampMs: 1_700_000_000_000 } }),
+				'digest',
+			),
+		).toBe(1_700_000_000_000);
+		expect(
+			await getSuiTransactionTime(
+				found({
+					$kind: 'FailedTransaction',
+					FailedTransaction: { timestampMs: 1_700_000_000_000 },
+				}),
+				'digest',
+			),
+		).toBeNull();
 	});
 });
 

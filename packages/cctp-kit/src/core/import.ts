@@ -122,6 +122,8 @@ export function buildImportedRecord(args: {
 		attestation: attested ? args.message!.attestation : undefined,
 		createdAt: args.burnedAt ?? now,
 		updatedAt: now,
+		// What was burned was read from Circle, or from a transaction that succeeded on its chain.
+		sourceConfirmed: true,
 		burnedAt: args.burnedAt,
 		attestingSince: args.burnedAt ?? now,
 	};

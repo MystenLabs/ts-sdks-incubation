@@ -208,14 +208,15 @@ export async function getEvmBurnDetails(
 	};
 }
 
-/** Block timestamp (ms) of a mined transaction, or null if it is not mined. */
+/** Block timestamp (ms) of a mined transaction that succeeded, or null. */
 export async function getEvmTransactionTime(
 	chain: EvmChainDefinition,
 	txHash: Hex,
 ): Promise<number | null> {
 	const client = getEvmPublicClient(chain);
 	const receipt = await client.getTransactionReceipt({ hash: txHash }).catch(() => null);
-	if (!receipt) return null;
+	// A transaction that reverted burned nothing, so it has no burn time.
+	if (!receipt || receipt.status !== 'success') return null;
 	const block = await client.getBlock({ blockNumber: receipt.blockNumber });
 	return Number(block.timestamp) * 1000;
 }

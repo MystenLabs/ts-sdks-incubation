@@ -5,6 +5,7 @@ import { Connection } from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
 import { SOLANA_MAINNET } from '../../src/chains/solana.js';
 import {
+	getSolanaTransactionTime,
 	hasSolanaTransactionSucceeded,
 	waitForSolanaConfirmation,
 } from '../../src/engine/solana.js';
@@ -117,6 +118,24 @@ describe('waiting for a Solana transaction', () => {
 		await expect(outcome).rejects.not.toBeInstanceOf(TransactionRevertedError);
 	});
 
+	it('does not write off a transaction it was told cannot be ruled out by silence', async () => {
+		// Sent at a time nobody recorded: the chain being far along proves nothing.
+		chainIs({ sentAt: SENT_AT, finalized: LAST_POSSIBLE + 10_000 });
+		lookupsAnswer({ value: null });
+		const outcome = waitForSolanaConfirmation(SOLANA_MAINNET, SIGNATURE, {
+			...quickly,
+			canExpire: false,
+		});
+		await expect(outcome).rejects.toThrow(/not confirmed in time/);
+		await expect(outcome).rejects.not.toBeInstanceOf(TransactionRevertedError);
+
+		// Finding it on chain with an error still settles it.
+		lookupsAnswer({ value: seen('finalized', { InstructionError: [0, { Custom: 1 }] }) });
+		await expect(
+			waitForSolanaConfirmation(SOLANA_MAINNET, SIGNATURE, { ...quickly, canExpire: false }),
+		).rejects.toBeInstanceOf(TransactionRevertedError);
+	});
+
 	it('stops when it is aborted', async () => {
 		chainIs({ sentAt: SENT_AT, finalized: SENT_AT });
 		lookupsAnswer({ value: null });
@@ -140,6 +159,19 @@ describe('looking up an earlier Solana transaction', () => {
 		expect(await hasSolanaTransactionSucceeded(SOLANA_MAINNET, SIGNATURE)).toBe(false);
 		lookupsAnswer(new Error('node says no'));
 		expect(await hasSolanaTransactionSucceeded(SOLANA_MAINNET, SIGNATURE)).toBeNull();
+	});
+});
+
+describe('the time of a Solana burn', () => {
+	it('is the block time of a transaction that succeeded, and nothing for one that failed', async () => {
+		const found = (err: unknown) =>
+			vi
+				.spyOn(Connection.prototype, 'getTransaction')
+				.mockResolvedValue({ blockTime: 1_700_000_000, meta: { err } } as never);
+		found(null);
+		expect(await getSolanaTransactionTime(SOLANA_MAINNET, SIGNATURE)).toBe(1_700_000_000_000);
+		found({ InstructionError: [0, { Custom: 1 }] });
+		expect(await getSolanaTransactionTime(SOLANA_MAINNET, SIGNATURE)).toBeNull();
 	});
 });
 

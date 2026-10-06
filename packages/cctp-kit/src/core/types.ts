@@ -118,8 +118,13 @@ export interface TransferRecord {
 	createdAt: number;
 	updatedAt: number;
 	/**
-	 * When the burn was seen on the source chain. Until this is set the burn has been sent but
-	 * not confirmed, and the transfer keeps checking the chain for it.
+	 * The burn is known to have happened: its chain showed it succeeding, or Circle has it. Until
+	 * this is set the burn has only been sent, and the transfer keeps checking its chain for it.
+	 */
+	sourceConfirmed?: boolean;
+	/**
+	 * When the burn happened, as near as is known. It is where the wait is counted from on
+	 * screen and proves nothing: earlier versions stamped it when a burn was sent.
 	 */
 	burnedAt?: number;
 	/** When the attestation wait started (first time the status became `attesting`). */

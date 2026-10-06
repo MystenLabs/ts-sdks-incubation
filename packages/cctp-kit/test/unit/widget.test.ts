@@ -324,6 +324,7 @@ describe('a transfer that another tab is driving', () => {
 			...failedBeforeBurning,
 			status: 'attesting',
 			sourceTxHash: DIGEST,
+			sourceConfirmed: true,
 			burnedAt: 1,
 			error: undefined,
 		};

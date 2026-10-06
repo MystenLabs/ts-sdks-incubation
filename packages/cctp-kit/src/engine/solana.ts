@@ -446,6 +446,12 @@ export interface SolanaConfirmationOptions {
 	 * after it was signed. Read at the start of the wait when it is not given.
 	 */
 	lastPossibleBlock?: number;
+	/**
+	 * Whether a transaction no node knows may be ruled out once the chain is past its last
+	 * block (the default). Pass false for one sent at a time nobody recorded: then only finding
+	 * it on chain, succeeded or failed, settles it.
+	 */
+	canExpire?: boolean;
 }
 
 /**
@@ -483,12 +489,13 @@ export async function waitForSolanaConfirmation(
 ): Promise<void> {
 	const pollMs = options.pollIntervalMs ?? CONFIRMATION_POLL_MS;
 	const deadline = Date.now() + (options.timeoutMs ?? CONFIRMATION_TIMEOUT_MS);
+	const canExpire = options.canExpire !== false;
 	let lastPossibleHeight: number | null = options.lastPossibleBlock ?? null;
 	for (;;) {
 		options.signal?.throwIfAborted();
 		// A reading taken on a later pass is still an upper bound; without one nothing can be
 		// said about expiry.
-		lastPossibleHeight ??= await getSolanaLastPossibleBlock(chain);
+		if (canExpire) lastPossibleHeight ??= await getSolanaLastPossibleBlock(chain);
 		const status = await getSolanaSignatureStatus(chain, signature);
 		if (status?.value) {
 			if (status.value.err) {
@@ -498,7 +505,7 @@ export async function waitForSolanaConfirmation(
 			}
 			const level = status.value.confirmationStatus;
 			if (level === 'confirmed' || level === 'finalized') return;
-		} else if (status && lastPossibleHeight !== null) {
+		} else if (status && canExpire && lastPossibleHeight !== null) {
 			if (await hasSolanaTransactionExpired(chain, signature, lastPossibleHeight)) {
 				throw new TransactionRevertedError(
 					`Solana transaction ${signature} expired before it was included`,
@@ -571,7 +578,7 @@ export async function getSolanaTokenAccountOwner(
 	return new PublicKey(info.data.subarray(32, 64));
 }
 
-/** Block time (ms) of a confirmed transaction, or null if unknown. */
+/** Block time (ms) of a confirmed transaction that succeeded, or null. */
 export async function getSolanaTransactionTime(
 	chain: SolanaChainDefinition,
 	signature: string,
@@ -579,5 +586,6 @@ export async function getSolanaTransactionTime(
 	const tx = await withSolanaConnection(chain, (c) =>
 		c.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }),
 	);
-	return tx?.blockTime ? tx.blockTime * 1000 : null;
+	// A transaction that failed burned nothing, so it has no burn time.
+	return tx?.blockTime && !tx.meta?.err ? tx.blockTime * 1000 : null;
 }

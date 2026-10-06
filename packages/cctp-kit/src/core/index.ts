@@ -746,7 +746,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		return record;
 	}
 
-	/** Source-chain confirmation time of a burn, in ms. */
+	/** Source-chain confirmation time of a burn, in ms; null for a transaction that failed. */
 	async function lookupBurnTime(from: ChainDefinition, txHash: string): Promise<number | null> {
 		switch (from.ecosystem) {
 			case 'evm':

@@ -7,7 +7,9 @@
 import { atom } from 'nanostores';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getChainRegistry } from '../../src/chains/index.js';
+import type { EvmChainDefinition } from '../../src/chains/types.js';
 import { runTransfer } from '../../src/core/transfer.js';
+import { getEvmTransactionTime } from '../../src/engine/evm.js';
 import type { AnyDAppKit, TransferRecord } from '../../src/core/types.js';
 import { IrisClient } from '../../src/iris/client.js';
 import type { WalletAdapters } from '../../src/wallets/types.js';
@@ -45,7 +47,7 @@ function pendingBurn() {
 }
 
 /** A JSON-RPC endpoint where H1 stays pending and block 0x10 holds its replacement H2. */
-function scriptedRpc(replacement: Record<string, unknown>) {
+function scriptedRpc(replacement: Record<string, unknown>, receiptStatus = '0x1') {
 	const methods: string[] = [];
 	const mined = {
 		...pendingBurn(),
@@ -80,7 +82,7 @@ function scriptedRpc(replacement: Record<string, unknown>) {
 					contractAddress: null,
 					logs: [],
 					logsBloom: `0x${'0'.repeat(512)}`,
-					status: '0x1',
+					status: receiptStatus,
 					type: '0x2',
 				};
 			case 'eth_getBlockByNumber':
@@ -191,6 +193,19 @@ async function drive(replacement: Record<string, unknown>) {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe('the time of an EVM burn', () => {
+	it('is the block time of a transaction that succeeded, and nothing for one that reverted', async () => {
+		scriptedRpc({});
+		expect(await getEvmTransactionTime(ethereum as EvmChainDefinition, H2 as `0x${string}`)).toBe(
+			0x65000000 * 1000,
+		);
+		scriptedRpc({}, '0x0');
+		expect(
+			await getEvmTransactionTime(ethereum as EvmChainDefinition, H2 as `0x${string}`),
+		).toBeNull();
+	});
+});
 
 describe('an EVM burn that is replaced in the wallet', () => {
 	it('sped up: follows the burn to the hash it was mined under', async () => {

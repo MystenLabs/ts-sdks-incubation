@@ -803,6 +803,7 @@ describe('a burn that was sent but not yet seen on its chain', () => {
 		const updates: TransferRecord[] = [];
 		const result = await runTransfer(sentNotConfirmed(), context(circleAttests(), updates));
 		expect(result.status).toBe('readyToMint');
+		expect(result.sourceConfirmed).toBe(true);
 		expect(result.burnedAt).toBeTypeOf('number');
 		expect(updates.every((u) => u.sourceTxHash === BURN_HASH)).toBe(true);
 	});
@@ -833,7 +834,11 @@ describe('a burn that was sent but not yet seen on its chain', () => {
 	it('counts as seen once Circle attests it, whatever the chain could say', async () => {
 		vi.mocked(evm.waitForEvmReceipt).mockRejectedValue(new Error('HTTP request failed'));
 		const result = await runTransfer(sentNotConfirmed(), context(circleAttests()));
-		expect(result).toMatchObject({ status: 'readyToMint', sourceTxHash: BURN_HASH });
+		expect(result).toMatchObject({
+			status: 'readyToMint',
+			sourceTxHash: BURN_HASH,
+			sourceConfirmed: true,
+		});
 		expect(result.burnedAt).toBeTypeOf('number');
 		vi.mocked(evm.waitForEvmReceipt)
 			.mockReset()
@@ -843,11 +848,41 @@ describe('a burn that was sent but not yet seen on its chain', () => {
 	it('is not asked about again once the chain has shown it', async () => {
 		vi.mocked(evm.waitForEvmReceipt).mockClear();
 		const result = await runTransfer(
-			sentNotConfirmed({ status: 'attesting', burnedAt: 5 }),
+			sentNotConfirmed({ status: 'attesting', sourceConfirmed: true, burnedAt: 5 }),
 			context(circleAttests()),
 		);
 		expect(result.status).toBe('readyToMint');
 		expect(evm.waitForEvmReceipt).not.toHaveBeenCalled();
+	});
+
+	it('is still checked when all that vouches for it is a time an earlier version stamped', async () => {
+		// That version stamped `burnedAt` once a burn was sent, whatever became of it. Taking
+		// the time as proof left a burn that had reverted waiting for Circle for good.
+		vi.mocked(evm.waitForEvmReceipt)
+			.mockReset()
+			.mockRejectedValue(new TransactionRevertedError('Transaction reverted on Ethereum'));
+		const updates: TransferRecord[] = [];
+		await expect(
+			runTransfer(
+				sentNotConfirmed({ status: 'attesting', burnedAt: 5, attestingSince: 5 }),
+				context(circleKnowsNothing(), updates),
+			),
+		).rejects.toThrow(/reverted/);
+		expect(updates.at(-1)!.status).toBe('failed');
+		expect(updates.at(-1)!.sourceTxHash).toBeUndefined();
+		// Nothing was burned, so there is no burn time left to count a wait from.
+		expect(updates.at(-1)!.burnedAt).toBeUndefined();
+
+		// Such a record whose burn did happen keeps its time and is not asked about again.
+		vi.mocked(evm.waitForEvmReceipt)
+			.mockReset()
+			.mockImplementation(async (_chain, hash) => hash);
+		const result = await runTransfer(
+			sentNotConfirmed({ status: 'attesting', burnedAt: 5, attestingSince: 5 }),
+			context(circleAttests()),
+		);
+		expect(result).toMatchObject({ status: 'readyToMint', sourceConfirmed: true, burnedAt: 5 });
+		expect(evm.waitForEvmReceipt).toHaveBeenCalledTimes(1);
 	});
 
 	it('on Solana, is released at once when the chain is already past its last block', async () => {
@@ -872,6 +907,53 @@ describe('a burn that was sent but not yet seen on its chain', () => {
 			droppedSourceTxHash: 'sent-signature',
 		});
 		expect(updates.at(-1)!.sourceTxHash).toBeUndefined();
+	});
+
+	it('on Solana, is not written off for being unknown when nothing says when it was sent', async () => {
+		// A record from an earlier version: a time, no last block. The chain is far past any
+		// bound taken now, and the node does not know the burn. That is what a node that keeps
+		// little history says about a burn that went through long ago.
+		solanaChainIs({ finalized: 5_000 });
+		solanaSays(null);
+		const owner = Keypair.generate().publicKey.toBase58();
+		const updates: TransferRecord[] = [];
+		const stop = new AbortController();
+		const outcome = runTransfer(
+			sentNotConfirmed({
+				from: 'solana',
+				sender: owner,
+				sourceTxHash: 'sent-signature',
+				status: 'attesting',
+				burnedAt: 5,
+			}),
+			{
+				...context(circleKnowsNothing(), updates),
+				wallets: solanaWallets(owner, vi.fn()),
+				signal: stop.signal,
+			},
+		).catch((error: Error) => error);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		stop.abort(new Error('stopped by the test'));
+		expect(((await outcome) as Error).message).toBe('stopped by the test');
+		expect(updates.every((u) => u.sourceTxHash === 'sent-signature')).toBe(true);
+		expect(updates.some((u) => u.status === 'failed')).toBe(false);
+
+		// Found on chain with an error, it is released like any other: that is evidence.
+		solanaSays({ err: { InstructionError: [0, { Custom: 1 }] }, confirmationStatus: 'finalized' });
+		const released: TransferRecord[] = [];
+		await expect(
+			runTransfer(
+				sentNotConfirmed({
+					from: 'solana',
+					sender: owner,
+					sourceTxHash: 'sent-signature',
+					status: 'attesting',
+					burnedAt: 5,
+				}),
+				{ ...context(circleKnowsNothing(), released), wallets: solanaWallets(owner, vi.fn()) },
+			),
+		).rejects.toThrow(/failed/);
+		expect(released.at(-1)!.sourceTxHash).toBeUndefined();
 	});
 
 	it('on Solana, records the last block that can carry it when it is sent', async () => {

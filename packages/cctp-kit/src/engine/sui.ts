@@ -173,12 +173,12 @@ export async function getSuiUsdcBalance(
 	return BigInt(result.balance.balance);
 }
 
-/** Checkpoint timestamp (ms) of a transaction, or null if it has not been checkpointed. */
+/** Checkpoint timestamp (ms) of a transaction that succeeded, or null. */
 export async function getSuiTransactionTime(
 	client: ClientWithCoreApi,
 	digest: string,
 ): Promise<number | null> {
 	const result = await client.core.getTransaction({ digest });
-	const tx = result.$kind === 'Transaction' ? result.Transaction : result.FailedTransaction;
-	return tx?.timestampMs ?? null;
+	// A transaction that failed burned nothing, so it has no burn time.
+	return result.$kind === 'Transaction' ? (result.Transaction.timestampMs ?? null) : null;
 }

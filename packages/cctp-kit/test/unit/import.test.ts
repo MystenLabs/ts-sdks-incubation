@@ -106,6 +106,8 @@ describe('buildImportedRecord', () => {
 			burnedAt: 500,
 		});
 		expect(dated.burnedAt).toBe(500);
+		// What it describes was read from Circle or from a mined burn, so it is not checked again.
+		expect(dated.sourceConfirmed).toBe(true);
 		expect(dated.attestingSince).toBe(500);
 		expect(dated.createdAt).toBe(500);
 		expect(record.sourceTxHash).toBe(EVM_HASH);
