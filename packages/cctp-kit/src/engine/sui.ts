@@ -5,7 +5,8 @@ import { bcs } from '@mysten/sui/bcs';
 import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { SuiChainDefinition } from '../chains/types.js';
-import { bytesToHex } from '../utils/bytes.js';
+import { fromBase64 } from '@mysten/sui/utils';
+import { bytesToHex, isMessageV2For } from '../utils/bytes.js';
 
 export interface SuiDepositForBurnParams {
 	sender: string;
@@ -171,6 +172,31 @@ export async function getSuiUsdcBalance(
 ): Promise<bigint> {
 	const result = await client.core.getBalance({ owner, coinType: chain.usdcCoinType });
 	return BigInt(result.balance.balance);
+}
+
+/**
+ * The CCTP message a Sui transaction claimed, or null when it claimed none. A claim hands the
+ * message to `receive_message` as plain bytes, so it is among the transaction's own inputs,
+ * whoever built the transaction.
+ */
+export async function getSuiClaimedMessage(
+	client: ClientWithCoreApi,
+	chain: SuiChainDefinition,
+	digest: string,
+): Promise<Uint8Array | null> {
+	const result = await client.core.getTransaction({ digest, include: { transaction: true } });
+	if (result.$kind !== 'Transaction') return null;
+	for (const input of result.Transaction.transaction.inputs) {
+		const pure = 'Pure' in input ? input.Pure : undefined;
+		if (!pure) continue;
+		try {
+			const bytes = Uint8Array.from(bcs.vector(bcs.u8()).parse(fromBase64(pure.bytes)));
+			if (isMessageV2For(bytes, chain.domain)) return bytes;
+		} catch {
+			// Some other argument.
+		}
+	}
+	return null;
 }
 
 /** What `owner` holds of SUI, which is what pays for gas. */

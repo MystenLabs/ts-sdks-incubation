@@ -167,6 +167,18 @@ function u256(bytes: Uint8Array, offset: number): bigint {
 	return value;
 }
 
+/**
+ * Whether these bytes are a CCTP v2 burn message for `destinationDomain`. For picking the
+ * message out of what a claim transaction was given.
+ */
+export function isMessageV2For(bytes: Uint8Array, destinationDomain: number): boolean {
+	if (bytes.length < MESSAGE_V2.body + MESSAGE_V2.bodyFields.hookData) return false;
+	return (
+		u32(bytes, MESSAGE_V2.version) === 1 &&
+		u32(bytes, MESSAGE_V2.destinationDomain) === destinationDomain
+	);
+}
+
 export function parseMessageV2(messageHex: string): ParsedMessageV2 {
 	const bytes = hexToBytes(messageHex);
 	const bf = MESSAGE_V2.bodyFields;

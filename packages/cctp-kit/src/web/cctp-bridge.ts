@@ -6,7 +6,6 @@ import { html, LitElement, nothing } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
 import type { ChainDefinition, ChainKey } from '../chains/types.js';
-import { classifyTxHash, parseTxReference } from '../core/import.js';
 import type { CctpKit } from '../core/index.js';
 import type { TransferRecord, TransferStatus } from '../core/types.js';
 import { formatUsdc } from '../utils/amount.js';
@@ -106,9 +105,6 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 	@state()
 	private _importHash = '';
-
-	@state()
-	private _importChain: ChainKey | '' = '';
 
 	@state()
 	private _importError: string | null = null;
@@ -654,10 +650,6 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	private renderImport(kit: CctpKit) {
-		const pasted = parseTxReference(this._importHash, kit.chains);
-		const isEvmHash = classifyTxHash(pasted.txHash) === 'evm';
-		const evmChains = kit.chains.filter((c) => c.ecosystem === 'evm');
-		const chainValue = this.importChain(kit, evmChains, pasted.chain) ?? '';
 		return html`
 			<div class="panel import" part="import">
 				<div class="row">
@@ -672,8 +664,8 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					</button>
 				</div>
 				<p class="muted import-hint">
-					Paste the burn transaction hash, or its link in a block explorer, from Ethereum, another
-					EVM chain, Sui or Solana. The transfer is added to your list and claimed from here.
+					Paste the transaction that sent the USDC or the one that claimed it, as a hash or as its
+					link in a block explorer, from any chain. The transfer is added to your list.
 				</p>
 				<input
 					class="field"
@@ -681,31 +673,20 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					autocomplete="off"
 					spellcheck="false"
 					placeholder="Transaction hash or link"
-					aria-label="Source transaction hash"
+					aria-label="Transaction hash or link"
 					.value=${this._importHash}
 					@input=${(e: Event) => (this._importHash = (e.target as HTMLInputElement).value)}
 					@keydown=${(e: KeyboardEvent) => {
 						if (e.key === 'Enter' && this._importHash.trim() && !this._busy) {
-							void this.importTransfer(kit, evmChains);
+							void this.importTransfer(kit);
 						}
 					}}
 				/>
-				${isEvmHash
-					? html`<div class="row">
-							<span class="muted">Sent on</span>
-							<internal-chain-select
-								.options=${evmChains}
-								.value=${chainValue}
-								@chain-change=${(e: CustomEvent<{ key: ChainKey }>) =>
-									(this._importChain = e.detail.key)}
-							></internal-chain-select>
-						</div>`
-					: nothing}
 				${this._importError ? html`<p class="error">${this._importError}</p>` : nothing}
 				<internal-button
 					variant="primary"
 					?disabled=${this._busy || !this._importHash.trim()}
-					@click=${() => this.importTransfer(kit, evmChains)}
+					@click=${() => this.importTransfer(kit)}
 				>
 					${this._busy ? 'Looking up…' : 'Track transfer'}
 				</internal-button>
@@ -825,29 +806,14 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	private closeImport() {
 		this._importOpen = false;
 		this._importHash = '';
-		this._importChain = '';
 		this._importError = null;
 	}
 
-	/** The chain an EVM hash is looked up on: the one picked, else the link's, else the form's. */
-	private importChain(kit: CctpKit, evmChains: ChainDefinition[], linked?: ChainKey) {
-		return (
-			this._importChain ||
-			linked ||
-			(evmChains.find((c) => c.key === kit.stores.$counterpartChain.get().key)?.key ??
-				evmChains[0]?.key)
-		);
-	}
-
-	private async importTransfer(kit: CctpKit, evmChains: ChainDefinition[]) {
-		const pasted = parseTxReference(this._importHash, kit.chains);
-		const txHash = pasted.txHash;
-		const sourceChain =
-			classifyTxHash(txHash) === 'evm' ? this.importChain(kit, evmChains, pasted.chain) : undefined;
+	private async importTransfer(kit: CctpKit) {
 		this._busy = true;
 		this._importError = null;
 		try {
-			await kit.importTransfer({ txHash, sourceChain: sourceChain || undefined });
+			await kit.importTransfer({ txHash: this._importHash });
 			this.closeImport();
 		} catch (error) {
 			this._importError = describeError(error);

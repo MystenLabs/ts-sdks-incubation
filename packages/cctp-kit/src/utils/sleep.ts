@@ -15,3 +15,17 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 		signal?.addEventListener('abort', onAbort, { once: true });
 	});
 }
+
+/** The result of `work`, or null when it fails or takes longer than `ms`. For lookups nothing may wait on. */
+export async function within<T>(ms: number, work: Promise<T>): Promise<T | null> {
+	const giveUp = new AbortController();
+	const result = await Promise.race([
+		work.catch(() => null),
+		sleep(ms, giveUp.signal).then(
+			() => null,
+			() => null,
+		),
+	]);
+	giveUp.abort();
+	return result;
+}

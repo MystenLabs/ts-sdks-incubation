@@ -12,27 +12,47 @@ import {
 } from '../chains/index.js';
 import type { ResolvedRoutes } from '../chains/index.js';
 import { FINALITY_THRESHOLD } from '../chains/types.js';
-import type { ChainDefinition, ChainKey, Network, SuiChainDefinition } from '../chains/types.js';
+import type {
+	ChainDefinition,
+	ChainKey,
+	EvmChainDefinition,
+	Network,
+	SolanaChainDefinition,
+	SuiChainDefinition,
+} from '../chains/types.js';
 import {
-	getEvmBurnDetails,
+	getEvmCctpActivity,
 	getEvmNativeBalance,
 	getEvmTransactionTime,
 	getEvmUsdcBalance,
 } from '../engine/evm.js';
+import type { EvmBurnDetails } from '../engine/evm.js';
 import {
 	describeSolanaAccount,
+	getSolanaClaimedMessage,
 	getSolanaNativeBalance,
 	getSolanaTokenAccountOwner,
 	getSolanaTransactionTime,
 	getSolanaUsdcBalance,
 } from '../engine/solana.js';
-import { getSuiGasBalance, getSuiTransactionTime, getSuiUsdcBalance } from '../engine/sui.js';
+import {
+	getSuiClaimedMessage,
+	getSuiGasBalance,
+	getSuiTransactionTime,
+	getSuiUsdcBalance,
+} from '../engine/sui.js';
 import { IrisClient, IrisError } from '../iris/client.js';
 import type { IrisMessage } from '../iris/client.js';
 import { feeFromBps, parseUsdc } from '../utils/amount.js';
-import { hexToBytes, isValidAddress, normalizeAddress } from '../utils/bytes.js';
-import { gasCoin } from '../utils/errors.js';
-import { sleep } from '../utils/sleep.js';
+import {
+	bytesToHex,
+	hexToBytes,
+	isValidAddress,
+	normalizeAddress,
+	parseMessageV2,
+} from '../utils/bytes.js';
+import { CctpKitError, gasCoin } from '../utils/errors.js';
+import { sleep, within } from '../utils/sleep.js';
 import { DEFAULT_STORAGE_KEY, getDefaultStorage } from '../utils/storage.js';
 import type { StateStorage } from '../utils/storage.js';
 import type {
@@ -44,8 +64,8 @@ import type {
 import {
 	buildImportedRecord,
 	burnDetailsFromIris,
+	classifyTxHash,
 	parseTxReference,
-	resolveSourceChain,
 } from './import.js';
 import type { BurnDetails } from './import.js';
 import { createStores } from './store.js';
@@ -796,50 +816,169 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		stores.$trackedTransferIds.set(new Set([...stores.$trackedTransferIds.get(), id]));
 	}
 
+	/** Circle's record of a burn, or null when it has none for that transaction. */
+	async function circleKnows(domain: number, txHash: string): Promise<IrisMessage | null> {
+		try {
+			return (await iris.getMessagesByTxHash(domain, txHash)).messages[0] ?? null;
+		} catch (error) {
+			if (error instanceof IrisError && error.status === 404) return null;
+			throw error;
+		}
+	}
+
+	/** The transfer that a claim settled. Circle is asked by the source and nonce of its message. */
+	async function transferClaimedWith(sourceDomain: number, nonce: string) {
+		const from = chains.find((c) => c.domain === sourceDomain);
+		if (!from) return null;
+		try {
+			const found = await iris.getMessagesByNonce(sourceDomain, nonce);
+			const message = found.messages[0];
+			return message && found.sourceTxHash
+				? { from, sourceTxHash: found.sourceTxHash, message, burn: null }
+				: null;
+		} catch (error) {
+			if (error instanceof IrisError && error.status === 404) return null;
+			throw error;
+		}
+	}
+
+	const LOOKUP_MS = 8_000;
+
+	interface FoundTransfer {
+		from: ChainDefinition;
+		sourceTxHash: string;
+		message: IrisMessage | null;
+		/** The burn as its own chain shows it, for one Circle has not caught up with yet. */
+		burn: EvmBurnDetails | null;
+		/** Set when the transaction that was pasted is the claim, not the burn. */
+		claimedIn?: string;
+	}
+
+	/**
+	 * Find the transfer a transaction belongs to. The transaction may be the burn or the claim,
+	 * and for an EVM hash nothing says which chain it is on.
+	 */
+	async function findTransfer(
+		txHash: string,
+		kind: 'evm' | 'sui' | 'solana',
+		hint?: ChainDefinition,
+	): Promise<FoundTransfer | null> {
+		if (kind !== 'evm') {
+			const chain = chains.find((c) => c.ecosystem === kind);
+			if (!chain) throw new Error(`${kind} is not enabled in this kit`);
+			const message = await circleKnows(chain.domain, txHash);
+			if (message) return { from: chain, sourceTxHash: txHash, message, burn: null };
+			// Not a burn Circle knows. It may be the transaction that claimed one.
+			const claimed = await within(
+				LOOKUP_MS,
+				chain.ecosystem === 'sui'
+					? getSuiClaimedMessage(dAppKit.getClient(chain.suiNetwork), chain, txHash)
+					: getSolanaClaimedMessage(chain as SolanaChainDefinition, txHash),
+			);
+			if (!claimed) return null;
+			const parsed = parseMessageV2(bytesToHex(claimed));
+			const transfer = await transferClaimedWith(parsed.sourceDomain, bytesToHex(parsed.nonce));
+			return transfer && { ...transfer, claimedIn: txHash };
+		}
+
+		const evmChains = chains.filter((c): c is EvmChainDefinition => c.ecosystem === 'evm');
+		const named = hint?.ecosystem === 'evm' ? hint : undefined;
+		// With its chain named, Circle is asked first: one request, and it knows a burn in seconds.
+		if (named) {
+			const message = await circleKnows(named.domain, txHash);
+			if (message) return { from: named, sourceTxHash: txHash, message, burn: null };
+		}
+		// Otherwise every chain is asked for the transaction itself, and the one that has it
+		// answers. Circle is not asked once per chain: its limit on requests is per visitor, and
+		// someone who goes over it gets no attestations either for some minutes.
+		const asked = named ? [named, ...evmChains.filter((c) => c !== named)] : evmChains;
+		const answers = await Promise.all(
+			asked.map((chain) => within(LOOKUP_MS, getEvmCctpActivity(chain, txHash as `0x${string}`))),
+		);
+		const at = answers.findIndex((answer) => answer?.burn || answer?.claim);
+		if (at === -1) return null;
+		const chain = asked[at]!;
+		const { burn, claim } = answers[at]!;
+		if (burn) {
+			return {
+				from: chain,
+				sourceTxHash: txHash,
+				message: await circleKnows(chain.domain, txHash),
+				burn,
+			};
+		}
+		const transfer = await transferClaimedWith(claim!.sourceDomain, claim!.nonce);
+		return transfer && { ...transfer, claimedIn: txHash };
+	}
+
 	async function importTransfer(input: { txHash: string; sourceChain?: ChainKey }) {
-		// The hash, or an explorer's link to it. A chain the caller names wins over the link's.
+		// A hash or an explorer's link to it, of the burn or of the claim.
 		const pasted = parseTxReference(input.txHash, chains);
 		const txHash = pasted.txHash;
-		const from = resolveSourceChain(txHash, chains, input.sourceChain ?? pasted.chain);
-		const existing = readStored().find((t) => t.sourceTxHash === txHash);
-		if (existing) {
-			track(existing.id);
+		const kind = classifyTxHash(txHash);
+		if (kind === 'unknown') {
+			throw new CctpKitError('That does not look like a transaction hash, or a link to one');
+		}
+		const stored = (hash: string) =>
+			readStored().find((t) => t.sourceTxHash === hash || t.destinationTxHash === hash);
+		const show = (record: TransferRecord) => {
+			track(record.id);
 			stores.$transfers.set(readStored());
-			if (!RUNNING.has(runKey(existing.id)) && existing.status !== 'complete') {
-				void execute({ ...existing, error: undefined }, { stopAfterAttestation: true }).catch(
+			if (!RUNNING.has(runKey(record.id)) && record.status !== 'complete') {
+				void execute({ ...record, error: undefined }, { stopAfterAttestation: true }).catch(
 					() => undefined,
 				);
 			}
-			return existing;
-		}
+			return record;
+		};
+		const existing = stored(txHash);
+		if (existing) return show(existing);
 
-		let message: IrisMessage | null = null;
-		try {
-			message = (await iris.getMessagesByTxHash(from.domain, txHash)).messages[0] ?? null;
-		} catch (error) {
-			if (!(error instanceof IrisError && error.status === 404)) throw error;
+		// A chain the caller names wins over the one a link points at.
+		const hintKey = input.sourceChain ?? pasted.chain;
+		const hint = hintKey ? chains.find((c) => c.key === hintKey) : undefined;
+		if (hintKey && !hint) throw new Error(`Unknown chain "${hintKey}"`);
+		if (hint && hint.ecosystem !== kind) {
+			throw new CctpKitError(`That hash is a ${kind} transaction, not ${hint.name}`);
+		}
+		const found = await findTransfer(txHash, kind, hint);
+		if (!found) {
+			throw new CctpKitError(
+				'No USDC transfer was found for that transaction. Paste the transaction that sent the USDC, or the one that claimed it.',
+			);
+		}
+		const { from, sourceTxHash, message } = found;
+
+		// Reached through its claim, the transfer may already be here under its burn.
+		const known = found.claimedIn ? stored(sourceTxHash) : undefined;
+		if (known) {
+			if (!known.destinationTxHash) {
+				const now = Date.now();
+				upsert({
+					...known,
+					status: 'complete',
+					destinationTxHash: found.claimedIn,
+					error: undefined,
+					completedAt: known.completedAt ?? now,
+					updatedAt: now,
+				});
+			}
+			return show(readStored().find((t) => t.id === known.id) ?? known);
 		}
 
 		let details: BurnDetails | null = message ? burnDetailsFromIris(message) : null;
-		if (!details && from.ecosystem === 'evm') {
-			const burn = await getEvmBurnDetails(from, txHash as `0x${string}`);
-			if (burn) {
-				details = {
-					amount: burn.amount,
-					destinationDomain: burn.destinationDomain,
-					mintRecipient: hexToBytes(burn.mintRecipient),
-					sender: burn.depositor,
-					maxFee: burn.maxFee,
-					minFinalityThreshold: burn.minFinalityThreshold,
-				};
-			}
+		if (!details && found.burn) {
+			details = {
+				amount: found.burn.amount,
+				destinationDomain: found.burn.destinationDomain,
+				mintRecipient: hexToBytes(found.burn.mintRecipient),
+				sender: found.burn.depositor,
+				maxFee: found.burn.maxFee,
+				minFinalityThreshold: found.burn.minFinalityThreshold,
+			};
 		}
 		if (!details) {
-			throw new Error(
-				message
-					? 'Circle has not decoded this transfer yet; try again in a minute'
-					: `No CCTP transfer found for that hash on ${from.name}`,
-			);
+			throw new CctpKitError('Circle has not decoded this transfer yet. Try again in a minute.');
 		}
 
 		// On Solana the mint recipient is a token account; store the wallet that owns it so a
@@ -853,24 +992,34 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 			).catch(() => null);
 			recipient = owner?.toBase58();
 		}
-		const burnedAt = (await lookupBurnTime(from, txHash).catch(() => null)) ?? undefined;
-		const record = buildImportedRecord({
+		const burnedAt = (await lookupBurnTime(from, sourceTxHash).catch(() => null)) ?? undefined;
+		let record = buildImportedRecord({
 			network,
 			chains,
 			from,
-			txHash,
+			txHash: sourceTxHash,
 			details,
 			message,
 			recipient,
 			burnedAt,
 		});
+		if (found.claimedIn) {
+			record = {
+				...record,
+				status: 'complete',
+				destinationTxHash: found.claimedIn,
+				completedAt: Date.now(),
+			};
+		}
 		upsert(record);
 		track(record.id);
-		// Nothing to drive until the user claims when the attestation is already in hand.
-		if (record.status !== 'readyToMint') {
+		if (record.status === 'readyToMint') {
+			// It may have been claimed already. Say so now, not after a press on Claim.
+			await within(LOOKUP_MS, settleClaimed(record.id));
+		} else if (record.status !== 'complete') {
 			void execute(record, { stopAfterAttestation: true }).catch(() => undefined);
 		}
-		return record;
+		return readStored().find((t) => t.id === record.id) ?? record;
 	}
 
 	/** Source-chain confirmation time of a burn, in ms; null for a transaction that failed. */

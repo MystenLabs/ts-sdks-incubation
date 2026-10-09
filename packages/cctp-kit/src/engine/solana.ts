@@ -11,7 +11,7 @@ import {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import type { SolanaChainDefinition } from '../chains/types.js';
-import { parseMessageV2 } from '../utils/bytes.js';
+import { isMessageV2For, parseMessageV2 } from '../utils/bytes.js';
 import { TransactionRevertedError } from '../utils/errors.js';
 import { sleep } from '../utils/sleep.js';
 
@@ -576,6 +576,34 @@ export async function getSolanaTokenAccountOwner(
 	const info = await withSolanaConnection(chain, (c) => c.getAccountInfo(tokenAccount));
 	if (!info || info.data.length < 64) return null;
 	return new PublicKey(info.data.subarray(32, 64));
+}
+
+/**
+ * The CCTP message a Solana transaction claimed, or null when it claimed none. Read from the
+ * `receive_message` instruction it sent to the message transmitter: the discriminator, then
+ * the message as a length and its bytes.
+ */
+export async function getSolanaClaimedMessage(
+	chain: SolanaChainDefinition,
+	signature: string,
+): Promise<Uint8Array | null> {
+	const tx = await withSolanaConnection(chain, (c) =>
+		c.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }),
+	);
+	if (!tx || tx.meta?.err) return null;
+	const message = tx.transaction.message;
+	const keys = message.staticAccountKeys;
+	for (const instruction of message.compiledInstructions) {
+		if (keys[instruction.programIdIndex]?.toBase58() !== chain.messageTransmitterV2) continue;
+		const data = instruction.data;
+		if (data.length < 12 || !DISCRIMINATOR.receiveMessage.every((byte, i) => data[i] === byte)) {
+			continue;
+		}
+		const length = new DataView(data.buffer, data.byteOffset + 8, 4).getUint32(0, true);
+		const bytes = data.slice(12, 12 + length);
+		if (bytes.length === length && isMessageV2For(bytes, chain.domain)) return bytes;
+	}
+	return null;
 }
 
 /** What `owner` holds of SOL, in lamports. */

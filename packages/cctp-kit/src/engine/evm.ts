@@ -219,6 +219,55 @@ export async function getEvmBurnDetails(
 	};
 }
 
+/** What a transaction did with CCTP v2: a burn, a claim, or neither. */
+export interface EvmCctpActivity {
+	burn: EvmBurnDetails | null;
+	/** The message a claim spent, as its source domain and nonce. */
+	claim: { sourceDomain: number; nonce: Hex } | null;
+}
+
+/**
+ * Read what a mined transaction did with CCTP v2 on `chain`. Null when this chain has no such
+ * transaction, or it failed. That is also how the chain of a bare EVM hash is found: every EVM
+ * chain shares the format, and only one of them knows the hash.
+ */
+export async function getEvmCctpActivity(
+	chain: EvmChainDefinition,
+	txHash: Hex,
+): Promise<EvmCctpActivity | null> {
+	const receipt = await getEvmPublicClient(chain)
+		.getTransactionReceipt({ hash: txHash })
+		.catch(() => null);
+	if (!receipt || receipt.status !== 'success') return null;
+	const from = (address: string) =>
+		receipt.logs.filter((l) => l.address.toLowerCase() === address.toLowerCase());
+	const [burned] = parseEventLogs({
+		abi: TOKEN_MESSENGER_V2_ABI,
+		eventName: 'DepositForBurn',
+		logs: from(chain.tokenMessengerV2),
+	});
+	const [received] = parseEventLogs({
+		abi: MESSAGE_TRANSMITTER_V2_ABI,
+		eventName: 'MessageReceived',
+		logs: from(chain.messageTransmitterV2),
+	});
+	return {
+		burn: burned
+			? {
+					amount: burned.args.amount,
+					destinationDomain: burned.args.destinationDomain,
+					mintRecipient: burned.args.mintRecipient,
+					depositor: burned.args.depositor,
+					maxFee: burned.args.maxFee,
+					minFinalityThreshold: burned.args.minFinalityThreshold,
+				}
+			: null,
+		claim: received
+			? { sourceDomain: received.args.sourceDomain, nonce: received.args.nonce }
+			: null,
+	};
+}
+
 /** Block timestamp (ms) of a mined transaction that succeeded, or null. */
 export async function getEvmTransactionTime(
 	chain: EvmChainDefinition,
