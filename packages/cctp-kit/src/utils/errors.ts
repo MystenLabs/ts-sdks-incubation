@@ -11,3 +11,11 @@
 export class TransactionRevertedError extends Error {
 	override name = 'TransactionRevertedError';
 }
+
+/**
+ * The wallet is on another network and did not move when asked. Nothing was sent, so switching
+ * it by hand and trying again is safe.
+ */
+export class WalletNetworkError extends Error {
+	override name = 'WalletNetworkError';
+}

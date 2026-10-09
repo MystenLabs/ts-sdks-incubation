@@ -28,7 +28,7 @@ export type { TransferContext } from './core/transfer.js';
 export * from './chains/index.js';
 
 export { IrisClient, IrisError, IRIS_BASE_URL, isAttested } from './iris/client.js';
-export { TransactionRevertedError } from './utils/errors.js';
+export { TransactionRevertedError, WalletNetworkError } from './utils/errors.js';
 export type {
 	IrisClientOptions,
 	IrisDecodedMessage,

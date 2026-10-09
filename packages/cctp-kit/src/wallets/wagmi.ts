@@ -10,6 +10,7 @@ import {
 } from '@wagmi/core';
 import type { Config } from '@wagmi/core';
 import type { EvmChainDefinition } from '../chains/types.js';
+import { WalletNetworkError } from '../utils/errors.js';
 import type { EvmWalletAdapter, WalletAccount } from './types.js';
 
 export interface WagmiEvmWalletOptions {
@@ -49,19 +50,36 @@ export function createEvmWalletFromWagmiConfig(
 			await wagmiDisconnect(config);
 		},
 		async getWalletClient(chain: EvmChainDefinition) {
-			const current = getAccount(config);
-			if (current.chainId !== chain.chainId) {
-				await switchChain(config, {
-					chainId: chain.chainId,
-					addEthereumChainParameter: {
-						chainName: chain.viemChain.name,
-						nativeCurrency: chain.viemChain.nativeCurrency,
-						rpcUrls: chain.rpcUrls,
-						blockExplorerUrls: chain.viemChain.blockExplorers
-							? [chain.viemChain.blockExplorers.default.url]
-							: undefined,
-					},
-				});
+			// Ask the wallet itself. What wagmi remembers is only as good as the wallet's notice
+			// that it changed network, and some wallets give none when switched by hand.
+			const walletChainId = async () => {
+				const { connector, chainId } = getAccount(config);
+				return (await connector?.getChainId?.().catch(() => undefined)) ?? chainId;
+			};
+			if ((await walletChainId()) !== chain.chainId) {
+				try {
+					await switchChain(config, {
+						chainId: chain.chainId,
+						addEthereumChainParameter: {
+							chainName: chain.viemChain.name,
+							nativeCurrency: chain.viemChain.nativeCurrency,
+							rpcUrls: chain.rpcUrls,
+							blockExplorerUrls: chain.viemChain.blockExplorers
+								? [chain.viemChain.blockExplorers.default.url]
+								: undefined,
+						},
+					});
+				} catch (error) {
+					// Some wallets cannot be told to switch, and wagmi reports that as the user
+					// rejecting a request. Some switch and answer with an error all the same. What
+					// counts is where the wallet is now.
+					if ((await walletChainId()) !== chain.chainId) {
+						throw new WalletNetworkError(
+							`Your wallet is on another network. Switch it to ${chain.name} in the wallet, then try again.`,
+							{ cause: error },
+						);
+					}
+				}
 			}
 			return getWalletClient(config, { chainId: chain.chainId });
 		},
