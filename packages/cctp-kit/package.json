@@ -85,7 +85,7 @@
 		"@types/react": "catalog:",
 		"@wagmi/core": "^3.6.0",
 		"react": "catalog:",
-		"tsdown": "^0.22.2",
+		"tsdown": "^0.23.0",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
 	},

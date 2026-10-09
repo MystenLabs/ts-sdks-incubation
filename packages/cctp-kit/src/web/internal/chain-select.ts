@@ -195,34 +195,38 @@ export class ChainSelect extends LitElement {
 					/>
 				</svg>
 			</button>
-			${this._open
-				? html`<div class="menu" role="listbox" part="menu">
-						${this.options.map(
-							(chain) =>
-								html`<button
-									type="button"
-									role="option"
-									aria-selected=${chain.key === this.value}
-									class=${classMap({ option: true, selected: chain.key === this.value })}
-									@click=${() => this.#select(chain.key)}
-								>
-									${renderChainIcon(chain)}
-									<span class="name">${chain.name}</span>
-									${chain.key === this.value
-										? html`<svg class="check" viewBox="0 0 16 16" fill="none">
-												<path
-													d="M3 8.5l3 3 7-7"
-													stroke="currentColor"
-													stroke-width="1.75"
-													stroke-linecap="round"
-													stroke-linejoin="round"
-												/>
-											</svg>`
-										: nothing}
-								</button>`,
-						)}
-					</div>`
-				: nothing}
+			${
+				this._open
+					? html`<div class="menu" role="listbox" part="menu">
+							${this.options.map(
+								(chain) =>
+									html`<button
+										type="button"
+										role="option"
+										aria-selected=${chain.key === this.value}
+										class=${classMap({ option: true, selected: chain.key === this.value })}
+										@click=${() => this.#select(chain.key)}
+									>
+										${renderChainIcon(chain)}
+										<span class="name">${chain.name}</span>
+										${
+											chain.key === this.value
+												? html`<svg class="check" viewBox="0 0 16 16" fill="none">
+														<path
+															d="M3 8.5l3 3 7-7"
+															stroke="currentColor"
+															stroke-width="1.75"
+															stroke-linecap="round"
+															stroke-linejoin="round"
+														/>
+													</svg>`
+												: nothing
+										}
+									</button>`,
+							)}
+						</div>`
+					: nothing
+			}
 		`;
 	}
 }

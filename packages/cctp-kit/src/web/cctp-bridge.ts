@@ -223,18 +223,20 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 			<div class="panels">
 				${this.renderPanel(kit, 'from')}
-				${canFlip
-					? html`<button
-							type="button"
-							class="flip"
-							part="flip"
-							title="Swap direction"
-							aria-label="Swap direction"
-							@click=${() => kit.flipDirection()}
-						>
-							${flipIcon}
-						</button>`
-					: html`<span class="flip" aria-hidden="true">${downIcon}</span>`}
+				${
+					canFlip
+						? html`<button
+								type="button"
+								class="flip"
+								part="flip"
+								title="Swap direction"
+								aria-label="Swap direction"
+								@click=${() => kit.flipDirection()}
+							>
+								${flipIcon}
+							</button>`
+						: html`<span class="flip" aria-hidden="true">${downIcon}</span>`
+				}
 				${this.renderPanel(kit, 'to')}
 			</div>
 
@@ -267,17 +269,19 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 			<div class="panel" part=${side}>
 				<div class="row">
 					<span class="label">${side === 'from' ? 'From' : 'To'}</span>
-					${isSui
-						? html`<span class="chain-static" part="sui-chain">
-								${renderChainIcon(chain)}
-								<span>${chain.name}</span>
-							</span>`
-						: html`<internal-chain-select
-								.options=${stores.$counterpartOptions.get()}
-								.value=${chain.key}
-								@chain-change=${(e: CustomEvent<{ key: ChainKey }>) =>
-									kit.setCounterpartChain(e.detail.key)}
-							></internal-chain-select>`}
+					${
+						isSui
+							? html`<span class="chain-static" part="sui-chain">
+									${renderChainIcon(chain)}
+									<span>${chain.name}</span>
+								</span>`
+							: html`<internal-chain-select
+									.options=${stores.$counterpartOptions.get()}
+									.value=${chain.key}
+									@chain-change=${(e: CustomEvent<{ key: ChainKey }>) =>
+										kit.setCounterpartChain(e.detail.key)}
+								></internal-chain-select>`
+					}
 				</div>
 
 				${side === 'from' ? this.renderAmount(kit) : this.renderReceive(kit)}
@@ -287,15 +291,17 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					${this.renderWallet(kit, chain, account)}
 				</div>
 
-				${side === 'to' && this.showRecipientField(kit, chain, account)
-					? html`<input
-							class="field"
-							type="text"
-							placeholder="Recipient address on ${chain.name}"
-							.value=${stores.$recipient.get()}
-							@input=${(e: Event) => kit.setRecipient((e.target as HTMLInputElement).value)}
-						/>`
-					: nothing}
+				${
+					side === 'to' && this.showRecipientField(kit, chain, account)
+						? html`<input
+								class="field"
+								type="text"
+								placeholder="Recipient address on ${chain.name}"
+								.value=${stores.$recipient.get()}
+								@input=${(e: Event) => kit.setRecipient((e.target as HTMLInputElement).value)}
+							/>`
+						: nothing
+				}
 			</div>
 		`;
 	}
@@ -336,11 +342,13 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		if (balance === null) return html`<span class="muted"></span>`;
 		return html`<span class="muted">
 			Balance: ${formatUsdc(balance)} USDC
-			${balance > 0n
-				? html`<span class="text-button" @click=${() => kit.setAmount(formatUsdc(balance))}
-						>Max</span
-					>`
-				: nothing}
+			${
+				balance > 0n
+					? html`<span class="text-button" @click=${() => kit.setAmount(formatUsdc(balance))}
+							>Max</span
+						>`
+					: nothing
+			}
 		</span>`;
 	}
 
@@ -482,28 +490,30 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					<span class="label">
 						${many ? `Transfers · ${index + 1} of ${list.length}` : 'Transfer'}
 					</span>
-					${many
-						? html`<span class="pager">
-								<button
-									type="button"
-									class="pager-btn"
-									aria-label="Previous transfer"
-									?disabled=${index === 0}
-									@click=${() => (this._transferIndex = index - 1)}
-								>
-									${backIcon}
-								</button>
-								<button
-									type="button"
-									class="pager-btn"
-									aria-label="Next transfer"
-									?disabled=${index === list.length - 1}
-									@click=${() => (this._transferIndex = index + 1)}
-								>
-									${nextIcon}
-								</button>
-							</span>`
-						: nothing}
+					${
+						many
+							? html`<span class="pager">
+									<button
+										type="button"
+										class="pager-btn"
+										aria-label="Previous transfer"
+										?disabled=${index === 0}
+										@click=${() => (this._transferIndex = index - 1)}
+									>
+										${backIcon}
+									</button>
+									<button
+										type="button"
+										class="pager-btn"
+										aria-label="Next transfer"
+										?disabled=${index === list.length - 1}
+										@click=${() => (this._transferIndex = index + 1)}
+									>
+										${nextIcon}
+									</button>
+								</span>`
+							: nothing
+					}
 				</div>
 				<div class="carousel">
 					<div class="track" style="transform: translateX(-${index * 100}%)">
@@ -575,35 +585,43 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 							>
 								<span class="dot"></span>
 								<span>${step.label}</span>
-								${link
-									? html`<a class="link muted" target="_blank" rel="noreferrer" href=${link}
-											>view</a
-										>`
-									: nothing}
+								${
+									link
+										? html`<a class="link muted" target="_blank" rel="noreferrer" href=${link}
+												>view</a
+											>`
+										: nothing
+								}
 							</li>
-							${i < STEPS.length - 1
-								? html`<li class="connector" aria-hidden="true"></li>`
-								: nothing}`;
+							${
+								i < STEPS.length - 1
+									? html`<li class="connector" aria-hidden="true"></li>`
+									: nothing
+							}`;
 					})}
 				</ol>
 				${failed && transfer.error ? html`<p class="error">${transfer.error}</p>` : nothing}
-				${canResume
-					? html`<div class="actions">
-							<internal-button
-								variant="primary"
-								small
-								?disabled=${this._busy}
-								@click=${() => this.resume(kit, transfer.id)}
-							>
-								${transfer.status === 'readyToMint' || (failed && transfer.attestation)
-									? 'Claim'
-									: interrupted || (failed && transfer.sourceTxHash)
-										? 'Resume'
-										: 'Retry'}
-							</internal-button>
-							${canRemove ? this.renderRemove(kit, transfer) : nothing}
-						</div>`
-					: nothing}
+				${
+					canResume
+						? html`<div class="actions">
+								<internal-button
+									variant="primary"
+									small
+									?disabled=${this._busy}
+									@click=${() => this.resume(kit, transfer.id)}
+								>
+									${
+										transfer.status === 'readyToMint' || (failed && transfer.attestation)
+											? 'Claim'
+											: interrupted || (failed && transfer.sourceTxHash)
+												? 'Resume'
+												: 'Retry'
+									}
+								</internal-button>
+								${canRemove ? this.renderRemove(kit, transfer) : nothing}
+							</div>`
+						: nothing
+				}
 			</div>
 		`;
 	}
@@ -621,9 +639,11 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 				<div class="row">
 					<span class="muted">Waiting ${formatElapsed(progress.elapsedSeconds)}</span>
 					<span class="muted">
-						${progress.overdue
-							? `Taking longer than the usual ${formatDuration(min, max)}`
-							: `${progress.remaining} remaining`}
+						${
+							progress.overdue
+								? `Taking longer than the usual ${formatDuration(min, max)}`
+								: `${progress.remaining} remaining`
+						}
 					</span>
 				</div>
 				<div
@@ -690,12 +710,14 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					}}
 				/>
 				${this._importError ? html`<p class="error">${this._importError}</p>` : nothing}
-				${this._importFound
-					? html`<p class="import-found" part="import-found">
-								This transfer is complete. It is also listed under History.
-							</p>
-							${this.renderHistoryRow(this._importFound, kit)}`
-					: nothing}
+				${
+					this._importFound
+						? html`<p class="import-found" part="import-found">
+									This transfer is complete. It is also listed under History.
+								</p>
+								${this.renderHistoryRow(this._importFound, kit)}`
+						: nothing
+				}
 				<internal-button
 					variant="primary"
 					?disabled=${this._busy || !this._importHash.trim()}
@@ -737,15 +759,19 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 				<h2 class="title">History</h2>
 				<span class="header-spacer"></span>
 			</div>
-			${records.length
-				? html`<div class="history" part="history">
-						${records.map((t) => this.renderHistoryRow(t, kit))}
-					</div>`
-				: html`<p class="muted history-empty">
-						${connected
-							? 'No transfers for the connected wallet yet.'
-							: 'Connect a wallet to see its transfers.'}
-					</p>`}
+			${
+				records.length
+					? html`<div class="history" part="history">
+							${records.map((t) => this.renderHistoryRow(t, kit))}
+						</div>`
+					: html`<p class="muted history-empty">
+							${
+								connected
+									? 'No transfers for the connected wallet yet.'
+									: 'Connect a wallet to see its transfers.'
+							}
+						</p>`
+			}
 		`;
 	}
 
@@ -777,39 +803,45 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					>
 					<span class="muted">
 						${new Date(transfer.createdAt).toLocaleString()} · ${label}
-						${transfer.sourceTxHash && from
-							? html` ·
-									<a
-										class="link"
-										target="_blank"
-										rel="noreferrer"
-										href=${txUrl(from, transfer.sourceTxHash)}
-										>burn</a
-									>`
-							: nothing}
-						${transfer.destinationTxHash && to
-							? html` ·
-									<a
-										class="link"
-										target="_blank"
-										rel="noreferrer"
-										href=${txUrl(to, transfer.destinationTxHash)}
-										>mint</a
-									>`
-							: nothing}
+						${
+							transfer.sourceTxHash && from
+								? html` ·
+										<a
+											class="link"
+											target="_blank"
+											rel="noreferrer"
+											href=${txUrl(from, transfer.sourceTxHash)}
+											>burn</a
+										>`
+								: nothing
+						}
+						${
+							transfer.destinationTxHash && to
+								? html` ·
+										<a
+											class="link"
+											target="_blank"
+											rel="noreferrer"
+											href=${txUrl(to, transfer.destinationTxHash)}
+											>mint</a
+										>`
+								: nothing
+						}
 					</span>
 				</div>
 				<div class="actions">
-					${actionable
-						? html`<internal-button
-								variant="secondary"
-								small
-								?disabled=${this._busy}
-								@click=${() => this.resume(kit, transfer.id)}
-							>
-								${transfer.status === 'readyToMint' ? 'Claim' : 'Retry'}
-							</internal-button>`
-						: nothing}
+					${
+						actionable
+							? html`<internal-button
+									variant="secondary"
+									small
+									?disabled=${this._busy}
+									@click=${() => this.resume(kit, transfer.id)}
+								>
+									${transfer.status === 'readyToMint' ? 'Claim' : 'Retry'}
+								</internal-button>`
+							: nothing
+					}
 					${neverBurned(transfer) && !running ? this.renderRemove(kit, transfer) : nothing}
 				</div>
 			</div>

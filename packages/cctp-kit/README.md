@@ -58,13 +58,13 @@ Every hook accepts an optional `{ kit }` to bypass context, mirroring dapp-kit's
 ### Configuration
 
 | Option                   | Description                                                                                                                                                             |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dAppKit`                | The host's dapp-kit 2.0 instance (required).                                                                                                                            |
 | `network`                | `'mainnet'` or `'testnet'`; inferred from dapp-kit's current network.                                                                                                   |
 | `direction`              | `'both'`, `'inflow'` (all routes end on Sui) or `'outflow'`.                                                                                                            |
 | `chains`                 | `{ allow, deny, from: { allow, deny }, to: { allow, deny } }` by chain key.                                                                                             |
 | `transferSpeed`          | `{ default, allow }` with `'fast'` and/or `'standard'`.                                                                                                                 |
-| `rpc`                    | `{ urls: { base: ['https://a', 'https://b'] }, mode: 'prepend'                                                                                                          | 'replace' }` |
+| `rpc`                    | `{ urls: { base: ['https://a', 'https://b'] }, mode }`, where `mode` is `'prepend'` or `'replace'`.                                                                     |
 | `icons`                  | Override chain icons by key (URL / data URI), or `null` for a text monogram. Defaults load from `icons.llamao.fi`; allow it in `img-src` or override.                   |
 | `wallets.evm`            | Inject an EVM adapter, e.g. `createEvmWalletFromWagmiConfig(config)`.                                                                                                   |
 | `wallets.solana`         | Inject a Solana adapter.                                                                                                                                                |

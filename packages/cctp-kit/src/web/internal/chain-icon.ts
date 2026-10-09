@@ -37,13 +37,15 @@ export function renderChainIcon(chain: ChainDefinition) {
 	const monogram = chain.name.charAt(0).toUpperCase();
 	return html`<span class="chain-icon" aria-hidden="true">
 		${monogram}
-		${chain.icon
-			? html`<img
-					src=${chain.icon}
-					alt=""
-					loading="lazy"
-					@error=${(e: Event) => (e.target as HTMLImageElement).remove()}
-				/>`
-			: nothing}
+		${
+			chain.icon
+				? html`<img
+						src=${chain.icon}
+						alt=""
+						loading="lazy"
+						@error=${(e: Event) => (e.target as HTMLImageElement).remove()}
+					/>`
+				: nothing
+		}
 	</span>`;
 }
