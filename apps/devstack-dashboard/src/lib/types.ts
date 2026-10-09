@@ -6,13 +6,7 @@
 // them in sync (the schema SDL under `schema.graphql` is the contract).
 
 export type LifecycleStatus =
-	| 'pending'
-	| 'acquiring'
-	| 'ready'
-	| 'failed'
-	| 'stopping'
-	| 'stopped'
-	| 'done';
+	'pending' | 'acquiring' | 'ready' | 'failed' | 'stopping' | 'stopped' | 'done';
 
 export type PluginRole = 'service' | 'task';
 

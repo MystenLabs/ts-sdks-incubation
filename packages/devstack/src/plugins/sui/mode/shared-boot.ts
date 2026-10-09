@@ -150,15 +150,14 @@ export const buildWaitForTransactionsReady = (
 					return true;
 				},
 			}).pipe(
-				Effect.mapError(
-					(cause): SuiPluginError =>
-						suiPluginError(
-							'wait-funds-ready',
-							`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
-								`${Duration.toMillis(timeout)}ms (still returning body-level Failure or 5xx): ` +
-								formatUnknownError(cause),
-							cause,
-						),
+				Effect.mapError((cause): SuiPluginError =>
+					suiPluginError(
+						'wait-funds-ready',
+						`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
+							`${Duration.toMillis(timeout)}ms (still returning body-level Failure or 5xx): ` +
+							formatUnknownError(cause),
+						cause,
+					),
 				),
 			);
 

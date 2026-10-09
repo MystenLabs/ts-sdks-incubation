@@ -254,12 +254,14 @@ export class DevWalletStandalone extends LitElement {
 		return html`
 			<footer class="about">
 				<span>Keys are stored in this browser only. Don't hold real funds here.</span>
-				${isLocal
-					? nothing
-					: html`<span>
-							For your <code>sui</code> CLI keys or localnet, run it locally:
-							<code>npx @mysten-incubation/dev-wallet serve</code>
-						</span>`}
+				${
+					isLocal
+						? nothing
+						: html`<span>
+								For your <code>sui</code> CLI keys or localnet, run it locally:
+								<code>npx @mysten-incubation/dev-wallet serve</code>
+							</span>`
+				}
 				<a href=${DOCS_URL} target="_blank" rel="noopener noreferrer">Documentation ↗</a>
 			</footer>
 		`;

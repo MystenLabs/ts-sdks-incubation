@@ -331,28 +331,30 @@ export class DevWalletNewAccount extends LitElement {
 		return html`
 			<dialog part="dialog" @cancel=${this.#handleDialogCancel}>
 				<div class="dialog-title">Add Account</div>
-				${showTabs
-					? html`
-							<div class="tabs">
-								<button
-									class="tab ${this._mode === 'create' ? 'active' : ''}"
-									@click=${() => (this._mode = 'create')}
-								>
-									Create
-								</button>
-								<button
-									class="tab ${this._mode === 'import' ? 'active' : ''}"
-									@click=${() => (this._mode = 'import')}
-								>
-									Import
-								</button>
-							</div>
-						`
-					: nothing}
+				${
+					showTabs
+						? html`
+								<div class="tabs">
+									<button
+										class="tab ${this._mode === 'create' ? 'active' : ''}"
+										@click=${() => (this._mode = 'create')}
+									>
+										Create
+									</button>
+									<button
+										class="tab ${this._mode === 'import' ? 'active' : ''}"
+										@click=${() => (this._mode = 'import')}
+									>
+										Import
+									</button>
+								</div>
+							`
+						: nothing
+				}
 				${this._mode === 'create' ? this.#renderCreateForm() : this.#renderImportList()}
-				${this._error
-					? html`<div class="error" part="error-message">${this._error}</div>`
-					: nothing}
+				${
+					this._error ? html`<div class="error" part="error-message">${this._error}</div>` : nothing
+				}
 			</dialog>
 		`;
 	}
@@ -372,45 +374,47 @@ export class DevWalletNewAccount extends LitElement {
 			creatableAdapters.find((a) => a.id === this._selectedAdapterId) ?? creatableAdapters[0];
 
 		return html`
-			${showPicker
-				? html`
-						<div class="field">
-							<label class="field-label">Type</label>
-							<dev-wallet-dropdown
-								full-width
-								.open=${this._dropdownOpen}
-								@close=${() => (this._dropdownOpen = false)}
-							>
-								<button
-									slot="trigger"
-									class="select-trigger ${this._dropdownOpen ? 'open' : ''}"
-									@click=${() => (this._dropdownOpen = !this._dropdownOpen)}
+			${
+				showPicker
+					? html`
+							<div class="field">
+								<label class="field-label">Type</label>
+								<dev-wallet-dropdown
+									full-width
+									.open=${this._dropdownOpen}
+									@close=${() => (this._dropdownOpen = false)}
 								>
-									<span>${selectedAdapter?.name ?? 'Select...'}</span>
-									<span class="chevron">▼</span>
-								</button>
-								<div slot="popover">
-									${creatableAdapters.map(
-										(a) => html`
-											<button
-												class="select-option ${a.id === (selectedAdapter?.id ?? '')
-													? 'selected'
-													: ''}"
-												@click=${() => {
-													this._selectedAdapterId = a.id;
-													this._dropdownOpen = false;
-													this._error = null;
-												}}
-											>
-												${a.name}
-											</button>
-										`,
-									)}
-								</div>
-							</dev-wallet-dropdown>
-						</div>
-					`
-				: nothing}
+									<button
+										slot="trigger"
+										class="select-trigger ${this._dropdownOpen ? 'open' : ''}"
+										@click=${() => (this._dropdownOpen = !this._dropdownOpen)}
+									>
+										<span>${selectedAdapter?.name ?? 'Select...'}</span>
+										<span class="chevron">▼</span>
+									</button>
+									<div slot="popover">
+										${creatableAdapters.map(
+											(a) => html`
+												<button
+													class="select-option ${
+														a.id === (selectedAdapter?.id ?? '') ? 'selected' : ''
+													}"
+													@click=${() => {
+														this._selectedAdapterId = a.id;
+														this._dropdownOpen = false;
+														this._error = null;
+													}}
+												>
+													${a.name}
+												</button>
+											`,
+										)}
+									</div>
+								</dev-wallet-dropdown>
+							</div>
+						`
+					: nothing
+			}
 			<div class="field">
 				<label class="field-label">Label</label>
 				<input
@@ -451,9 +455,11 @@ export class DevWalletNewAccount extends LitElement {
 
 		if (this._availableAccounts.length === 0) {
 			return html`<div class="empty-state">
-					${this.#hasUnpairedImportableAdapters
-						? 'Open the token URL from your terminal to connect CLI accounts.'
-						: 'No accounts available to import'}
+					${
+						this.#hasUnpairedImportableAdapters
+							? 'Open the token URL from your terminal to connect CLI accounts.'
+							: 'No accounts available to import'
+					}
 				</div>
 				<div class="actions">
 					<button class="btn btn-cancel" part="cancel-button" @click=${this.#handleCancel}>
@@ -498,9 +504,11 @@ export class DevWalletNewAccount extends LitElement {
 					?disabled=${this._creating || this._selectedImports.size === 0}
 					@click=${this.#handleImportSelected}
 				>
-					${this._creating
-						? 'Importing...'
-						: `Import${this._selectedImports.size > 0 ? ` (${this._selectedImports.size})` : ''}`}
+					${
+						this._creating
+							? 'Importing...'
+							: `Import${this._selectedImports.size > 0 ? ` (${this._selectedImports.size})` : ''}`
+					}
 				</button>
 			</div>
 		`;

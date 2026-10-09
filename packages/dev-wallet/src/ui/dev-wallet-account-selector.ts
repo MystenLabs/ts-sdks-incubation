@@ -231,9 +231,11 @@ export class DevWalletAccountSelector extends LitElement {
 						<div class="account-info">
 							<div class="account-label-row">
 								<div class="account-label">${label}</div>
-								${activeAdapterName
-									? html`<span class="adapter-badge">${activeAdapterName}</span>`
-									: nothing}
+								${
+									activeAdapterName
+										? html`<span class="adapter-badge">${activeAdapterName}</span>`
+										: nothing
+								}
 							</div>
 							<div class="account-address">${formatAddress(active.address)}</div>
 						</div>

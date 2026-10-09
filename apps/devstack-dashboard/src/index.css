@@ -10,30 +10,12 @@
 
 /* ------------------------------------------------------------
    THEME — expose design tokens as Tailwind utilities.
-   `inline` makes utilities reference the raw --bg-*/
---tx-*/--c-* vars directly,
-so
-	light-mode
-	+ Tweaks
-	(accent/density)
-	still
-	cascade.
-	e.g.
-	bg-panel
-	/
-	text-mid
-	/
-	border-line
-	/
-	text-green
-	/
-	rounded-lg
-	/
-	shadow-e1.
-	------------------------------------------------------------
-	*/
-	@theme
-	inline {
+   `inline` makes utilities reference the raw --bg-* / --tx-* / --c-*
+   vars directly, so light-mode + Tweaks (accent/density) still
+   cascade. e.g. bg-panel / text-mid / border-line / text-green
+   / rounded-lg / shadow-e1.
+   ------------------------------------------------------------ */
+@theme inline {
 	/* surfaces */
 	--color-base: var(--bg-base);
 	--color-canvas: var(--bg-canvas);

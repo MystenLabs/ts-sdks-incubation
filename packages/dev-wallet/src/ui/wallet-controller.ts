@@ -240,37 +240,41 @@ export class WalletController implements ReactiveController {
 	renderAssetsTab() {
 		return html`
 			${this.renderAccountSelector()}
-			${this.activeAddress && this.#wallet
-				? html`
-						<div class="section">
-							<dev-wallet-balances
-								exportparts="balance-list, loading: balances-loading, error-message: balances-error-message, empty-state: balances-empty-state, faucet-button: balances-faucet-button, faucet-error-message: balances-faucet-error-message"
-								.address=${this.activeAddress}
-								.client=${this.getActiveClient()}
-								.network=${this.#wallet.activeNetwork}
-								.faucetHost=${this.#wallet.activeFaucet}
-								.coins=${this.coins}
-							></dev-wallet-balances>
-						</div>
-					`
-				: nothing}
+			${
+				this.activeAddress && this.#wallet
+					? html`
+							<div class="section">
+								<dev-wallet-balances
+									exportparts="balance-list, loading: balances-loading, error-message: balances-error-message, empty-state: balances-empty-state, faucet-button: balances-faucet-button, faucet-error-message: balances-faucet-error-message"
+									.address=${this.activeAddress}
+									.client=${this.getActiveClient()}
+									.network=${this.#wallet.activeNetwork}
+									.faucetHost=${this.#wallet.activeFaucet}
+									.coins=${this.coins}
+								></dev-wallet-balances>
+							</div>
+						`
+					: nothing
+			}
 		`;
 	}
 
 	renderObjectsTab() {
 		return html`
 			${this.renderAccountSelector()}
-			${this.activeAddress && this.#wallet
-				? html`
-						<div class="section">
-							<dev-wallet-objects
-								exportparts="object-list, loading: objects-loading, error-message: objects-error-message, empty-state: objects-empty-state, load-more-button"
-								.address=${this.activeAddress}
-								.client=${this.getActiveClient()}
-							></dev-wallet-objects>
-						</div>
-					`
-				: nothing}
+			${
+				this.activeAddress && this.#wallet
+					? html`
+							<div class="section">
+								<dev-wallet-objects
+									exportparts="object-list, loading: objects-loading, error-message: objects-error-message, empty-state: objects-empty-state, load-more-button"
+									.address=${this.activeAddress}
+									.client=${this.getActiveClient()}
+								></dev-wallet-objects>
+							</div>
+						`
+					: nothing
+			}
 		`;
 	}
 

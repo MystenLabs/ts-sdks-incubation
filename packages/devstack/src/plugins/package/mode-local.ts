@@ -342,21 +342,19 @@ export const acquireLocal = (
 								chainId: inputs.chainId,
 							})
 							.pipe(
-								Effect.catchTag(
-									'PublishError',
-									(err): Effect.Effect<BuildOutput, PublishError> =>
-										// Re-stamp sourcePath/packageName if the underlying
-										// caller omitted them (every throw site MUST surface
-										// the context — see distilled doc §Opportunities).
-										Effect.fail(
-											err.sourcePath
-												? err
-												: {
-														...err,
-														sourcePath: inputs.sourcePath,
-														packageName: inputs.packageName,
-													},
-										),
+								Effect.catchTag('PublishError', (err): Effect.Effect<BuildOutput, PublishError> =>
+									// Re-stamp sourcePath/packageName if the underlying
+									// caller omitted them (every throw site MUST surface
+									// the context — see distilled doc §Opportunities).
+									Effect.fail(
+										err.sourcePath
+											? err
+											: {
+													...err,
+													sourcePath: inputs.sourcePath,
+													packageName: inputs.packageName,
+												},
+									),
 								),
 							);
 					}),
@@ -418,9 +416,8 @@ export const acquireLocal = (
 				};
 				return entry;
 			}).pipe(
-				Effect.mapError(
-					(err): ArtifactPublishError =>
-						artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
+				Effect.mapError((err): ArtifactPublishError =>
+					artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
 				),
 			),
 			// Register: on EVERY cycle. Distilled doc Invariant 6. The
@@ -491,9 +488,8 @@ export const acquireLocal = (
 				// with `detail: "package.publish parse: capture callback
 				// threw"` — regardless of whether the bug surfaces on a
 				// cache miss (inside `produce`) or a cache hit (here).
-				Effect.mapError(
-					(err): ArtifactPublishError =>
-						artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
+				Effect.mapError((err): ArtifactPublishError =>
+					artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
 				),
 			);
 			yield* registry.set(inputs.packageName, {

@@ -647,14 +647,13 @@ export const runUpLive = (
 					}),
 				);
 				yield* handle.awaitShutdown.pipe(
-					Effect.catchCause(
-						(cause): Effect.Effect<never, CliError> =>
-							Effect.fail(
-								new CliInternalError({
-									message: 'stack failed',
-									cause: Cause.pretty(cause as Cause.Cause<unknown>),
-								}),
-							),
+					Effect.catchCause((cause): Effect.Effect<never, CliError> =>
+						Effect.fail(
+							new CliInternalError({
+								message: 'stack failed',
+								cause: Cause.pretty(cause as Cause.Cause<unknown>),
+							}),
+						),
 					),
 				);
 				return { exitCode: ExitCode.OK } satisfies CommandResult;

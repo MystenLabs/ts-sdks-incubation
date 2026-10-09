@@ -58,12 +58,7 @@ export interface TxDetail {
 /** Object ownership, flattened from the gRPC `ObjectOwner` discriminated union. */
 export interface ObjectOwnerView {
 	readonly kind:
-		| 'AddressOwner'
-		| 'ObjectOwner'
-		| 'Shared'
-		| 'Immutable'
-		| 'ConsensusAddressOwner'
-		| 'Unknown';
+		'AddressOwner' | 'ObjectOwner' | 'Shared' | 'Immutable' | 'ConsensusAddressOwner' | 'Unknown';
 	/** Owning address/object id for Address/Object/ConsensusAddress owners. */
 	readonly address: string | null;
 }

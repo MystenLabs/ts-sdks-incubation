@@ -144,8 +144,7 @@ describe('snapshot orchestrator wiring in runBoot', () => {
 			withinScope: (ctx) =>
 				Effect.gen(function* () {
 					const resolved = ctx.resolvedValues.get('snapshot-host-tree#0') as
-						| { readonly dir: string; readonly file: string }
-						| undefined;
+						{ readonly dir: string; readonly file: string } | undefined;
 					expect(resolved).toBeDefined();
 					if (resolved === undefined) return;
 

@@ -696,14 +696,13 @@ const waitForReady = (
 					),
 				),
 		}).pipe(
-			Effect.mapError(
-				(cause): SuiPluginError =>
-					suiPluginError(
-						'grpc-probe',
-						`sui local mode: gRPC endpoint ${rpcUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
-						cause,
-					),
+			Effect.mapError((cause): SuiPluginError =>
+				suiPluginError(
+					'grpc-probe',
+					`sui local mode: gRPC endpoint ${rpcUrl} did not become ready within ` +
+						`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
+					cause,
+				),
 			),
 		);
 
@@ -717,14 +716,13 @@ const waitForReady = (
 			requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
 			validate: (response) => response.status < 500,
 		}).pipe(
-			Effect.mapError(
-				(cause): SuiPluginError =>
-					suiPluginError(
-						'faucet-probe',
-						`sui local mode: faucet endpoint ${faucetUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
-						cause,
-					),
+			Effect.mapError((cause): SuiPluginError =>
+				suiPluginError(
+					'faucet-probe',
+					`sui local mode: faucet endpoint ${faucetUrl} did not become ready within ` +
+						`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
+					cause,
+				),
 			),
 		);
 
@@ -739,14 +737,13 @@ const waitForReady = (
 							requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
 							validate: (response) => response.status < 500,
 						}).pipe(
-							Effect.mapError(
-								(cause): SuiPluginError =>
-									suiPluginError(
-										'graphql-probe',
-										`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
-											`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
-										cause,
-									),
+							Effect.mapError((cause): SuiPluginError =>
+								suiPluginError(
+									'graphql-probe',
+									`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
+										`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
+									cause,
+								),
 							),
 						),
 					];
@@ -813,8 +810,7 @@ const fetchLatestCheckpoint = (
 
 /** One poll's verdict from the catch-up cadence evaluator. */
 export type CatchUpVerdict =
-	| { readonly caughtUp: true }
-	| { readonly caughtUp: false; readonly detail: unknown };
+	{ readonly caughtUp: true } | { readonly caughtUp: false; readonly detail: unknown };
 
 /** Build the stateful cadence evaluator the catch-up gate feeds samples
  *  into. Pure + injectable so the cadence logic is unit-testable without
@@ -913,17 +909,16 @@ const waitForCheckpointCatchUp = (
 					}),
 				),
 		}).pipe(
-			Effect.mapError(
-				(cause): SuiPluginError =>
-					suiPluginError(
-						'grpc-probe',
-						`sui local mode: checkpoint head did not stabilize within ` +
-							`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). With the #26884 ` +
-							`resume fix both nodes resume from disk, so the head should reach live cadence ` +
-							`almost immediately; a stall here points to a wedged boot, not a re-sync: ` +
-							`${formatUnknownError(cause)}`,
-						cause,
-					),
+			Effect.mapError((cause): SuiPluginError =>
+				suiPluginError(
+					'grpc-probe',
+					`sui local mode: checkpoint head did not stabilize within ` +
+						`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). With the #26884 ` +
+						`resume fix both nodes resume from disk, so the head should reach live cadence ` +
+						`almost immediately; a stall here points to a wedged boot, not a re-sync: ` +
+						`${formatUnknownError(cause)}`,
+					cause,
+				),
 			),
 		);
 	});

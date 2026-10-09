@@ -142,27 +142,31 @@ export class DevWalletConnectedApps extends LitElement {
 	override render() {
 		return html`
 			<h2 class="title">Connected apps</h2>
-			${this._apps.length === 0
-				? html`<p class="empty">No apps connected yet.</p>`
-				: html`<ul>
-						${this._apps.map(
-							(app) =>
-								html`<li>
-									<div class="info">
-										<span class="name" title=${app.name}>${app.name || safeHost(app.origin)}</span>
-										<span class="meta" title=${app.origin}>${this.#describe(app)}</span>
-									</div>
-									<button
-										class="disconnect"
-										type="button"
-										aria-label=${`Disconnect ${app.origin}`}
-										@click=${() => this.#disconnect(app.origin)}
-									>
-										Disconnect
-									</button>
-								</li>`,
-						)}
-					</ul>`}
+			${
+				this._apps.length === 0
+					? html`<p class="empty">No apps connected yet.</p>`
+					: html`<ul>
+							${this._apps.map(
+								(app) =>
+									html`<li>
+										<div class="info">
+											<span class="name" title=${app.name}
+												>${app.name || safeHost(app.origin)}</span
+											>
+											<span class="meta" title=${app.origin}>${this.#describe(app)}</span>
+										</div>
+										<button
+											class="disconnect"
+											type="button"
+											aria-label=${`Disconnect ${app.origin}`}
+											@click=${() => this.#disconnect(app.origin)}
+										>
+											Disconnect
+										</button>
+									</li>`,
+							)}
+						</ul>`
+			}
 		`;
 	}
 

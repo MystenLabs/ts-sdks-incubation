@@ -59,12 +59,12 @@ function usageError(message: string): number {
 }
 
 /** Unwrap a clack prompt result, exiting 130 on cancel (ctrl-c). */
-function unwrap<T>(value: T | symbol): T {
+function unwrap<T>(value: T): Exclude<T, symbol> {
 	if (isCancel(value)) {
 		cancel('Cancelled.');
 		process.exit(130);
 	}
-	return value as T;
+	return value as Exclude<T, symbol>;
 }
 
 async function main(): Promise<number> {

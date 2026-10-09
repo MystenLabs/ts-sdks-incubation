@@ -136,11 +136,10 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chainId: string): ChainProbe<
 			}).pipe(
 				// Lenient mode coerces both not-found and transient into a
 				// null result. Strict mode lets the error propagate.
-				Effect.catch(
-					(err): Effect.Effect<unknown, ChainProbeError> =>
-						mode === 'lenient' && (err.reason === 'not-found' || err.reason === 'transient')
-							? Effect.succeed(null)
-							: Effect.fail(err),
+				Effect.catch((err): Effect.Effect<unknown, ChainProbeError> =>
+					mode === 'lenient' && (err.reason === 'not-found' || err.reason === 'transient')
+						? Effect.succeed(null)
+						: Effect.fail(err),
 				),
 			);
 			if (raw === null) return null;

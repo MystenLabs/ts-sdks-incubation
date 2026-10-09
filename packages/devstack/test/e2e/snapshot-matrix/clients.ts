@@ -425,8 +425,7 @@ export const makeEnv = (
 			vaultPackageId: vaultPackageIdOf(ctx),
 		};
 		const deepbook = findResolved(ctx, /^deepbook[:/]/) as
-			| { readonly packageId?: string }
-			| undefined;
+			{ readonly packageId?: string } | undefined;
 		console.log(
 			`[snapshot-matrix] ids actor=${address} walCoinType=${env.walrus.walCoinType} ` +
 				`sealObjectId=${env.seal.objectId} vaultPkg=${env.vaultPackageId} ` +

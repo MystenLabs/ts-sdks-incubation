@@ -323,21 +323,27 @@ export class DevWalletSettings extends LitElement {
 
 	override render() {
 		return html`
-			${this.walletOrigin
-				? html`<div class="section rail-mirror">
-						<dev-wallet-connect-guide .origin=${this.walletOrigin}></dev-wallet-connect-guide>
-					</div>`
-				: nothing}
-			${this.connectedApps
-				? html`<div class="section rail-mirror">
-						<dev-wallet-connected-apps .store=${this.connectedApps}></dev-wallet-connected-apps>
-					</div>`
-				: nothing}
+			${
+				this.walletOrigin
+					? html`<div class="section rail-mirror">
+							<dev-wallet-connect-guide .origin=${this.walletOrigin}></dev-wallet-connect-guide>
+						</div>`
+					: nothing
+			}
+			${
+				this.connectedApps
+					? html`<div class="section rail-mirror">
+							<dev-wallet-connected-apps .store=${this.connectedApps}></dev-wallet-connected-apps>
+						</div>`
+					: nothing
+			}
 			<div class="section">${this.#renderSummary()}</div>
 			<div class="section">${this.#renderNetworks()}</div>
-			${this.#hasCliAdapter()
-				? html`<div class="section">${this.#renderCliSigner()}</div>`
-				: nothing}
+			${
+				this.#hasCliAdapter()
+					? html`<div class="section">${this.#renderCliSigner()}</div>`
+					: nothing
+			}
 			<div class="section">${this.#renderAccounts()}</div>
 		`;
 	}
@@ -383,96 +389,106 @@ export class DevWalletSettings extends LitElement {
 							<span class="network-dot" style="background: ${color}"></span>
 							<div class="network-info">
 								<span class="network-name">${name}</span>
-								${isEditing
-									? html`<input
-												class="network-url-input"
-												type="text"
-												aria-label="gRPC URL"
-												.value=${this._editingUrl}
-												@input=${(e: InputEvent) => {
-													this._editingUrl = (e.target as HTMLInputElement).value;
-												}}
-												@keydown=${this.#onEditKeydown(name)}
-											/>
-											<input
-												class="network-url-input"
-												type="text"
-												aria-label="Faucet URL"
-												placeholder="Faucet URL (optional)"
-												.value=${this._editingFaucet}
-												@input=${(e: InputEvent) => {
-													this._editingFaucet = (e.target as HTMLInputElement).value;
-												}}
-												@keydown=${this.#onEditKeydown(name)}
-											/>
-											${this._error ? html`<div class="error">${this._error}</div>` : nothing}`
-									: html`<span class="network-url" title=${urls[name] ?? ''}
-												>${urls[name] ?? ''}</span
-											>${faucets[name]
-												? html`<span class="network-url" title=${faucets[name]}
-														>faucet: ${faucets[name]}</span
-													>`
-												: nothing}`}
+								${
+									isEditing
+										? html`<input
+													class="network-url-input"
+													type="text"
+													aria-label="gRPC URL"
+													.value=${this._editingUrl}
+													@input=${(e: InputEvent) => {
+														this._editingUrl = (e.target as HTMLInputElement).value;
+													}}
+													@keydown=${this.#onEditKeydown(name)}
+												/>
+												<input
+													class="network-url-input"
+													type="text"
+													aria-label="Faucet URL"
+													placeholder="Faucet URL (optional)"
+													.value=${this._editingFaucet}
+													@input=${(e: InputEvent) => {
+														this._editingFaucet = (e.target as HTMLInputElement).value;
+													}}
+													@keydown=${this.#onEditKeydown(name)}
+												/>
+												${this._error ? html`<div class="error">${this._error}</div>` : nothing}`
+										: html`<span class="network-url" title=${urls[name] ?? ''}
+													>${urls[name] ?? ''}</span
+												>${
+													faucets[name]
+														? html`<span class="network-url" title=${faucets[name]}
+																>faucet: ${faucets[name]}</span
+															>`
+														: nothing
+												}`
+								}
 							</div>
 							<div class="network-actions">
-								${isEditing
-									? html`
-											<button
-												class="btn-icon"
-												title="Save"
-												aria-label="Save network"
-												@click=${() => this.#saveNetworkUrl(name)}
-											>
-												&#10003;
-											</button>
-											<button
-												class="btn-icon"
-												title="Cancel"
-												aria-label="Cancel editing"
-												@click=${this.#cancelEditNetwork}
-											>
-												&#10005;
-											</button>
-										`
-									: html`
-											<button
-												class="btn-icon"
-												title="Edit"
-												aria-label="Edit network"
-												@click=${() =>
-													this.#startEditNetwork(name, urls[name] ?? '', faucets[name] ?? '')}
-											>
-												&#9998;
-											</button>
-											${!isActive
-												? html`<button
-														class="btn-icon btn-icon-danger"
-														title="Remove"
-														aria-label="Remove network"
-														@click=${() => this.#removeNetwork(name)}
-													>
-														&#10005;
-													</button>`
-												: nothing}
-										`}
+								${
+									isEditing
+										? html`
+												<button
+													class="btn-icon"
+													title="Save"
+													aria-label="Save network"
+													@click=${() => this.#saveNetworkUrl(name)}
+												>
+													&#10003;
+												</button>
+												<button
+													class="btn-icon"
+													title="Cancel"
+													aria-label="Cancel editing"
+													@click=${this.#cancelEditNetwork}
+												>
+													&#10005;
+												</button>
+											`
+										: html`
+												<button
+													class="btn-icon"
+													title="Edit"
+													aria-label="Edit network"
+													@click=${() =>
+														this.#startEditNetwork(name, urls[name] ?? '', faucets[name] ?? '')}
+												>
+													&#9998;
+												</button>
+												${
+													!isActive
+														? html`<button
+																class="btn-icon btn-icon-danger"
+																title="Remove"
+																aria-label="Remove network"
+																@click=${() => this.#removeNetwork(name)}
+															>
+																&#10005;
+															</button>`
+														: nothing
+												}
+											`
+								}
 								${isActive ? html`<span class="network-active-badge">Active</span>` : nothing}
 							</div>
 						</div>
 					`;
 				})}
 			</div>
-			${this._showAddNetwork
-				? this.#renderAddNetworkForm()
-				: html`
-						<button
-							class="btn-toggle"
-							@click=${() => {
-								this._showAddNetwork = true;
-							}}
-						>
-							+ Add Network
-						</button>
-					`}
+			${
+				this._showAddNetwork
+					? this.#renderAddNetworkForm()
+					: html`
+							<button
+								class="btn-toggle"
+								@click=${() => {
+									this._showAddNetwork = true;
+								}}
+							>
+								+ Add Network
+							</button>
+						`
+			}
 		`;
 	}
 
@@ -539,44 +555,56 @@ export class DevWalletSettings extends LitElement {
 
 		return html`
 			<h3 class="section-header">CLI Signer</h3>
-			${isPaired
-				? html`
-						<div class="network-item active cli-section-column">
-							<div class="cli-header-row">
+			${
+				isPaired
+					? html`
+							<div class="network-item active cli-section-column">
+								<div class="cli-header-row">
+									<span
+										class="network-dot"
+										style="background: var(--dev-wallet-status-connected)"
+									></span>
+									<span class="network-name">Connected</span>
+									${
+										cliAccounts.length > 0
+											? html`<span class="network-active-badge"
+													>${cliAccounts.length} imported</span
+												>`
+											: nothing
+									}
+								</div>
+								${
+									cliAccounts.length > 0
+										? html`<div class="cli-accounts-list">
+												${cliAccounts.map(
+													(acc) => html`
+														<div class="network-url">
+															${acc.label} (${formatAddress(acc.address)})
+														</div>
+													`,
+												)}
+											</div>`
+										: html`<div class="about cli-hint">
+												Use + Add above to import CLI accounts.
+											</div>`
+								}
+							</div>
+						`
+					: html`
+							<div class="network-item">
 								<span
 									class="network-dot"
-									style="background: var(--dev-wallet-status-connected)"
+									style="background: var(--dev-wallet-status-disconnected)"
 								></span>
-								<span class="network-name">Connected</span>
-								${cliAccounts.length > 0
-									? html`<span class="network-active-badge">${cliAccounts.length} imported</span>`
-									: nothing}
+								<span class="network-name" style="color: var(--dev-wallet-muted-foreground)"
+									>Not connected</span
+								>
 							</div>
-							${cliAccounts.length > 0
-								? html`<div class="cli-accounts-list">
-										${cliAccounts.map(
-											(acc) => html`
-												<div class="network-url">${acc.label} (${formatAddress(acc.address)})</div>
-											`,
-										)}
-									</div>`
-								: html`<div class="about cli-hint">Use + Add above to import CLI accounts.</div>`}
-						</div>
-					`
-				: html`
-						<div class="network-item">
-							<span
-								class="network-dot"
-								style="background: var(--dev-wallet-status-disconnected)"
-							></span>
-							<span class="network-name" style="color: var(--dev-wallet-muted-foreground)"
-								>Not connected</span
-							>
-						</div>
-						<div class="about cli-unpaired-hint">
-							Open the token URL from your terminal to connect CLI accounts.
-						</div>
-					`}
+							<div class="about cli-unpaired-hint">
+								Open the token URL from your terminal to connect CLI accounts.
+							</div>
+						`
+			}
 		`;
 	}
 

@@ -398,50 +398,58 @@ export class DevWalletSigning extends LitElement {
 
 				<div class="request-type" part="request-type">${typeLabel ?? 'Signing Request'}</div>
 
-				${account
-					? html`<div class="request-detail">
-							<span class="detail-label">Account</span>
-							<span
-								class="detail-value copyable-addr ${this.#copy.isCopied(account.address)
-									? 'copied'
-									: ''}"
-								title="Click to copy"
-								role="button"
-								tabindex="0"
-								aria-label="Copy account address"
-								@click=${() => this.#copy.copy(account.address)}
-								@keydown=${(e: KeyboardEvent) => {
-									if (e.key === 'Enter' || e.key === ' ') {
-										e.preventDefault();
-										this.#copy.copy(account.address);
+				${
+					account
+						? html`<div class="request-detail">
+								<span class="detail-label">Account</span>
+								<span
+									class="detail-value copyable-addr ${
+										this.#copy.isCopied(account.address) ? 'copied' : ''
+									}"
+									title="Click to copy"
+									role="button"
+									tabindex="0"
+									aria-label="Copy account address"
+									@click=${() => this.#copy.copy(account.address)}
+									@keydown=${(e: KeyboardEvent) => {
+										if (e.key === 'Enter' || e.key === ' ') {
+											e.preventDefault();
+											this.#copy.copy(account.address);
+										}
+									}}
+								>
+									${
+										this.#copy.isCopied(account.address)
+											? 'Copied!'
+											: account.label
+												? html`${account.label}
+														<span class="detail-secondary">${formatAddress(account.address)}</span>`
+												: formatAddress(account.address)
 									}
-								}}
-							>
-								${this.#copy.isCopied(account.address)
-									? 'Copied!'
-									: account.label
-										? html`${account.label}
-												<span class="detail-secondary">${formatAddress(account.address)}</span>`
-										: formatAddress(account.address)}
-							</span>
-						</div>`
-					: nothing}
-				${isTransaction
-					? html`<div class="request-detail">
-							<span class="detail-label">Chain</span>
-							<span class="detail-value">${this.request.chain}</span>
-						</div>`
-					: nothing}
+								</span>
+							</div>`
+						: nothing
+				}
+				${
+					isTransaction
+						? html`<div class="request-detail">
+								<span class="detail-label">Chain</span>
+								<span class="detail-value">${this.request.chain}</span>
+							</div>`
+						: nothing
+				}
 				${this.#renderTransactionPreview()}
 			</div>
 			<div class="signing-footer" part="footer">
 				<div class="actions">
 					<button class="btn btn-reject" part="reject-button" @click=${this.#reject}>Reject</button>
-					${canApprove
-						? html`<button class="btn btn-approve" part="approve-button" @click=${this.#approve}>
-								Approve
-							</button>`
-						: nothing}
+					${
+						canApprove
+							? html`<button class="btn btn-approve" part="approve-button" @click=${this.#approve}>
+									Approve
+								</button>`
+							: nothing
+					}
 				</div>
 			</div>
 		`;
@@ -523,9 +531,11 @@ export class DevWalletSigning extends LitElement {
 						<div class="command-kind">TransferObjects</div>
 						<div class="command-detail">
 							${cmd.objects.length} object${cmd.objects.length !== 1 ? 's' : ''}
-							${cmd.address.$kind === 'Pure'
-								? html` &rarr; ${formatAddress(this.#decodePureAddress(cmd.address))}`
-								: nothing}
+							${
+								cmd.address.$kind === 'Pure'
+									? html` &rarr; ${formatAddress(this.#decodePureAddress(cmd.address))}`
+									: nothing
+							}
 						</div>
 					</div>
 				`;

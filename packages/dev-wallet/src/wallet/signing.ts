@@ -7,9 +7,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64, toBase64 } from '@mysten/sui/utils';
 
 type SigningRequestType =
-	| 'sign-personal-message'
-	| 'sign-transaction'
-	| 'sign-and-execute-transaction';
+	'sign-personal-message' | 'sign-transaction' | 'sign-and-execute-transaction';
 
 interface ExecuteSigningOptions {
 	type: SigningRequestType;

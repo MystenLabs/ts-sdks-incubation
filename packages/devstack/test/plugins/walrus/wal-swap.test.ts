@@ -28,14 +28,12 @@ const objectProbe = (object: { readonly objectId: string; readonly type: string 
 			_mode: ChainProbeMode,
 		) =>
 			Schema.decodeUnknownEffect(schema)(object).pipe(
-				Effect.mapError(
-					(cause): ChainProbeError => ({
-						_tag: 'ChainProbeError',
-						reason: 'decode-failed',
-						chainId: 'sui:localnet',
-						detail: String(cause),
-					}),
-				),
+				Effect.mapError((cause): ChainProbeError => ({
+					_tag: 'ChainProbeError',
+					reason: 'decode-failed',
+					chainId: 'sui:localnet',
+					detail: String(cause),
+				})),
 			),
 	}) satisfies ChainProbe<WalExchangeProbeKey>;
 

@@ -80,9 +80,7 @@ const splitCoinType = (
  *  helper covers the common surface and degrades gracefully. */
 const pickAddressOwner = (change: CoinDiscoveryObjectChange): string | undefined => {
 	const owner = change.owner as
-		| { readonly AddressOwner?: string; readonly $kind?: string }
-		| string
-		| undefined;
+		{ readonly AddressOwner?: string; readonly $kind?: string } | string | undefined;
 	if (owner === undefined || owner === null) return undefined;
 	if (typeof owner === 'string') return owner; // some SDK projections flatten
 	if (typeof owner === 'object' && 'AddressOwner' in owner) {

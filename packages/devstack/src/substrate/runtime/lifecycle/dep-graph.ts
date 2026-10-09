@@ -52,9 +52,7 @@ export class DuplicateResourceIdError extends Data.TaggedError('DuplicateResourc
 }> {}
 
 export type DepGraphError =
-	| DepGraphCycleError
-	| UnresolvedDependencyError
-	| DuplicateResourceIdError;
+	DepGraphCycleError | UnresolvedDependencyError | DuplicateResourceIdError;
 
 // -----------------------------------------------------------------------------
 // Node shape

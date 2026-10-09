@@ -333,16 +333,14 @@ const runPrivateContentBoot = async (opts: {
 
 				const sui = ctx.resolvedValues.get('sui#0') as BalanceReader | undefined;
 				const wal = ctx.resolvedValues.get('coin:wal#5') as
-					| { readonly fullCoinType?: unknown }
-					| undefined;
+					{ readonly fullCoinType?: unknown } | undefined;
 				if (sui === undefined || typeof wal?.fullCoinType !== 'string') return;
 				const walCoinType = wal.fullCoinType;
 				accountFunding = yield* Effect.promise(async () => {
 					const entries = await Promise.all(
 						accountKeys.map(async (key) => {
 							const account = ctx.resolvedValues.get(key) as
-								| { readonly address?: unknown; readonly funding?: unknown }
-								| undefined;
+								{ readonly address?: unknown; readonly funding?: unknown } | undefined;
 							if (typeof account?.address !== 'string') {
 								return [
 									key,

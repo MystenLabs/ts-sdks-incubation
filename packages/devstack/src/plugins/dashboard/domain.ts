@@ -671,13 +671,11 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			return yield* match
 				.mintFromCap({ to: recipient, amount: BigInt(input.amountBaseUnits) })
 				.pipe(
-					Effect.map(
-						(r): DashboardMintResult => ({
-							ok: true,
-							detail: `minted ${input.amountBaseUnits} of ${input.coinType} to ${recipient}`,
-							digest: r.digest,
-						}),
-					),
+					Effect.map((r): DashboardMintResult => ({
+						ok: true,
+						detail: `minted ${input.amountBaseUnits} of ${input.coinType} to ${recipient}`,
+						digest: r.digest,
+					})),
 					// Typed coin/artifact-publisher failures carry `.message`.
 					Effect.catch((cause) =>
 						Effect.succeed<DashboardMintResult>({
@@ -818,12 +816,10 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				// honor it lands a sane value.
 				const amount = parseAmount(input.amountBaseUnits) ?? 1_000_000_000n;
 				return yield* strategy.request({ address: recipient, amount }).pipe(
-					Effect.map(
-						(): DashboardFundResult => ({
-							ok: true,
-							detail: `requested SUI for ${recipient} (fixed-amount faucet grant)`,
-						}),
-					),
+					Effect.map((): DashboardFundResult => ({
+						ok: true,
+						detail: `requested SUI for ${recipient} (fixed-amount faucet grant)`,
+					})),
 					Effect.catch((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
@@ -888,12 +884,10 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					...(account === undefined ? {} : { account: account as unknown as AccountValue }),
 				})
 				.pipe(
-					Effect.map(
-						(): DashboardFundResult => ({
-							ok: true,
-							detail: `funded ${amount} base units of ${coinType} to ${recipient}`,
-						}),
-					),
+					Effect.map((): DashboardFundResult => ({
+						ok: true,
+						detail: `funded ${amount} base units of ${coinType} to ${recipient}`,
+					})),
 					Effect.catch((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,

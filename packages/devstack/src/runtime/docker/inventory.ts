@@ -130,51 +130,43 @@ const parseJsonLines = <S extends Schema.Decoder<unknown>>(
 
 const toContainerSummaries = (stdout: string): ReadonlyArray<ContainerSummary> => {
 	const lines = parseJsonLines(PsLine, stdout);
-	return lines.map(
-		(l): ContainerSummary => ({
-			id: l.ID,
-			name: l.Names.split(',')[0] ?? l.Names,
-			image: l.Image,
-			status: l.Status,
-			state: l.State,
-			labels: parseLabelString(l.Labels),
-		}),
-	);
+	return lines.map((l): ContainerSummary => ({
+		id: l.ID,
+		name: l.Names.split(',')[0] ?? l.Names,
+		image: l.Image,
+		status: l.Status,
+		state: l.State,
+		labels: parseLabelString(l.Labels),
+	}));
 };
 
 const toImageSummaries = (stdout: string): ReadonlyArray<ImageSummary> => {
 	const lines = parseJsonLines(ImagesLine, stdout);
-	return lines.map(
-		(l): ImageSummary => ({
-			id: l.ID,
-			tag: `${l.Repository}:${l.Tag}`,
-			labels: parseLabelString(l.Labels),
-		}),
-	);
+	return lines.map((l): ImageSummary => ({
+		id: l.ID,
+		tag: `${l.Repository}:${l.Tag}`,
+		labels: parseLabelString(l.Labels),
+	}));
 };
 
 const toNetworkSummaries = (stdout: string): ReadonlyArray<NetworkSummary> => {
 	const lines = parseJsonLines(NetworksLine, stdout);
-	return lines.map(
-		(l): NetworkSummary => ({
-			id: l.ID,
-			name: l.Name,
-			driver: l.Driver,
-			labels: parseLabelString(l.Labels),
-		}),
-	);
+	return lines.map((l): NetworkSummary => ({
+		id: l.ID,
+		name: l.Name,
+		driver: l.Driver,
+		labels: parseLabelString(l.Labels),
+	}));
 };
 
 const toVolumeSummaries = (stdout: string): ReadonlyArray<VolumeSummary> => {
 	const lines = parseJsonLines(VolumesLine, stdout);
-	return lines.map(
-		(l): VolumeSummary => ({
-			name: l.Name,
-			driver: l.Driver,
-			mountpoint: l.Mountpoint,
-			labels: parseLabelString(l.Labels),
-		}),
-	);
+	return lines.map((l): VolumeSummary => ({
+		name: l.Name,
+		driver: l.Driver,
+		mountpoint: l.Mountpoint,
+		labels: parseLabelString(l.Labels),
+	}));
 };
 
 const devstackAppFilterArgs: ReadonlyArray<string> = ['--filter', `label=${LabelKey.app}`];

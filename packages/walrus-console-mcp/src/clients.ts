@@ -362,8 +362,7 @@ export function jsonFileClient(opts: {
       try {
         const target = resolveTarget(configPath);
         const servers = parseConfig(target, readRaw(target))["mcpServers"] as
-          | Record<string, unknown>
-          | undefined;
+          Record<string, unknown> | undefined;
         entry = servers?.[SERVER_NAME];
       } catch (err) {
         return `${configPath} could not be read back (${(err as Error).message})`;

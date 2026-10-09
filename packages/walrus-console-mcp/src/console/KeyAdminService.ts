@@ -162,12 +162,7 @@ export interface GenerateApiKeyResult {
  * raised while it runs is attributed to it.
  */
 export type MintStage =
-  | "mint"
-  | "persist"
-  | "space-check"
-  | "private-buckets-unknown"
-  | "grant"
-  | "activation";
+  "mint" | "persist" | "space-check" | "private-buckets-unknown" | "grant" | "activation";
 
 /**
  * The stages that run once the key definitely exists AND its secrets are

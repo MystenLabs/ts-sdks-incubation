@@ -19,14 +19,7 @@ import { humanize } from './format.ts';
 
 /** Semantic ColorTokens, matching the design tokens (`--st-*`) one-to-one. */
 export type StatusToken =
-	| 'green'
-	| 'yellow'
-	| 'red'
-	| 'cyan'
-	| 'magenta'
-	| 'blue'
-	| 'white'
-	| 'dim';
+	'green' | 'yellow' | 'red' | 'cyan' | 'magenta' | 'blue' | 'white' | 'dim';
 
 export interface StatusDisplay {
 	readonly token: StatusToken;

@@ -376,12 +376,11 @@ export const createDeepbookPools = (
 							});
 						},
 					}).pipe(
-						Effect.mapError(
-							(err): ArtifactPublishError =>
-								artifactPublishError(
-									'produce-failed',
-									`deepbook pool transaction failed: ${err.message}`,
-								),
+						Effect.mapError((err): ArtifactPublishError =>
+							artifactPublishError(
+								'produce-failed',
+								`deepbook pool transaction failed: ${err.message}`,
+							),
 						),
 					);
 					if (result.$kind === 'FailedTransaction') {
@@ -497,13 +496,12 @@ const requestSeedFunding = (
 	return strategy
 		.request({ address: signer.address, amount })
 		.pipe(
-			Effect.mapError(
-				(err): ArtifactPublishError =>
-					artifactPublishError(
-						'produce-failed',
-						`deepbook seed funding failed for ${coinType} ` +
-							`to publisher '${signer.name}' amount=${amount}: ${errorDetail(err)}`,
-					),
+			Effect.mapError((err): ArtifactPublishError =>
+				artifactPublishError(
+					'produce-failed',
+					`deepbook seed funding failed for ${coinType} ` +
+						`to publisher '${signer.name}' amount=${amount}: ${errorDetail(err)}`,
+				),
 			),
 		);
 };
@@ -759,12 +757,11 @@ export const seedDeepbookPools = (
 							return tx.build({ client: sdk.client });
 						},
 					}).pipe(
-						Effect.mapError(
-							(err): ArtifactPublishError =>
-								artifactPublishError(
-									'produce-failed',
-									`deepbook seed transaction failed for pool '${spec.name}': ${err.message}`,
-								),
+						Effect.mapError((err): ArtifactPublishError =>
+							artifactPublishError(
+								'produce-failed',
+								`deepbook seed transaction failed for pool '${spec.name}': ${err.message}`,
+							),
 						),
 					);
 					if (result.$kind === 'FailedTransaction') {

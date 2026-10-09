@@ -307,12 +307,11 @@ export const initLocalPythFeeds = (
 				return { packageId: pkg.packageId, feeds: cachedFeeds };
 			}),
 		}).pipe(
-			Effect.mapError(
-				(err): DeepbookPluginError =>
-					deepbookPluginError(
-						'pyth-feed',
-						err._tag === 'ArtifactPublishError' ? err.detail : String(err),
-					),
+			Effect.mapError((err): DeepbookPluginError =>
+				deepbookPluginError(
+					'pyth-feed',
+					err._tag === 'ArtifactPublishError' ? err.detail : String(err),
+				),
 			),
 		);
 

@@ -207,19 +207,17 @@ export const acquireChainBuildContainer = (
 				const result = yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* acquireStackLock(moveBuildLockPath, MOVE_BUILD_LOCK_TIMEOUT_MS).pipe(
-							Effect.mapError(
-								(cause): SuiCliError =>
-									suiCliError(op, {
-										cause: new Error(`move-build lock acquire failed: ${cause._tag}`, { cause }),
-									}),
+							Effect.mapError((cause): SuiCliError =>
+								suiCliError(op, {
+									cause: new Error(`move-build lock acquire failed: ${cause._tag}`, { cause }),
+								}),
 							),
 						);
 						return yield* runtime.exec(handle, ['sh', '-c', inner]).pipe(
-							Effect.mapError(
-								(cause): SuiCliError =>
-									suiCliError(op, {
-										cause: new Error(`runtime.exec failed: ${cause.reason}: ${cause.detail}`),
-									}),
+							Effect.mapError((cause): SuiCliError =>
+								suiCliError(op, {
+									cause: new Error(`runtime.exec failed: ${cause.reason}: ${cause.detail}`),
+								}),
 							),
 						);
 					}),
