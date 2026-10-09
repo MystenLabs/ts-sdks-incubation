@@ -219,6 +219,50 @@ describe('a claim on Sui', () => {
 	});
 });
 
+describe('tracking a transfer that is already finished', () => {
+	// A finished transfer has no card. The tracker used to close on it without a word, and
+	// someone who pasted a claim transaction saw nothing happen at all.
+	const tracker = (kit: unknown) => {
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			_importOpen: boolean;
+			_importHash: string;
+			_importFound: TransferRecord | null;
+			importTransfer(kit: unknown): Promise<void>;
+		};
+		element.instance = kit;
+		element._importOpen = true;
+		element._importHash = DIGEST;
+		return element;
+	};
+
+	it('stays open and shows it', async () => {
+		const { kit } = suiKit();
+		const finished = {
+			...waitingForCircle,
+			status: 'complete',
+			destinationTxHash: '0xabc',
+		} as const;
+		vi.spyOn(kit, 'importTransfer').mockResolvedValue(finished);
+		const element = tracker(kit);
+		await element.importTransfer(kit);
+		expect(element._importOpen).toBe(true);
+		expect(element._importFound).toBe(finished);
+		expect(element._importHash).toBe('');
+		kit.destroy();
+	});
+
+	it('closes for one that is still on its way, which has a card of its own', async () => {
+		const { kit } = suiKit();
+		vi.spyOn(kit, 'importTransfer').mockResolvedValue(waitingForCircle);
+		const element = tracker(kit);
+		await element.importTransfer(kit);
+		expect(element._importOpen).toBe(false);
+		expect(element._importFound).toBeNull();
+		kit.destroy();
+	});
+});
+
 describe('removing a transfer that never burned', () => {
 	const stored = (storage: ReturnType<typeof createInMemoryStorage>) =>
 		JSON.parse(storage.getItem(KEY) ?? '[]') as TransferRecord[];

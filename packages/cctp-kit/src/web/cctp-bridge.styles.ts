@@ -432,6 +432,12 @@ export const styles = [
 			line-height: 1.45;
 		}
 
+		.import-found {
+			margin: 0;
+			font-size: 0.8125rem;
+			color: var(--cctp-kit-positive);
+		}
+
 		.footer-links {
 			display: flex;
 			justify-content: center;

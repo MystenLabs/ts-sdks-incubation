@@ -109,6 +109,10 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	@state()
 	private _importError: string | null = null;
 
+	/** A finished transfer the tracker just found. It has no card, so the tracker shows it. */
+	@state()
+	private _importFound: TransferRecord | null = null;
+
 	#clock: ReturnType<typeof setInterval> | undefined;
 
 	override connectedCallback() {
@@ -675,7 +679,10 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					placeholder="Transaction hash or link"
 					aria-label="Transaction hash or link"
 					.value=${this._importHash}
-					@input=${(e: Event) => (this._importHash = (e.target as HTMLInputElement).value)}
+					@input=${(e: Event) => {
+						this._importHash = (e.target as HTMLInputElement).value;
+						this._importFound = null;
+					}}
 					@keydown=${(e: KeyboardEvent) => {
 						if (e.key === 'Enter' && this._importHash.trim() && !this._busy) {
 							void this.importTransfer(kit);
@@ -683,6 +690,12 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					}}
 				/>
 				${this._importError ? html`<p class="error">${this._importError}</p>` : nothing}
+				${this._importFound
+					? html`<p class="import-found" part="import-found">
+								This transfer is complete. It is also listed under History.
+							</p>
+							${this.renderHistoryRow(this._importFound, kit)}`
+					: nothing}
 				<internal-button
 					variant="primary"
 					?disabled=${this._busy || !this._importHash.trim()}
@@ -807,14 +820,23 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		this._importOpen = false;
 		this._importHash = '';
 		this._importError = null;
+		this._importFound = null;
 	}
 
 	private async importTransfer(kit: CctpKit) {
 		this._busy = true;
 		this._importError = null;
+		this._importFound = null;
 		try {
-			await kit.importTransfer({ txHash: this._importHash });
-			this.closeImport();
+			const found = await kit.importTransfer({ txHash: this._importHash });
+			if (found.status === 'complete') {
+				// A transfer still on its way gets a card, which is the answer. A finished one gets
+				// none, and closing the tracker on it looked as if nothing had happened.
+				this._importFound = found;
+				this._importHash = '';
+			} else {
+				this.closeImport();
+			}
 		} catch (error) {
 			this._importError = describeError(error);
 		} finally {
