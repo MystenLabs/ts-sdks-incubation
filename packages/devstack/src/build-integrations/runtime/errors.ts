@@ -23,10 +23,7 @@
  *  `required-missing` is the catch-all for the `required: true`
  *  branches. */
 export type ManifestDiscoveryPhase =
-	| 'walk-up'
-	| 'env-missing'
-	| 'override-missing'
-	| 'required-missing';
+	'walk-up' | 'env-missing' | 'override-missing' | 'required-missing';
 
 /** Thrown when the manifest cannot be located on disk. The message
  *  embeds the candidate path and the canonical recovery recipe

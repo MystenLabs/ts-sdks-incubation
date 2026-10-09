@@ -330,12 +330,11 @@ export const performMint = (
 							//    use the SDK resolver, which fills gas + object versions.
 							return sdk.forkMode === true
 								? yield* buildForkImpersonationTransactionBytes(tx, signer.address, sdk.core).pipe(
-										Effect.mapError(
-											(cause): ArtifactPublishError =>
-												artifactPublishError(
-													'produce-failed',
-													`coin.mint(${inputs.fullCoinType}): fork Transaction.build failed — ${cause.message}`,
-												),
+										Effect.mapError((cause): ArtifactPublishError =>
+											artifactPublishError(
+												'produce-failed',
+												`coin.mint(${inputs.fullCoinType}): fork Transaction.build failed — ${cause.message}`,
+											),
 										),
 									)
 								: yield* Effect.tryPromise({

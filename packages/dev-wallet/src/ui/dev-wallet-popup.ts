@@ -69,10 +69,8 @@ export class DevWalletPopup extends LitElement {
 
 	@property({ type: String })
 	requestType:
-		| 'connect'
-		| 'sign-transaction'
-		| 'sign-and-execute-transaction'
-		| 'sign-personal-message' = 'connect';
+		'connect' | 'sign-transaction' | 'sign-and-execute-transaction' | 'sign-personal-message' =
+		'connect';
 
 	@property({ type: String })
 	appName = '';

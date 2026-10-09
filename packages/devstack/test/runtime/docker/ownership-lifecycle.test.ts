@@ -885,8 +885,7 @@ describe('container lifecycle mutation policy', { timeout: 30_000 }, () => {
 				);
 
 				const error = expectErrorTag(exit, 'ContainerNameCollisionUnrecoverable') as
-					| { readonly detail: string }
-					| undefined;
+					{ readonly detail: string } | undefined;
 				expect(error?.detail).toContain('unknown lifecycle state before-start');
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				expect(lines).toContain('rm -f devstack-owned');
@@ -994,8 +993,7 @@ describe('container lifecycle mutation policy', { timeout: 30_000 }, () => {
 				);
 
 				const error = expectErrorTag(exit, 'RecreateRefused') as
-					| { readonly reason: string }
-					| undefined;
+					{ readonly reason: string } | undefined;
 				expect(error?.reason).toBe('resume-failed');
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				expect(lines).toContain('start devstack-owned');
@@ -1274,8 +1272,7 @@ describe('container lifecycle mutation policy', { timeout: 30_000 }, () => {
 				}).pipe(Effect.provide(dockerRuntimeLayer(bin, stackRoot)), Effect.exit);
 
 				const error = expectErrorTag(exit, 'ContainerRuntimeError') as
-					| { readonly reason: string }
-					| undefined;
+					{ readonly reason: string } | undefined;
 				expect(error?.reason).toBe('foreign-resource');
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				expect(lines).toEqual(['container inspect devstack-owned']);

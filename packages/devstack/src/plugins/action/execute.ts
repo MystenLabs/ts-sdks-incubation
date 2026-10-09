@@ -195,13 +195,12 @@ export const signAndExecute = (params: {
 				// real-vs-empty-signature split happens later in signAndExecute.
 				return account.source === 'impersonate' || sui.fork !== null
 					? yield* buildForkImpersonationTransactionBytes(tx, account.address, sui.sdk.core).pipe(
-							Effect.mapError(
-								(cause): ActionError =>
-									actionError('sign', {
-										actionName,
-										message: `Action '${actionName}': fork Transaction.build failed — ${cause.message}.`,
-										cause,
-									}),
+							Effect.mapError((cause): ActionError =>
+								actionError('sign', {
+									actionName,
+									message: `Action '${actionName}': fork Transaction.build failed — ${cause.message}.`,
+									cause,
+								}),
 							),
 						)
 					: yield* Effect.tryPromise({

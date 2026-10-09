@@ -39,14 +39,11 @@ export const WALRUS_UPLOAD_RELAY_ENDPOINT_NAME = 'walrus-upload-relay' as const;
 export const WALRUS_MAX_NODE_COUNT = 8;
 
 export const WALRUS_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
-	...Array.from(
-		{ length: WALRUS_MAX_NODE_COUNT },
-		(_, i): EntrypointDecl => ({
-			name: `${WALRUS_NODE_ENDPOINT_PREFIX}${i}`,
-			port: WALRUS_ROUTER_PORT,
-			protocol: 'http',
-		}),
-	),
+	...Array.from({ length: WALRUS_MAX_NODE_COUNT }, (_, i): EntrypointDecl => ({
+		name: `${WALRUS_NODE_ENDPOINT_PREFIX}${i}`,
+		port: WALRUS_ROUTER_PORT,
+		protocol: 'http',
+	})),
 	{ name: WALRUS_AGGREGATOR_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },
 	{ name: WALRUS_PUBLISHER_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },
 	{ name: WALRUS_UPLOAD_RELAY_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },

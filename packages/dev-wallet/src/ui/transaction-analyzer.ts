@@ -11,8 +11,7 @@ export interface TransactionAnalysis {
 }
 
 type AnalysisResult =
-	| { kind: 'rich'; analysis: TransactionAnalysis }
-	| { kind: 'error'; message: string };
+	{ kind: 'rich'; analysis: TransactionAnalysis } | { kind: 'error'; message: string };
 
 export async function analyzeTransaction(
 	txData: string,

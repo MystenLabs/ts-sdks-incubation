@@ -117,11 +117,7 @@ export type RunAction =
 	| { readonly kind: 'refuse'; readonly reason: RecreateReason };
 
 export type RecreateReason =
-	| 'image-mismatch'
-	| 'config-mismatch'
-	| 'unclean-shutdown'
-	| 'resume-failed'
-	| 'unknown-state';
+	'image-mismatch' | 'config-mismatch' | 'unclean-shutdown' | 'resume-failed' | 'unknown-state';
 
 /** Pure decision: given the inspect facts (or null = missing), the
  *  desired image + host port bindings, and the policy, what action

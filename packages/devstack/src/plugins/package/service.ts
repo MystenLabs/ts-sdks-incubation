@@ -47,8 +47,7 @@ import type { PublishError } from './errors.ts';
  *  constructs ONE of these per declared package and the body below
  *  routes. */
 export type PackageMode =
-	| ({ readonly mode: 'local' } & LocalModeInputs)
-	| ({ readonly mode: 'known' } & KnownModeInputs);
+	({ readonly mode: 'local' } & LocalModeInputs) | ({ readonly mode: 'known' } & KnownModeInputs);
 
 export interface BootPackageResult {
 	readonly resolved: ResolvedPackage;

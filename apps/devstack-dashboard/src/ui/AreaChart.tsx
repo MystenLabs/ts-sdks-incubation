@@ -12,8 +12,7 @@ import { CHART_TOOLTIP } from './chartTooltip.tsx';
 
 /** A bare numeric series, or rows carrying a `value` plus arbitrary x fields. */
 export type AreaChartData =
-	| ReadonlyArray<number>
-	| ReadonlyArray<{ value: number; [key: string]: number }>;
+	ReadonlyArray<number> | ReadonlyArray<{ value: number; [key: string]: number }>;
 
 export interface AreaChartProps {
 	/** Series values, as numbers or objects carrying `value` (+ optional x fields). */

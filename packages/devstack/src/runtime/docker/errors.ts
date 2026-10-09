@@ -147,11 +147,7 @@ export class VolumeOperationFailed extends Data.TaggedError('VolumeOperationFail
 export class RecreateRefused extends Data.TaggedError('RecreateRefused')<{
 	readonly name: string;
 	readonly reason:
-		| 'image-mismatch'
-		| 'config-mismatch'
-		| 'unclean-shutdown'
-		| 'resume-failed'
-		| 'unknown-state';
+		'image-mismatch' | 'config-mismatch' | 'unclean-shutdown' | 'resume-failed' | 'unknown-state';
 }> {}
 
 /** Generic exec / one-shot failure when the caller asked us to

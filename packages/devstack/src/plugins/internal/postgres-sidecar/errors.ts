@@ -20,12 +20,7 @@ import {
 /** Phases for `PostgresPluginError`. Closed sum — additions land in
  *  the distilled-doc catalog first. */
 export type PostgresPhase =
-	| 'network-create'
-	| 'image-build'
-	| 'container-start'
-	| 'ready-probe'
-	| 'db-ensure'
-	| 'unknown';
+	'network-create' | 'image-build' | 'container-start' | 'ready-probe' | 'db-ensure' | 'unknown';
 
 /** Generic plugin error. Most failure surfaces collapse onto this
  *  shape; specific failure modes that warrant their own catchable

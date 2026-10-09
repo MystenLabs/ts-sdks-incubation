@@ -225,75 +225,87 @@ export class DevWalletObjects extends LitElement {
 
 		return html`
 			<h3 class="section-header">Owned Objects</h3>
-			${this._loading
-				? html`<div class="loading" part="loading" aria-live="polite">Loading...</div>`
-				: this._error
-					? html`<div class="error-state" part="error-message" aria-live="polite">
-							${this._error}
-						</div>`
-					: this._objects.length === 0
-						? html`<div class="empty-state" part="empty-state">No objects found</div>`
-						: html`
-								<div class="object-list" part="object-list">
-									${this._objects.map(
-										(obj) => html`
-											<div class="object-item">
-												${obj.imageUrl && /^https?:\/\//i.test(obj.imageUrl)
-													? html`<img
-															class="object-thumb"
-															src=${obj.imageUrl}
-															alt=${obj.displayName ?? obj.typeName}
-															@error=${(e: Event) =>
-																((e.target as HTMLImageElement).style.display = 'none')}
-														/>`
-													: html`<span class="object-fallback">O</span>`}
-												<div class="object-body">
-													<div class="object-top">
-														<span class="object-type"> ${obj.displayName ?? obj.typeName} </span>
-														<span class="object-version">v${obj.version}</span>
-													</div>
-													${obj.displayName
-														? html`<span class="object-type-badge">${obj.typeName}</span>`
-														: nothing}
-													${obj.description
-														? html`<span class="object-description">${obj.description}</span>`
-														: nothing}
-													<span
-														class="object-id ${this.#copy.isCopied(obj.objectId) ? 'copied' : ''}"
-														title="Click to copy"
-														role="button"
-														tabindex="0"
-														aria-label="Copy object ID"
-														@click=${() => this.#copy.copy(obj.objectId)}
-														@keydown=${(e: KeyboardEvent) => {
-															if (e.key === 'Enter' || e.key === ' ') {
-																e.preventDefault();
-																this.#copy.copy(obj.objectId);
+			${
+				this._loading
+					? html`<div class="loading" part="loading" aria-live="polite">Loading...</div>`
+					: this._error
+						? html`<div class="error-state" part="error-message" aria-live="polite">
+								${this._error}
+							</div>`
+						: this._objects.length === 0
+							? html`<div class="empty-state" part="empty-state">No objects found</div>`
+							: html`
+									<div class="object-list" part="object-list">
+										${this._objects.map(
+											(obj) => html`
+												<div class="object-item">
+													${
+														obj.imageUrl && /^https?:\/\//i.test(obj.imageUrl)
+															? html`<img
+																	class="object-thumb"
+																	src=${obj.imageUrl}
+																	alt=${obj.displayName ?? obj.typeName}
+																	@error=${(e: Event) =>
+																		((e.target as HTMLImageElement).style.display = 'none')}
+																/>`
+															: html`<span class="object-fallback">O</span>`
+													}
+													<div class="object-body">
+														<div class="object-top">
+															<span class="object-type"> ${obj.displayName ?? obj.typeName} </span>
+															<span class="object-version">v${obj.version}</span>
+														</div>
+														${
+															obj.displayName
+																? html`<span class="object-type-badge">${obj.typeName}</span>`
+																: nothing
+														}
+														${
+															obj.description
+																? html`<span class="object-description">${obj.description}</span>`
+																: nothing
+														}
+														<span
+															class="object-id ${this.#copy.isCopied(obj.objectId) ? 'copied' : ''}"
+															title="Click to copy"
+															role="button"
+															tabindex="0"
+															aria-label="Copy object ID"
+															@click=${() => this.#copy.copy(obj.objectId)}
+															@keydown=${(e: KeyboardEvent) => {
+																if (e.key === 'Enter' || e.key === ' ') {
+																	e.preventDefault();
+																	this.#copy.copy(obj.objectId);
+																}
+															}}
+														>
+															${
+																this.#copy.isCopied(obj.objectId)
+																	? 'Copied!'
+																	: `${obj.objectId.slice(0, 10)}...${obj.objectId.slice(-8)}`
 															}
-														}}
-													>
-														${this.#copy.isCopied(obj.objectId)
-															? 'Copied!'
-															: `${obj.objectId.slice(0, 10)}...${obj.objectId.slice(-8)}`}
-													</span>
+														</span>
+													</div>
 												</div>
-											</div>
-										`,
-									)}
-								</div>
-								${this._hasNextPage
-									? html`
-											<button
-												class="load-more"
-												part="load-more-button"
-												?disabled=${this._loadingMore}
-												@click=${this.#loadMore}
-											>
-												${this._loadingMore ? 'Loading...' : 'Load More'}
-											</button>
-										`
-									: nothing}
-							`}
+											`,
+										)}
+									</div>
+									${
+										this._hasNextPage
+											? html`
+													<button
+														class="load-more"
+														part="load-more-button"
+														?disabled=${this._loadingMore}
+														@click=${this.#loadMore}
+													>
+														${this._loadingMore ? 'Loading...' : 'Load More'}
+													</button>
+												`
+											: nothing
+									}
+								`
+			}
 		`;
 	}
 

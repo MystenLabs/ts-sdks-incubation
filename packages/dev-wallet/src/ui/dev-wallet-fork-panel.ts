@@ -339,9 +339,11 @@ export class DevWalletForkPanel extends LitElement {
 				<div class="helper-text">
 					Seals pending transactions into <code>n</code> new checkpoints.
 				</div>
-				${this._actionError
-					? html`<div class="inline-error" part="action-error">${this._actionError}</div>`
-					: nothing}
+				${
+					this._actionError
+						? html`<div class="inline-error" part="action-error">${this._actionError}</div>`
+						: nothing
+				}
 			</div>
 
 			<div class="section">

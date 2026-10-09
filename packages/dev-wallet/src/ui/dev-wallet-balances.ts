@@ -334,72 +334,83 @@ export class DevWalletBalances extends LitElement {
 					<div class="hero-note">${formatAddress(this.address)} · ${networkLabel}</div>
 				</div>
 				<div class="hero-actions">
-					${this.faucetHost
-						? html`<button
-								class="action-btn"
-								part="faucet-button"
-								?disabled=${this._funding}
-								@click=${this.#requestFromFaucet}
-							>
-								${this._funding ? 'Funding...' : 'Faucet'}
-							</button>`
-						: nothing}
+					${
+						this.faucetHost
+							? html`<button
+									class="action-btn"
+									part="faucet-button"
+									?disabled=${this._funding}
+									@click=${this.#requestFromFaucet}
+								>
+									${this._funding ? 'Funding...' : 'Faucet'}
+								</button>`
+							: nothing
+					}
 					<button class="action-btn" @click=${this.refresh}>Refresh</button>
 				</div>
 			</div>
-			${this._fundError
-				? html`<div class="error-state" part="faucet-error-message" aria-live="polite">
-						${this._fundError}
-					</div>`
-				: nothing}
+			${
+				this._fundError
+					? html`<div class="error-state" part="faucet-error-message" aria-live="polite">
+							${this._fundError}
+						</div>`
+					: nothing
+			}
 			<div class="coins-header">
 				<h3 class="section-header">Coins · ${this._balances.length}</h3>
 			</div>
-			${this._loading
-				? html`<div class="loading" part="loading" aria-live="polite">Loading...</div>`
-				: this._error
-					? html`<div class="error-state" part="error-message" aria-live="polite">
-							${this._error}
-						</div>`
-					: this._balances.length === 0
-						? html`<div class="empty-state empty-wallet" part="empty-state">
-								<div class="empty-title">No balances on ${networkLabel}</div>
-								<div class="empty-copy">
-									${this.faucetHost
-										? html`Use the Faucet button above to fund ${formatAddress(this.address)} on
-											${networkLabel}, then refresh.`
-										: this.network === 'testnet'
-											? html`Get testnet SUI for ${formatAddress(this.address)} at
-													<a href="https://faucet.sui.io" target="_blank" rel="noopener noreferrer"
-														>faucet.sui.io</a
-													>, then refresh.`
-											: html`Fund ${formatAddress(this.address)} from your local faucet or devstack
-												seed, then refresh balances here.`}
-								</div>
+			${
+				this._loading
+					? html`<div class="loading" part="loading" aria-live="polite">Loading...</div>`
+					: this._error
+						? html`<div class="error-state" part="error-message" aria-live="polite">
+								${this._error}
 							</div>`
-						: html`
-								<div class="balance-list" part="balance-list">
-									${this._balances.map((balance) => {
-										const seed = lookupCoinByType(this.#coinIndex, balance.coinType);
-										const name = seed?.displayName ?? balance.symbol;
-										return html`
-											<div class="balance-item">
-												<span class="token-icon">${balance.symbol.slice(0, 3)}</span>
-												<span class="balance-main">
-													<div class="balance-symbol">${balance.symbol}</div>
-													<div class="balance-name">${name}</div>
-												</span>
-												<span class="balance-amount-stack">
-													<span class="balance-amount">
-														${formatCoinBalance(balance.totalBalance, balance.decimals)}
+						: this._balances.length === 0
+							? html`<div class="empty-state empty-wallet" part="empty-state">
+									<div class="empty-title">No balances on ${networkLabel}</div>
+									<div class="empty-copy">
+										${
+											this.faucetHost
+												? html`Use the Faucet button above to fund ${formatAddress(this.address)} on
+													${networkLabel}, then refresh.`
+												: this.network === 'testnet'
+													? html`Get testnet SUI for ${formatAddress(this.address)} at
+															<a
+																href="https://faucet.sui.io"
+																target="_blank"
+																rel="noopener noreferrer"
+																>faucet.sui.io</a
+															>, then refresh.`
+													: html`Fund ${formatAddress(this.address)} from your local faucet or
+														devstack seed, then refresh balances here.`
+										}
+									</div>
+								</div>`
+							: html`
+									<div class="balance-list" part="balance-list">
+										${this._balances.map((balance) => {
+											const seed = lookupCoinByType(this.#coinIndex, balance.coinType);
+											const name = seed?.displayName ?? balance.symbol;
+											return html`
+												<div class="balance-item">
+													<span class="token-icon">${balance.symbol.slice(0, 3)}</span>
+													<span class="balance-main">
+														<div class="balance-symbol">${balance.symbol}</div>
+														<div class="balance-name">${name}</div>
 													</span>
-													<span class="balance-amount-symbol">${balance.symbol}</span>
-												</span>
-											</div>
-										`;
-									})}
-								</div>
-							`}
+													<span class="balance-amount-stack">
+														<span class="balance-amount">
+															${formatCoinBalance(balance.totalBalance, balance.decimals)}
+														</span>
+														<span class="balance-amount-symbol">${balance.symbol}</span>
+													</span>
+												</div>
+											`;
+										})}
+									</div>
+								`
+			}
 		`;
 	}
 

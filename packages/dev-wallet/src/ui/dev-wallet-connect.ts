@@ -183,42 +183,52 @@ export class DevWalletConnect extends LitElement {
 				<div class="connect-header">
 					<div class="connect-title">Connection Request</div>
 					<div class="connect-desc">Select accounts to share with the app</div>
-					${this.appName
+					${
+						this.appName
+							? html`
+									<div class="app-info">
+										<span class="app-name">${this.appName}</span>
+										<span class="app-url">${this.appUrl}</span>
+									</div>
+								`
+							: nothing
+					}
+				</div>
+				${
+					this.accounts.length > 0
 						? html`
-								<div class="app-info">
-									<span class="app-name">${this.appName}</span>
-									<span class="app-url">${this.appUrl}</span>
+								<div class="account-list" part="account-list">
+									${this.accounts.map(
+										(account) => html`
+											<label class="account-item">
+												<input
+													type="checkbox"
+													.checked=${this._selectedAddresses.has(account.address)}
+													@change=${() => this.#toggleAccount(account.address)}
+												/>
+												<div>
+													${
+														account.label
+															? html`<div class="account-label">
+																	${account.label}${
+																		account.adapterName
+																			? html`<span class="account-adapter"
+																					>${account.adapterName}</span
+																				>`
+																			: nothing
+																	}
+																</div>`
+															: nothing
+													}
+													<div class="account-address">${formatAddress(account.address)}</div>
+												</div>
+											</label>
+										`,
+									)}
 								</div>
 							`
-						: nothing}
-				</div>
-				${this.accounts.length > 0
-					? html`
-							<div class="account-list" part="account-list">
-								${this.accounts.map(
-									(account) => html`
-										<label class="account-item">
-											<input
-												type="checkbox"
-												.checked=${this._selectedAddresses.has(account.address)}
-												@change=${() => this.#toggleAccount(account.address)}
-											/>
-											<div>
-												${account.label
-													? html`<div class="account-label">
-															${account.label}${account.adapterName
-																? html`<span class="account-adapter">${account.adapterName}</span>`
-																: nothing}
-														</div>`
-													: nothing}
-												<div class="account-address">${formatAddress(account.address)}</div>
-											</div>
-										</label>
-									`,
-								)}
-							</div>
-						`
-					: nothing}
+						: nothing
+				}
 			</div>
 			<div class="connect-footer">
 				<div class="actions">
@@ -232,9 +242,11 @@ export class DevWalletConnect extends LitElement {
 						${this._connecting ? 'Connecting...' : `Connect (${this._selectedAddresses.size})`}
 					</button>
 				</div>
-				${this._error
-					? html`<p class="error-message" part="error-message">${this._error}</p>`
-					: nothing}
+				${
+					this._error
+						? html`<p class="error-message" part="error-message">${this._error}</p>`
+						: nothing
+				}
 			</div>
 		`;
 	}

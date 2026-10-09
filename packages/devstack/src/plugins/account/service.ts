@@ -661,15 +661,14 @@ const buildClosures = (
 					);
 				}
 				const submitted = yield* fork.impersonate(resolved.address, tx).pipe(
-					Effect.mapError(
-						(cause): AccountSignError =>
-							accountSignError({
-								phase: 'submit',
-								accountName,
-								address: resolved.address,
-								message: `Account '${accountName}': fork impersonation submit failed.`,
-								cause,
-							}),
+					Effect.mapError((cause): AccountSignError =>
+						accountSignError({
+							phase: 'submit',
+							accountName,
+							address: resolved.address,
+							message: `Account '${accountName}': fork impersonation submit failed.`,
+							cause,
+						}),
 					),
 				);
 				yield* Effect.tryPromise({

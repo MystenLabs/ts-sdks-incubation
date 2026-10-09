@@ -260,16 +260,15 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 								inputs.account.address,
 								inputs.sdk.core,
 							).pipe(
-								Effect.mapError(
-									(cause): PublishError =>
-										publishError('publish-tx', {
-											sourcePath,
-											packageName,
-											message:
-												`Fork impersonation Transaction.build failed for package '${packageName}': ` +
-												cause.message,
-											cause,
-										}),
+								Effect.mapError((cause): PublishError =>
+									publishError('publish-tx', {
+										sourcePath,
+										packageName,
+										message:
+											`Fork impersonation Transaction.build failed for package '${packageName}': ` +
+											cause.message,
+										cause,
+									}),
 								),
 							)
 						: Effect.tryPromise({

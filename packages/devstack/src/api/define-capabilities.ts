@@ -21,8 +21,7 @@ import type { ProjectionDecl, ProjectionEvent } from '../contracts/projection.ts
  *  without consumers re-spelling each emission site. */
 export const projection = (
 	input:
-		| (Omit<ProjectionEvent, 'tag' | 'at'> & { readonly at?: number })
-		| Omit<ProjectionDecl, 'kind'>,
+		(Omit<ProjectionEvent, 'tag' | 'at'> & { readonly at?: number }) | Omit<ProjectionDecl, 'kind'>,
 ): ProjectionDecl => {
 	if ('event' in input) return { ...input, kind: 'projection' };
 	return {

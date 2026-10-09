@@ -55,11 +55,7 @@ export const CURRENT_MANIFEST_VERSION = 1 as const;
 /** One error class for every manifest IO failure. */
 export class ManifestError extends Data.TaggedError('ManifestError')<{
 	readonly reason:
-		| 'write-failed'
-		| 'read-failed'
-		| 'decode-failed'
-		| 'version-mismatch'
-		| 'duplicate-endpoint';
+		'write-failed' | 'read-failed' | 'decode-failed' | 'version-mismatch' | 'duplicate-endpoint';
 	readonly path: string;
 	readonly detail?: string;
 	readonly cause?: unknown;

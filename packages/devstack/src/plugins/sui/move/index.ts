@@ -529,16 +529,15 @@ const buildViaContainerExec = (
 				? bc.runBuild(inputs.sourcePath)
 				: bc.runBuild(inputs.sourcePath, { buildEnv: inputs.buildEnv })
 		).pipe(
-			Effect.mapError(
-				(err): MoveBuildError =>
-					moveBuildError('build', {
-						sourcePath: inputs.sourcePath,
-						packageName: inputs.packageName,
-						message: `buildContainer.runBuild failed: ${String(
-							(err as { cause?: { message?: string } })?.cause?.message ?? err,
-						)}`,
-						cause: err,
-					}),
+			Effect.mapError((err): MoveBuildError =>
+				moveBuildError('build', {
+					sourcePath: inputs.sourcePath,
+					packageName: inputs.packageName,
+					message: `buildContainer.runBuild failed: ${String(
+						(err as { cause?: { message?: string } })?.cause?.message ?? err,
+					)}`,
+					cause: err,
+				}),
 			),
 		);
 		if (result.exitCode !== 0) {
@@ -674,14 +673,13 @@ const buildViaOneShot = (
 				timeoutMillis: 5 * 60_000,
 			})
 			.pipe(
-				Effect.mapError(
-					(err): MoveBuildError =>
-						moveBuildError('build', {
-							sourcePath: inputs.sourcePath,
-							packageName: inputs.packageName,
-							message: `runtime.runOneShot failed: ${err.reason}: ${err.detail}`,
-							cause: err,
-						}),
+				Effect.mapError((err): MoveBuildError =>
+					moveBuildError('build', {
+						sourcePath: inputs.sourcePath,
+						packageName: inputs.packageName,
+						message: `runtime.runOneShot failed: ${err.reason}: ${err.detail}`,
+						cause: err,
+					}),
 				),
 			);
 		if (result.exitCode !== 0) {

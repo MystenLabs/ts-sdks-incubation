@@ -219,11 +219,7 @@ export class MirrorGrantMissingError extends Data.TaggedError("MirrorGrantMissin
  *   code this build does not know, deliberately (see `uploadFailure.ts`).
  */
 export type UploadFailureCondition =
-  | "daily_limit"
-  | "funding_paused"
-  | "storage_cap"
-  | "transient"
-  | "permanent";
+  "daily_limit" | "funding_paused" | "storage_cap" | "transient" | "permanent";
 
 export class FileStatusError extends Data.TaggedError("FileStatusError")<{
   readonly fileId: string;

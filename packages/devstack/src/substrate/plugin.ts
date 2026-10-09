@@ -46,9 +46,7 @@ export const isResourceRef = (value: unknown): value is AnyResourceRef =>
 	(value as { readonly [resourceBrand]?: true })[resourceBrand] === true;
 
 export type DependencyInput =
-	| AnyResourceRef
-	| readonly AnyResourceRef[]
-	| Readonly<Record<string, AnyResourceRef>>;
+	AnyResourceRef | readonly AnyResourceRef[] | Readonly<Record<string, AnyResourceRef>>;
 
 export type DependencyList<Input> = Input extends readonly AnyResourceRef[]
 	? Input

@@ -99,9 +99,7 @@ app's `src/dapp-kit.ts`:
 import { createDAppKit } from '@mysten/dapp-kit-react';
 import { registerDAppKitForTesting } from '@mysten-incubation/devstack/dapp-kit';
 
-export const dAppKit = createDAppKit({
-	/* …networks, defaultNetwork, createClient… */
-});
+export const dAppKit = createDAppKit({/* …networks, defaultNetwork, createClient… */});
 
 // DEV-only: a production build strips this branch (the dev wallet is never
 // injected), so the app ships with no test surface.

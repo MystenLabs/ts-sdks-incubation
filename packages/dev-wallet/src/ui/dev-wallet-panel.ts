@@ -298,9 +298,9 @@ export class DevWalletPanel extends LitElement {
 		if (this.#hadPendingRequest && !hasPending) {
 			this.updateComplete.then(() => {
 				this.shadowRoot
-					?.querySelector<
-						import('./dev-wallet-balances.js').DevWalletBalances
-					>('dev-wallet-balances')
+					?.querySelector<import('./dev-wallet-balances.js').DevWalletBalances>(
+						'dev-wallet-balances',
+					)
 					?.refresh();
 			});
 		}

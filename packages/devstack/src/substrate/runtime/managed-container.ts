@@ -53,8 +53,7 @@ export const managedContainerLabels = (
 });
 
 type ManagedContainerLabelInput =
-	| { readonly labels: ContainerLabelTuple }
-	| ManagedContainerLabelOptions;
+	{ readonly labels: ContainerLabelTuple } | ManagedContainerLabelOptions;
 
 export type EnsureManagedContainerOptions<E> = ManagedContainerLabelInput & {
 	readonly runtime: ContainerRuntime;

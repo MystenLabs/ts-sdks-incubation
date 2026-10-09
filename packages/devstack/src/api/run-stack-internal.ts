@@ -105,10 +105,7 @@ export interface InternalRunHandle extends RunHandle {
  *  NON-PUBLIC: like `InternalRunHandle`, this never reaches the public
  *  `runStack` facade. */
 export type BootHookServices =
-	| Scope.Scope
-	| SnapshotOrchestratorService
-	| FileSystem.FileSystem
-	| StackPathsService;
+	Scope.Scope | SnapshotOrchestratorService | FileSystem.FileSystem | StackPathsService;
 
 /** Caller-injected boot hooks. Both run AFTER their built-in counterpart
  *  (see the PR#21 ordering note at the top of this file). Their failures
@@ -135,9 +132,7 @@ export interface RunStackBootBag {
  *  capture the LIVE participant set and `FileSystem` to thread it into the
  *  snapshot I/O. */
 type CommandHandlerServices =
-	| SnapshotOrchestratorService
-	| FileSystem.FileSystem
-	| StackPathsService;
+	SnapshotOrchestratorService | FileSystem.FileSystem | StackPathsService;
 
 /** A FACTORY for the supervisor command handler. The seam runs it ONCE,
  *  inside the supervised body (so `CommandHandlerServices` — notably the live

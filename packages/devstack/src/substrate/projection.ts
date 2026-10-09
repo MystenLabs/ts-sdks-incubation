@@ -29,12 +29,7 @@ export interface SubscribableState {
 		readonly id: number;
 		readonly startedAt: number;
 		readonly phase:
-			| 'booting'
-			| 'running'
-			| 'restarting'
-			| 'shutting-down'
-			| 'snapshotting'
-			| 'restoring';
+			'booting' | 'running' | 'restarting' | 'shutting-down' | 'snapshotting' | 'restoring';
 	};
 	readonly rows: ReadonlyArray<Row>;
 	readonly endpoints: ReadonlyArray<Endpoint>;

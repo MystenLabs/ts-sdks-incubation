@@ -185,18 +185,17 @@ export const fetchAddressTransactions = async (
 	const { data, errors } = await client.query({ query, variables: { addr: address, limit } });
 	if (errors?.length) throw new Error(errors.map((e) => e.message).join('; '));
 	return (data?.transactions?.nodes ?? [])
-		.flatMap(
-			(n): ReadonlyArray<AddressTransaction> =>
-				n.digest === null
-					? []
-					: [
-							{
-								digest: n.digest,
-								status: toOutcome(n.effects?.status),
-								kind: n.kind?.__typename ?? 'Transaction',
-								timestampMs: isoToMillis(n.effects?.timestamp),
-							},
-						],
+		.flatMap((n): ReadonlyArray<AddressTransaction> =>
+			n.digest === null
+				? []
+				: [
+						{
+							digest: n.digest,
+							status: toOutcome(n.effects?.status),
+							kind: n.kind?.__typename ?? 'Transaction',
+							timestampMs: isoToMillis(n.effects?.timestamp),
+						},
+					],
 		)
 		.sort((a, b) => (b.timestampMs ?? 0) - (a.timestampMs ?? 0));
 };

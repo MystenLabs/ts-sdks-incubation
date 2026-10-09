@@ -178,11 +178,7 @@ export interface SwapTreeOp<E> {
  *  error tag `E`; `swap-tree`'s `buildEffect` carries `E` directly and the
  *  executor surfaces `E | StageAndSwapError` from the rename. */
 export type ReconcileFsOp<E> =
-	| SweepChildrenOp<E>
-	| ReapEmptyOp
-	| ReapMetaMissingOp<E>
-	| ReapImagesOp<E>
-	| SwapTreeOp<E>;
+	SweepChildrenOp<E> | ReapEmptyOp | ReapMetaMissingOp<E> | ReapImagesOp<E> | SwapTreeOp<E>;
 
 /** The staged file-tree mutation plan: an ordered list of ops the
  *  executor runs in sequence. */
