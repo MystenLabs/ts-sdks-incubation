@@ -239,6 +239,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 			</div>
 
 			${this.renderSpeedNote(kit)} ${this.renderQuote(kit)}
+			${kit.warnings().map((warning) => html`<p class="notice" part="notice">${warning}</p>`)}
 
 			<internal-button
 				variant="primary"

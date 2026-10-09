@@ -578,6 +578,47 @@ export async function getSolanaTokenAccountOwner(
 	return new PublicKey(info.data.subarray(32, 64));
 }
 
+/** What `owner` holds of SOL, in lamports. */
+export async function getSolanaNativeBalance(
+	chain: SolanaChainDefinition,
+	owner: PublicKey,
+): Promise<bigint> {
+	return BigInt(await withSolanaConnection(chain, (c) => c.getBalance(owner)));
+}
+
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+
+export type SolanaAccountKind =
+	| { kind: 'wallet' }
+	| { kind: 'tokenAccount'; mint: string; owner: string }
+	| { kind: 'mint' }
+	| { kind: 'program' };
+
+/**
+ * What an address is on chain, for an address someone typed as a recipient. A wallet address
+ * and a token account address look the same, and USDC sent "to" a token account as if it were a
+ * wallet ends up in an account nobody holds the key to. An address with nothing at it yet is
+ * taken for a wallet.
+ */
+export async function describeSolanaAccount(
+	chain: SolanaChainDefinition,
+	address: PublicKey,
+): Promise<SolanaAccountKind> {
+	const info = await withSolanaConnection(chain, (c) => c.getAccountInfo(address));
+	if (!info) return { kind: 'wallet' };
+	if (info.executable) return { kind: 'program' };
+	if (info.owner.equals(TOKEN_PROGRAM_ID) || info.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+		// A token account starts with its mint and its owner; a mint is shorter than that.
+		if (info.data.length < 165) return { kind: 'mint' };
+		return {
+			kind: 'tokenAccount',
+			mint: new PublicKey(info.data.subarray(0, 32)).toBase58(),
+			owner: new PublicKey(info.data.subarray(32, 64)).toBase58(),
+		};
+	}
+	return { kind: 'wallet' };
+}
+
 /** Block time (ms) of a confirmed transaction that succeeded, or null. */
 export async function getSolanaTransactionTime(
 	chain: SolanaChainDefinition,

@@ -13,17 +13,26 @@ import {
 import type { ResolvedRoutes } from '../chains/index.js';
 import { FINALITY_THRESHOLD } from '../chains/types.js';
 import type { ChainDefinition, ChainKey, Network, SuiChainDefinition } from '../chains/types.js';
-import { getEvmBurnDetails, getEvmTransactionTime, getEvmUsdcBalance } from '../engine/evm.js';
 import {
+	getEvmBurnDetails,
+	getEvmNativeBalance,
+	getEvmTransactionTime,
+	getEvmUsdcBalance,
+} from '../engine/evm.js';
+import {
+	describeSolanaAccount,
+	getSolanaNativeBalance,
 	getSolanaTokenAccountOwner,
 	getSolanaTransactionTime,
 	getSolanaUsdcBalance,
 } from '../engine/solana.js';
-import { getSuiTransactionTime, getSuiUsdcBalance } from '../engine/sui.js';
+import { getSuiGasBalance, getSuiTransactionTime, getSuiUsdcBalance } from '../engine/sui.js';
 import { IrisClient, IrisError } from '../iris/client.js';
 import type { IrisMessage } from '../iris/client.js';
 import { feeFromBps, parseUsdc } from '../utils/amount.js';
 import { hexToBytes, isValidAddress, normalizeAddress } from '../utils/bytes.js';
+import { gasCoin } from '../utils/errors.js';
+import { sleep } from '../utils/sleep.js';
 import { DEFAULT_STORAGE_KEY, getDefaultStorage } from '../utils/storage.js';
 import type { StateStorage } from '../utils/storage.js';
 import type {
@@ -68,6 +77,11 @@ export interface CctpKit {
 	refreshQuote(): Promise<Quote | null>;
 	/** Validate the current form; returns a user-facing reason or null when ready. */
 	validate(): string | null;
+	/**
+	 * What someone should know before burning, about the claim that follows on the destination.
+	 * These do not stop a transfer: `validate` is what stops one.
+	 */
+	warnings(): string[];
 	/** Start a new transfer from the current form state. */
 	transfer(): Promise<TransferRecord>;
 	/** Resume a persisted transfer (e.g. after a reload, or to retry a failed mint). */
@@ -389,6 +403,91 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		}
 	}
 
+	// --- What the destination will need -------------------------------------------------
+	// A transfer ends with a claim on the destination, paid for there. Both people who lost
+	// track of funds in production learned that only after their burn, so it is looked at, and
+	// said, while the form is being filled in.
+	const DESTINATION_CHECK_MS = 6_000;
+
+	async function gasHeldOn(chain: ChainDefinition, address: string): Promise<bigint> {
+		switch (chain.ecosystem) {
+			case 'sui':
+				return getSuiGasBalance(dAppKit.getClient(chain.suiNetwork), address);
+			case 'evm':
+				return getEvmNativeBalance(chain, address as `0x${string}`);
+			case 'solana':
+				return getSolanaNativeBalance(chain, new PublicKey(address));
+		}
+	}
+
+	/** Why a typed recipient cannot be sent to, or null. Only Solana can be told apart on chain. */
+	async function recipientProblemOn(
+		chain: ChainDefinition,
+		address: string,
+	): Promise<string | null> {
+		if (chain.ecosystem !== 'solana') return null;
+		const account = await describeSolanaAccount(chain, new PublicKey(address));
+		switch (account.kind) {
+			case 'wallet':
+				return null;
+			case 'tokenAccount':
+				return account.mint === chain.usdcMint
+					? `That is a USDC token account, not a wallet. Enter the wallet that owns it: ${account.owner}`
+					: 'That is a token account for another token, not a wallet address';
+			case 'mint':
+			case 'program':
+				return 'That address is a token or a program, not a wallet';
+		}
+	}
+
+	let destinationSeq = 0;
+	async function refreshDestination() {
+		const seq = ++destinationSeq;
+		const to = stores.$destinationChain.get();
+		const claimer = stores.$destinationAccount.get();
+		const typed = stores.$recipient.get();
+		stores.$destination.set({ gas: null, recipientProblem: null });
+		if (!claimer && !typed) return;
+		const giveUp = new AbortController();
+		// Neither answer may hold the form up, and not knowing stops nothing.
+		const bounded = <T>(read: Promise<T>) =>
+			Promise.race([
+				read.catch(() => null),
+				sleep(DESTINATION_CHECK_MS, giveUp.signal).then(
+					() => null,
+					() => null,
+				),
+			]);
+		const [gas, recipientProblem] = await Promise.all([
+			claimer ? bounded(gasHeldOn(to, claimer.address)) : null,
+			typed && isValidAddress(typed, to) ? bounded(recipientProblemOn(to, typed)) : null,
+		]);
+		giveUp.abort();
+		if (seq === destinationSeq && !destroyed) stores.$destination.set({ gas, recipientProblem });
+	}
+	for (const store of [stores.$destinationChain, stores.$destinationAccount, stores.$recipient]) {
+		cleanups.push(store.listen(() => void refreshDestination()));
+	}
+
+	function warnings(): string[] {
+		const to = stores.$destinationChain.get();
+		const coin = gasCoin(to);
+		if (!stores.$destinationAccount.get()) {
+			// Sending to a typed address with no wallet for that chain connected: an exchange
+			// deposit address, or a wallet on another device.
+			return stores.$recipient.get()
+				? [
+						`USDC does not arrive on ${to.name} by itself. After the burn, it has to be claimed on ${to.name} from a wallet that holds ${coin}.`,
+					]
+				: [];
+		}
+		return stores.$destination.get().gas === 0n
+			? [
+					`Your ${to.name} wallet holds no ${coin}. You will need some to claim the USDC on ${to.name}.`,
+				]
+			: [];
+	}
+
 	let quoteSeq = 0;
 	async function refreshQuote(): Promise<Quote | null> {
 		const seq = ++quoteSeq;
@@ -584,6 +683,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		const recipient = stores.$recipient.get() || stores.$destinationAccount.get()?.address;
 		if (!recipient) return `Connect your ${to.name} wallet or enter a recipient`;
 		if (!isValidAddress(recipient, to)) return `Invalid ${to.name} address`;
+		const recipientProblem = stores.$recipient.get() && stores.$destination.get().recipientProblem;
+		if (recipientProblem) return recipientProblem;
 		const quoteError = stores.$quoteError.get();
 		if (quoteError) return quoteError;
 		const quote = currentQuote();
@@ -893,6 +994,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	void backfillBurnTimes();
 	void refreshBalance();
 	void refreshQuote();
+	void refreshDestination();
 
 	return {
 		config,
@@ -915,6 +1017,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		refreshBalance,
 		refreshQuote,
 		validate,
+		warnings,
 		transfer,
 		resume,
 		importTransfer,

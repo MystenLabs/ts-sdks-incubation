@@ -22,6 +22,16 @@ export interface BalanceState {
 	source: bigint | null;
 }
 
+export interface DestinationState {
+	/**
+	 * What the connected destination wallet holds of the coin that pays for gas there, in base
+	 * units; null when no wallet is connected or the balance is not known.
+	 */
+	gas: bigint | null;
+	/** Why a typed recipient cannot be sent to, when the chain says it is not a wallet. */
+	recipientProblem: string | null;
+}
+
 export interface CctpKitStores {
 	$routes: WritableAtom<ResolvedRoutes>;
 	$fromChain: WritableAtom<ChainKey>;
@@ -32,6 +42,8 @@ export interface CctpKitStores {
 	$recipient: WritableAtom<string>;
 	$wallets: MapStore<WalletState>;
 	$balance: MapStore<BalanceState>;
+	/** What is known about the destination before anything is burned. */
+	$destination: WritableAtom<DestinationState>;
 	$quote: WritableAtom<Quote | null>;
 	$quoteError: WritableAtom<string | null>;
 	/** Whether Fast Transfer can be offered for the current route; null while unknown. */
@@ -101,6 +113,7 @@ export function createStores(args: {
 		ready: false,
 	});
 	const $balance: MapStore<BalanceState> = map<BalanceState>({ source: null });
+	const $destination = atom<DestinationState>({ gas: null, recipientProblem: null });
 	const $quote = atom<Quote | null>(null);
 	const $quoteError = atom<string | null>(null);
 	const $fastAvailable = atom<boolean | null>(null);
@@ -155,6 +168,7 @@ export function createStores(args: {
 		$recipient,
 		$wallets,
 		$balance,
+		$destination,
 		$quote,
 		$quoteError,
 		$fastAvailable,

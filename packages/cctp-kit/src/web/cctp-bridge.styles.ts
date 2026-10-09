@@ -235,6 +235,15 @@ export const styles = [
 			font-size: 0.8125rem;
 		}
 
+		.notice {
+			margin: 0;
+			padding: 0.5rem 0.75rem;
+			font-size: 0.8125rem;
+			border-radius: var(--cctp-kit-radius-md);
+			border: 1px solid var(--cctp-kit-border);
+			background-color: var(--cctp-kit-muted);
+		}
+
 		.text-button {
 			font-family: inherit;
 			font-size: 0.8125rem;

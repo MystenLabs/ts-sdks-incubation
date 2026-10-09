@@ -173,6 +173,12 @@ export async function getSuiUsdcBalance(
 	return BigInt(result.balance.balance);
 }
 
+/** What `owner` holds of SUI, which is what pays for gas. */
+export async function getSuiGasBalance(client: ClientWithCoreApi, owner: string): Promise<bigint> {
+	const result = await client.core.getBalance({ owner, coinType: '0x2::sui::SUI' });
+	return BigInt(result.balance.balance);
+}
+
 /** Checkpoint timestamp (ms) of a transaction that succeeded, or null. */
 export async function getSuiTransactionTime(
 	client: ClientWithCoreApi,

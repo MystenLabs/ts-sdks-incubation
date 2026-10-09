@@ -31,7 +31,7 @@ export class WalletNetworkError extends CctpKitError {
 }
 
 /** The coin that pays for transactions on a chain. */
-function gasCoin(chain: ChainDefinition): string {
+export function gasCoin(chain: ChainDefinition): string {
 	switch (chain.ecosystem) {
 		case 'evm':
 			return chain.viemChain.nativeCurrency.symbol;
