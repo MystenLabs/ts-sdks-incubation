@@ -24,6 +24,7 @@ const client = { account: { address: '0x1111111111111111111111111111111111111111
 /** A connected wallet: the network wagmi remembers, and the one the wallet says it is on. */
 function walletIs(on: { remembered: number; actual: () => number }) {
 	wagmi.getAccount.mockImplementation(() => ({
+		address: client.account.address,
 		chainId: on.remembered,
 		connector: { getChainId: async () => on.actual() },
 	}));
@@ -94,6 +95,7 @@ describe('getting an EVM wallet onto the network a transfer needs', () => {
 
 	it('falls back on what wagmi remembers when the wallet cannot be asked', async () => {
 		wagmi.getAccount.mockImplementation(() => ({
+			address: client.account.address,
 			chainId: base.chainId,
 			connector: {
 				getChainId: async () => {
@@ -103,5 +105,38 @@ describe('getting an EVM wallet onto the network a transfer needs', () => {
 		}));
 		expect(await adapter.getWalletClient(base)).toBe(client);
 		expect(wagmi.switchChain).not.toHaveBeenCalled();
+	});
+
+	it('says to connect a wallet when none is connected', async () => {
+		// Someone who sent to a pasted address and came back to claim. wagmi's own words for
+		// this are "Connector not connected."
+		wagmi.getAccount.mockImplementation(() => ({ address: undefined, chainId: undefined }));
+		await expect(adapter.getWalletClient(base)).rejects.toThrow(
+			'Connect an EVM wallet to continue on Base.',
+		);
+		expect(wagmi.switchChain).not.toHaveBeenCalled();
+		expect(wagmi.getWalletClient).not.toHaveBeenCalled();
+	});
+
+	it('does not wait for good on a wallet that never answers the switch', async () => {
+		vi.useFakeTimers();
+		try {
+			walletIs({ remembered: ETHEREUM, actual: () => ETHEREUM });
+			wagmi.switchChain.mockImplementation(() => new Promise(() => undefined));
+			const failure = adapter.getWalletClient(base).catch((error: Error) => error);
+			await vi.advanceTimersByTimeAsync(119_000);
+			expect(wagmi.getWalletClient).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(await failure).toBeInstanceOf(WalletNetworkError);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not take the wallet at its word when it says it switched and did not', async () => {
+		walletIs({ remembered: ETHEREUM, actual: () => ETHEREUM });
+		wagmi.switchChain.mockResolvedValue({ id: base.chainId });
+		await expect(adapter.getWalletClient(base)).rejects.toBeInstanceOf(WalletNetworkError);
+		expect(wagmi.getWalletClient).not.toHaveBeenCalled();
 	});
 });

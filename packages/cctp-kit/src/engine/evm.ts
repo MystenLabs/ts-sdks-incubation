@@ -57,6 +57,12 @@ export async function getEvmNativeBalance(chain: EvmChainDefinition, owner: Hex)
 	return getEvmPublicClient(chain).getBalance({ address: owner });
 }
 
+/** Whether `address` is a contract (a Safe, a smart account), not an account with a key of its own. */
+export async function isEvmContract(chain: EvmChainDefinition, address: Hex): Promise<boolean> {
+	const code = await getEvmPublicClient(chain).getCode({ address });
+	return !!code && code !== '0x';
+}
+
 export async function getEvmUsdcAllowance(chain: EvmChainDefinition, owner: Hex): Promise<bigint> {
 	return getEvmPublicClient(chain).readContract({
 		address: chain.usdcAddress,

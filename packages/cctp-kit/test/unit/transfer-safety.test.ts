@@ -21,6 +21,7 @@ vi.mock('../../src/engine/evm.js', async (original) => ({
 	getEvmUsdcAllowance: vi.fn(async () => 10n ** 12n),
 	getEvmUsdcBalance: vi.fn(async () => 10n ** 12n),
 	getEvmNativeBalance: vi.fn(async () => 10n ** 18n),
+	isEvmContract: vi.fn(async () => false),
 	approveEvmUsdc: vi.fn(async () => BURN_HASH),
 	evmDepositForBurn: vi.fn(async () => BURN_HASH),
 	waitForEvmReceipt: vi.fn(async (_chain: unknown, hash: string) => hash),
@@ -366,53 +367,40 @@ describe('a burn the wallet cannot pay for', () => {
 		expect(evm.evmDepositForBurn).not.toHaveBeenCalled();
 	});
 
-	it('is stopped before an EVM wallet is asked when it holds nothing to pay gas with', async () => {
-		vi.mocked(evm.getEvmNativeBalance).mockResolvedValueOnce(0n);
-		vi.mocked(evm.evmDepositForBurn).mockClear();
-		vi.mocked(evm.approveEvmUsdc).mockClear();
-		const updates: TransferRecord[] = [];
-		await expect(
-			runTransfer(record({}), {
-				dAppKit: suiDAppKit().dAppKit,
-				wallets: evmWallets(),
-				iris: new IrisClient('mainnet', { fetch: vi.fn<typeof fetch>() }),
-				chains,
-				onUpdate: (t) => updates.push(t),
-			}),
-		).rejects.toThrow(
-			'The wallet does not have enough ETH on Ethereum to pay for gas. Add some ETH on Ethereum, then try again.',
-		);
-		expect(evm.approveEvmUsdc).not.toHaveBeenCalled();
-		expect(evm.evmDepositForBurn).not.toHaveBeenCalled();
-		expect(updates.at(-1)).toMatchObject({ status: 'failed' });
-		expect(updates.at(-1)!.sourceTxHash).toBeUndefined();
-	});
-
-	it('is not held up when the gas balance cannot be read', async () => {
-		vi.mocked(evm.getEvmNativeBalance).mockRejectedValueOnce(new Error('HTTP request failed'));
-		vi.mocked(evm.evmDepositForBurn).mockClear();
-		// An earlier test leaves the receipt wait reporting a revert.
-		vi.mocked(evm.waitForEvmReceipt)
-			.mockReset()
-			.mockImplementation(async (_chain, hash) => hash);
-		const attested = {
-			status: 'complete',
-			message: message(0n),
-			attestation: `0x${'bb'.repeat(65)}`,
-		};
-		const result = await runTransfer(record({}), {
+	it('is told it has nothing to pay gas with when an EVM wallet turns the burn down', async () => {
+		// The wallet is asked: an account can hold nothing and still pay, if it is a contract or
+		// its gas is paid for it. Only when the request fails is the balance looked at.
+		const refusal = new Error('transaction underpriced or something the wallet made up');
+		vi.mocked(evm.evmDepositForBurn).mockReset().mockRejectedValue(refusal);
+		const burnWith = (updates: TransferRecord[] = []) => ({
 			dAppKit: suiDAppKit().dAppKit,
 			wallets: evmWallets(),
-			iris: new IrisClient('mainnet', {
-				fetch: vi.fn<typeof fetch>(async () => json(200, { messages: [attested] })),
-			}),
+			iris: new IrisClient('mainnet', { fetch: vi.fn<typeof fetch>() }),
 			chains,
-			stopAfterAttestation: true,
-			pollIntervalMs: 1,
-			onUpdate: () => undefined,
+			onUpdate: (t: TransferRecord) => updates.push(t),
 		});
+		const updates: TransferRecord[] = [];
+
+		vi.mocked(evm.getEvmNativeBalance).mockResolvedValueOnce(0n);
+		await expect(runTransfer(record({}), burnWith(updates))).rejects.toThrow(
+			'The wallet does not have enough ETH on Ethereum to pay for gas. Add some ETH on Ethereum, then try again.',
+		);
 		expect(evm.evmDepositForBurn).toHaveBeenCalledTimes(1);
-		expect(result.status).toBe('readyToMint');
+		expect(updates.at(-1)).toMatchObject({ status: 'failed' });
+		expect(updates.at(-1)!.sourceTxHash).toBeUndefined();
+
+		// With something in the wallet, or a balance nobody can read, the wallet's words stand.
+		await expect(runTransfer(record({}), burnWith())).rejects.toBe(refusal);
+		vi.mocked(evm.getEvmNativeBalance).mockRejectedValueOnce(new Error('HTTP request failed'));
+		await expect(runTransfer(record({}), burnWith())).rejects.toBe(refusal);
+		// A contract account holding nothing is not told to add gas: it may not be what pays.
+		vi.mocked(evm.getEvmNativeBalance).mockResolvedValueOnce(0n);
+		vi.mocked(evm.isEvmContract).mockResolvedValueOnce(true);
+		await expect(runTransfer(record({}), burnWith())).rejects.toBe(refusal);
+
+		vi.mocked(evm.evmDepositForBurn)
+			.mockReset()
+			.mockImplementation(async () => BURN_HASH);
 	});
 
 	it('goes ahead when the balance cannot be read', async () => {
@@ -443,6 +431,8 @@ describe('a burn the wallet cannot pay for', () => {
 describe('a claim on an EVM chain by a wallet with nothing to pay gas with', () => {
 	// Someone bridging to a chain for the first time. The wallet's node answered "gas required
 	// exceeds allowance (0)", and the card showed that inside forty lines of call data.
+	const GAS_ADVICE =
+		'The wallet does not have enough ETH on Base to pay for gas. Add some ETH on Base, then try again.';
 	const waiting = () =>
 		record({
 			from: 'sui',
@@ -455,7 +445,7 @@ describe('a claim on an EVM chain by a wallet with nothing to pay gas with', () 
 			message: message(0n),
 			attestation: `0x${'bb'.repeat(65)}`,
 		});
-	const claimWith = (writeContract: () => Promise<string>, updates: TransferRecord[]) => ({
+	const claimWith = (writeContract: () => Promise<string>, updates: TransferRecord[] = []) => ({
 		dAppKit: suiDAppKit().dAppKit,
 		wallets: async () =>
 			({
@@ -469,27 +459,29 @@ describe('a claim on an EVM chain by a wallet with nothing to pay gas with', () 
 		checkNonce: false,
 		onUpdate: (t: TransferRecord) => updates.push(t),
 	});
+	const receiptsArrive = () =>
+		vi
+			.mocked(evm.waitForEvmReceipt)
+			.mockReset()
+			.mockImplementation(async (_chain, hash) => hash);
 
-	it('is stopped before the wallet is asked, and says what to do', async () => {
+	it('says what to add where, whatever the wallet said', async () => {
+		// The wallet's words here are a plain refusal that names no cause at all.
 		vi.mocked(evm.getEvmNativeBalance).mockResolvedValueOnce(0n);
-		const writeContract = vi.fn(async () => BURN_HASH);
+		const writeContract = vi.fn(async (): Promise<string> => {
+			throw new Error('Something went wrong');
+		});
 		const updates: TransferRecord[] = [];
 		await expect(runTransfer(waiting(), claimWith(writeContract, updates))).rejects.toThrow(
-			/does not have enough ETH on Base/,
+			GAS_ADVICE,
 		);
-		expect(writeContract).not.toHaveBeenCalled();
-		expect(updates.at(-1)).toMatchObject({
-			status: 'failed',
-			error:
-				'The wallet does not have enough ETH on Base to pay for gas. Add some ETH on Base, then try again.',
-		});
+		expect(updates.at(-1)).toMatchObject({ status: 'failed', error: GAS_ADVICE });
 		// Nothing is lost: the attestation is still there to claim with.
 		expect(updates.at(-1)!.attestation).toBeTruthy();
 	});
 
-	it('says the same when it is the wallet that reports it', async () => {
-		// Some ETH, not enough: the check lets it through and the node turns the claim away.
-		const writeContract = vi.fn(async () => {
+	it('says the same when the wallet has some, and its node says it is too little', async () => {
+		const writeContract = vi.fn(async (): Promise<string> => {
 			throw Object.assign(
 				new Error(
 					`The contract function "receiveMessage" reverted with the following reason:\nRPC 0x2105 Infura eth_sendRawTransaction: gas required exceeds allowance (0)\n\nContract Call:\n  args: (0x${'00'.repeat(376)})\n\nVersion: viem@2.57.3`,
@@ -499,9 +491,21 @@ describe('a claim on an EVM chain by a wallet with nothing to pay gas with', () 
 		});
 		const updates: TransferRecord[] = [];
 		await expect(runTransfer(waiting(), claimWith(writeContract, updates))).rejects.toThrow();
-		expect(updates.at(-1)!.error).toBe(
-			'The wallet does not have enough ETH on Base to pay for gas. Add some ETH on Base, then try again.',
-		);
+		expect(updates.at(-1)!.error).toBe(GAS_ADVICE);
+	});
+
+	it('is never stopped beforehand: an account that holds nothing may still be able to pay', async () => {
+		// A Safe whose owner pays, or an account whose gas is paid for it. Stopping it on its
+		// balance, after the burn, would strand a claim that works.
+		receiptsArrive();
+		vi.mocked(evm.getEvmNativeBalance).mockResolvedValue(0n);
+		const writeContract = vi.fn(async () => BURN_HASH);
+		const result = await runTransfer(waiting(), claimWith(writeContract));
+		expect(writeContract).toHaveBeenCalledTimes(1);
+		expect(result.status).toBe('complete');
+		vi.mocked(evm.getEvmNativeBalance)
+			.mockReset()
+			.mockImplementation(async () => 10n ** 18n);
 	});
 });
 

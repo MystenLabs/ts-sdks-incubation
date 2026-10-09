@@ -16,6 +16,7 @@ import {
 	getEvmNativeBalance,
 	getEvmUsdcAllowance,
 	getEvmUsdcBalance,
+	isEvmContract,
 	waitForEvmReceipt,
 } from '../engine/evm.js';
 import {
@@ -41,7 +42,12 @@ import type { IrisClient, IrisMessage } from '../iris/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { bytesToHex, hexToBytes, parseMessageV2, toBytes32 } from '../utils/bytes.js';
 import type { Hex } from '../utils/bytes.js';
-import { describeError, gasShortfallMessage, TransactionRevertedError } from '../utils/errors.js';
+import {
+	CctpKitError,
+	describeError,
+	gasShortfallMessage,
+	TransactionRevertedError,
+} from '../utils/errors.js';
 import { sleep } from '../utils/sleep.js';
 import type { WalletAdapters } from '../wallets/types.js';
 import type { AnyDAppKit, TransferRecord } from './types.js';
@@ -195,26 +201,44 @@ async function assertSourceBalance(
 
 const GAS_CHECK_MS = 5_000;
 
-/**
- * Stop before an EVM wallet is asked when it holds none of the coin that pays for gas. Someone
- * bridging to a chain for the first time is often in exactly that position, and the wallet, or
- * the node behind it, reports it in words nobody outside can read. A wallet that holds some but
- * too little is left to the wallet, since what a transaction costs is the wallet's to decide. A
- * balance that cannot be read stops nothing.
- */
-async function assertEvmGas(chain: EvmChainDefinition, payer: Hex | undefined) {
-	if (!payer) return;
+/** Whether an account plainly cannot pay for gas: it has a key of its own and holds nothing. */
+async function cannotPayGas(chain: EvmChainDefinition, payer: Hex): Promise<boolean> {
 	const giveUp = new AbortController();
-	const balance = await Promise.race([
-		getEvmNativeBalance(chain, payer).catch(() => null),
-		// A node that does not answer must not hold the wallet prompt up.
+	const answer = await Promise.race([
+		Promise.all([getEvmNativeBalance(chain, payer), isEvmContract(chain, payer)]).then(
+			([balance, contract]) => balance === 0n && !contract,
+			() => false,
+		),
+		// A node that does not answer must not hold the failure up.
 		sleep(GAS_CHECK_MS, giveUp.signal).then(
-			() => null,
-			() => null,
+			() => false,
+			() => false,
 		),
 	]);
 	giveUp.abort();
-	if (balance === 0n) throw new Error(gasShortfallMessage(chain));
+	return answer;
+}
+
+/**
+ * Make a request that an EVM wallet pays gas for. When it fails and the paying account plainly
+ * cannot pay, say that, whatever words the wallet or its node found for it. Someone bridging to
+ * a chain for the first time is often in exactly that position.
+ *
+ * This is looked at after the failure, never before the request. A Safe, or an account whose
+ * gas is paid for it, can hold nothing and still go through, and a claim that is stopped
+ * wrongly, after the burn, is the worst thing this could do.
+ */
+async function payingGas<T>(
+	chain: EvmChainDefinition,
+	payer: Hex | undefined,
+	request: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await request();
+	} catch (error) {
+		if (error instanceof CctpKitError || !payer || !(await cannotPayGas(chain, payer))) throw error;
+		throw new CctpKitError(gasShortfallMessage(chain), { cause: error });
+	}
 }
 
 /**
@@ -271,24 +295,25 @@ async function burn(
 			const owner = walletClient.account?.address;
 			assertSender(transfer, from, owner);
 			await assertSourceBalance(from, owner!, amount, ctx);
-			await assertEvmGas(from, owner);
 			const allowance = await getEvmUsdcAllowance(from, owner!);
 			if (allowance < amount) {
 				ctx.signal?.throwIfAborted();
 				update({ status: 'approving' });
-				await approveEvmUsdc(walletClient, from, amount);
+				await payingGas(from, owner, () => approveEvmUsdc(walletClient, from, amount));
 			}
 			// The approval can take minutes. If the kit was torn down meanwhile, stop here rather
 			// than open a burn request nobody is waiting for.
 			ctx.signal?.throwIfAborted();
 			update({ status: 'burning' });
-			const hash = await evmDepositForBurn(walletClient, from, {
-				amount,
-				destinationDomain: to.domain,
-				mintRecipient: bytesToHex(mintRecipient),
-				maxFee,
-				minFinalityThreshold,
-			});
+			const hash = await payingGas(from, owner, () =>
+				evmDepositForBurn(walletClient, from, {
+					amount,
+					destinationDomain: to.domain,
+					mintRecipient: bytesToHex(mintRecipient),
+					maxFee,
+					minFinalityThreshold,
+				}),
+			);
 			update({ sourceTxHash: hash });
 			return;
 		}
@@ -477,7 +502,8 @@ async function mint(
 	switch (to.ecosystem) {
 		case 'sui': {
 			const account = ctx.dAppKit.stores.$connection.get().account;
-			const tx = buildSuiReceiveTransaction(to, message, attestation, account?.address);
+			if (!account) throw new CctpKitError('Connect a Sui wallet to claim.');
+			const tx = buildSuiReceiveTransaction(to, message, attestation, account.address);
 			// Keep the digest the moment there is one. The message is spent from here on, so a
 			// claim that is forgotten can never be made again.
 			return executeSui(ctx, to, tx, (digest) => update({ destinationTxHash: digest }));
@@ -485,14 +511,10 @@ async function mint(
 		case 'evm': {
 			const wallets = await ctx.wallets();
 			const walletClient = await wallets.evm.getWalletClient(to);
-			// Whoever claims pays the gas, which need not be the recipient.
-			await assertEvmGas(to, walletClient.account?.address);
 			ctx.signal?.throwIfAborted();
-			const hash = await evmReceiveMessage(
-				walletClient,
-				to,
-				transfer.message as Hex,
-				transfer.attestation as Hex,
+			// Whoever claims pays the gas, which need not be the recipient.
+			const hash = await payingGas(to, walletClient.account?.address, () =>
+				evmReceiveMessage(walletClient, to, transfer.message as Hex, transfer.attestation as Hex),
 			);
 			return waitForEvmReceipt(to, hash);
 		}

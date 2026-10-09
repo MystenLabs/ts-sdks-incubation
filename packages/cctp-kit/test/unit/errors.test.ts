@@ -6,11 +6,12 @@ import {
 	ContractFunctionExecutionError,
 	ContractFunctionRevertedError,
 	parseAbi,
+	UnknownRpcError,
 	UserRejectedRequestError,
 } from 'viem';
 import { describe, expect, it } from 'vitest';
 import { getChainRegistry } from '../../src/chains/index.js';
-import { describeError, WalletNetworkError } from '../../src/utils/errors.js';
+import { CctpKitError, describeError, WalletNetworkError } from '../../src/utils/errors.js';
 
 const chains = getChainRegistry('mainnet');
 const chain = (key: string) => chains.find((c) => c.key === key)!;
@@ -101,6 +102,22 @@ describe('putting an error into words', () => {
 				new Error('Not enough USDC on Solana: the wallet holds 0 and this transfer needs 0.5.'),
 			),
 		).toBe('Not enough USDC on Solana: the wallet holds 0 and this transfer needs 0.5.');
+	});
+
+	it("uses the wallet's words when the library's summary says nothing", () => {
+		// What a WalletConnect wallet answers for a chain its session does not include.
+		const error = new UnknownRpcError(
+			new Error('Missing or invalid. request() chainId: eip155:8453'),
+		);
+		expect(error.shortMessage).toBe('An unknown RPC error occurred.');
+		expect(describeError(error)).toBe('Missing or invalid. request() chainId: eip155:8453');
+	});
+
+	it('shows any error of the kit as written, whatever caused it', () => {
+		const cause = new UserRejectedRequestError(new Error('User rejected the request.'));
+		expect(describeError(new CctpKitError('Connect a Sui wallet to claim.', { cause }))).toBe(
+			'Connect a Sui wallet to claim.',
+		);
 	});
 
 	it('never hands back a wall of text', () => {

@@ -4,13 +4,21 @@
 import type { ChainDefinition } from '../chains/types.js';
 
 /**
+ * An error whose message is already written for the person using the widget. It is shown as it
+ * is; what caused it is kept for whoever debugs it.
+ */
+export class CctpKitError extends Error {
+	override name = 'CctpKitError';
+}
+
+/**
  * A transaction that definitely did not take effect: it was mined and reverted, or it can no
  * longer land. Nothing moved, so sending it again is safe.
  *
  * Anything else that goes wrong while waiting for a transaction (a timeout, an RPC outage) is
  * NOT this error: the transaction may still have gone through, and must not be sent again.
  */
-export class TransactionRevertedError extends Error {
+export class TransactionRevertedError extends CctpKitError {
 	override name = 'TransactionRevertedError';
 }
 
@@ -18,7 +26,7 @@ export class TransactionRevertedError extends Error {
  * The wallet is on another network and did not move when asked. Nothing was sent, so switching
  * it by hand and trying again is safe.
  */
-export class WalletNetworkError extends Error {
+export class WalletNetworkError extends CctpKitError {
 	override name = 'WalletNetworkError';
 }
 
@@ -71,6 +79,8 @@ const NO_GAS = [
 ];
 const REJECTED =
 	/user (rejected|denied|cancell?ed|declined|disapproved)|(rejected|cancell?ed|denied) (by|from) (the )?user|user rejection/i;
+const SAYS_NOTHING =
+	/^(An unknown RPC error occurred|An internal error was received|Missing or invalid parameters)/;
 const MAX_LENGTH = 300;
 
 /** One line, without the stretches of hex a wallet library prints its arguments as. */
@@ -92,11 +102,7 @@ function tidy(text: string): string {
  */
 export function describeError(error: unknown, context: { chain?: ChainDefinition } = {}): string {
 	if (!(error instanceof Error)) return tidy(String(error));
-	// The kit's own errors are already written for the person reading them. What caused one is
-	// kept for whoever debugs it, and is not a second opinion on what to say.
-	if (error instanceof WalletNetworkError || error instanceof TransactionRevertedError) {
-		return tidy(error.message);
-	}
+	if (error instanceof CctpKitError) return tidy(error.message);
 	const links = causes(error);
 	const said = links.map((link) => link.message).join('\n');
 	if (
@@ -121,6 +127,13 @@ export function describeError(error: unknown, context: { chain?: ChainDefinition
 			: `The wallet turned the request down: ${tidy(words)}`;
 	}
 	if (REJECTED.test(said)) return 'The request was rejected in the wallet.';
-	const summary = links.map((link) => link.shortMessage).find((s) => typeof s === 'string' && s);
-	return tidy(typeof summary === 'string' ? summary : error.message);
+	const summarised = links.find(
+		(link) => typeof link.shortMessage === 'string' && link.shortMessage,
+	);
+	if (!summarised) return tidy(error.message);
+	const summary = summarised.shortMessage as string;
+	// For an error it has no name for, the library's summary says nothing ("An unknown RPC error
+	// occurred."). What the wallet or node said is then the only information there is.
+	const details = links.map((link) => link.details).find((d) => typeof d === 'string' && d);
+	return tidy(SAYS_NOTHING.test(summary) && typeof details === 'string' ? details : summary);
 }
