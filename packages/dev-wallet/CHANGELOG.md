@@ -1,5 +1,11 @@
 # @mysten-incubation/dev-wallet
 
+## 0.6.1
+
+### Patch Changes
+
+- 6e84185: Update dependencies to their latest in-major versions and resolve `pnpm audit` findings.
+
 ## 0.6.0
 
 ### Minor Changes
