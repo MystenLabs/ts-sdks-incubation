@@ -13,6 +13,7 @@ import {
 	evmDepositForBurn,
 	evmIsNonceUsed,
 	evmReceiveMessage,
+	getEvmNativeBalance,
 	getEvmUsdcAllowance,
 	getEvmUsdcBalance,
 	waitForEvmReceipt,
@@ -40,7 +41,7 @@ import type { IrisClient, IrisMessage } from '../iris/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { bytesToHex, hexToBytes, parseMessageV2, toBytes32 } from '../utils/bytes.js';
 import type { Hex } from '../utils/bytes.js';
-import { TransactionRevertedError } from '../utils/errors.js';
+import { describeError, gasShortfallMessage, TransactionRevertedError } from '../utils/errors.js';
 import { sleep } from '../utils/sleep.js';
 import type { WalletAdapters } from '../wallets/types.js';
 import type { AnyDAppKit, TransferRecord } from './types.js';
@@ -137,7 +138,10 @@ export async function runTransfer(
 		return transfer;
 	} catch (error) {
 		if (ctx.signal?.aborted) throw error;
-		update({ status: 'failed', error: errorMessage(error) });
+		// A wallet fails on the source chain until the burn is sent, and on the destination once
+		// there is something to claim.
+		const chain = transfer.attestation ? to : transfer.sourceTxHash ? undefined : from;
+		update({ status: 'failed', error: describeError(error, { chain }) });
 		throw error;
 	}
 }
@@ -187,6 +191,30 @@ async function assertSourceBalance(
 			`Not enough USDC on ${from.name}: the wallet holds ${formatUsdc(balance)} and this transfer needs ${formatUsdc(amount)}.`,
 		);
 	}
+}
+
+const GAS_CHECK_MS = 5_000;
+
+/**
+ * Stop before an EVM wallet is asked when it holds none of the coin that pays for gas. Someone
+ * bridging to a chain for the first time is often in exactly that position, and the wallet, or
+ * the node behind it, reports it in words nobody outside can read. A wallet that holds some but
+ * too little is left to the wallet, since what a transaction costs is the wallet's to decide. A
+ * balance that cannot be read stops nothing.
+ */
+async function assertEvmGas(chain: EvmChainDefinition, payer: Hex | undefined) {
+	if (!payer) return;
+	const giveUp = new AbortController();
+	const balance = await Promise.race([
+		getEvmNativeBalance(chain, payer).catch(() => null),
+		// A node that does not answer must not hold the wallet prompt up.
+		sleep(GAS_CHECK_MS, giveUp.signal).then(
+			() => null,
+			() => null,
+		),
+	]);
+	giveUp.abort();
+	if (balance === 0n) throw new Error(gasShortfallMessage(chain));
 }
 
 /**
@@ -243,6 +271,7 @@ async function burn(
 			const owner = walletClient.account?.address;
 			assertSender(transfer, from, owner);
 			await assertSourceBalance(from, owner!, amount, ctx);
+			await assertEvmGas(from, owner);
 			const allowance = await getEvmUsdcAllowance(from, owner!);
 			if (allowance < amount) {
 				ctx.signal?.throwIfAborted();
@@ -456,6 +485,8 @@ async function mint(
 		case 'evm': {
 			const wallets = await ctx.wallets();
 			const walletClient = await wallets.evm.getWalletClient(to);
+			// Whoever claims pays the gas, which need not be the recipient.
+			await assertEvmGas(to, walletClient.account?.address);
 			ctx.signal?.throwIfAborted();
 			const hash = await evmReceiveMessage(
 				walletClient,
@@ -592,11 +623,6 @@ function formatSol(lamports: bigint, round: 'up' | 'down'): string {
 	const unit = 100_000n; // 0.0001 SOL
 	const units = (lamports + (round === 'up' ? unit - 1n : 0n)) / unit;
 	return `${units / 10_000n}.${(units % 10_000n).toString().padStart(4, '0')}`;
-}
-
-export function errorMessage(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	return String(error);
 }
 
 export type { EvmChainDefinition, SolanaChainDefinition, SuiChainDefinition };

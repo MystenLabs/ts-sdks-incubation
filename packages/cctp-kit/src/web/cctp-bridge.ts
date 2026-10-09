@@ -11,6 +11,7 @@ import type { CctpKit } from '../core/index.js';
 import type { TransferRecord, TransferStatus } from '../core/types.js';
 import { formatUsdc } from '../utils/amount.js';
 import { formatDuration, formatElapsed, waitProgress } from '../utils/duration.js';
+import { describeError } from '../utils/errors.js';
 import { storeProperty } from '../utils/lit.js';
 import { sleep } from '../utils/sleep.js';
 import { styles } from './cctp-bridge.styles.js';
@@ -848,7 +849,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 			await kit.importTransfer({ txHash, sourceChain: sourceChain || undefined });
 			this.closeImport();
 		} catch (error) {
-			this._importError = error instanceof Error ? error.message : String(error);
+			this._importError = describeError(error);
 		} finally {
 			this._busy = false;
 		}
@@ -860,7 +861,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		try {
 			await kit.connect(chain.ecosystem);
 		} catch (error) {
-			this._formError = error instanceof Error ? error.message : String(error);
+			this._formError = describeError(error);
 		}
 	}
 
@@ -944,7 +945,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		} catch (error) {
 			// A failed transfer says why on its own card. The form reports only what never
 			// became a transfer.
-			if (!id) this._formError = error instanceof Error ? error.message : String(error);
+			if (!id) this._formError = describeError(error);
 			release(false);
 		}
 	}

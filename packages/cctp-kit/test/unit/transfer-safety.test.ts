@@ -20,6 +20,7 @@ vi.mock('../../src/engine/evm.js', async (original) => ({
 	...(await original<typeof evm>()),
 	getEvmUsdcAllowance: vi.fn(async () => 10n ** 12n),
 	getEvmUsdcBalance: vi.fn(async () => 10n ** 12n),
+	getEvmNativeBalance: vi.fn(async () => 10n ** 18n),
 	approveEvmUsdc: vi.fn(async () => BURN_HASH),
 	evmDepositForBurn: vi.fn(async () => BURN_HASH),
 	waitForEvmReceipt: vi.fn(async (_chain: unknown, hash: string) => hash),
@@ -365,6 +366,55 @@ describe('a burn the wallet cannot pay for', () => {
 		expect(evm.evmDepositForBurn).not.toHaveBeenCalled();
 	});
 
+	it('is stopped before an EVM wallet is asked when it holds nothing to pay gas with', async () => {
+		vi.mocked(evm.getEvmNativeBalance).mockResolvedValueOnce(0n);
+		vi.mocked(evm.evmDepositForBurn).mockClear();
+		vi.mocked(evm.approveEvmUsdc).mockClear();
+		const updates: TransferRecord[] = [];
+		await expect(
+			runTransfer(record({}), {
+				dAppKit: suiDAppKit().dAppKit,
+				wallets: evmWallets(),
+				iris: new IrisClient('mainnet', { fetch: vi.fn<typeof fetch>() }),
+				chains,
+				onUpdate: (t) => updates.push(t),
+			}),
+		).rejects.toThrow(
+			'The wallet does not have enough ETH on Ethereum to pay for gas. Add some ETH on Ethereum, then try again.',
+		);
+		expect(evm.approveEvmUsdc).not.toHaveBeenCalled();
+		expect(evm.evmDepositForBurn).not.toHaveBeenCalled();
+		expect(updates.at(-1)).toMatchObject({ status: 'failed' });
+		expect(updates.at(-1)!.sourceTxHash).toBeUndefined();
+	});
+
+	it('is not held up when the gas balance cannot be read', async () => {
+		vi.mocked(evm.getEvmNativeBalance).mockRejectedValueOnce(new Error('HTTP request failed'));
+		vi.mocked(evm.evmDepositForBurn).mockClear();
+		// An earlier test leaves the receipt wait reporting a revert.
+		vi.mocked(evm.waitForEvmReceipt)
+			.mockReset()
+			.mockImplementation(async (_chain, hash) => hash);
+		const attested = {
+			status: 'complete',
+			message: message(0n),
+			attestation: `0x${'bb'.repeat(65)}`,
+		};
+		const result = await runTransfer(record({}), {
+			dAppKit: suiDAppKit().dAppKit,
+			wallets: evmWallets(),
+			iris: new IrisClient('mainnet', {
+				fetch: vi.fn<typeof fetch>(async () => json(200, { messages: [attested] })),
+			}),
+			chains,
+			stopAfterAttestation: true,
+			pollIntervalMs: 1,
+			onUpdate: () => undefined,
+		});
+		expect(evm.evmDepositForBurn).toHaveBeenCalledTimes(1);
+		expect(result.status).toBe('readyToMint');
+	});
+
 	it('goes ahead when the balance cannot be read', async () => {
 		solanaAcceptsEverything();
 		vi.spyOn(Connection.prototype, 'getAccountInfo').mockRejectedValue(new Error('403 Forbidden'));
@@ -387,6 +437,71 @@ describe('a burn the wallet cannot pay for', () => {
 			onUpdate: () => undefined,
 		});
 		expect(result.sourceTxHash).toBe('solana-signature');
+	});
+});
+
+describe('a claim on an EVM chain by a wallet with nothing to pay gas with', () => {
+	// Someone bridging to a chain for the first time. The wallet's node answered "gas required
+	// exceeds allowance (0)", and the card showed that inside forty lines of call data.
+	const waiting = () =>
+		record({
+			from: 'sui',
+			to: 'base',
+			sender: SUI_ADDRESS,
+			recipient: EVM_ADDRESS,
+			status: 'readyToMint',
+			sourceTxHash: SUI_DIGEST,
+			sourceConfirmed: true,
+			message: message(0n),
+			attestation: `0x${'bb'.repeat(65)}`,
+		});
+	const claimWith = (writeContract: () => Promise<string>, updates: TransferRecord[]) => ({
+		dAppKit: suiDAppKit().dAppKit,
+		wallets: async () =>
+			({
+				evm: {
+					getWalletClient: async () => ({ account: { address: EVM_ADDRESS }, writeContract }),
+				},
+				solana: {},
+			}) as unknown as WalletAdapters,
+		iris: new IrisClient('mainnet', { fetch: vi.fn<typeof fetch>() }),
+		chains,
+		checkNonce: false,
+		onUpdate: (t: TransferRecord) => updates.push(t),
+	});
+
+	it('is stopped before the wallet is asked, and says what to do', async () => {
+		vi.mocked(evm.getEvmNativeBalance).mockResolvedValueOnce(0n);
+		const writeContract = vi.fn(async () => BURN_HASH);
+		const updates: TransferRecord[] = [];
+		await expect(runTransfer(waiting(), claimWith(writeContract, updates))).rejects.toThrow(
+			/does not have enough ETH on Base/,
+		);
+		expect(writeContract).not.toHaveBeenCalled();
+		expect(updates.at(-1)).toMatchObject({
+			status: 'failed',
+			error:
+				'The wallet does not have enough ETH on Base to pay for gas. Add some ETH on Base, then try again.',
+		});
+		// Nothing is lost: the attestation is still there to claim with.
+		expect(updates.at(-1)!.attestation).toBeTruthy();
+	});
+
+	it('says the same when it is the wallet that reports it', async () => {
+		// Some ETH, not enough: the check lets it through and the node turns the claim away.
+		const writeContract = vi.fn(async () => {
+			throw Object.assign(
+				new Error(
+					`The contract function "receiveMessage" reverted with the following reason:\nRPC 0x2105 Infura eth_sendRawTransaction: gas required exceeds allowance (0)\n\nContract Call:\n  args: (0x${'00'.repeat(376)})\n\nVersion: viem@2.57.3`,
+				),
+				{ name: 'ContractFunctionExecutionError' },
+			);
+		});
+		const updates: TransferRecord[] = [];
+		await expect(runTransfer(waiting(), claimWith(writeContract, updates))).rejects.toThrow();
+		expect(updates.at(-1)!.error).toBe(
+			'The wallet does not have enough ETH on Base to pay for gas. Add some ETH on Base, then try again.',
+		);
 	});
 });
 

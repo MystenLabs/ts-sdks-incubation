@@ -52,6 +52,11 @@ export async function getEvmUsdcBalance(chain: EvmChainDefinition, owner: Hex): 
 	});
 }
 
+/** What `owner` holds of the chain's own coin, which is what pays for gas. */
+export async function getEvmNativeBalance(chain: EvmChainDefinition, owner: Hex): Promise<bigint> {
+	return getEvmPublicClient(chain).getBalance({ address: owner });
+}
+
 export async function getEvmUsdcAllowance(chain: EvmChainDefinition, owner: Hex): Promise<bigint> {
 	return getEvmPublicClient(chain).readContract({
 		address: chain.usdcAddress,
