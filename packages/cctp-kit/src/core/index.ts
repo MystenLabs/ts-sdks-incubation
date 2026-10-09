@@ -50,7 +50,7 @@ import {
 import type { BurnDetails } from './import.js';
 import { createStores } from './store.js';
 import type { CctpKitStores } from './store.js';
-import { runTransfer } from './transfer.js';
+import { isNonceUsed, runTransfer } from './transfer.js';
 import type { CctpKitConfig, CctpKitEvent, Quote, TransferRecord, TransferSpeed } from './types.js';
 
 export interface CctpKit {
@@ -990,6 +990,29 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		}
 	}
 	resumeInterrupted();
+
+	/**
+	 * A transfer that is waiting to be claimed may have been claimed already: from another
+	 * device, or by someone who submitted it for the recipient. Look when the page loads, so the
+	 * card does not offer a claim that can only fail. A lookup that cannot be made changes nothing.
+	 */
+	async function settleClaimed(only?: string) {
+		for (const record of readStored()) {
+			if (only && record.id !== only) continue;
+			if (!record.message || !record.attestation || record.destinationTxHash) continue;
+			if (record.status !== 'readyToMint' && record.status !== 'failed') continue;
+			const to = chains.find((c) => c.key === record.to);
+			if (!to || isRunning(record.id)) continue;
+			const claimed = await isNonceUsed(to, record.message, { dAppKit });
+			const latest = readStored().find((t) => t.id === record.id);
+			if (!claimed || destroyed || !latest || latest.destinationTxHash || isRunning(latest.id)) {
+				continue;
+			}
+			const now = Date.now();
+			upsert({ ...latest, status: 'complete', error: undefined, completedAt: now, updatedAt: now });
+		}
+	}
+	void settleClaimed();
 
 	void backfillBurnTimes();
 	void refreshBalance();

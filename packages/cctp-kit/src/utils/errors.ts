@@ -79,6 +79,14 @@ const NO_GAS = [
 ];
 const REJECTED =
 	/user (rejected|denied|cancell?ed|declined|disapproved)|(rejected|cancell?ed|denied) (by|from) (the )?user|user rejection/i;
+// What a wallet that signs in a window of its own throws when the browser will not open it.
+const BLOCKED_WINDOW = /failed to open (a )?(new )?window|pop-?up[^.]*blocked/i;
+
+/** Whether a wallet request failed because the browser refused to open the wallet's window. */
+export function isBlockedWindow(error: unknown): boolean {
+	return causes(error).some((link) => BLOCKED_WINDOW.test(link.message));
+}
+
 const SAYS_NOTHING =
 	/^(An unknown RPC error occurred|An internal error was received|Missing or invalid parameters)/;
 const MAX_LENGTH = 300;
@@ -110,6 +118,9 @@ export function describeError(error: unknown, context: { chain?: ChainDefinition
 		NO_GAS.some((r) => r.test(said))
 	) {
 		return gasShortfallMessage(context.chain);
+	}
+	if (links.some((link) => BLOCKED_WINDOW.test(link.message))) {
+		return "Your browser blocked the wallet's window. Allow pop-ups for this site, then try again.";
 	}
 	const refusal = links.find(
 		(link) => link.name === 'UserRejectedRequestError' || link.code === 4001,

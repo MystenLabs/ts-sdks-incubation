@@ -143,6 +143,82 @@ describe('a burn from Sui', () => {
 	});
 });
 
+describe('a claim on Sui', () => {
+	const SUI_BOUND: TransferRecord = {
+		id: 'transfer-2',
+		network: 'mainnet',
+		from: 'avalanche',
+		to: 'sui',
+		amount: '1000000',
+		maxFee: '0',
+		speed: 'standard',
+		sender: EVM_ADDRESS,
+		recipient: SUI_ADDRESS,
+		status: 'readyToMint',
+		sourceTxHash: `0x${'ab'.repeat(32)}`,
+		sourceConfirmed: true,
+		message: `0x${'aa'.repeat(376)}`,
+		attestation: `0x${'bb'.repeat(65)}`,
+		createdAt: 1,
+		updatedAt: 1,
+	};
+
+	it('asks the wallet inside the click on Claim', async () => {
+		// The same rule as for a burn: Sui is where most transfers end, and a wallet that signs
+		// in a window of its own is what many people there use.
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
+		const { kit, signAndExecuteTransaction } = suiKit(storage);
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			resume(kit: unknown, id: string): Promise<void>;
+		};
+		element.instance = kit;
+		await settle();
+
+		void element.resume(kit, SUI_BOUND.id);
+		expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+		await settle();
+		expect(kit.stores.$transfers.get()[0]).toMatchObject({
+			status: 'complete',
+			destinationTxHash: DIGEST,
+		});
+		kit.destroy();
+	});
+
+	it('is shown as done when the page loads, if it was claimed from somewhere else meanwhile', async () => {
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
+		const signAndExecuteTransaction = vi.fn();
+		const kit = createCctpKit({
+			dAppKit: {
+				stores: {
+					$connection: atom({ account: { address: SUI_ADDRESS } }),
+					$currentNetwork: atom('mainnet'),
+				},
+				getClient: () => ({
+					core: {
+						getBalance: async () => ({ balance: { balance: '5000000' } }),
+						// The transmitter's `is_nonce_used` view says yes.
+						simulateTransaction: async () => ({
+							commandResults: [{ returnValues: [{ bcs: new Uint8Array([1]) }] }],
+						}),
+					},
+				}),
+				signAndExecuteTransaction,
+			} as unknown as AnyDAppKit,
+			network: 'mainnet',
+			storage,
+			iris: { fetch: vi.fn<typeof fetch>(async () => json(404, { error: 'not found' })) },
+			wallets: { evm: unusedWallet('evm') as never, solana: unusedWallet('solana') as never },
+		});
+		await settle(50);
+		expect(kit.stores.$transfers.get()[0]).toMatchObject({ id: SUI_BOUND.id, status: 'complete' });
+		expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		kit.destroy();
+	});
+});
+
 describe('removing a transfer that never burned', () => {
 	const stored = (storage: ReturnType<typeof createInMemoryStorage>) =>
 		JSON.parse(storage.getItem(KEY) ?? '[]') as TransferRecord[];

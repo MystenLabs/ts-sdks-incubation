@@ -46,6 +46,7 @@ import {
 	CctpKitError,
 	describeError,
 	gasShortfallMessage,
+	isBlockedWindow,
 	TransactionRevertedError,
 } from '../utils/errors.js';
 import { sleep } from '../utils/sleep.js';
@@ -91,6 +92,8 @@ export async function runTransfer(
 
 	const from = findChain(ctx.chains, transfer.from);
 	const to = findChain(ctx.chains, transfer.to);
+	// A run that begins with the attestation in hand was started by someone pressing Claim.
+	const startedAtClaim = !!record.attestation && !!record.message;
 
 	try {
 		if (!transfer.sourceTxHash) {
@@ -119,9 +122,15 @@ export async function runTransfer(
 				if (transfer.status !== 'readyToMint') update({ status: 'readyToMint' });
 				return transfer;
 			}
-			const nonceUsed =
-				ctx.checkNonce === false ? false : await isNonceUsed(to, transfer.message!, ctx);
-			if (nonceUsed) {
+			// A Sui wallet that signs in a window of its own can only open it while the press
+			// that asked for the claim is still being handled. So on a Claim press nothing is
+			// awaited on the way to a Sui wallet. Whether the message was claimed already is
+			// looked at when the page loads, and here only if the claim then fails.
+			const inPress =
+				startedAtClaim && to.ecosystem === 'sui' && !isExpiredOnSui(transfer.message!);
+			const claimed = () =>
+				ctx.checkNonce === false ? false : isNonceUsed(to, transfer.message!, ctx);
+			if (!inPress && (await claimed())) {
 				update({ status: 'complete', completedAt: Date.now() });
 				return transfer;
 			}
@@ -136,7 +145,25 @@ export async function runTransfer(
 				update({ message: fresh.message, attestation: fresh.attestation });
 			}
 			update({ status: 'minting' });
-			const destinationTxHash = await mint(transfer, to, ctx, update);
+			let destinationTxHash: string;
+			try {
+				destinationTxHash = await mint(transfer, to, ctx, update);
+			} catch (error) {
+				if (ctx.signal?.aborted || to.ecosystem !== 'sui') throw error;
+				if (inPress && (await claimed())) {
+					// It failed because it had been made already, from elsewhere.
+					update({ status: 'complete', completedAt: Date.now() });
+					return transfer;
+				}
+				if (!inPress && isBlockedWindow(error)) {
+					// The claim follows the attestation by itself, minutes after anyone pressed
+					// anything, and the browser would not open the wallet's window for it. That is
+					// not a failure: the transfer waits at Claim, where a press will open it.
+					update({ status: 'readyToMint' });
+					return transfer;
+				}
+				throw error;
+			}
 			update({ status: 'complete', destinationTxHash, completedAt: Date.now() });
 		} else {
 			update({ status: 'complete', completedAt: transfer.completedAt ?? Date.now() });
@@ -586,10 +613,10 @@ async function executeSui(
 }
 
 /** Best-effort "already minted?" check; any failure means "assume not", never a failed transfer. */
-async function isNonceUsed(
+export async function isNonceUsed(
 	to: ChainDefinition,
 	messageHex: string,
-	ctx: TransferContext,
+	ctx: Pick<TransferContext, 'dAppKit'>,
 ): Promise<boolean> {
 	try {
 		return await isNonceUsedUnsafe(to, messageHex, ctx);
@@ -601,7 +628,7 @@ async function isNonceUsed(
 async function isNonceUsedUnsafe(
 	to: ChainDefinition,
 	messageHex: string,
-	ctx: TransferContext,
+	ctx: Pick<TransferContext, 'dAppKit'>,
 ): Promise<boolean> {
 	const parsed = parseMessageV2(messageHex);
 	switch (to.ecosystem) {

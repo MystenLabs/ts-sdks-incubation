@@ -849,13 +849,84 @@ describe('a claim on Sui', () => {
 		expect(updates.find((u) => u.destinationTxHash)?.status).toBe('minting');
 	});
 
-	it('is not sent again when the chain says the message was already claimed', async () => {
+	it('asks the wallet at once on a Claim press, with nothing awaited first', async () => {
+		// A Sui wallet that signs in a window of its own can only open it while the press is
+		// still being handled. A lookup awaited first, and the browser may refuse the window.
+		const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+			core: { simulateTransaction: nonceIs(false) },
+		});
+		const run = runTransfer(claimable(), context(dAppKit));
+		expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+		expect((await run).status).toBe('complete');
+	});
+
+	it('is completed, not failed, when it turns out to have been claimed already', async () => {
+		// From another device, or by someone who submitted it for the recipient.
 		const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
 			core: { simulateTransaction: nonceIs(true) },
 		});
-		const result = await runTransfer(claimable(), context(dAppKit));
+		signAndExecuteTransaction.mockResolvedValueOnce({
+			$kind: 'FailedTransaction',
+			FailedTransaction: { status: { error: { message: 'MoveAbort: nonce already used' } } },
+		} as never);
+		const updates: TransferRecord[] = [];
+		const result = await runTransfer(claimable(), context(dAppKit, updates));
 		expect(result.status).toBe('complete');
-		expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		expect(updates.some((u) => u.status === 'failed')).toBe(false);
+	});
+
+	describe('following the attestation by itself, minutes after anyone pressed anything', () => {
+		const attested = () => ({
+			status: 'complete',
+			message: message(BigInt(Date.now() + 3_600_000)),
+			attestation: `0x${'11'.repeat(65)}`,
+		});
+		const waiting = () =>
+			record({ status: 'attesting', sourceTxHash: BURN_HASH, sourceConfirmed: true });
+		const afterAttestation = (dAppKit: AnyDAppKit, updates: TransferRecord[] = []) => ({
+			...context(dAppKit, updates),
+			iris: new IrisClient('mainnet', {
+				fetch: vi.fn<typeof fetch>(async () => json(200, { messages: [attested()] })),
+			}),
+			pollIntervalMs: 1,
+		});
+
+		it('is not sent when the chain says the message was already claimed', async () => {
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(true) },
+			});
+			const result = await runTransfer(waiting(), afterAttestation(dAppKit));
+			expect(result.status).toBe('complete');
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		it('waits at Claim when the browser will not open the wallet window', async () => {
+			// Nobody pressed anything, so a wallet that signs in its own window is refused one.
+			// That is not a failure of the transfer: a press on Claim will open it.
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			signAndExecuteTransaction.mockRejectedValueOnce(new Error('Failed to open new window'));
+			const updates: TransferRecord[] = [];
+			const result = await runTransfer(waiting(), afterAttestation(dAppKit, updates));
+			expect(result.status).toBe('readyToMint');
+			expect(result.error).toBeUndefined();
+			expect(updates.some((u) => u.status === 'failed')).toBe(false);
+		});
+	});
+
+	it('says to allow pop-ups when the window is refused on a Claim press', async () => {
+		const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+			core: { simulateTransaction: nonceIs(false) },
+		});
+		signAndExecuteTransaction.mockRejectedValueOnce(new Error('Failed to open new window'));
+		const updates: TransferRecord[] = [];
+		await expect(runTransfer(claimable(), context(dAppKit, updates))).rejects.toThrow();
+		expect(updates.at(-1)).toMatchObject({
+			status: 'failed',
+			error:
+				"Your browser blocked the wallet's window. Allow pop-ups for this site, then try again.",
+		});
 	});
 
 	it('is sent when the message has not been claimed, or the lookup cannot be made', async () => {
