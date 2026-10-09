@@ -1496,10 +1496,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
             // retry re-sends the same ciphertext, which is still a payload.
             let uploadResult: FileUploadResponse | undefined;
             let lastErr:
-              | ConsoleApiError
-              | UnsupportedFileTypeError
-              | PayloadTooLargeError
-              | undefined;
+              ConsoleApiError | UnsupportedFileTypeError | PayloadTooLargeError | undefined;
             for (let attempt = 0; attempt < MIRROR_GRANT_ATTEMPTS; attempt++) {
               const res = yield* api
                 .uploadBucketFile(

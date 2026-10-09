@@ -150,8 +150,7 @@ export const renderFile = (input: RenderInput): RenderResult => {
 const INDENT = '\t';
 
 type TryRenderResult =
-	| { readonly ok: true; readonly text: string }
-	| { readonly ok: false; readonly detail: string };
+	{ readonly ok: true; readonly text: string } | { readonly ok: false; readonly detail: string };
 
 const tryOk = (text: string): TryRenderResult => ({ ok: true, text });
 const tryErr = (detail: string): TryRenderResult => ({ ok: false, detail });

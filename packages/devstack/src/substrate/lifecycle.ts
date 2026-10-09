@@ -6,13 +6,7 @@
 
 /** Closed state set the scheduler tracks. */
 export type LifecycleStatus =
-	| 'pending'
-	| 'acquiring'
-	| 'ready'
-	| 'failed'
-	| 'stopping'
-	| 'stopped'
-	| 'done';
+	'pending' | 'acquiring' | 'ready' | 'failed' | 'stopping' | 'stopped' | 'done';
 
 /** Phases on top of statuses. Free-form (architecture Tension 14):
  *  the engine treats phase as opaque text; renderers project. */

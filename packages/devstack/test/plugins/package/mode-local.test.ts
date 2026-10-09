@@ -45,14 +45,12 @@ const transientProbe = (
 					value === null
 						? Effect.succeed(null)
 						: Schema.decodeUnknownEffect(schema)(value).pipe(
-								Effect.mapError(
-									(cause): ChainProbeError => ({
-										_tag: 'ChainProbeError',
-										reason: 'decode-failed',
-										chainId: 'sui:localnet',
-										detail: String(cause),
-									}),
-								),
+								Effect.mapError((cause): ChainProbeError => ({
+									_tag: 'ChainProbeError',
+									reason: 'decode-failed',
+									chainId: 'sui:localnet',
+									detail: String(cause),
+								})),
 							),
 				),
 			),

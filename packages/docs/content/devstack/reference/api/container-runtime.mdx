@@ -31,9 +31,7 @@ export const mything = () =>
 				const handle = yield* runtime.ensureContainer({
 					name: 'mything-1',
 					image,
-					labels: [
-						/* ContainerLabelTuple stamped by the substrate's managed-container helper */
-					],
+					labels: [/* ContainerLabelTuple stamped by the substrate's managed-container helper */],
 					recreate: 'on-config-change',
 				});
 				return { handle };

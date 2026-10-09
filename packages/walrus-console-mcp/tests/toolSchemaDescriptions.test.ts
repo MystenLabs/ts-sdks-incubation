@@ -44,8 +44,7 @@ afterAll(() => close());
 
 const property = (tool: string, key: string) =>
   tools.find((t) => t.name === tool)?.inputSchema.properties?.[key] as
-    | { description?: string; enum?: string[] }
-    | undefined;
+    { description?: string; enum?: string[] } | undefined;
 
 describe("tool input schemas, as tools/list returns them", () => {
   it("lists the 17 tools", () => {

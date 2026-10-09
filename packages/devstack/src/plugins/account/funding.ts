@@ -115,8 +115,7 @@ export interface CrossCuttingFundingEntry<M extends CoinMember = CoinMember> {
 }
 
 export type AccountFundingEntry<M extends CoinMember = CoinMember> =
-	| SuiFundingEntry
-	| CrossCuttingFundingEntry<M>;
+	SuiFundingEntry | CrossCuttingFundingEntry<M>;
 
 export type AccountFunding = ReadonlyArray<AccountFundingEntry>;
 

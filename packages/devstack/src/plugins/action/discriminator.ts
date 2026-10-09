@@ -54,8 +54,7 @@ export interface StaticDiscriminator {
  *                  on EVERY acquire (hit OR miss). User errors
  *                  propagate as `ActionError({phase: 'discriminator'})`. */
 export type DynamicDiscriminator<Deps = unknown> =
-	| string
-	| ((ctx: ActionBuildContext, deps: Deps) => Effect.Effect<string, ActionError>);
+	string | ((ctx: ActionBuildContext, deps: Deps) => Effect.Effect<string, ActionError>);
 
 /** Build the content-hash input string from static + resolved-dynamic
  *  pieces. Canonical shape: newline-delimited so two strings with

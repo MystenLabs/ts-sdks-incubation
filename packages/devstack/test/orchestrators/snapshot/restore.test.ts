@@ -170,13 +170,11 @@ const runtimeStub = (
 		saveImages: () => Stream.empty,
 		loadImage: (tar) =>
 			Stream.runCollect(tar).pipe(
-				Effect.mapError(
-					(cause): ContainerRuntimeError => ({
-						_tag: 'ContainerRuntimeError',
-						reason: 'image-load-failed',
-						detail: String(cause),
-					}),
-				),
+				Effect.mapError((cause): ContainerRuntimeError => ({
+					_tag: 'ContainerRuntimeError',
+					reason: 'image-load-failed',
+					detail: String(cause),
+				})),
 				Effect.flatMap((chunks) => {
 					for (const chunk of chunks) {
 						opts.loadBytes?.push(...chunk);

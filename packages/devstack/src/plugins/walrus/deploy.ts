@@ -536,9 +536,8 @@ export const deployWalrusContracts = (
 				),
 			// Produce: real walrus-deploy one-shot.
 			produce: runDeployOneShot(runtime, inputs).pipe(
-				Effect.mapError(
-					(err): ArtifactPublishError =>
-						artifactPublishError('produce-failed', `walrus.deploy ${err.phase}: ${err.message}`),
+				Effect.mapError((err): ArtifactPublishError =>
+					artifactPublishError('produce-failed', `walrus.deploy ${err.phase}: ${err.message}`),
 				),
 			),
 			// Register: fires on EVERY cycle. The plugin's outer body

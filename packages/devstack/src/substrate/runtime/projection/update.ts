@@ -119,8 +119,7 @@ const MAX_ROW_LOG_LINES = 100;
 // -----------------------------------------------------------------------------
 
 type DecodeResult<T> =
-	| { readonly ok: true; readonly value: T }
-	| { readonly ok: false; readonly cause: unknown };
+	{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly cause: unknown };
 
 // -----------------------------------------------------------------------------
 // LifecycleFact bridge

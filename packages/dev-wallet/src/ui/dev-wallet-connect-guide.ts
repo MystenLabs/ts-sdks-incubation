@@ -293,11 +293,13 @@ createDAppKit({
 				)}
 			</div>
 			<div role="tabpanel" class="panel">
-				${this._tab === 'bookmarklet'
-					? this.platform === 'desktop'
-						? this.#renderBookmarklet(bookmarkletHref, consoleScript)
-						: this.#renderMobileBookmarklet(bookmarkletHref)
-					: this.#renderDappKit(dappKitSnippet)}
+				${
+					this._tab === 'bookmarklet'
+						? this.platform === 'desktop'
+							? this.#renderBookmarklet(bookmarkletHref, consoleScript)
+							: this.#renderMobileBookmarklet(bookmarkletHref)
+						: this.#renderDappKit(dappKitSnippet)
+				}
 			</div>
 		`;
 	}
@@ -317,9 +319,11 @@ createDAppKit({
 							@click=${this.#nudgeDrag}
 							>${this.#walletIcon} Dev Wallet</a
 						>
-						${this._dragNudge
-							? html`<span class="hint nudge">Drag it, don't click it</span>`
-							: nothing}
+						${
+							this._dragNudge
+								? html`<span class="hint nudge">Drag it, don't click it</span>`
+								: nothing
+						}
 					</div>
 				</li>
 				<li>
@@ -331,9 +335,11 @@ createDAppKit({
 				The bookmark only lasts until the page reloads. After a reload, click it again.
 			</p>
 			<button class="link-btn" type="button" @click=${() => this.#copy.copy(consoleScript)}>
-				${this.#copy.isCopied(consoleScript)
-					? 'Copied. Paste it into the dApp’s browser console.'
-					: 'Can’t use bookmarks? Copy a script for the dApp’s console instead.'}
+				${
+					this.#copy.isCopied(consoleScript)
+						? 'Copied. Paste it into the dApp’s browser console.'
+						: 'Can’t use bookmarks? Copy a script for the dApp’s console instead.'
+				}
 			</button>
 		`;
 	}
@@ -359,26 +365,28 @@ createDAppKit({
 						${copied ? 'Copied' : 'Copy bookmarklet code'}
 					</button>
 				</li>
-				${this.platform === 'ios'
-					? html`
-							<li>Bookmark this page, then open Bookmarks and edit the new bookmark.</li>
-							<li>Replace its address with the copied code and tap Done.</li>
-							<li>
-								On your dApp, open Bookmarks and tap the bookmark. Then choose
-								<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
-							</li>
-						`
-					: html`
-							<li>
-								Bookmark this page, then edit the bookmark: name it "Dev Wallet" and replace its URL
-								with the copied code.
-							</li>
-							<li>
-								On your dApp, type "Dev Wallet" in the address bar and tap the bookmark suggestion
-								(opening it from the bookmarks list won't work). Then choose
-								<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
-							</li>
-						`}
+				${
+					this.platform === 'ios'
+						? html`
+								<li>Bookmark this page, then open Bookmarks and edit the new bookmark.</li>
+								<li>Replace its address with the copied code and tap Done.</li>
+								<li>
+									On your dApp, open Bookmarks and tap the bookmark. Then choose
+									<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
+								</li>
+							`
+						: html`
+								<li>
+									Bookmark this page, then edit the bookmark: name it "Dev Wallet" and replace its
+									URL with the copied code.
+								</li>
+								<li>
+									On your dApp, type "Dev Wallet" in the address bar and tap the bookmark suggestion
+									(opening it from the bookmarks list won't work). Then choose
+									<strong>Dev Wallet (Web)</strong> in the dApp's wallet picker.
+								</li>
+							`
+				}
 			</ol>
 			<p class="hint">
 				The bookmark only lasts until the page reloads. After a reload, run it again.

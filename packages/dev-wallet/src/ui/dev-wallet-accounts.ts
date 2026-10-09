@@ -265,119 +265,133 @@ export class DevWalletAccounts extends LitElement {
 		return html`
 			<div class="accounts-header">
 				<h3 class="section-header">Accounts</h3>
-				${canAdd
-					? html`<button
-							class="add-btn"
-							part="add-button"
-							?disabled=${fork}
-							title=${fork
-								? `Disabled on ${this.network}: fork networks have no faucet — fund seed addresses via Sui({fork:{seed:{addresses}}}) instead.`
-								: ''}
-							@click=${this.#openDialog}
-						>
-							+ Add${fork ? ' (fork: no faucet)' : ''}
-						</button>`
-					: nothing}
+				${
+					canAdd
+						? html`<button
+								class="add-btn"
+								part="add-button"
+								?disabled=${fork}
+								title=${
+									fork
+										? `Disabled on ${this.network}: fork networks have no faucet — fund seed addresses via Sui({fork:{seed:{addresses}}}) instead.`
+										: ''
+								}
+								@click=${this.#openDialog}
+							>
+								+ Add${fork ? ' (fork: no faucet)' : ''}
+							</button>`
+						: nothing
+				}
 			</div>
-			${this.accounts.length === 0
-				? html`<div class="empty-state" part="empty-state">No accounts yet</div>`
-				: html`
-						<div
-							class="account-list"
-							part="account-list"
-							role="listbox"
-							aria-label="Wallet accounts"
-						>
-							${this.accounts.map(
-								(account, index) => html`
-									<button
-										class="account-item ${account.address === this.activeAddress ? 'active' : ''}"
-										role="option"
-										aria-selected=${account.address === this.activeAddress}
-										@click=${() => this.#selectAccount(account)}
-									>
-										<div class="account-avatar">${index + 1}</div>
-										<div class="account-info">
-											${this._editingAddress === account.address
-												? html`<input
-														class="edit-label-input"
-														type="text"
-														aria-label="Rename account"
-														.value=${this._editingLabel}
-														@input=${(e: InputEvent) => {
-															this._editingLabel = (e.target as HTMLInputElement).value;
-														}}
-														@keydown=${(e: KeyboardEvent) => {
-															e.stopPropagation();
-															if (e.key === 'Enter') this.#saveLabel(account.address);
-															if (e.key === 'Escape') this.#cancelEditLabel();
-														}}
-														@click=${(e: Event) => e.stopPropagation()}
-													/>`
-												: html`<div class="account-label-row">
-														<span class="account-label">
-															${this.#getAccountLabel(account.address, index)}
-														</span>
-														<span class="account-badge"
-															>${this.#getAdapterName(account.address)}</span
-														>
-														${this.#canRename(account.address)
-															? html`<button
-																	class="edit-label-btn"
-																	title="Rename"
-																	aria-label="Rename account"
-																	@click=${(e: Event) => {
-																		e.stopPropagation();
-																		this.#startEditLabel(account.address, index);
-																	}}
+			${
+				this.accounts.length === 0
+					? html`<div class="empty-state" part="empty-state">No accounts yet</div>`
+					: html`
+							<div
+								class="account-list"
+								part="account-list"
+								role="listbox"
+								aria-label="Wallet accounts"
+							>
+								${this.accounts.map(
+									(account, index) => html`
+										<button
+											class="account-item ${account.address === this.activeAddress ? 'active' : ''}"
+											role="option"
+											aria-selected=${account.address === this.activeAddress}
+											@click=${() => this.#selectAccount(account)}
+										>
+											<div class="account-avatar">${index + 1}</div>
+											<div class="account-info">
+												${
+													this._editingAddress === account.address
+														? html`<input
+																class="edit-label-input"
+																type="text"
+																aria-label="Rename account"
+																.value=${this._editingLabel}
+																@input=${(e: InputEvent) => {
+																	this._editingLabel = (e.target as HTMLInputElement).value;
+																}}
+																@keydown=${(e: KeyboardEvent) => {
+																	e.stopPropagation();
+																	if (e.key === 'Enter') this.#saveLabel(account.address);
+																	if (e.key === 'Escape') this.#cancelEditLabel();
+																}}
+																@click=${(e: Event) => e.stopPropagation()}
+															/>`
+														: html`<div class="account-label-row">
+																<span class="account-label">
+																	${this.#getAccountLabel(account.address, index)}
+																</span>
+																<span class="account-badge"
+																	>${this.#getAdapterName(account.address)}</span
 																>
-																	&#9998;
-																</button>`
-															: nothing}
-													</div>`}
-											<div
-												class="account-address ${this.#copy.isCopied(account.address)
-													? 'copied'
-													: ''}"
-												title="Click to copy"
-												role="button"
-												tabindex="0"
-												aria-label="Copy address"
-												@click=${(e: Event) => {
-													e.stopPropagation();
-													this.#copy.copy(account.address);
-												}}
-												@keydown=${(e: KeyboardEvent) => {
-													if (e.key === 'Enter' || e.key === ' ') {
-														e.preventDefault();
-														e.stopPropagation();
-														this.#copy.copy(account.address);
-													}
-												}}
-											>
-												${this.#copy.isCopied(account.address)
-													? 'Copied!'
-													: formatAddress(account.address)}
-											</div>
-										</div>
-										${this.#canRemove(account.address)
-											? html`<button
-													class="delete-btn"
-													title="Remove account"
-													aria-label="Remove account"
+																${
+																	this.#canRename(account.address)
+																		? html`<button
+																				class="edit-label-btn"
+																				title="Rename"
+																				aria-label="Rename account"
+																				@click=${(e: Event) => {
+																					e.stopPropagation();
+																					this.#startEditLabel(account.address, index);
+																				}}
+																			>
+																				&#9998;
+																			</button>`
+																		: nothing
+																}
+															</div>`
+												}
+												<div
+													class="account-address ${
+														this.#copy.isCopied(account.address) ? 'copied' : ''
+													}"
+													title="Click to copy"
+													role="button"
+													tabindex="0"
+													aria-label="Copy address"
 													@click=${(e: Event) => {
 														e.stopPropagation();
-														this.#promptDelete(account.address);
+														this.#copy.copy(account.address);
+													}}
+													@keydown=${(e: KeyboardEvent) => {
+														if (e.key === 'Enter' || e.key === ' ') {
+															e.preventDefault();
+															e.stopPropagation();
+															this.#copy.copy(account.address);
+														}
 													}}
 												>
-													&#128465;
-												</button>`
-											: nothing}
-									</button>
-								`,
-							)}
-						</div>
-					`}
+													${
+														this.#copy.isCopied(account.address)
+															? 'Copied!'
+															: formatAddress(account.address)
+													}
+												</div>
+											</div>
+											${
+												this.#canRemove(account.address)
+													? html`<button
+															class="delete-btn"
+															title="Remove account"
+															aria-label="Remove account"
+															@click=${(e: Event) => {
+																e.stopPropagation();
+																this.#promptDelete(account.address);
+															}}
+														>
+															&#128465;
+														</button>`
+													: nothing
+											}
+										</button>
+									`,
+								)}
+							</div>
+						`
+			}
 			${this.#renderConfirmDialog()}
 			<dev-wallet-new-account
 				.adapters=${this.adapters}
@@ -504,9 +518,11 @@ export class DevWalletAccounts extends LitElement {
 			>
 				<div class="dialog-title">Remove Account</div>
 				<div class="confirm-body">
-					${imported
-						? 'This will remove the imported account from your wallet. You can re-import it later.'
-						: 'This will permanently delete this account and its keys. This cannot be undone.'}
+					${
+						imported
+							? 'This will remove the imported account from your wallet. You can re-import it later.'
+							: 'This will permanently delete this account and its keys. This cannot be undone.'
+					}
 				</div>
 				<div class="confirm-account">
 					<div class="confirm-account-label">${label}</div>

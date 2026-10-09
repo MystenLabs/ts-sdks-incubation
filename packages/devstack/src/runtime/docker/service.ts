@@ -391,32 +391,30 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 					summaries,
 					(s) =>
 						inspectContainer(s.name).pipe(
-							Effect.map(
-								(facts): ContainerHandle => ({
-									id: facts?.id ?? s.id,
-									name: s.name,
-									labels,
-									imageName: facts?.image ?? s.image,
-									status: (facts?.paused
-										? 'paused'
-										: (facts?.running ?? s.state === 'running')
-											? 'running'
-											: s.state === 'paused'
-												? 'paused'
-												: s.state === 'created'
-													? 'created'
-													: 'exited') as ContainerHandle['status'],
-									ips: [],
-									...(facts?.ports !== undefined ? { ports: facts.ports } : {}),
-									// Surface the inspected exit code whenever Docker
-									// supplied a `State` (running / exited-0 → `0`; only an
-									// omitted-`State` inspect leaves `exitCode` null →
-									// `lastExitCode` absent) so callers can gate on a
-									// SIGKILL/OOM `137` crash-recreate — the signal sui's
-									// indexer-db sidecar resets on.
-									...(facts?.exitCode != null ? { lastExitCode: facts.exitCode } : {}),
-								}),
-							),
+							Effect.map((facts): ContainerHandle => ({
+								id: facts?.id ?? s.id,
+								name: s.name,
+								labels,
+								imageName: facts?.image ?? s.image,
+								status: (facts?.paused
+									? 'paused'
+									: (facts?.running ?? s.state === 'running')
+										? 'running'
+										: s.state === 'paused'
+											? 'paused'
+											: s.state === 'created'
+												? 'created'
+												: 'exited') as ContainerHandle['status'],
+								ips: [],
+								...(facts?.ports !== undefined ? { ports: facts.ports } : {}),
+								// Surface the inspected exit code whenever Docker
+								// supplied a `State` (running / exited-0 → `0`; only an
+								// omitted-`State` inspect leaves `exitCode` null →
+								// `lastExitCode` absent) so callers can gate on a
+								// SIGKILL/OOM `137` crash-recreate — the signal sui's
+								// indexer-db sidecar resets on.
+								...(facts?.exitCode != null ? { lastExitCode: facts.exitCode } : {}),
+							})),
 						),
 					{ concurrency: 'unbounded' },
 				);
@@ -482,13 +480,11 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			}).pipe(
 				// Contract surface: NEVER promote non-zero exit to failure
 				// here. The caller is the policy holder.
-				Effect.map(
-					(r): ExecResult => ({
-						exitCode: r.exitCode,
-						stdout: r.stdout,
-						stderr: r.stderr,
-					}),
-				),
+				Effect.map((r): ExecResult => ({
+					exitCode: r.exitCode,
+					stdout: r.stdout,
+					stderr: r.stderr,
+				})),
 				mapToContractError,
 				Effect.provide(baseCtx),
 			);
@@ -547,13 +543,11 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				extraHosts: spec.extraHosts,
 			}).pipe(
 				// Same contract: never promote non-zero exit to failure.
-				Effect.map(
-					(r): ExecResult => ({
-						exitCode: r.exitCode,
-						stdout: r.stdout,
-						stderr: r.stderr,
-					}),
-				),
+				Effect.map((r): ExecResult => ({
+					exitCode: r.exitCode,
+					stdout: r.stdout,
+					stderr: r.stderr,
+				})),
 				mapToContractError,
 				Effect.provide(baseCtx),
 			);

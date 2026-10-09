@@ -105,8 +105,7 @@ describe('token-studio boots end-to-end', () => {
 		// root, so cache state never carries over) the output is
 		// always populated.
 		const pkg = result.resolvedValues.get('package:managed_coin#2') as
-			| LocalPackageResolved
-			| undefined;
+			LocalPackageResolved | undefined;
 		expect(pkg, 'managed_coin resolved value should be present').toBeDefined();
 		expect(pkg!.packageId).toMatch(/^0x[0-9a-f]+$/);
 
