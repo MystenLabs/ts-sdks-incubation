@@ -18,6 +18,7 @@ export type {
 export { mintRecipientBytes, runTransfer } from './core/transfer.js';
 export {
 	classifyTxHash,
+	parseTxReference,
 	resolveSourceChain,
 	buildImportedRecord,
 	burnDetailsFromIris,

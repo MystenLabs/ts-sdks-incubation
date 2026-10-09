@@ -32,7 +32,12 @@ import type {
 	WalletAccount,
 	WalletAdapters,
 } from '../wallets/types.js';
-import { buildImportedRecord, burnDetailsFromIris, resolveSourceChain } from './import.js';
+import {
+	buildImportedRecord,
+	burnDetailsFromIris,
+	parseTxReference,
+	resolveSourceChain,
+} from './import.js';
 import type { BurnDetails } from './import.js';
 import { createStores } from './store.js';
 import type { CctpKitStores } from './store.js';
@@ -691,8 +696,10 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	}
 
 	async function importTransfer(input: { txHash: string; sourceChain?: ChainKey }) {
-		const txHash = input.txHash.trim();
-		const from = resolveSourceChain(txHash, chains, input.sourceChain);
+		// The hash, or an explorer's link to it. A chain the caller names wins over the link's.
+		const pasted = parseTxReference(input.txHash, chains);
+		const txHash = pasted.txHash;
+		const from = resolveSourceChain(txHash, chains, input.sourceChain ?? pasted.chain);
 		const existing = readStored().find((t) => t.sourceTxHash === txHash);
 		if (existing) {
 			track(existing.id);

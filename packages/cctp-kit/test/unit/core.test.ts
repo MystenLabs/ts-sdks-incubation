@@ -326,6 +326,24 @@ function fakeSolanaAdapter() {
 }
 
 describe('archive, restore, remove', () => {
+	it('tracks a transfer from a block explorer link, and keeps the bare hash', async () => {
+		const storage = createInMemoryStorage();
+		const kit = createCctpKit({
+			dAppKit: mockDAppKit().dAppKit,
+			network: 'mainnet',
+			storage,
+			iris: { fetch: irisFetch() },
+			wallets: { evm: fakeEvmAdapter(), solana: fakeSolanaAdapter() },
+		});
+		const digest = 'C1v6NwPuxdXmaag9Wjcnq4TX65fh5QQj5nDVaSGeM39M';
+		const t = await kit.importTransfer({ txHash: `https://suiscan.xyz/mainnet/tx/${digest}` });
+		expect(t).toMatchObject({ from: 'sui', sourceTxHash: digest });
+		// Pasting the hash itself afterwards finds the same transfer, not a second one.
+		expect((await kit.importTransfer({ txHash: digest })).id).toBe(t.id);
+		expect(kit.stores.$transfers.get()).toHaveLength(1);
+		kit.destroy();
+	});
+
 	it('dismiss hides but keeps the record; restore and remove behave as named', async () => {
 		const storage = createInMemoryStorage();
 		const kit = createCctpKit({

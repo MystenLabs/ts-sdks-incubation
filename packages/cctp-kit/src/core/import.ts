@@ -23,6 +23,39 @@ export function classifyTxHash(txHash: string): HashKind {
 	return 'unknown';
 }
 
+/** The host a link points at, without a leading "www."; null when it is not a link. */
+function hostOf(link: string): string | null {
+	try {
+		return new URL(link.includes('://') ? link : `https://${link}`).hostname.replace(/^www\./, '');
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Read what someone pasted to track a transfer: the transaction identifier itself, or a block
+ * explorer's link to it, which is what a phone's share button hands over. A link to one of the
+ * kit's own explorers also says which chain the transaction is on.
+ */
+export function parseTxReference(
+	pasted: string,
+	chains: ChainDefinition[],
+): { txHash: string; chain?: ChainKey } {
+	const value = pasted.trim();
+	if (classifyTxHash(value) !== 'unknown') return { txHash: value };
+	const candidates = value.split(/[/?#&=\s]+/).filter((part) => classifyTxHash(part) !== 'unknown');
+	const host = hostOf(value);
+	const explorers = chains.filter((c) => hostOf(c.explorerUrl) === host);
+	for (const txHash of candidates) {
+		const chain = explorers.find((c) => c.ecosystem === classifyTxHash(txHash));
+		if (chain) return { txHash, chain: chain.key };
+	}
+	// On an explorer the kit knows, anything else of that shape is not a transaction there: a
+	// Sui address looks exactly like an EVM transaction hash.
+	if (explorers.length > 0 || candidates.length === 0) return { txHash: value };
+	return { txHash: candidates[0]! };
+}
+
 /**
  * Resolve the source chain for a hash. Sui digests and Solana signatures are unambiguous;
  * EVM hashes need a hint because every EVM chain shares the format.
@@ -33,7 +66,9 @@ export function resolveSourceChain(
 	hint?: ChainKey,
 ): ChainDefinition {
 	const kind = classifyTxHash(txHash);
-	if (kind === 'unknown') throw new Error('That does not look like a transaction hash');
+	if (kind === 'unknown') {
+		throw new Error('That does not look like a transaction hash, or a link to one');
+	}
 	if (hint) {
 		const chain = chains.find((c) => c.key === hint);
 		if (!chain) throw new Error(`Unknown chain "${hint}"`);

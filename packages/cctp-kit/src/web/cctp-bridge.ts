@@ -6,6 +6,7 @@ import { html, LitElement, nothing } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
 import type { ChainDefinition, ChainKey } from '../chains/types.js';
+import { classifyTxHash, parseTxReference } from '../core/import.js';
 import type { CctpKit } from '../core/index.js';
 import type { TransferRecord, TransferStatus } from '../core/types.js';
 import { formatUsdc } from '../utils/amount.js';
@@ -651,13 +652,10 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	private renderImport(kit: CctpKit) {
-		const isEvmHash = /^0x[0-9a-fA-F]{64}$/.test(this._importHash.trim());
+		const pasted = parseTxReference(this._importHash, kit.chains);
+		const isEvmHash = classifyTxHash(pasted.txHash) === 'evm';
 		const evmChains = kit.chains.filter((c) => c.ecosystem === 'evm');
-		const chainValue =
-			this._importChain ||
-			(evmChains.find((c) => c.key === kit.stores.$counterpartChain.get().key)?.key ??
-				evmChains[0]?.key ??
-				'');
+		const chainValue = this.importChain(kit, evmChains, pasted.chain) ?? '';
 		return html`
 			<div class="panel import" part="import">
 				<div class="row">
@@ -672,15 +670,15 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					</button>
 				</div>
 				<p class="muted import-hint">
-					Paste the burn transaction hash from Ethereum, another EVM chain, Sui or Solana. The
-					transfer is added to your list and claimed from here.
+					Paste the burn transaction hash, or its link in a block explorer, from Ethereum, another
+					EVM chain, Sui or Solana. The transfer is added to your list and claimed from here.
 				</p>
 				<input
 					class="field"
 					type="text"
 					autocomplete="off"
 					spellcheck="false"
-					placeholder="Transaction hash"
+					placeholder="Transaction hash or link"
 					aria-label="Source transaction hash"
 					.value=${this._importHash}
 					@input=${(e: Event) => (this._importHash = (e.target as HTMLInputElement).value)}
@@ -829,14 +827,21 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		this._importError = null;
 	}
 
+	/** The chain an EVM hash is looked up on: the one picked, else the link's, else the form's. */
+	private importChain(kit: CctpKit, evmChains: ChainDefinition[], linked?: ChainKey) {
+		return (
+			this._importChain ||
+			linked ||
+			(evmChains.find((c) => c.key === kit.stores.$counterpartChain.get().key)?.key ??
+				evmChains[0]?.key)
+		);
+	}
+
 	private async importTransfer(kit: CctpKit, evmChains: ChainDefinition[]) {
-		const txHash = this._importHash.trim();
-		const isEvmHash = /^0x[0-9a-fA-F]{64}$/.test(txHash);
-		const sourceChain = isEvmHash
-			? this._importChain ||
-				(evmChains.find((c) => c.key === kit.stores.$counterpartChain.get().key)?.key ??
-					evmChains[0]?.key)
-			: undefined;
+		const pasted = parseTxReference(this._importHash, kit.chains);
+		const txHash = pasted.txHash;
+		const sourceChain =
+			classifyTxHash(txHash) === 'evm' ? this.importChain(kit, evmChains, pasted.chain) : undefined;
 		this._busy = true;
 		this._importError = null;
 		try {

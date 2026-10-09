@@ -7,6 +7,7 @@ import {
 	buildImportedRecord,
 	burnDetailsFromIris,
 	classifyTxHash,
+	parseTxReference,
 	resolveSourceChain,
 } from '../../src/core/import.js';
 import type { IrisMessage } from '../../src/iris/client.js';
@@ -31,6 +32,61 @@ describe('classifyTxHash / resolveSourceChain', () => {
 		expect(resolveSourceChain(EVM_HASH, chains, 'base').key).toBe('base');
 		expect(resolveSourceChain(SUI_DIGEST, chains).key).toBe('sui');
 		expect(() => resolveSourceChain(SUI_DIGEST, chains, 'base')).toThrow(/sui transaction/);
+	});
+});
+
+describe('what gets pasted to track a transfer', () => {
+	const SOLANA_SIGNATURE = '5'.repeat(88);
+	const SUI_ADDRESS = `0x${'d1'.repeat(32)}`;
+
+	it('takes a bare hash as it is', () => {
+		expect(parseTxReference(`  ${SUI_DIGEST}\n`, chains)).toEqual({ txHash: SUI_DIGEST });
+		expect(parseTxReference(EVM_HASH, chains)).toEqual({ txHash: EVM_HASH });
+	});
+
+	it("finds the hash in an explorer's link, which is what a phone's share button gives", () => {
+		expect(parseTxReference(`https://suiscan.xyz/mainnet/tx/${SUI_DIGEST}`, chains)).toEqual({
+			txHash: SUI_DIGEST,
+			chain: 'sui',
+		});
+		// An explorer the kit does not link to itself: the shape still says which chain.
+		expect(
+			parseTxReference(`https://suivision.xyz/txblock/${SUI_DIGEST}?tab=Events`, chains),
+		).toEqual({ txHash: SUI_DIGEST });
+		expect(parseTxReference(`solscan.io/tx/${SOLANA_SIGNATURE}`, chains)).toEqual({
+			txHash: SOLANA_SIGNATURE,
+			chain: 'solana',
+		});
+	});
+
+	it('takes the chain of an EVM hash from the explorer it is on', () => {
+		// Every EVM chain shares the format, so without this the chain has to be picked by hand.
+		expect(parseTxReference(`https://basescan.org/tx/${EVM_HASH}`, chains)).toEqual({
+			txHash: EVM_HASH,
+			chain: 'base',
+		});
+		expect(parseTxReference(`https://www.etherscan.io/tx/${EVM_HASH}#eventlog`, chains)).toEqual({
+			txHash: EVM_HASH,
+			chain: 'ethereum',
+		});
+		expect(parseTxReference(`https://blockscout.example/tx/${EVM_HASH}`, chains)).toEqual({
+			txHash: EVM_HASH,
+		});
+	});
+
+	it('does not take a Sui address for an EVM transaction', () => {
+		// They look the same: 0x and 64 hex digits.
+		const link = `https://suiscan.xyz/mainnet/account/${SUI_ADDRESS}`;
+		expect(parseTxReference(link, chains)).toEqual({ txHash: link });
+		expect(() => resolveSourceChain(parseTxReference(link, chains).txHash, chains)).toThrow(
+			'That does not look like a transaction hash, or a link to one',
+		);
+	});
+
+	it('leaves anything else alone, to be reported as it was typed', () => {
+		expect(parseTxReference('my transfer is stuck', chains)).toEqual({
+			txHash: 'my transfer is stuck',
+		});
 	});
 });
 
