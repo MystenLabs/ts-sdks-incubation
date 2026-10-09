@@ -93,6 +93,9 @@ describe('putting an error into words', () => {
 		const own =
 			'Your wallet is on another network. Switch it to Base in the wallet, then try again.';
 		expect(describeError(new WalletNetworkError(own))).toBe(own);
+		// Also when it carries the library's error as its cause, which says something else.
+		const cause = new UserRejectedRequestError(new Error('Method not found'));
+		expect(describeError(new WalletNetworkError(own, { cause }))).toBe(own);
 		expect(
 			describeError(
 				new Error('Not enough USDC on Solana: the wallet holds 0 and this transfer needs 0.5.'),

@@ -92,6 +92,11 @@ function tidy(text: string): string {
  */
 export function describeError(error: unknown, context: { chain?: ChainDefinition } = {}): string {
 	if (!(error instanceof Error)) return tidy(String(error));
+	// The kit's own errors are already written for the person reading them. What caused one is
+	// kept for whoever debugs it, and is not a second opinion on what to say.
+	if (error instanceof WalletNetworkError || error instanceof TransactionRevertedError) {
+		return tidy(error.message);
+	}
 	const links = causes(error);
 	const said = links.map((link) => link.message).join('\n');
 	if (
