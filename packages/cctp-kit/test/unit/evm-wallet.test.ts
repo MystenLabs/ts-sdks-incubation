@@ -139,4 +139,48 @@ describe('getting an EVM wallet onto the network a transfer needs', () => {
 		await expect(adapter.getWalletClient(base)).rejects.toBeInstanceOf(WalletNetworkError);
 		expect(wagmi.getWalletClient).not.toHaveBeenCalled();
 	});
+
+	it('gives a switch that was agreed to a moment to show up', async () => {
+		let actual = ETHEREUM;
+		walletIs({ remembered: ETHEREUM, actual: () => actual });
+		wagmi.switchChain.mockImplementation(async () => {
+			setTimeout(() => (actual = base.chainId), 300);
+			return { id: base.chainId };
+		});
+		expect(await adapter.getWalletClient(base)).toBe(client);
+	});
+
+	describe('over WalletConnect', () => {
+		/** A phone wallet that agreed to these chains when it connected. */
+		function sessionCovers(chains: string[], accounts: string[] = []) {
+			wagmi.getAccount.mockImplementation(() => ({
+				address: client.account.address,
+				chainId: ETHEREUM,
+				connector: {
+					getChainId: async () => ETHEREUM,
+					getProvider: async () => ({ session: { namespaces: { eip155: { chains, accounts } } } }),
+				},
+			}));
+			wagmi.switchChain.mockRejectedValue(cannotSwitch());
+		}
+
+		it('says to connect again when the session does not cover the chain', async () => {
+			// Switching the wallet by hand cannot help: it refuses any request for a chain that
+			// was not agreed to when it connected.
+			sessionCovers(['eip155:1'], ['eip155:1:0x1111111111111111111111111111111111111111']);
+			await expect(adapter.getWalletClient(base)).rejects.toThrow(
+				"Your wallet's connection does not cover Base. Disconnect it and connect again, approving Base, or use a wallet that supports Base.",
+			);
+		});
+
+		it('says to switch when the session covers the chain and the wallet still is not on it', async () => {
+			sessionCovers(
+				['eip155:1'],
+				[`eip155:${base.chainId}:0x1111111111111111111111111111111111111111`],
+			);
+			await expect(adapter.getWalletClient(base)).rejects.toThrow(
+				'Your wallet is on another network. Switch it to Base in the wallet, then try again.',
+			);
+		});
+	});
 });

@@ -34,6 +34,28 @@ async function settled(request: Promise<unknown>, ms: number): Promise<unknown> 
 	return outcome;
 }
 
+/** How long a switch that was answered "yes" is given to show up where the kit looks. */
+const SWITCH_SETTLE_MS = 1_500;
+
+/**
+ * The chains a WalletConnect session covers, or null for a wallet that is not connected that
+ * way. A phone wallet agrees to a list of chains when it connects and refuses requests for any
+ * other, whatever network it is switched to by hand.
+ */
+async function sessionChainIds(
+	connector: { getProvider?: () => Promise<unknown> } | undefined,
+): Promise<number[] | null> {
+	const provider = (await connector?.getProvider?.().catch(() => null)) as {
+		session?: { namespaces?: Record<string, { chains?: string[]; accounts?: string[] }> };
+	} | null;
+	const evm = provider?.session?.namespaces?.eip155;
+	if (!evm) return null;
+	// "eip155:8453" for a chain, "eip155:8453:0x…" for an account on it.
+	return [...(evm.chains ?? []), ...(evm.accounts ?? [])]
+		.map((entry) => Number(entry.split(':')[1]))
+		.filter((id) => Number.isInteger(id));
+}
+
 export interface WagmiEvmWalletOptions {
 	/** Called when the widget needs the user to connect; hosts usually open their own modal here. */
 	openConnect?: () => Promise<void> | void;
@@ -98,9 +120,22 @@ export function createEvmWalletFromWagmiConfig(
 					}),
 					SWITCH_WAIT_MS,
 				);
+				// A switch that was agreed to can take a moment to reach every place it is recorded.
+				for (
+					let waited = 0;
+					cause === undefined &&
+					waited < SWITCH_SETTLE_MS &&
+					(await walletChainId()) !== chain.chainId;
+					waited += 150
+				) {
+					await sleep(150);
+				}
 				if ((await walletChainId()) !== chain.chainId) {
+					const covered = await sessionChainIds(getAccount(config).connector);
 					throw new WalletNetworkError(
-						`Your wallet is on another network. Switch it to ${chain.name} in the wallet, then try again.`,
+						covered && !covered.includes(chain.chainId)
+							? `Your wallet's connection does not cover ${chain.name}. Disconnect it and connect again, approving ${chain.name}, or use a wallet that supports ${chain.name}.`
+							: `Your wallet is on another network. Switch it to ${chain.name} in the wallet, then try again.`,
 						{ cause },
 					);
 				}
