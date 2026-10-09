@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import bs58 from 'bs58';
+import { fromBase58 } from '@mysten/sui/utils';
 import type { ChainDefinition, ChainKey, Network } from '../chains/types.js';
 import type { IrisMessage } from '../iris/client.js';
 import { fromBytes32, hexToBytes, isHexAddress } from '../utils/bytes.js';
@@ -14,7 +14,7 @@ export function classifyTxHash(txHash: string): HashKind {
 	const value = txHash.trim();
 	if (/^0x[0-9a-fA-F]{64}$/.test(value)) return 'evm';
 	try {
-		const bytes = bs58.decode(value);
+		const bytes = fromBase58(value);
 		if (bytes.length === 32) return 'sui';
 		if (bytes.length === 64) return 'solana';
 	} catch {
@@ -176,7 +176,7 @@ export function addressToBytes32(value: string): Uint8Array {
 		return out;
 	}
 	try {
-		const bytes = bs58.decode(value);
+		const bytes = fromBase58(value);
 		if (bytes.length === 32) return bytes;
 	} catch {
 		// not base58

@@ -96,7 +96,6 @@
 		"@nanostores/react": "^1.0.0",
 		"@solana/web3.js": "^1.98.0",
 		"@webcomponents/scoped-custom-element-registry": "^0.0.10",
-		"bs58": "^6.0.0",
 		"buffer": "^6.0.3",
 		"lit": "^3.3.3",
 		"nanostores": "^1.0.0",

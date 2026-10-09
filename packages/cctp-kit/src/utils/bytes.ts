@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isValidSuiAddress, normalizeSuiAddress } from '@mysten/sui/utils';
-import bs58 from 'bs58';
+import { fromBase58, toBase58 } from '@mysten/sui/utils';
 import { getAddress, isAddress } from 'viem';
 import type { ChainDefinition } from '../chains/types.js';
 
@@ -38,7 +38,7 @@ export function isSuiAddress(value: string): boolean {
 
 export function isSolanaAddress(value: string): boolean {
 	try {
-		return bs58.decode(value).length === 32;
+		return fromBase58(value).length === 32;
 	} catch {
 		return false;
 	}
@@ -63,7 +63,7 @@ export function toBytes32(address: string, chain: ChainDefinition): Uint8Array {
 		}
 		case 'solana': {
 			if (!isSolanaAddress(address)) throw new Error(`Invalid Solana address: ${address}`);
-			return bs58.decode(address);
+			return fromBase58(address);
 		}
 	}
 }
@@ -81,7 +81,7 @@ export function fromBytes32(bytes: Uint8Array, chain: ChainDefinition): string {
 		case 'sui':
 			return bytesToHex(bytes);
 		case 'solana':
-			return bs58.encode(bytes);
+			return toBase58(bytes);
 	}
 }
 

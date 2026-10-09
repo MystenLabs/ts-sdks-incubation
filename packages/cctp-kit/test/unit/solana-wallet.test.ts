@@ -8,7 +8,7 @@ import {
 	SendTransactionError,
 	Transaction,
 } from '@solana/web3.js';
-import bs58 from 'bs58';
+import { toBase58 } from '@mysten/sui/utils';
 import { describe, expect, it, vi } from 'vitest';
 import { SOLANA_MAINNET } from '../../src/chains/solana.js';
 import { buildSolanaBurnTransaction } from '../../src/engine/solana.js';
@@ -123,7 +123,7 @@ describe('signing a Solana transaction that needs a second signer', () => {
 			);
 			await vi.runAllTimersAsync();
 			const sent = Transaction.from(sendRawTransaction.mock.calls[0]![0] as Buffer);
-			expect(await outcome).toBe(bs58.encode(sent.signature!));
+			expect(await outcome).toBe(toBase58(sent.signature!));
 		} finally {
 			vi.useRealTimers();
 		}
@@ -147,7 +147,7 @@ describe('signing a Solana transaction that needs a second signer', () => {
 			);
 			await vi.runAllTimersAsync();
 			const sent = Transaction.from(sendRawTransaction.mock.calls[0]![0] as Buffer);
-			expect(await outcome).toBe(bs58.encode(sent.signature!));
+			expect(await outcome).toBe(toBase58(sent.signature!));
 			expect(sendRawTransaction).toHaveBeenCalledTimes(3);
 		} finally {
 			vi.useRealTimers();
@@ -182,7 +182,7 @@ describe('signing a Solana transaction that needs a second signer', () => {
 				);
 				await vi.runAllTimersAsync();
 				const sent = Transaction.from(sendRawTransaction.mock.calls[0]![0] as Buffer);
-				expect(await outcome).toBe(bs58.encode(sent.signature!));
+				expect(await outcome).toBe(toBase58(sent.signature!));
 			} finally {
 				vi.useRealTimers();
 			}

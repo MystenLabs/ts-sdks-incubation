@@ -3,7 +3,7 @@
 
 import { SendTransactionError } from '@solana/web3.js';
 import type { Connection, Signer, Transaction as SolanaTransaction } from '@solana/web3.js';
-import bs58 from 'bs58';
+import { toBase58 } from '@mysten/sui/utils';
 import { sleep } from '../utils/sleep.js';
 
 /** The parts of a Solana wallet provider this kit uses. AppKit's providers implement all of them. */
@@ -68,7 +68,7 @@ export async function signAndSendSolanaTransaction(
 				// report a failure here would invite a second burn beside one that may land.
 				if (attempt === SEND_ATTEMPTS || alreadySeen) {
 					if (!signed.signature) throw error;
-					return bs58.encode(signed.signature);
+					return toBase58(signed.signature);
 				}
 				await sleep(SEND_RETRY_MS);
 			}
