@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Connection, Signer, Transaction as SolanaTransaction } from '@solana/web3.js';
+import type { Connection, Signer, Transaction, VersionedTransaction } from '@solana/web3.js';
 import type { WalletClient } from 'viem';
 import type { EvmChainDefinition } from '../chains/types.js';
 
@@ -38,12 +38,14 @@ export interface SolanaWalletAdapter {
 	 * Sign with the wallet and send. `signers` are keypairs the wallet does not control that the
 	 * transaction also needs. They have to sign after the wallet, which may change the
 	 * transaction before it signs: `signAndSendSolanaTransaction` does this for any provider.
+	 * Claims are v0 transactions that use an address lookup table; burns are legacy. (A property,
+	 * not a method, so an adapter that takes only legacy transactions does not typecheck.)
 	 */
-	signAndSendTransaction(
-		transaction: SolanaTransaction,
+	signAndSendTransaction: (
+		transaction: Transaction | VersionedTransaction,
 		connection: Connection,
 		signers?: Signer[],
-	): Promise<string>;
+	) => Promise<string>;
 }
 
 export interface WalletAdapters {

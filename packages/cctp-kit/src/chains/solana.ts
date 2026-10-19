@@ -11,6 +11,11 @@ import type { SolanaChainDefinition } from './types.js';
 const MESSAGE_TRANSMITTER_V2 = 'CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC';
 const TOKEN_MESSENGER_MINTER_V2 = 'CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe';
 
+// Circle's own lookup tables for CCTP, which `@circle-fin/adapter-solana` mints with. Both are
+// frozen: they have no authority, so nobody can change their addresses or close them.
+const CCTP_LOOKUP_TABLE_MAINNET = 'qj4EYgsGpnRdt9rvQW3wWZR8JVaKPg9rG9EB8DNgfz8';
+const CCTP_LOOKUP_TABLE_DEVNET = '29VCJ73d5aR5dE6oxaUkipntw1tFzDDKNLqrXE2ujWHW';
+
 export const SOLANA_MAINNET: SolanaChainDefinition = {
 	ecosystem: 'solana',
 	key: 'solana',
@@ -26,6 +31,7 @@ export const SOLANA_MAINNET: SolanaChainDefinition = {
 	usdcMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
 	messageTransmitterV2: MESSAGE_TRANSMITTER_V2,
 	tokenMessengerMinterV2: TOKEN_MESSENGER_MINTER_V2,
+	cctpLookupTable: CCTP_LOOKUP_TABLE_MAINNET,
 };
 
 export const SOLANA_DEVNET: SolanaChainDefinition = {
@@ -43,4 +49,5 @@ export const SOLANA_DEVNET: SolanaChainDefinition = {
 	usdcMint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
 	messageTransmitterV2: MESSAGE_TRANSMITTER_V2,
 	tokenMessengerMinterV2: TOKEN_MESSENGER_MINTER_V2,
+	cctpLookupTable: CCTP_LOOKUP_TABLE_DEVNET,
 };

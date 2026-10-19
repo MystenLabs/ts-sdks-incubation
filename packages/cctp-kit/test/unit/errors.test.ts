@@ -80,6 +80,29 @@ describe('putting an error into words', () => {
 		);
 	});
 
+	it('says the wallet made a Solana transaction too large, in place of the byte counts', () => {
+		const said =
+			'The wallet made the transaction too large for Solana by adding to it while signing, so it did not go through. Try again with another wallet.';
+		// As shown on a claim card in production: web3.js refusing what the wallet had signed.
+		expect(
+			describeError(new Error('Transaction too large: 1276 > 1232'), { chain: chain('solana') }),
+		).toBe(said);
+		// A node refusing it, and a wallet library passing on what web3.js said.
+		expect(
+			describeError(
+				new Error(
+					'failed to send transaction: base64 encoded solana_transaction::versioned::VersionedTransaction too large: 1708 bytes (max: encoded/raw 1644/1232)',
+				),
+				{ chain: chain('solana') },
+			),
+		).toBe(said);
+		expect(
+			describeError(
+				new Error('Signing failed', { cause: new Error('Transaction too large: 1268 > 1232') }),
+			),
+		).toBe(said);
+	});
+
 	it("keeps to the library's one-line summary for anything else", () => {
 		const said = describeError(claimFailed('Nonce already used'), { chain: chain('base') });
 		expect(said).toBe(
