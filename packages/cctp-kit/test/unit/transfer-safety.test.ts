@@ -1,7 +1,13 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import {
+	ComputeBudgetProgram,
+	Connection,
+	Keypair,
+	PublicKey,
+	VersionedTransaction,
+} from '@solana/web3.js';
 import type { Transaction } from '@solana/web3.js';
 import { atom } from 'nanostores';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +21,7 @@ import { IrisClient } from '../../src/iris/client.js';
 import { MESSAGE_V2 } from '../../src/utils/bytes.js';
 import { TransactionRevertedError } from '../../src/utils/errors.js';
 import type { WalletAdapters } from '../../src/wallets/types.js';
+import { solanaHasCctpLookupTable } from './solana-lookup-table.js';
 
 vi.mock('../../src/engine/evm.js', async (original) => ({
 	...(await original<typeof evm>()),
@@ -644,6 +651,7 @@ describe('claiming on Solana', () => {
 	/** A recipient with no USDC account yet, and mainnet's rent minimums on 2026-10-05. */
 	function solana(balance: number | Error) {
 		solanaAcceptsEverything();
+		solanaHasCctpLookupTable();
 		const tokenMessenger = Buffer.alloc(8 + 32 + 32 + 32 + 4 + 1 + 32 + 32 + 4);
 		vi.spyOn(Connection.prototype, 'getAccountInfo').mockImplementation(async (key) =>
 			(key as PublicKey).equals(tokenAccount)
@@ -687,13 +695,20 @@ describe('claiming on Solana', () => {
 		const result = await runTransfer(claim(), context(signAndSendTransaction));
 		expect(result.status).toBe('complete');
 		expect(result.destinationTxHash).toBe('claimed');
-		const programs = signAndSendTransaction.mock.calls.map(([transaction]) =>
-			(transaction as Transaction).instructions.map((i) => i.programId.toBase58()),
-		);
-		expect(programs).toEqual([
-			[ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()],
-			[SOLANA_MAINNET.messageTransmitterV2],
+		// The token account in a legacy transaction, then the claim as a v0 one, which is what
+		// leaves a wallet room to add to it.
+		const [[created], [claimed]] = signAndSendTransaction.mock.calls as [
+			[Transaction],
+			[VersionedTransaction],
+		];
+		expect(created.instructions.map((i) => i.programId.toBase58())).toEqual([
+			ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(),
 		]);
+		expect(claimed).toBeInstanceOf(VersionedTransaction);
+		const { compiledInstructions, staticAccountKeys } = claimed.message;
+		expect(
+			compiledInstructions.map((i) => staticAccountKeys[i.programIdIndex]!.toBase58()),
+		).toEqual([ComputeBudgetProgram.programId.toBase58(), SOLANA_MAINNET.messageTransmitterV2]);
 	});
 
 	it('goes ahead when the balance cannot be read', async () => {

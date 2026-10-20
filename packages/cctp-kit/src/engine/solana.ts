@@ -3,16 +3,20 @@
 
 import { Buffer } from 'buffer';
 import {
+	ComputeBudgetProgram,
 	Connection,
 	Keypair,
 	PublicKey,
 	SystemProgram,
 	Transaction,
 	TransactionInstruction,
+	TransactionMessage,
+	VersionedTransaction,
 } from '@solana/web3.js';
+import type { AddressLookupTableAccount } from '@solana/web3.js';
 import type { SolanaChainDefinition } from '../chains/types.js';
 import { isMessageV2For, parseMessageV2 } from '../utils/bytes.js';
-import { TransactionRevertedError } from '../utils/errors.js';
+import { CctpKitError, TransactionRevertedError } from '../utils/errors.js';
 import { sleep } from '../utils/sleep.js';
 
 export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -166,13 +170,20 @@ export interface SolanaDepositForBurnParams {
 	minFinalityThreshold: number;
 }
 
-export interface SolanaBuiltTransaction {
-	transaction: Transaction;
+export interface SolanaBuiltTransaction<
+	T extends Transaction | VersionedTransaction = Transaction,
+> {
+	transaction: T;
 	/**
 	 * Keypairs the wallet does not control that must also sign. They are not applied here: the
 	 * wallet signs first (see `signAndSendSolanaTransaction`).
 	 */
 	signers: Keypair[];
+	/**
+	 * The last block height the transaction's blockhash is good for. A legacy `Transaction` also
+	 * carries it as its own `lastValidBlockHeight`; a `VersionedTransaction` has no such field.
+	 */
+	lastValidBlockHeight: number;
 }
 
 /**
@@ -236,7 +247,7 @@ export async function buildSolanaBurnTransaction(
 	transaction.recentBlockhash = blockhash;
 	transaction.lastValidBlockHeight = lastValidBlockHeight;
 
-	return { transaction, signers: [eventKeypair] };
+	return { transaction, signers: [eventKeypair], lastValidBlockHeight };
 }
 
 /** Read `fee_recipient` from the TokenMessenger account (Anchor layout from the v2 IDL). */
@@ -254,8 +265,9 @@ async function getFeeRecipient(chain: SolanaChainDefinition, tmm: PublicKey): Pr
  * A transaction that creates the USDC token account a message mints to, or `null` when the
  * account already exists.
  *
- * It has to be its own transaction: `receive_message` alone is within a few bytes of Solana's
- * 1232-byte limit, so adding the create instruction to it makes a transaction no node accepts.
+ * It is kept apart from the claim. In the claim it would fit (1033 bytes for a Sui message
+ * instead of 990), but wallets add instructions of their own to what they sign, and the claim
+ * keeps as much of Solana's 1232 bytes for those as it can (see `buildSolanaReceiveTransaction`).
  * Anyone may create an associated token account for any owner (the payer funds the rent), but
  * the owner has to be known: the recipient wallet from the record, or the payer claiming for
  * themselves.
@@ -290,26 +302,65 @@ export async function buildSolanaTokenAccountTransaction(
 	);
 	transaction.recentBlockhash = blockhash;
 	transaction.lastValidBlockHeight = lastValidBlockHeight;
-	return { transaction, signers: [] };
+	return { transaction, signers: [], lastValidBlockHeight };
+}
+
+/**
+ * Compute units a claim may use. A claim with Circle's two attesters uses about 183,000 of the
+ * 200,000 Solana grants an instruction by default; this is the limit Circle's own adapter sets.
+ * Wallets charge their priority fee per unit of this limit.
+ */
+const CLAIM_COMPUTE_UNIT_LIMIT = 350_000;
+
+/** Circle's lookup table for CCTP on `chain`, which never changes once it is frozen. */
+async function getCctpLookupTable(
+	chain: SolanaChainDefinition,
+): Promise<AddressLookupTableAccount> {
+	const key = new PublicKey(chain.cctpLookupTable);
+	const response = await withSolanaConnection(chain, (c) => c.getAddressLookupTable(key)).catch(
+		(error: unknown) => {
+			throw new CctpKitError(
+				`Could not read Circle's address lookup table ${key.toBase58()} on ${chain.name}, which a claim needs. Try again in a moment.`,
+				{ cause: error },
+			);
+		},
+	);
+	if (!response.value?.isActive()) {
+		throw new CctpKitError(
+			`Circle's address lookup table ${key.toBase58()} is not available on ${chain.name}, so a claim cannot be built.`,
+		);
+	}
+	return response.value;
 }
 
 /**
  * Build a CCTP v2 `receive_message` transaction. The mint recipient encoded in the message is
  * a USDC token account, which must exist: see `buildSolanaTokenAccountTransaction`.
+ *
+ * Solana takes at most 1232 bytes, and a message from Sui with its attestation is 506 of them.
+ * As a legacy transaction the claim was 1224 bytes, and the compute budget instructions wallets
+ * add while they sign took it to 1276, so it could not be sent. As a v0 transaction compiled
+ * against Circle's lookup table, ten of its accounts are one-byte indexes instead of 32-byte
+ * keys: it is 990 bytes, 1002 once a wallet adds a priority fee. It sets its own compute unit
+ * limit, which leaves a wallet less reason to change it.
  */
 export async function buildSolanaReceiveTransaction(
 	chain: SolanaChainDefinition,
 	payer: PublicKey,
 	message: Uint8Array,
 	attestation: Uint8Array,
-): Promise<SolanaBuiltTransaction> {
+): Promise<SolanaBuiltTransaction<VersionedTransaction>> {
 	const mt = new PublicKey(chain.messageTransmitterV2);
 	const tmm = new PublicKey(chain.tokenMessengerMinterV2);
 	const mint = new PublicKey(chain.usdcMint);
 	const parsed = parseMessageV2(bytesToHexString(message));
 	const remoteDomain = parsed.sourceDomain.toString();
 	const recipientTokenAccount = new PublicKey(parsed.body.mintRecipient);
-	const feeRecipient = await getFeeRecipient(chain, tmm);
+	const [feeRecipient, lookupTable, { blockhash, lastValidBlockHeight }] = await Promise.all([
+		getFeeRecipient(chain, tmm),
+		getCctpLookupTable(chain),
+		withSolanaConnection(chain, (c) => c.getLatestBlockhash()),
+	]);
 
 	const data = new BorshWriter()
 		.raw(DISCRIMINATOR.receiveMessage)
@@ -357,16 +408,16 @@ export async function buildSolanaReceiveTransaction(
 		],
 	});
 
-	const transaction = new Transaction();
-	transaction.add(instruction);
-	transaction.feePayer = payer;
-	const { blockhash, lastValidBlockHeight } = await withSolanaConnection(chain, (c) =>
-		c.getLatestBlockhash(),
-	);
-	transaction.recentBlockhash = blockhash;
-	transaction.lastValidBlockHeight = lastValidBlockHeight;
+	const compiled = new TransactionMessage({
+		payerKey: payer,
+		recentBlockhash: blockhash,
+		instructions: [
+			ComputeBudgetProgram.setComputeUnitLimit({ units: CLAIM_COMPUTE_UNIT_LIMIT }),
+			instruction,
+		],
+	}).compileToV0Message([lookupTable]);
 
-	return { transaction, signers: [] };
+	return { transaction: new VersionedTransaction(compiled), signers: [], lastValidBlockHeight };
 }
 
 /** Bytes of the account a claim creates to record that its nonce was used. */

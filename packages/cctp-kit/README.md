@@ -160,6 +160,10 @@ are split into separate chunks.
   record knows.
 - Tracked transfers resolve the recipient wallet from the token account on-chain; if the account
   does not exist yet, the recipient wallet has to create it before the claim.
+- The claim is a v0 transaction compiled against Circle's address lookup table for CCTP, which keeps
+  it under Solana's 1232-byte limit once the wallet adds its priority fee. The burn and the token
+  account transaction are legacy, so an adapter passed as `wallets.solana` has to sign and send both
+  kinds.
 - Solana RPC calls fall over to the next endpoint in `rpc` on transport errors. A balance that
   cannot be read shows as unknown rather than zero and does not block the form.
 

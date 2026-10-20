@@ -3,7 +3,7 @@
 
 import { fallback, http } from 'viem';
 import type { Transport } from 'viem';
-import type { Connection, Signer, Transaction as SolanaTransaction } from '@solana/web3.js';
+import type { Connection, Signer, Transaction, VersionedTransaction } from '@solana/web3.js';
 import { getChainRegistry } from '../chains/index.js';
 import type {
 	ChainDefinition,
@@ -151,7 +151,7 @@ async function buildAppKitWallets(args: CreateAppKitWalletsArgs): Promise<Wallet
 			await appKit.disconnect('solana');
 		},
 		async signAndSendTransaction(
-			transaction: SolanaTransaction,
+			transaction: Transaction | VersionedTransaction,
 			connection: Connection,
 			signers?: Signer[],
 		) {

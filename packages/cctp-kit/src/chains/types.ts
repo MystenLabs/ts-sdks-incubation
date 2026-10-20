@@ -97,6 +97,11 @@ export interface SolanaChainDefinition extends ChainBase {
 	usdcMint: string;
 	messageTransmitterV2: string;
 	tokenMessengerMinterV2: string;
+	/**
+	 * Circle's address lookup table for CCTP on this cluster, which claims are compiled against.
+	 * Without it a claim is too close to Solana's 1232-byte limit for a wallet to add anything.
+	 */
+	cctpLookupTable: string;
 }
 
 export type ChainDefinition = EvmChainDefinition | SuiChainDefinition | SolanaChainDefinition;

@@ -11,6 +11,7 @@ import {
 	getChainRegistry,
 	resolveRoutes,
 } from '../../src/chains/index.js';
+import { SOLANA_DEVNET, SOLANA_MAINNET } from '../../src/chains/solana.js';
 
 describe('chain registry', () => {
 	it('has unique keys, domains and chain ids per network', () => {
@@ -50,6 +51,13 @@ describe('chain registry', () => {
 				expect(isAddress(address), `${chain.name} ${address}`).toBe(true);
 			}
 		}
+	});
+
+	it("claims on Solana against Circle's own lookup table for each cluster", () => {
+		// The frozen tables `@circle-fin/adapter-solana` mints with. Without one a claim does not
+		// fit once a wallet adds to it.
+		expect(SOLANA_MAINNET.cctpLookupTable).toBe('qj4EYgsGpnRdt9rvQW3wWZR8JVaKPg9rG9EB8DNgfz8');
+		expect(SOLANA_DEVNET.cctpLookupTable).toBe('29VCJ73d5aR5dE6oxaUkipntw1tFzDDKNLqrXE2ujWHW');
 	});
 
 	it('never lists BNB Smart Chain (USYC only)', () => {

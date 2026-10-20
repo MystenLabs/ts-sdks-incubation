@@ -2,22 +2,31 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { SendTransactionError } from '@solana/web3.js';
-import type { Connection, Signer, Transaction as SolanaTransaction } from '@solana/web3.js';
+import type { Connection, Signer, Transaction, VersionedTransaction } from '@solana/web3.js';
 import { toBase58 } from '@mysten/sui/utils';
 import { sleep } from '../utils/sleep.js';
 
-/** The parts of a Solana wallet provider this kit uses. AppKit's providers implement all of them. */
+type SolanaTransaction = Transaction | VersionedTransaction;
+
+/**
+ * The parts of a Solana wallet provider this kit uses. AppKit's providers implement all of them,
+ * for legacy and versioned transactions alike. They are properties rather than methods so that
+ * a provider that takes only legacy transactions does not typecheck: claims are versioned.
+ */
 export interface SolanaProviderLike {
 	publicKey?: { toBase58(): string };
-	signAndSendTransaction(transaction: SolanaTransaction, options?: unknown): Promise<string>;
-	/** Signs with the wallet and returns the transaction, which the wallet may have changed. */
-	signTransaction?(transaction: SolanaTransaction): Promise<SolanaTransaction>;
+	signAndSendTransaction: (transaction: SolanaTransaction, options?: unknown) => Promise<string>;
+	/**
+	 * Signs with the wallet and returns the transaction, of the kind it was given, which the
+	 * wallet may have changed.
+	 */
+	signTransaction?: (transaction: SolanaTransaction) => Promise<SolanaTransaction>;
 	/** Signs with the wallet and submits through the given connection. */
-	sendTransaction?(
+	sendTransaction?: (
 		transaction: SolanaTransaction,
 		connection: Connection,
 		options?: unknown,
-	): Promise<string>;
+	) => Promise<string>;
 }
 
 const SEND_ATTEMPTS = 3;
@@ -46,8 +55,9 @@ export async function signAndSendSolanaTransaction(
 	}
 	if (typeof provider.signTransaction === 'function') {
 		const signed = await provider.signTransaction(transaction);
-		signed.partialSign(...signers);
-		// `serialize` checks every signature against the message that is about to be sent.
+		addSignatures(signed, signers);
+		// A legacy `serialize` checks every signature against the message that is about to be
+		// sent. A versioned one checks nothing, and the node refuses it if one does not verify.
 		const raw = signed.serialize();
 		// Set once a send has ended without an answer. From then on the transaction may be on
 		// its way, whatever a later send is told.
@@ -67,16 +77,37 @@ export async function signAndSendSolanaTransaction(
 				// is sent, so the caller tracks it until the chain shows what became of it. To
 				// report a failure here would invite a second burn beside one that may land.
 				if (attempt === SEND_ATTEMPTS || alreadySeen) {
-					if (!signed.signature) throw error;
-					return toBase58(signed.signature);
+					const signature = feePayerSignature(signed);
+					if (!signature) throw error;
+					return toBase58(signature);
 				}
 				await sleep(SEND_RETRY_MS);
 			}
 		}
 	}
 	// A wallet that can only sign and send in one step has to be given our signatures first.
-	transaction.partialSign(...signers);
+	addSignatures(transaction, signers);
 	return provider.signAndSendTransaction(transaction);
+}
+
+/**
+ * Whether a transaction is versioned. Asked of its shape, as AppKit does, not with `instanceof`:
+ * a wallet library hands back transactions built with its own copy of web3.js.
+ */
+function isVersioned(transaction: SolanaTransaction): transaction is VersionedTransaction {
+	return 'version' in transaction;
+}
+
+function addSignatures(transaction: SolanaTransaction, signers: Signer[]): void {
+	if (isVersioned(transaction)) transaction.sign(signers);
+	else transaction.partialSign(...signers);
+}
+
+/** The fee payer's signature, which is the transaction's id, or null before the wallet signs. */
+function feePayerSignature(transaction: SolanaTransaction): Uint8Array | null {
+	if (!isVersioned(transaction)) return transaction.signature;
+	const first = transaction.signatures[0];
+	return first && first.some((byte) => byte !== 0) ? first : null;
 }
 
 /**

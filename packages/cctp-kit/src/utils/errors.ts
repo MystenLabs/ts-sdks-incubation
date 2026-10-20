@@ -81,6 +81,10 @@ const REJECTED =
 	/user (rejected|denied|cancell?ed|declined|disapproved)|(rejected|cancell?ed|denied) (by|from) (the )?user|user rejection/i;
 // What a wallet that signs in a window of its own throws when the browser will not open it.
 const BLOCKED_WINDOW = /failed to open (a )?(new )?window|pop-?up[^.]*blocked/i;
+// What web3.js ("Transaction too large: 1276 > 1232") and Solana nodes ("VersionedTransaction
+// too large: ...") say of a transaction over Solana's 1232 bytes. The kit's own fit; this is a
+// wallet that added more to one than there was room for.
+const TOO_LARGE = /transaction too large/i;
 
 /** Whether a wallet request failed because the browser refused to open the wallet's window. */
 export function isBlockedWindow(error: unknown): boolean {
@@ -121,6 +125,9 @@ export function describeError(error: unknown, context: { chain?: ChainDefinition
 	}
 	if (links.some((link) => BLOCKED_WINDOW.test(link.message))) {
 		return "Your browser blocked the wallet's window. Allow pop-ups for this site, then try again.";
+	}
+	if (TOO_LARGE.test(said)) {
+		return `The wallet made the transaction too large for ${context.chain?.name ?? 'Solana'} by adding to it while signing, so it did not go through. Try again with another wallet.`;
 	}
 	const refusal = links.find(
 		(link) => link.name === 'UserRejectedRequestError' || link.code === 4001,
