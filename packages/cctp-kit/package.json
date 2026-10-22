@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/cctp-kit",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"description": "Embeddable USDC bridge widget for Sui dapps, built on Circle CCTP v2. Framework-agnostic core with React bindings.",
 	"license": "Apache-2.0",
 	"author": "Mysten Labs <build@mystenlabs.com>",
