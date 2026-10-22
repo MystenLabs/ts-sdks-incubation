@@ -1,32 +1,3 @@
-#!/usr/bin/env node
-
-// The Node floor, refused before anything else runs. This must stay the first
-// statement in the file: both verbs below reach their code through a dynamic
-// `import()`, and on an unsupported Node that import fails at link time with a
-// SyntaxError naming `styleText` rather than the version. Static imports do
-// still link ahead of this line, which is why src/nodeVersion.ts imports
-// nothing at all and never colours its own message.
-//
-// `styleText` is the instance, not the class. Anything the old runtime refuses
-// while linking or parsing this file defeats the gate the same way, and
-// tsdown.config.ts sets `target: "node22"`, which is an explicit licence to emit
-// syntax Node 18 cannot parse. The `node-floor` CI job is what notices either.
-//
-// One case this cannot cover, measured rather than assumed. The .mcpb build
-// sets `inlineDynamicImports` (see tsdown.mcpb.config.ts), which folds the
-// install chunk in and turns its `import { styleText } from "node:util"` into a
-// static import of this file. ESM links the whole graph before evaluating any
-// of it, so on a Node without that export the bundle dies at link time and this
-// line never runs. `styleText` arrived in 20.12, so the boundary is exactly:
-// the .mcpb bundle below Node 20.12 still shows the SyntaxError. Verified on
-// 18.20.4 (SyntaxError) and 20.20.1 (this message). The npm channel, which is
-// code-split, is covered on both. The .mcpb channel has its own declared gate,
-// `compatibility.runtimes.node` in manifest.json, which an MCPB host checks
-// before installing; npm's own gate is `engines.node`. Closing the gap here
-// would mean no file reachable from this one may name `styleText` in an import
-// specifier, which is a bigger change than the case is worth.
-assertSupportedNode();
-
 // `walrus-console-mcp --help`, with no verb. Without this it falls through to
 // the server below and sits on stdio waiting for JSON-RPC, which is the least
 // useful answer this CLI can give someone asking what it does.
@@ -135,7 +106,6 @@ import {
 import { KEY_ADMIN_PIN_REMEDY, WEB_ACCOUNT_PIN_REMEDY } from "../src/console/pinRemedy";
 import { BucketId, FileId, SpaceId, withDisplaySize } from "../src/console/types";
 import { confirmApiKeyMint } from "../src/elicitation";
-import { assertSupportedNode } from "../src/nodeVersion";
 import {
   resolveDownloadDestWithinRoots,
   resolvePathWithinRoots,

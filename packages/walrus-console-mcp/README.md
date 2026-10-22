@@ -35,10 +35,44 @@ That's it — once the agent finishes and you've approved the MCP server, you ca
 
 ### Install from npm (recommended)
 
-**Requires Node 22 or newer.** Check with `node --version`. On anything older
-the CLI stops at the first line and says which version it found: the npm
-`EBADENGINE` warning scrolls past during the install, and the failure that
-follows it names a missing `styleText` export rather than the Node version.
+**Requires stable Node 22.23.4+, 24.22.1+, or 26.12.1+ within those major lines.**
+Node 24.22.1 LTS is recommended. Use its latest patched successor within Node 24
+when available. Older patches, odd-numbered majors, unreviewed future majors,
+prereleases, and malformed version strings are rejected with exit status 1.
+Valid semantic-version build metadata does not change the version comparison.
+
+The supported engine range is
+`>=22.23.4 <23.0.0 || >=24.22.1 <25.0.0 || >=26.12.1 <27.0.0`.
+These floors follow the [October 2026 Node.js security advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+
+#### Upgrade the runtime used by your MCP host
+
+1. Update the Node executable that your MCP host actually launches to Node
+   24.22.1 LTS or its current patched Node 24 successor.
+2. For an npm installation, update this package in its existing installation
+   directory after the patched package is released. For example, run
+   `npm install --prefix /path/to/install --ignore-scripts @mysten-incubation/walrus-console-mcp@latest`.
+   Use your actual installation path. The installer default is
+   `${XDG_DATA_HOME:-$HOME/.local/share}/walrus-console-mcp` on macOS and Linux.
+3. For an MCPB installation, install the updated bundle after release and update
+   the desktop host if it supplies Node. A bundle contains JavaScript, not a
+   patched Node executable. If the host runtime remains unsupported, the server
+   cannot start until the host provides a supported runtime.
+4. Fully restart the host or its MCP process so it launches the updated executable.
+
+Inspect the executable and version in the **actual host launch environment**.
+Use the same executable path, environment, and launcher that start this server,
+with this diagnostic command in place of the server arguments:
+
+```bash
+/path/to/host/node -p 'JSON.stringify({execPath: process.execPath, version: process.version})'
+```
+
+If the host resolves `node` through PATH, run the command through that host's
+launcher environment. A terminal's `node --version` alone does not establish
+which runtime the host uses. Host-managed runtimes may require a host update.
+Updating the npm package or a terminal's Node installation does not update them.
+Restore the server arguments after the diagnostic and restart the MCP process.
 
 ```bash
 cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install
@@ -936,7 +970,7 @@ the file change.
 
 ## MCPB bundle (no-terminal install for Claude Desktop)
 
-The server can be packaged as a single `.mcpb` file — a Claude Desktop Extension — for drag-and-drop / double-click install, no terminal required. The bundle inlines all dependencies (Seal/Sui are pure JS, no WASM), so it runs standalone with `node` — no `node_modules` needed.
+The server can be packaged as a single `.mcpb` file — a Claude Desktop Extension — for drag-and-drop / double-click install, no terminal required. The bundle includes all dependencies in self-contained JavaScript chunks, so it runs with a supported `node` executable and needs no `node_modules`. The bootstrap checks Node before loading application chunks. MCPB 2.1.2 validates the bounded runtime range as a string. Its schema does not verify host-side range evaluation, so the startup guard enforces the policy even if a host ignores the constraint.
 
 **Download:** the packed bundle ships inside the npm package, so the latest release is always at
 `https://cdn.jsdelivr.net/npm/@mysten-incubation/walrus-console-mcp@latest/walrus-console-mcp.mcpb`

@@ -46,7 +46,7 @@ LOG_FILE="/tmp/console-mcp-verify.log"
 # Portable timeout: stock macOS has no GNU `timeout`, so instead of depending
 # on it we run the server in the background and stop it ourselves. Works the
 # same on macOS, Linux, and CI with no extra tools.
-printf '%s\n' "$INIT_REQ" | pnpm exec tsx bin/console-mcp.ts >"$RESPONSE_FILE" 2>"$LOG_FILE" &
+printf '%s\n' "$INIT_REQ" | pnpm exec tsx bin/entry.ts >"$RESPONSE_FILE" 2>"$LOG_FILE" &
 SERVER_PID=$!
 # Poll for the response for up to 8s, then stop the server.
 for _ in $(seq 1 16); do

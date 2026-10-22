@@ -2,62 +2,87 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  MIN_NODE_MAJOR,
+  NODE_VERSION_RANGE,
   assertSupportedNode,
-  nodeMajor,
   unsupportedNodeMessage,
 } from "../src/nodeVersion.js";
 
-/**
- * COMG-1036 item 1. Two halves: the refusal itself, and the guarantee that the
- * five places stating the floor still agree with each other. They disagreed
- * once already (manifest >=22, tsdown node22, engines >=24), which is why the
- * number lives in one exported constant now.
- */
-
 const ROOT = path.join(__dirname, "..");
 const read = (file: string): string => fs.readFileSync(path.join(ROOT, file), "utf-8");
-const unquote = (value: string): string => value.trim().replace(/^(["'])(.*)\1$/, "$2");
+const FLOORS = ["22.23.4", "24.22.1", "26.12.1"];
 
-describe("nodeMajor", () => {
-  it("reads the major out of a process.versions.node string", () => {
-    expect(nodeMajor("24.0.0")).toBe(24);
-    expect(nodeMajor("20.19.6")).toBe(20);
-    expect(nodeMajor(" 25.8.1 ")).toBe(25);
-  });
-
-  it("returns null for anything it cannot read as one", () => {
-    for (const value of ["", "24", "v24.0.0", "next", "x.y.z"]) {
-      expect(nodeMajor(value)).toBeNull();
-    }
-  });
-});
+const supported = [
+  ...FLOORS,
+  "22.23.5",
+  "22.24.0",
+  "24.22.2",
+  "24.23.0",
+  "26.12.2",
+  "26.13.0",
+  "22.23.4+vendor.001",
+  "24.22.1+build-1",
+  "26.12.1+build.1",
+];
+const unsupported = [
+  "22.23.3",
+  "24.22.0",
+  "26.12.0",
+  "22.22.999",
+  "24.21.999",
+  "26.11.999",
+  "18.20.8",
+  "20.20.1",
+  "21.7.3",
+  "23.11.1",
+  "25.9.0",
+  "27.0.0",
+  "28.0.0",
+];
+const invalid = [
+  "",
+  "24",
+  "24.22",
+  "v24.22.1",
+  " 24.22.1",
+  "24.22.1 ",
+  "24.22.1\n",
+  "24.22.1.0",
+  "024.22.1",
+  "24.022.1",
+  "24.22.01",
+  "24.-1.1",
+  "24.22.1+",
+  "24.22.1+build..1",
+  "24.22.1+build_1",
+  "24.9007199254740992.0",
+  "24.22.9007199254740992",
+  "9007199254740992.22.1",
+  "not-a-version",
+  "22.23.4-rc.1",
+  "24.22.1-rc.1",
+  "26.12.1-rc.1",
+  "24.23.0-nightly.20261022",
+  "26.13.0-rc.1+build.1",
+];
 
 describe("unsupportedNodeMessage", () => {
-  it("passes the floor and everything above it", () => {
-    expect(unsupportedNodeMessage(`${MIN_NODE_MAJOR}.0.0`)).toBeNull();
-    expect(unsupportedNodeMessage(`${MIN_NODE_MAJOR + 1}.8.1`)).toBeNull();
+  it.each(supported)("accepts supported stable release %s", (version) => {
+    expect(unsupportedNodeMessage(version)).toBeNull();
   });
 
-  // The whole complaint: on an old Node the first symptom is a SyntaxError
-  // about `styleText` from a bundled chunk, which names neither the version
-  // that is running nor the one that is required.
-  it("names both the floor and the running version", () => {
-    const message = unsupportedNodeMessage("20.19.6");
-    expect(message).toContain(`Node ${MIN_NODE_MAJOR}`);
-    expect(message).toContain("20.19.6");
+  it.each(unsupported)("rejects unpatched or unreviewed release %s", (version) => {
+    expect(unsupportedNodeMessage(version)).toContain(JSON.stringify(version));
   });
 
-  it("refuses every major below the floor", () => {
-    for (let major = 12; major < MIN_NODE_MAJOR; major++) {
-      expect(unsupportedNodeMessage(`${major}.0.0`)).not.toBeNull();
-    }
+  it.each(invalid)("rejects malformed or prerelease version %j", (version) => {
+    expect(unsupportedNodeMessage(version)).toContain(JSON.stringify(version));
   });
 
-  // A runtime whose version cannot be read is one we cannot judge. Refusing to
-  // start on a guess is worse than running somewhere that turns out to be fine.
-  it("fails open on a version it cannot parse", () => {
-    expect(unsupportedNodeMessage("not-a-version")).toBeNull();
+  it("names the detected version and supported patched lines", () => {
+    const message = unsupportedNodeMessage("24.18.0");
+    expect(message).toContain('Detected Node version "24.18.0"');
+    expect(message).toContain(NODE_VERSION_RANGE);
+    expect(message).toContain("restart the host or MCP process");
   });
 });
 
@@ -75,90 +100,47 @@ describe("assertSupportedNode", () => {
     };
   };
 
-  it("writes the refusal and exits 1", () => {
+  it.each([...unsupported, ...invalid])("writes the refusal and exits 1 for %j", (version) => {
     const { deps, written, codes } = spy();
-    assertSupportedNode("20.19.6", deps);
+    assertSupportedNode(version, deps);
     expect(codes).toEqual([1]);
-    expect(written.join("")).toContain(`Node ${MIN_NODE_MAJOR}`);
+    expect(written).toEqual([`${unsupportedNodeMessage(version)}\n`]);
   });
 
-  it("returns silently on a supported version", () => {
+  it.each(FLOORS)("returns silently on supported version %s", (version) => {
     const { deps, written, codes } = spy();
-    assertSupportedNode(`${MIN_NODE_MAJOR}.3.0`, deps);
+    assertSupportedNode(version, deps);
     expect(codes).toEqual([]);
     expect(written).toEqual([]);
   });
 });
 
-describe("one floor, five declarations", () => {
-  it("package.json engines.node", () => {
-    const pkg = JSON.parse(read("package.json")) as { engines: { node: string } };
-    expect(pkg.engines.node).toBe(`>=${MIN_NODE_MAJOR}`);
+describe("runtime policy declarations", () => {
+  it("uses explicit bounded major ranges", () => {
+    expect(NODE_VERSION_RANGE).toBe(">=22.23.4 <23.0.0 || >=24.22.1 <25.0.0 || >=26.12.1 <27.0.0");
   });
 
-  it("manifest.json compatibility.runtimes.node", () => {
+  it("package.json and MCPB manifest state the guard's range", () => {
+    const pkg = JSON.parse(read("package.json")) as { engines: { node: string } };
     const manifest = JSON.parse(read("manifest.json")) as {
       compatibility: { runtimes: { node: string } };
     };
-    expect(manifest.compatibility.runtimes.node).toBe(`>=${MIN_NODE_MAJOR}.0.0`);
+    expect(pkg.engines.node).toBe(NODE_VERSION_RANGE);
+    expect(manifest.compatibility.runtimes.node).toBe(NODE_VERSION_RANGE);
   });
 
-  it("both tsdown targets", () => {
+  it("retains compilation targets independently of security patch floors", () => {
     for (const config of ["tsdown.config.ts", "tsdown.mcpb.config.ts"]) {
-      expect(read(config)).toContain(`target: "node${MIN_NODE_MAJOR}"`);
+      expect(read(config)).toContain('target: "node22"');
     }
   });
 
-  // The three cases below read the development repo's own CI workflow, which is
-  // not mirrored into the ts-sdks-incubation workspace (the monorepo has its own
-  // workflows at the repo root), so they only run where the file exists.
-  const hasOwnCi = fs.existsSync(path.join(ROOT, ".github/workflows/ci.yml"));
-
-  // Every `node-version:` in ci.yml, whatever form it is written in. ci.yml pins
-  // it in several jobs, and a `toContain`, or a regex that only knows the quoted
-  // integer form, stays green with one of them stale as `24`, "24.x" or "lts/*".
-  // The one exception is node-floor's `${{ matrix.node }}`, which runs below the
-  // floor by design.
-  it.skipIf(!hasOwnCi)("every Node version CI pins is the floor", () => {
-    const pinned = [...read(".github/workflows/ci.yml").matchAll(/node-version:(.*)/g)]
-      .map((m) => unquote((m[1] ?? "").replace(/\s#.*$/, "")))
-      .filter((value) => !/^\$\{\{\s*matrix\.node\s*\}\}$/.test(value));
-    expect(pinned.length).toBeGreaterThan(0);
-    expect([...new Set(pinned)]).toEqual([String(MIN_NODE_MAJOR)]);
-  });
-
-  // The node-floor job carries the floor twice more, in shell rather than YAML:
-  // the version it refuses to run at or above, and the text it greps the refusal
-  // for. The second is tied to the message the module actually emits, so a
-  // reworded refusal fails here rather than in a CI job nobody reads.
-  it.skipIf(!hasOwnCi)(
-    "the node-floor job's own two copies of the floor track the constant",
-    () => {
-      const ci = read(".github/workflows/ci.yml");
-      const pattern = `needs Node ${MIN_NODE_MAJOR} or newer`;
-      expect(unsupportedNodeMessage(`${MIN_NODE_MAJOR - 1}.0.0`)).toContain(pattern);
-      expect(ci).toContain(pattern);
-      expect(ci).toContain(`-ge ${MIN_NODE_MAJOR} ]`);
-    },
-  );
-
-  // The invariant the job rests on: every row it runs must be below the floor,
-  // or the job would demand a refusal from a version that is supposed to work.
-  it.skipIf(!hasOwnCi)("every node-floor matrix row is below the floor", () => {
-    const matrix = /node:\s*\[([^\]]*)\]/.exec(read(".github/workflows/ci.yml"))?.[1] ?? "";
-    const rows = matrix.split(",").map(unquote).filter(Boolean);
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) expect(Number(row), row).toBeLessThan(MIN_NODE_MAJOR);
-  });
-
-  it("the README tells a reader which Node they need", () => {
-    expect(read("README.md")).toContain(`Node ${MIN_NODE_MAJOR}`);
+  it("documents the complete runtime range", () => {
+    expect(read("README.md")).toContain(NODE_VERSION_RANGE);
   });
 });
 
 describe("where the check is wired", () => {
-  // It has to run on the Node it exists to refuse, so it may not import
-  // anything: `styleText` is the very export that is missing there.
   it("src/nodeVersion.ts imports nothing, by any spelling", () => {
     const src = read("src/nodeVersion.ts");
     expect(src).not.toMatch(/^\s*import\s/m);
@@ -166,15 +148,66 @@ describe("where the check is wired", () => {
     expect(src).not.toMatch(/\brequire\s*\(|createRequire/);
   });
 
-  // Placement is the whole point. Both verbs reach their code through a dynamic
-  // `import()`, which is where the link-time SyntaxError lands, so the call has
-  // to come first.
-  it("bin/console-mcp.ts calls it before the first dynamic import", () => {
-    const src = read("bin/console-mcp.ts");
+  it("source launchers use the guarded bootstrap", () => {
+    expect(JSON.parse(read("package.json")).scripts.dev).toBe("tsx bin/entry.ts");
+    for (const launcher of ["bin/console-mcp.sh", "bin/verify-mcp.sh"]) {
+      expect(read(launcher)).toContain("tsx bin/entry.ts");
+      expect(read(launcher)).not.toContain("tsx bin/console-mcp.ts");
+    }
+  });
+
+  it("bin/entry.ts calls it before the first dynamic import", () => {
+    const src = read("bin/entry.ts");
     const call = src.indexOf("assertSupportedNode()");
     const dynamicImport = src.indexOf("await import(");
     expect(call).toBeGreaterThan(-1);
     expect(dynamicImport).toBeGreaterThan(-1);
     expect(call).toBeLessThan(dynamicImport);
+  });
+});
+
+// The CI workflow hand-writes the floors in its job pins and both matrices, and
+// scripts/check-node-runtime.mjs carries its own copy; these tests tie every
+// copy back to the table so a floor bump cannot leave one behind. The synced
+// copy of this package (ts-sdks-incubation) has no .github/ of its own, so the
+// workflow-reading tests skip there; the script ships in both repos.
+describe("CI pins track the floor table", () => {
+  const hasOwnCi = fs.existsSync(path.join(ROOT, ".github/workflows/ci.yml"));
+  const ci = () => read(".github/workflows/ci.yml");
+
+  it.skipIf(!hasOwnCi)("every non-matrix node-version is a supported version", () => {
+    const pinned = [...ci().matchAll(/node-version:\s*"([^"]+)"/g)].map((m) => m[1]);
+    expect(pinned.length).toBeGreaterThan(0);
+    for (const version of pinned) {
+      expect(unsupportedNodeMessage(version), `ci.yml pins ${version}`).toBeNull();
+    }
+  });
+
+  it.skipIf(!hasOwnCi)("the node-floor matrix is refused and sits on the boundary", () => {
+    // First matrix in the file is the node-floor (reject) job, second is
+    // supported-runtimes (accept); the next assertions pin that meaning.
+    const matrices = [...ci().matchAll(/node:\s*\[([^\]]*)\]/g)].map((m) =>
+      [...(m[1] ?? "").matchAll(/"([^"]+)"/g)].map((x) => x[1] ?? ""),
+    );
+    expect(matrices).toHaveLength(2);
+    const [floorRows = [], supportedRows = []] = matrices;
+    for (const version of floorRows) {
+      expect(unsupportedNodeMessage(version), `node-floor row ${version}`).not.toBeNull();
+    }
+    for (const floor of FLOORS) {
+      const [major = 0, minor = 0, patch = 0] = floor.split(".").map(Number);
+      expect(floorRows, `one row exactly one patch below ${floor}`).toContain(
+        `${major}.${minor}.${patch - 1}`,
+      );
+    }
+    expect([...supportedRows].sort()).toEqual([...FLOORS].sort());
+  });
+
+  it("check-node-runtime.mjs carries the same floors", () => {
+    const script = read("scripts/check-node-runtime.mjs");
+    const listed = [...script.matchAll(/"(\d+\.\d+\.\d+)"/g)]
+      .map((m) => m[1])
+      .filter((v) => unsupportedNodeMessage(v) === null);
+    expect(listed.sort()).toEqual([...FLOORS].sort());
   });
 });

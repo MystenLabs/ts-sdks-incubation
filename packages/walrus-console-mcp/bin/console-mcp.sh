@@ -19,8 +19,8 @@ fi
 
 # Prefer pnpm exec if pnpm is available (best for this project)
 if command -v pnpm &> /dev/null; then
-  exec pnpm exec tsx bin/console-mcp.ts
+  exec pnpm exec tsx bin/entry.ts
 else
   # Fallback to npx tsx
-  exec npx tsx bin/console-mcp.ts
+  exec npx tsx bin/entry.ts
 fi
