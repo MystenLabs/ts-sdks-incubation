@@ -1,5 +1,11 @@
 # @mysten-incubation/create-devstack-app
 
+## 0.4.1
+
+### Patch Changes
+
+- 6e84185: Update dependencies to their latest in-major versions and resolve `pnpm audit` findings.
+
 ## 0.4.0
 
 ### Minor Changes

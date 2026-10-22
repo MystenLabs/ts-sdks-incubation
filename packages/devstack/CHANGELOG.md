@@ -1,5 +1,11 @@
 # @mysten-incubation/devstack
 
+## 0.8.2
+
+### Patch Changes
+
+- 6e84185: Update dependencies to their latest in-major versions and resolve `pnpm audit` findings.
+
 ## 0.8.1
 
 ### Patch Changes
