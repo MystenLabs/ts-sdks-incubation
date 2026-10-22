@@ -7,6 +7,7 @@ import { runConfigure } from "../bin/configure.js";
 import { runInstall } from "../bin/install.js";
 import { BOOLEAN_FLAGS, VALUE_FLAGS } from "../src/cliArgs.js";
 import { loadConfigFile } from "../src/configFile.js";
+import { unsupportedNodeMessage } from "../src/nodeVersion.js";
 import { CONFIG_USAGE, INSTALL_USAGE, ROOT_USAGE, isHelpFlag, wantsHelp } from "../src/usage.js";
 
 /**
@@ -161,6 +162,10 @@ describe("--help on the commands themselves", () => {
   // Test); locally it skips unless you have run `pnpm build`, and the source
   // assertion above covers the wiring either way.
   const BUILT_ENTRY = path.join(__dirname, "..", "dist", "console-mcp.js");
+  // When the Node running this suite is itself below the security floor, the
+  // built entry refuses to start by design; assert that refusal instead of the
+  // usage screen. Either branch proves the process exits rather than hanging.
+  const runnerNodeUnsupported = unsupportedNodeMessage(process.versions.node) !== null;
   it.skipIf(!fs.existsSync(BUILT_ENTRY))(
     "a bare --help exits instead of waiting on stdio",
     () => {
@@ -174,8 +179,16 @@ describe("--help on the commands themselves", () => {
       });
       expect(result.error).toBeUndefined();
       expect(result.signal).toBeNull();
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain("walrus-console-mcp install");
+      if (runnerNodeUnsupported) {
+        expect(result.status).toBe(1);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toContain(
+          `Detected Node version ${JSON.stringify(process.versions.node)}`,
+        );
+      } else {
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("walrus-console-mcp install");
+      }
     },
     30_000,
   );
