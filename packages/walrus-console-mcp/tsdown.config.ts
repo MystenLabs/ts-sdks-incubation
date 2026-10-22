@@ -1,16 +1,15 @@
 import { defineConfig } from "tsdown";
 
 export default defineConfig({
-  entry: ["bin/console-mcp.ts", "bin/install.ts", "bin/configure.ts", "bin/importBundle.ts"],
+  entry: {
+    "console-mcp": "bin/entry.ts",
+    install: "bin/install.ts",
+    configure: "bin/configure.ts",
+    importBundle: "bin/importBundle.ts",
+  },
   format: "esm",
   platform: "node",
-  // Keep in step with package.json `engines.node`, manifest.json
-  // `compatibility.runtimes.node` and `MIN_NODE_MAJOR` in src/nodeVersion.ts,
-  // which is what actually refuses an old host at startup. They all state the
-  // same floor, so a host the .mcpb gate admits is one npx would also accept
-  // and the bundle can run. tests/nodeVersion.test.ts holds them together.
-  // @types/node deliberately sits ABOVE the floor to match the
-  // ts-sdks-incubation catalog; see the note in tsdown.mcpb.config.ts.
+  // Syntax compatibility is separate from the security floors in src/nodeVersion.ts.
   target: "node22",
   outDir: "dist",
   clean: true,
