@@ -251,6 +251,41 @@ describe('tracking a transfer by a transaction of it', () => {
 		kit.destroy();
 	});
 
+	it('asks Circle to sign again a Fast Transfer into Sui that is tracked after it expired', async () => {
+		// What Circle signed a day ago, Sui no longer takes. What it signs again never expires.
+		const bytes = baseToSui.bytes.slice();
+		const expiry = MESSAGE_V2.body + MESSAGE_V2.bodyFields.expirationBlock + 24;
+		new DataView(bytes.buffer).setBigUint64(expiry, BigInt(Date.now() - 1_000));
+		const expired = {
+			...baseToSui.circle,
+			message: `0x${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+		};
+		const renewed = { ...baseToSui.circle, attestation: `0x${'cc'.repeat(65)}` };
+		let asked = false;
+		const circle = vi.fn<typeof fetch>(async (input, init) => {
+			const url = new URL(String(input));
+			if (init?.method === 'POST' && url.pathname.startsWith('/v2/reattest/')) {
+				asked = true;
+				return json(200, { message: 'Re-attestation successfully requested for nonce.' });
+			}
+			if (url.pathname === `/v2/messages/${DOMAIN.base}`) {
+				return json(200, { messages: [asked ? renewed : expired], sourceTxHash: BASE_BURN });
+			}
+			return json(400, { error: 'no quote in this test' });
+		});
+		const kit = kitWith(circle);
+		await kit.importTransfer({ txHash: BASE_BURN, sourceChain: 'base' });
+		await vi.waitFor(() =>
+			expect(kit.stores.$transfers.get()[0]).toMatchObject({
+				status: 'readyToMint',
+				message: renewed.message,
+				attestation: renewed.attestation,
+			}),
+		);
+		expect(asked).toBe(true);
+		kit.destroy();
+	});
+
 	it('says so when no chain knows the transaction as a transfer', async () => {
 		const kit = kitWith(circleKnows([]));
 		const message =

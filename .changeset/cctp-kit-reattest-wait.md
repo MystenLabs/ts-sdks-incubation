@@ -1,0 +1,5 @@
+---
+'@mysten-incubation/cctp-kit': minor
+---
+
+A Fast Transfer into Sui that was not claimed within 24 hours now explains itself. Its card says "Waiting for Circle" and that Circle is signing the transfer again, which can take a few hours, and that the page can be closed meanwhile. The wait is counted from when the kit asked, with no Fast Transfer estimate, and the Attest step shows as in progress instead of done. The kit asks Circle to sign the transfer again by itself, also when a page loads or a transfer is tracked by hash, and stops at Claim with the new message, so a press on Claim opens the wallet. A transfer that was claimed in time is marked complete instead. A request Circle cannot take is made again with backoff, and a request Circle turns down fails the transfer with a plain message. `TransferRecord` has a new optional field, `reattestingSince`. Breaking: `IrisClient.reattest(nonce, options)` takes `{ signal, intervalMs, maxIntervalMs }` as its second argument instead of a bare `AbortSignal`, and retries network errors, 429s and 5xx responses until it succeeds or the signal aborts.

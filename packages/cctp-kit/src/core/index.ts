@@ -70,7 +70,7 @@ import {
 import type { BurnDetails } from './import.js';
 import { createStores } from './store.js';
 import type { CctpKitStores } from './store.js';
-import { isNonceUsed, runTransfer } from './transfer.js';
+import { isExpiredOnSui, isNonceUsed, runTransfer } from './transfer.js';
 import type { CctpKitConfig, CctpKitEvent, Quote, TransferRecord, TransferSpeed } from './types.js';
 
 export interface CctpKit {
@@ -1060,6 +1060,21 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		return RUNNING.has(runKey(id)) || runningElsewhere(id);
 	}
 
+	/**
+	 * Whether Sui would turn down the message a transfer is waiting to claim with. Getting it
+	 * signed again needs no wallet, so a run does that instead of leaving the transfer at Claim.
+	 */
+	function expiredOnSui(record: TransferRecord): boolean {
+		if (!record.message || record.destinationTxHash) return false;
+		if (chains.find((c) => c.key === record.to)?.ecosystem !== 'sui') return false;
+		try {
+			return isExpiredOnSui(record.message);
+		} catch {
+			// A stored message that cannot be read is left to the run, which says what is wrong.
+			return false;
+		}
+	}
+
 	function setHidden(id: string, hidden: boolean) {
 		const list = readStored();
 		if (!list.some((t) => t.id === id)) return;
@@ -1122,7 +1137,9 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 				(record.status === 'burning' && !!record.sourceTxHash) ||
 				// Failed while waiting for the attestation (e.g. an old timeout or a network
 				// outage): the burn was sent, so keep watching for it.
-				(record.status === 'failed' && !!record.sourceTxHash && !record.attestation);
+				(record.status === 'failed' && !!record.sourceTxHash && !record.attestation) ||
+				// Waiting at Claim with a message Sui no longer takes: it is signed again first.
+				(record.status === 'readyToMint' && expiredOnSui(record));
 			if (!interrupted || RUNNING.has(runKey(record.id))) continue;
 			const holder = leaseHolder(record.id);
 			if (holder && holder.owner !== PAGE_ID) {
@@ -1144,6 +1161,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	 * A transfer that is waiting to be claimed may have been claimed already: from another
 	 * device, or by someone who submitted it for the recipient. Look when the page loads, so the
 	 * card does not offer a claim that can only fail. A lookup that cannot be made changes nothing.
+	 * One whose message has expired on Sui is handed to a run, which looks before it asks Circle
+	 * to sign the message again.
 	 */
 	async function settleClaimed(only?: string) {
 		for (const record of readStored()) {
@@ -1152,6 +1171,12 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 			if (record.status !== 'readyToMint' && record.status !== 'failed') continue;
 			const to = chains.find((c) => c.key === record.to);
 			if (!to || isRunning(record.id)) continue;
+			if (record.status === 'readyToMint' && expiredOnSui(record)) {
+				void execute({ ...record, error: undefined }, { stopAfterAttestation: true }).catch(
+					() => undefined,
+				);
+				continue;
+			}
 			const claimed = await isNonceUsed(to, record.message, { dAppKit });
 			const latest = readStored().find((t) => t.id === record.id);
 			if (!claimed || destroyed || !latest || latest.destinationTxHash || isRunning(latest.id)) {

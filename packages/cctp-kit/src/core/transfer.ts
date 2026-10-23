@@ -38,6 +38,7 @@ import {
 	getSuiUsdcBalance,
 	suiIsNonceUsed,
 } from '../engine/sui.js';
+import { IrisError, isAttested } from '../iris/client.js';
 import type { IrisClient, IrisMessage } from '../iris/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { bytesToHex, hexToBytes, parseMessageV2, toBytes32 } from '../utils/bytes.js';
@@ -66,7 +67,10 @@ export interface TransferContext {
 	stopAfterAttestation?: boolean;
 	/** Skip the destination "nonce already used" lookup (defaults to true; tests disable it). */
 	checkNonce?: boolean;
-	/** Attestation polling interval (defaults to 5 s). */
+	/**
+	 * Attestation polling interval, and the first pause before asking Circle again to sign an
+	 * expired message when it could not take the request (defaults to 5 s).
+	 */
 	pollIntervalMs?: number;
 	/** How long to wait before asking the source chain again about a burn it could not vouch for (defaults to 15 s). */
 	confirmRetryMs?: number;
@@ -94,6 +98,9 @@ export async function runTransfer(
 	const to = findChain(ctx.chains, transfer.to);
 	// A run that begins with the attestation in hand was started by someone pressing Claim.
 	const startedAtClaim = !!record.attestation && !!record.message;
+	// Sui turns the message down: it has to be signed again before anyone can claim it.
+	const expired = () =>
+		!transfer.destinationTxHash && to.ecosystem === 'sui' && isExpiredOnSui(transfer.message!);
 
 	try {
 		if (!transfer.sourceTxHash) {
@@ -110,39 +117,36 @@ export async function runTransfer(
 				message: attested.message,
 				attestation: attested.attestation,
 			});
-		} else if (transfer.status !== 'readyToMint' && transfer.status !== 'minting') {
+		} else if (transfer.status !== 'readyToMint' && transfer.status !== 'minting' && !expired()) {
 			update({ status: 'readyToMint' });
 		}
 
 		if (!transfer.destinationTxHash) {
 			ctx.signal?.throwIfAborted();
-			// Resumed on load: stop at Claim without touching the destination chain; the nonce is
-			// checked when the user actually claims.
-			if (ctx.stopAfterAttestation) {
-				if (transfer.status !== 'readyToMint') update({ status: 'readyToMint' });
-				return transfer;
-			}
 			// A Sui wallet that signs in a window of its own can only open it while the press
 			// that asked for the claim is still being handled. So on a Claim press nothing is
 			// awaited on the way to a Sui wallet. Whether the message was claimed already is
 			// looked at when the page loads, and here only if the claim then fails.
-			const inPress =
-				startedAtClaim && to.ecosystem === 'sui' && !isExpiredOnSui(transfer.message!);
+			const inPress = startedAtClaim && to.ecosystem === 'sui' && !expired();
 			const claimed = () =>
 				ctx.checkNonce === false ? false : isNonceUsed(to, transfer.message!, ctx);
+			if (expired()) {
+				// Getting it signed again needs no wallet, so it is done however the run began,
+				// on load too: otherwise the card offers a claim that can only fail.
+				if (await claimed()) {
+					update({ status: 'complete', completedAt: Date.now() });
+					return transfer;
+				}
+				await signAgain(transfer, from, ctx, update);
+			}
+			// Resumed on load: stop at Claim, since the claim needs the user's wallet.
+			if (ctx.stopAfterAttestation) {
+				if (transfer.status !== 'readyToMint') update({ status: 'readyToMint' });
+				return transfer;
+			}
 			if (!inPress && (await claimed())) {
 				update({ status: 'complete', completedAt: Date.now() });
 				return transfer;
-			}
-			if (to.ecosystem === 'sui' && isExpiredOnSui(transfer.message!)) {
-				update({ status: 'attesting' });
-				await ctx.iris.reattest(bytesToHex(parseMessageV2(transfer.message!).nonce), ctx.signal);
-				const fresh = await ctx.iris.waitForAttestation(from.domain, transfer.sourceTxHash!, {
-					signal: ctx.signal,
-					intervalMs: ctx.pollIntervalMs,
-					differentFrom: transfer.attestation,
-				});
-				update({ message: fresh.message, attestation: fresh.attestation });
 			}
 			update({ status: 'minting' });
 			let destinationTxHash: string;
@@ -188,6 +192,59 @@ export async function runTransfer(
 export function isExpiredOnSui(message: string, now = Date.now()): boolean {
 	const expiry = parseMessageV2(message).body.expirationBlock;
 	return expiry !== 0n && BigInt(now) + 60_000n >= expiry;
+}
+
+/**
+ * Get an expired message signed again, and stop at Claim with the new one. Circle has taken
+ * many hours over this, so the wait has no limit; `reattestingSince` keeps when it was first
+ * asked for, through any run that asks again after a reload.
+ */
+async function signAgain(
+	transfer: TransferRecord,
+	from: ChainDefinition,
+	ctx: TransferContext,
+	update: (patch: Partial<TransferRecord>) => TransferRecord,
+): Promise<void> {
+	const hash = transfer.sourceTxHash!;
+	// An earlier run may have asked, and Circle signed while nobody was watching. Take that
+	// signature rather than ask for one it has already given.
+	let fresh = await ctx.iris.getMessagesByTxHash(from.domain, hash, ctx.signal).then(
+		(found) => found.messages[0],
+		() => undefined,
+	);
+	if (
+		!fresh ||
+		!isAttested(fresh) ||
+		fresh.attestation === transfer.attestation ||
+		isExpiredOnSui(fresh.message)
+	) {
+		update({ status: 'attesting', reattestingSince: transfer.reattestingSince ?? Date.now() });
+		try {
+			await ctx.iris.reattest(bytesToHex(parseMessageV2(transfer.message!).nonce), {
+				signal: ctx.signal,
+				intervalMs: ctx.pollIntervalMs,
+			});
+		} catch (error) {
+			if (ctx.signal?.aborted || !(error instanceof IrisError)) throw error;
+			// Circle turned the request down, so nothing is being signed and nothing is waited for.
+			update({ reattestingSince: undefined });
+			throw new CctpKitError(
+				'Circle did not accept the request to sign this transfer again. Press Claim to ask again.',
+				{ cause: error },
+			);
+		}
+		fresh = await ctx.iris.waitForAttestation(from.domain, hash, {
+			signal: ctx.signal,
+			intervalMs: ctx.pollIntervalMs,
+			differentFrom: transfer.attestation,
+		});
+	}
+	update({
+		status: 'readyToMint',
+		message: fresh.message,
+		attestation: fresh.attestation,
+		reattestingSince: undefined,
+	});
 }
 
 /**

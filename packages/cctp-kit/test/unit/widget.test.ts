@@ -575,3 +575,89 @@ describe('a transfer that another tab is driving', () => {
 		kit.destroy();
 	});
 });
+
+/** A template as the text it shows, each class map written as the classes it turns on. */
+function text(value: unknown): string {
+	if (Array.isArray(value)) return value.map(text).join('');
+	if (value && typeof value === 'object' && 'values' in value) {
+		const { strings, values } = value as { strings?: readonly string[]; values: unknown[] };
+		if (strings)
+			return strings.map((s, i) => s + (i < values.length ? text(values[i]) : '')).join('');
+		const [classes] = values as [Record<string, boolean>];
+		return Object.keys(classes)
+			.filter((name) => classes[name])
+			.join(' ');
+	}
+	return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+}
+
+describe('a Fast Transfer into Sui that Circle is signing again', () => {
+	const HOUR = 3_600_000;
+	const askedAt = 1_800_000_000_000;
+	const signingAgain: TransferRecord = {
+		id: 'transfer-3',
+		network: 'mainnet',
+		from: 'base',
+		to: 'sui',
+		amount: '705880000',
+		maxFee: '70588',
+		speed: 'fast',
+		sender: EVM_ADDRESS,
+		recipient: SUI_ADDRESS,
+		status: 'attesting',
+		sourceTxHash: `0x${'ab'.repeat(32)}`,
+		sourceConfirmed: true,
+		message: `0x${'aa'.repeat(376)}`,
+		attestation: `0x${'bb'.repeat(65)}`,
+		// The burn, and the first wait for Circle, were a day and a half before it was asked again.
+		burnedAt: askedAt - 36 * HOUR,
+		attestingSince: askedAt - 36 * HOUR,
+		reattestingSince: askedAt,
+		createdAt: askedAt - 36 * HOUR,
+		updatedAt: askedAt,
+	};
+	const card = (transfer: TransferRecord, now: number) => {
+		const { kit } = suiKit();
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			_now: number;
+			renderTransfer(transfer: TransferRecord, kit: unknown): unknown;
+		};
+		element.instance = kit;
+		element._now = now;
+		const shown = text(element.renderTransfer(transfer, kit)).replace(/\s+/g, ' ');
+		kit.destroy();
+		return shown;
+	};
+	const stepClasses = (shown: string, label: string) =>
+		new RegExp(`<li class=([\\w ]*?) ?> <span class="dot"></span> <span>${label}</span>`).exec(
+			shown,
+		)?.[1];
+
+	it('says why it is waiting, and counts from when Circle was asked', () => {
+		const shown = card(signingAgain, askedAt + 2 * HOUR + 5_000);
+		expect(shown).toContain('Waiting for Circle');
+		expect(shown).toContain(
+			'The claim window for this Fast Transfer passed, so Circle is signing it again. This can take a few hours. You can close this page; the transfer will be ready to claim when you come back.',
+		);
+		expect(shown).toContain('Waiting 2:00:05');
+		// The Fast Transfer estimate does not apply.
+		expect(shown).not.toMatch(/remaining|Taking longer|overdue|progressbar/);
+		expect(shown).not.toContain('>Attesting<');
+	});
+
+	it('shows Attest as under way, not as done', () => {
+		const shown = card(signingAgain, askedAt);
+		expect(stepClasses(shown, 'Burn')).toBe('step done');
+		expect(stepClasses(shown, 'Attest')).toBe('step active');
+	});
+
+	it('is shown as an ordinary wait for Circle when it is not signing again', () => {
+		const waiting = { ...signingAgain, attestation: undefined, reattestingSince: undefined };
+		const shown = card(waiting, askedAt - 36 * HOUR + 4_000);
+		expect(shown).toContain('Attesting');
+		expect(shown).not.toContain('Circle is signing it again');
+		expect(shown).toMatch(/remaining/);
+		expect(stepClasses(shown, 'Attest')).toBe('step active');
+	});
+});

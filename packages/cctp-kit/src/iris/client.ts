@@ -141,9 +141,31 @@ export class IrisClient {
 	 * Ask Circle to sign a message again. A Fast Transfer message expires 24 hours after it was
 	 * signed and the destination then rejects it; a new attestation carries a new expiry. Circle
 	 * sets no deadline for asking. Poll `waitForAttestation` with `differentFrom` afterwards.
+	 *
+	 * A request Circle could not take (a network failure, a 429 or a 5xx) is made again, backing
+	 * off from `intervalMs` to `maxIntervalMs`, until it goes through or `signal` aborts. Any other
+	 * answer, such as a 400 or a 404, is Circle refusing, and is thrown as an `IrisError`.
 	 */
-	async reattest(nonce: string, signal?: AbortSignal): Promise<void> {
-		await this.#request(`/v2/reattest/${nonce}`, { method: 'POST', signal });
+	async reattest(
+		nonce: string,
+		options: { signal?: AbortSignal; intervalMs?: number; maxIntervalMs?: number } = {},
+	): Promise<void> {
+		const baseInterval = options.intervalMs ?? 5_000;
+		const maxInterval = options.maxIntervalMs ?? 60_000;
+		for (let attempt = 0; ; attempt++) {
+			options.signal?.throwIfAborted();
+			try {
+				await this.#request(`/v2/reattest/${nonce}`, { method: 'POST', signal: options.signal });
+				return;
+			} catch (error) {
+				if (options.signal?.aborted) throw error;
+				// Unlike a lookup, which can come before Circle has indexed the burn, a 404 here
+				// means Circle has no such message.
+				const refused = error instanceof IrisError && error.status === 404;
+				if (refused || !isTransientIrisFailure(error)) throw error;
+			}
+			await sleep(Math.min(baseInterval * 2 ** attempt, maxInterval), options.signal);
+		}
 	}
 
 	/**
