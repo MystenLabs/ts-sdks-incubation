@@ -554,7 +554,9 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 			? 'Complete'
 			: failed
 				? 'Needs attention'
-				: (STEP_LABELS[transfer.status as keyof typeof STEP_LABELS] ?? '');
+				: signingAgain(transfer)
+					? 'Waiting for Circle'
+					: (STEP_LABELS[transfer.status as keyof typeof STEP_LABELS] ?? '');
 
 		return html`
 			<div class="transfer" part="transfer">
@@ -571,7 +573,8 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 							complete ||
 							(activeIndex !== -1 && i < activeIndex) ||
 							(step.key === 'burn' && !!transfer.sourceTxHash) ||
-							(step.key === 'attest' && !!transfer.attestation);
+							// An attestation that Circle is replacing does not finish the step.
+							(step.key === 'attest' && !!transfer.attestation && transfer.status !== 'attesting');
 						const isActive = !complete && !failed && i === activeIndex;
 						const isFailed = failed && !done && i === failedIndex(transfer);
 						const link =
@@ -627,6 +630,22 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	private renderWait(transfer: TransferRecord, from: ChainDefinition) {
+		if (signingAgain(transfer)) {
+			// Circle gives no estimate for signing again, and the Fast Transfer one does not
+			// apply: count from the request, and say what is going on instead.
+			return html`
+				<div class="wait" part="wait">
+					<span class="muted">
+						Waiting ${formatElapsed((this._now - transfer.reattestingSince!) / 1000)}
+					</span>
+					<p class="muted">
+						The claim window for this Fast Transfer passed, so Circle is signing it again. This can
+						take a few hours. You can close this page; the transfer will be ready to claim when you
+						come back.
+					</p>
+				</div>
+			`;
+		}
 		const [min, max] = estimateRange(from, transfer.speed);
 		const progress = waitProgress(
 			transfer.attestingSince ?? transfer.updatedAt,
@@ -980,6 +999,11 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 /** How long Bridge waits for a fresh balance before going ahead with the one it has. */
 const BALANCE_CHECK_LIMIT_MS = 5_000;
+
+/** Circle is signing an expired Fast Transfer message into Sui again. */
+function signingAgain(transfer: TransferRecord): boolean {
+	return transfer.status === 'attesting' && !!transfer.reattestingSince;
+}
 
 /** No burn was sent for this transfer, so no funds depend on its record. */
 function neverBurned(transfer: TransferRecord): boolean {

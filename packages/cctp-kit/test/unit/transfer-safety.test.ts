@@ -13,13 +13,16 @@ import { atom } from 'nanostores';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChainRegistry } from '../../src/chains/index.js';
 import { SOLANA_MAINNET } from '../../src/chains/solana.js';
+import { createCctpKit } from '../../src/core/index.js';
 import { isExpiredOnSui, runTransfer } from '../../src/core/transfer.js';
+import type { TransferContext } from '../../src/core/transfer.js';
 import type { AnyDAppKit, TransferRecord } from '../../src/core/types.js';
 import * as evm from '../../src/engine/evm.js';
 import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '../../src/engine/solana.js';
 import { IrisClient } from '../../src/iris/client.js';
 import { MESSAGE_V2 } from '../../src/utils/bytes.js';
 import { TransactionRevertedError } from '../../src/utils/errors.js';
+import { createInMemoryStorage } from '../../src/utils/storage.js';
 import type { WalletAdapters } from '../../src/wallets/types.js';
 import { solanaHasCctpLookupTable } from './solana-lookup-table.js';
 
@@ -87,6 +90,12 @@ function suiDAppKit(options: { account?: string | null; core?: Record<string, un
 	} as unknown as AnyDAppKit;
 	return { dAppKit, signAndExecuteTransaction };
 }
+
+/** What the transmitter's `is_nonce_used` view returns, as a simulation result. */
+const nonceIs = (used: boolean) =>
+	vi.fn(async () => ({
+		commandResults: [{ returnValues: [{ bcs: new Uint8Array([used ? 1 : 0]) }] }],
+	}));
 
 const record = (over: Partial<TransferRecord>): TransferRecord => ({
 	id: 't',
@@ -212,7 +221,11 @@ describe('an expired Fast Transfer into Sui', () => {
 				onUpdate: (t) => updates.push(t),
 			},
 		);
-		expect(calls[0]).toMatch(/^POST \/v2\/reattest\/0x[0-9a-f]{64}$/);
+		// It looks for a new signature first, finds the old one, and asks.
+		expect(calls.slice(0, 2)).toEqual([
+			expect.stringMatching(/^GET \/v2\/messages\/0$/),
+			expect.stringMatching(/^POST \/v2\/reattest\/0x[0-9a-f]{64}$/),
+		]);
 		expect(result.status).toBe('complete');
 		expect(result.message).toBe(renewed);
 		expect(result.attestation).toBe(newAttestation);
@@ -220,7 +233,7 @@ describe('an expired Fast Transfer into Sui', () => {
 		// 'minting' twice: once when the claim starts, once when its digest is recorded.
 		expect(updates.map((u) => u.status)).toEqual([
 			'attesting',
-			'attesting',
+			'readyToMint',
 			'minting',
 			'minting',
 			'complete',
@@ -248,6 +261,229 @@ describe('an expired Fast Transfer into Sui', () => {
 		);
 		expect(result.status).toBe('complete');
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	describe('signing it again', () => {
+		// As it went in production: a message signed for a Fast Transfer, unclaimed a day later.
+		const expired = message(BigInt(Date.now() - 1_000));
+		// What Circle signed again was a standard message, which never expires.
+		const renewed = message(0n, 0xcc);
+		const OLD = `0x${'11'.repeat(65)}`;
+		const NEW = `0x${'22'.repeat(65)}`;
+		const REATTEST = /^POST \/v2\/reattest\/0x[0-9a-f]{64}$/;
+		const waitingAtClaim = (over: Partial<TransferRecord> = {}) =>
+			record({
+				status: 'readyToMint',
+				sourceTxHash: BURN_HASH,
+				sourceConfirmed: true,
+				message: expired,
+				attestation: OLD,
+				...over,
+			});
+
+		/**
+		 * Circle, which goes on returning the old signature until it has been asked to sign again
+		 * `signsOn` times. `answer` stands in for how it takes each request to sign again.
+		 */
+		function circle(
+			options: {
+				signsOn?: number;
+				signedAlready?: boolean;
+				answer?: (attempt: number) => Response;
+			} = {},
+		) {
+			const calls: string[] = [];
+			let asked = 0;
+			let signed = options.signedAlready ?? false;
+			const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+				const url = new URL(String(input));
+				calls.push(`${init?.method ?? 'GET'} ${url.pathname}`);
+				if (init?.method === 'POST' && url.pathname.startsWith('/v2/reattest/')) {
+					asked += 1;
+					const answer =
+						options.answer?.(asked) ??
+						json(200, { message: 'Re-attestation successfully requested for nonce.' });
+					if (answer.ok && asked >= (options.signsOn ?? 1)) signed = true;
+					return answer;
+				}
+				if (!url.pathname.startsWith('/v2/messages/')) return json(400, { error: 'not here' });
+				return json(200, {
+					messages: [
+						signed
+							? { status: 'complete', message: renewed, attestation: NEW }
+							: { status: 'complete', message: expired, attestation: OLD },
+					],
+				});
+			});
+			const requests = () => calls.filter((call) => REATTEST.test(call)).length;
+			return { iris: new IrisClient('mainnet', { fetch: fetchMock }), fetchMock, calls, requests };
+		}
+
+		const context = (
+			iris: IrisClient,
+			dAppKit: AnyDAppKit,
+			updates: TransferRecord[],
+			over: Partial<TransferContext> = {},
+		): TransferContext => ({
+			dAppKit,
+			wallets: evmWallets(),
+			iris,
+			chains,
+			pollIntervalMs: 1,
+			onUpdate: (t) => updates.push(t),
+			...over,
+		});
+
+		it('happens when the page loads, and stops at Claim without asking the wallet', async () => {
+			const { iris, calls } = circle();
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit();
+			const updates: TransferRecord[] = [];
+			const result = await runTransfer(
+				waitingAtClaim(),
+				context(iris, dAppKit, updates, { stopAfterAttestation: true }),
+			);
+			expect(calls).toContainEqual(expect.stringMatching(REATTEST));
+			expect(result).toMatchObject({ status: 'readyToMint', message: renewed, attestation: NEW });
+			expect(result.reattestingSince).toBeUndefined();
+			expect(updates.map((u) => u.status)).toEqual(['attesting', 'readyToMint']);
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+
+			// The new message carries no expiry, so a press on Claim goes straight to the wallet.
+			const asked = calls.length;
+			const claim = runTransfer(result, context(iris, dAppKit, []));
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			expect((await claim).status).toBe('complete');
+			expect(calls).toHaveLength(asked);
+		});
+
+		it('remembers when it first asked, through a reload, until the new signature is in', async () => {
+			// Circle signs only once it has been asked twice: the page is closed while it works.
+			const { iris, calls } = circle({ signsOn: 2 });
+			const { dAppKit } = suiDAppKit();
+			const before: TransferRecord[] = [];
+			const closed = new AbortController();
+			const firstRun = runTransfer(
+				waitingAtClaim(),
+				context(iris, dAppKit, before, { stopAfterAttestation: true, signal: closed.signal }),
+			);
+			await vi.waitFor(() => expect(calls).toContainEqual(expect.stringMatching(REATTEST)));
+			closed.abort();
+			await expect(firstRun).rejects.toThrow();
+			const left = before.at(-1)!;
+			expect(left).toMatchObject({ status: 'attesting', message: expired, attestation: OLD });
+			const askedAt = left.reattestingSince!;
+			expect(askedAt).toBeGreaterThan(0);
+
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			const after: TransferRecord[] = [];
+			const result = await runTransfer(
+				left,
+				context(iris, dAppKit, after, { stopAfterAttestation: true }),
+			);
+			expect(after[0]).toMatchObject({ status: 'attesting', reattestingSince: askedAt });
+			expect(result).toMatchObject({ status: 'readyToMint', message: renewed, attestation: NEW });
+			expect(result.reattestingSince).toBeUndefined();
+		});
+
+		it('takes a signature Circle gave while nobody was watching, without asking again', async () => {
+			const { iris, requests } = circle({ signedAlready: true });
+			const result = await runTransfer(
+				waitingAtClaim({ status: 'attesting', reattestingSince: 1 }),
+				context(iris, suiDAppKit().dAppKit, [], { stopAfterAttestation: true }),
+			);
+			expect(requests()).toBe(0);
+			expect(result).toMatchObject({ status: 'readyToMint', message: renewed, attestation: NEW });
+			expect(result.reattestingSince).toBeUndefined();
+		});
+
+		it('is not asked for when the message was claimed in time after all', async () => {
+			const { fetchMock } = circle();
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(true) },
+			});
+			// On load, and on a press on Claim.
+			for (const stopAfterAttestation of [true, false]) {
+				const result = await runTransfer(
+					waitingAtClaim(),
+					context(new IrisClient('mainnet', { fetch: fetchMock }), dAppKit, [], {
+						stopAfterAttestation,
+					}),
+				);
+				expect(result.status).toBe('complete');
+			}
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		it('asks again when Circle could not take the request', async () => {
+			const { iris, requests } = circle({
+				answer: (attempt) => {
+					if (attempt === 1) throw new TypeError('Failed to fetch');
+					if (attempt === 2) return json(429, { error: 'Too many requests' });
+					if (attempt === 3) return json(503, { error: 'Service unavailable' });
+					return json(200, { message: 'Re-attestation successfully requested for nonce.' });
+				},
+			});
+			const updates: TransferRecord[] = [];
+			const result = await runTransfer(
+				waitingAtClaim(),
+				context(iris, suiDAppKit().dAppKit, updates, { stopAfterAttestation: true }),
+			);
+			expect(requests()).toBe(4);
+			expect(result).toMatchObject({ status: 'readyToMint', attestation: NEW });
+			expect(updates.some((u) => u.status === 'failed')).toBe(false);
+		});
+
+		it('says in plain words when Circle turns the request down, and leaves Claim to ask again', async () => {
+			for (const status of [400, 404]) {
+				const { iris, requests } = circle({
+					answer: () => json(status, { error: 'Invalid nonce' }),
+				});
+				const updates: TransferRecord[] = [];
+				await expect(
+					runTransfer(
+						waitingAtClaim(),
+						context(iris, suiDAppKit().dAppKit, updates, { stopAfterAttestation: true }),
+					),
+				).rejects.toThrow();
+				expect(requests()).toBe(1);
+				const failed = updates.at(-1)!;
+				expect(failed).toMatchObject({
+					status: 'failed',
+					error:
+						'Circle did not accept the request to sign this transfer again. Press Claim to ask again.',
+					message: expired,
+					attestation: OLD,
+				});
+				// Nothing is being signed, so there is no wait to count.
+				expect(failed.reattestingSince).toBeUndefined();
+			}
+		});
+
+		it('is asked for by a page that finds the transfer waiting at Claim', async () => {
+			const storage = createInMemoryStorage();
+			const stored = waitingAtClaim({ id: 'expired-at-load', burnedAt: 1 });
+			storage.setItem('mysten-cctp-kit:transfers:mainnet', JSON.stringify([stored]));
+			const { fetchMock, calls } = circle();
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit();
+			const kit = createCctpKit({
+				dAppKit,
+				network: 'mainnet',
+				storage,
+				iris: { fetch: fetchMock },
+			});
+			await vi.waitFor(() =>
+				expect(kit.stores.$transfers.get()[0]).toMatchObject({
+					id: stored.id,
+					status: 'readyToMint',
+					message: renewed,
+					attestation: NEW,
+				}),
+			);
+			expect(calls).toContainEqual(expect.stringMatching(REATTEST));
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			kit.destroy();
+		});
 	});
 });
 
@@ -845,11 +1081,6 @@ describe('a claim on Sui', () => {
 		chains,
 		onUpdate: (t: TransferRecord) => updates.push(t),
 	});
-	/** What the transmitter's `is_nonce_used` view returns, as a simulation result. */
-	const nonceIs = (used: boolean) =>
-		vi.fn(async () => ({
-			commandResults: [{ returnValues: [{ bcs: new Uint8Array([used ? 1 : 0]) }] }],
-		}));
 
 	it('keeps its digest when the wait that follows fails', async () => {
 		// The message is spent once the claim executes. Losing the digest here left a transfer

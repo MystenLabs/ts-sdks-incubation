@@ -178,3 +178,53 @@ describe('IrisClient waiting', () => {
 		).rejects.toThrow(/^Timed out waiting for Circle's attestation$/);
 	});
 });
+
+describe('IrisClient asking Circle to sign again', () => {
+	const NONCE = `0x${'11'.repeat(32)}`;
+	const accepted = () =>
+		jsonResponse(200, { message: 'Re-attestation successfully requested for nonce.' });
+
+	it('makes the request again through network errors, rate limits and 5xx', async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+			.mockResolvedValueOnce(jsonResponse(429, { error: 'rate limited' }))
+			.mockResolvedValueOnce(jsonResponse(502, { error: 'bad gateway' }))
+			.mockResolvedValueOnce(accepted());
+		const client = new IrisClient('mainnet', { fetch: fetchMock });
+		await client.reattest(NONCE, { intervalMs: 1, maxIntervalMs: 4 });
+		expect(fetchMock).toHaveBeenCalledTimes(4);
+		const [url, init] = fetchMock.mock.calls[0]!;
+		expect(String(url)).toBe(`https://iris-api.circle.com/v2/reattest/${NONCE}`);
+		expect(init?.method).toBe('POST');
+	});
+
+	it('takes a 400 or a 404 as an answer, not as a reason to ask again', async () => {
+		for (const status of [400, 404]) {
+			const fetchMock = vi
+				.fn<typeof fetch>()
+				.mockResolvedValue(jsonResponse(status, { error: 'Invalid nonce' }));
+			const client = new IrisClient('mainnet', { fetch: fetchMock });
+			await expect(client.reattest(NONCE, { intervalMs: 1 })).rejects.toMatchObject({
+				name: 'IrisError',
+				status,
+			} satisfies Partial<IrisError>);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		}
+	});
+
+	it('stops asking when its signal aborts', async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(jsonResponse(503, { error: 'unavailable' }));
+		const client = new IrisClient('mainnet', { fetch: fetchMock });
+		const controller = new AbortController();
+		const asking = client.reattest(NONCE, { signal: controller.signal, intervalMs: 60_000 });
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+		// Let it take the 503 and settle into its pause before asking again.
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		controller.abort(new Error('page closed'));
+		await expect(asking).rejects.toThrow('page closed');
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});

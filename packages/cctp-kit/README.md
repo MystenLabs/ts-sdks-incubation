@@ -175,3 +175,8 @@ are split into separate chunks.
 - Sui is a standard-speed source: Circle lists Fast Transfer as not applicable there because a
   standard attestation already lands in seconds. Fast into Sui is offered when the source chain
   supports it.
+- A Fast Transfer message expires 24 hours after Circle signs it, and Sui then refuses it. For a
+  transfer into Sui that was not claimed in time, the kit asks Circle to sign it again without
+  waiting for a press, also when a page loads, and stops at **Claim** with the new message. Circle
+  can take hours over this; the card says so and counts the wait from `reattestingSince`, when the
+  kit first asked.

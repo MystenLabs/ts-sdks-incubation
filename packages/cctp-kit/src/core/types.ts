@@ -129,6 +129,12 @@ export interface TransferRecord {
 	burnedAt?: number;
 	/** When the attestation wait started (first time the status became `attesting`). */
 	attestingSince?: number;
+	/**
+	 * When the kit first asked Circle to sign an expired Fast Transfer message into Sui again.
+	 * A later run that asks again keeps it, so the wait shown does not restart on a reload. Cleared
+	 * once the new attestation is stored.
+	 */
+	reattestingSince?: number;
 	/** When the transfer completed. */
 	completedAt?: number;
 	/** Archived by the user (Dismiss). Kept in storage and visible in history; not in the pending list. */
