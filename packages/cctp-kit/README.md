@@ -69,6 +69,8 @@ Every hook accepts an optional `{ kit }` to bypass context, mirroring dapp-kit's
 | `wallets.evm`            | Inject an EVM adapter, e.g. `createEvmWalletFromWagmiConfig(config)`.                                                                                                   |
 | `wallets.solana`         | Inject a Solana adapter.                                                                                                                                                |
 | `wallets.layer`          | Supplies the EVM and Solana wallets you do not inject. `appKitWallets({ projectId, metadata, themeMode })` from `/appkit` is the ready-made one, built on Reown AppKit. |
+| `sui.executeTransaction` | Signs and executes the kit's Sui burns and claims in place of dapp-kit's wallet. See [Executing Sui transactions yourself](#executing-sui-transactions-yourself).       |
+| `claim`                  | `'auto'` (default) claims as soon as Circle attests; `'manual'` stops at `readyToMint` until `kit.claim(id)`.                                                           |
 | `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                                    |
 | `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                                   |
 
@@ -128,6 +130,58 @@ What the widget lists follows the connected wallets:
 
 `stores.$history` is that list; `stores.$transfers` is everything in storage.
 
+### Executing Sui transactions yourself
+
+`sui.executeTransaction` replaces dapp-kit's `signAndExecuteTransaction` for the kit's Sui burns and
+claims, e.g. to use the app's own fullnode and gas budget, or another signer for claims.
+
+```ts
+const kit = createCctpKit({
+	dAppKit,
+	claim: 'manual',
+	sui: {
+		executeTransaction: async ({ kind, transaction }) => {
+			if (kind === 'claim') transaction.setSender(relayerAddress);
+			return { digest: (await myExecutor(transaction)).digest };
+		},
+	},
+});
+```
+
+- A burn spends the connected wallet's USDC. Anyone may submit a claim whose destination caller is
+  zero and the USDC still goes to the recorded recipient, so with an executor a claim needs no
+  connected wallet.
+- Resolve with the digest once the transaction has executed, and throw if it failed.
+
+`claim: 'manual'` stops transfers at `readyToMint` until `kit.claim(id)`, which rejects a transfer
+Circle has not attested and never burns.
+
+### Adding the CCTP calls to your own transactions
+
+`suiDepositForBurn` and `suiReceiveMessage` return transaction thunks for `tx.add()`.
+`suiDepositForBurn` burns the coin it is given, which can come from an earlier call in the same
+transaction:
+
+```ts
+import { mintRecipientBytes, SUI_MAINNET, suiDepositForBurn } from '@mysten-incubation/cctp-kit';
+
+const tx = new Transaction();
+const coin = tx.add(withdrawUsdcFromMyAccount(amount));
+tx.add(
+	suiDepositForBurn(SUI_MAINNET, {
+		coin,
+		destinationDomain: base.domain,
+		mintRecipient: mintRecipientBytes(recipient, base),
+		maxFee: 0n,
+		minFinalityThreshold: 2000,
+	}),
+);
+```
+
+The whole coin is burned, so it must hold exactly the amount to send. Track the burn with
+`kit.importTransfer({ txHash })`. Calls after a claim cannot use the minted USDC: Circle's handler
+sends it straight to the recipient.
+
 ### Content Security Policy
 
 Hosts with a strict CSP need to allow:
@@ -169,9 +223,9 @@ are split into separate chunks.
 
 ### Sui notes
 
-- Circle does not run a relayer for Sui, so the destination mint is submitted by the user's wallet.
-  The widget persists the attested message and shows a **Claim** button if the tab was closed in
-  between.
+- Circle does not run a relayer for Sui, so the destination mint is submitted by the user's wallet,
+  or by whatever signs for `sui.executeTransaction`. The widget persists the attested message and
+  shows a **Claim** button if the tab was closed in between.
 - Sui is a standard-speed source: Circle lists Fast Transfer as not applicable there because a
   standard attestation already lands in seconds. Fast into Sui is offered when the source chain
   supports it.

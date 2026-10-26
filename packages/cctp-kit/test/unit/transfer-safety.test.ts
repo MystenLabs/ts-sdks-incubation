@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChainRegistry } from '../../src/chains/index.js';
 import { SOLANA_MAINNET } from '../../src/chains/solana.js';
 import { isExpiredOnSui, runTransfer } from '../../src/core/transfer.js';
-import type { AnyDAppKit, TransferRecord } from '../../src/core/types.js';
+import type { AnyDAppKit, SuiExecutionRequest, TransferRecord } from '../../src/core/types.js';
 import * as evm from '../../src/engine/evm.js';
 import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '../../src/engine/solana.js';
 import { IrisClient } from '../../src/iris/client.js';
@@ -954,6 +954,38 @@ describe('a claim on Sui', () => {
 			expect(result.status).toBe('complete');
 			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
 		}
+	});
+
+	describe("through the host's executor", () => {
+		const HOST_DIGEST = '8yW3bnTb1bvW9WqZBb8YjVt1g1q7RkFzvVr2nEwqM9Lz';
+		const executor = () =>
+			vi.fn(async (_request: SuiExecutionRequest) => ({ digest: HOST_DIGEST }));
+
+		it('is signed and executed by the host instead of the wallet, and keeps its digest', async () => {
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			const executeSuiTransaction = executor();
+			const run = runTransfer(claimable(), { ...context(dAppKit), executeSuiTransaction });
+			// Called inside the press, like a wallet.
+			expect(executeSuiTransaction).toHaveBeenCalledTimes(1);
+			expect(await run).toMatchObject({ status: 'complete', destinationTxHash: HOST_DIGEST });
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			const request = executeSuiTransaction.mock.calls[0]![0];
+			expect(request).toMatchObject({ kind: 'claim', network: 'mainnet', transfer: { id: 't' } });
+			expect(request.transaction.getData().sender).toBe(SUI_ADDRESS);
+		});
+
+		it('needs no connected wallet, since anyone may submit the claim', async () => {
+			const { dAppKit } = suiDAppKit({ account: null });
+			const executeSuiTransaction = executor();
+			const result = await runTransfer(claimable(), { ...context(dAppKit), executeSuiTransaction });
+			expect(result.status).toBe('complete');
+			expect(executeSuiTransaction.mock.calls[0]![0].transaction.getData().sender).toBeNull();
+			await expect(runTransfer(claimable(), context(dAppKit))).rejects.toThrow(
+				'Connect a Sui wallet to claim.',
+			);
+		});
 	});
 });
 

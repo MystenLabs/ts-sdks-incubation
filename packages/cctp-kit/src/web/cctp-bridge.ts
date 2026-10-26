@@ -974,7 +974,10 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	private async resume(kit: CctpKit, id: string) {
 		if (this._busy) return;
 		this._formError = null;
-		await this.runWithBusy(kit, () => kit.resume(id), { id });
+		const transfer = kit.stores.$transfers.get().find((t) => t.id === id);
+		const start =
+			transfer?.message && transfer.attestation ? () => kit.claim(id) : () => kit.resume(id);
+		await this.runWithBusy(kit, start, { id });
 	}
 }
 

@@ -4,7 +4,7 @@
 import { atom } from 'nanostores';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCctpKit } from '../../src/core/index.js';
-import type { AnyDAppKit, TransferRecord } from '../../src/core/types.js';
+import type { AnyDAppKit, CctpKitConfig, TransferRecord } from '../../src/core/types.js';
 import { createInMemoryStorage } from '../../src/utils/storage.js';
 import { CctpBridge } from '../../src/web/cctp-bridge.js';
 
@@ -34,7 +34,11 @@ const unusedWallet = (ecosystem: 'evm' | 'solana') => ({
 });
 
 /** A kit sending from Sui to Avalanche, with a Sui wallet that holds 5 USDC. */
-function suiKit(storage = createInMemoryStorage(), circle?: typeof fetch) {
+function suiKit(
+	storage = createInMemoryStorage(),
+	circle?: typeof fetch,
+	config: Partial<CctpKitConfig> = {},
+) {
 	const signAndExecuteTransaction = vi.fn(async () => ({
 		$kind: 'Transaction',
 		Transaction: { digest: DIGEST },
@@ -75,6 +79,7 @@ function suiKit(storage = createInMemoryStorage(), circle?: typeof fetch) {
 			evm: unusedWallet('evm') as never,
 			solana: unusedWallet('solana') as never,
 		},
+		...config,
 	});
 	return { kit, signAndExecuteTransaction, storage };
 }
@@ -169,6 +174,27 @@ describe('a claim on Sui', () => {
 		const storage = createInMemoryStorage();
 		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
 		const { kit, signAndExecuteTransaction } = suiKit(storage);
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			resume(kit: unknown, id: string): Promise<void>;
+		};
+		element.instance = kit;
+		await settle();
+
+		void element.resume(kit, SUI_BOUND.id);
+		expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+		await settle();
+		expect(kit.stores.$transfers.get()[0]).toMatchObject({
+			status: 'complete',
+			destinationTxHash: DIGEST,
+		});
+		kit.destroy();
+	});
+
+	it('claims on a Claim press when the kit leaves claiming to the page', async () => {
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
+		const { kit, signAndExecuteTransaction } = suiKit(storage, undefined, { claim: 'manual' });
 		const element = new CctpBridge() as unknown as {
 			instance: unknown;
 			resume(kit: unknown, id: string): Promise<void>;
