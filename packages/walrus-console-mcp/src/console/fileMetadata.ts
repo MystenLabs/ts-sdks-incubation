@@ -26,9 +26,11 @@ const tagsSchema = (tagLength: number, maxTags: number) =>
   z.array(z.string().trim().min(1).max(tagLength)).max(maxTags);
 
 // Described here, once, rather than at each tool's use site: every tool below
-// wraps these in its own `.optional()` / `.nullable()`, and the description
-// carries through that wrapping into the JSON schema an agent actually sees
-// (verified against zod-to-json-schema, the converter the MCP SDK uses).
+// wraps these in its own `.optional()`, and the description carries through
+// that wrapping into the JSON schema an agent actually sees. `.nullable()` does
+// NOT carry it — zod 4 emits `anyOf: [{ ..., description }, { type: "null" }]`
+// with no top-level description — so a nullable use site re-describes itself
+// (see update_file).
 // Tags are searchable through Console's /search API, which no tool here calls;
 // list_files' `q` matches the file name only, and nothing searches descriptions.
 export const fileDescriptionSchema = descriptionSchema(MAX_FILE_DESCRIPTION_LENGTH).describe(

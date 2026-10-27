@@ -40,9 +40,16 @@
 			"@mysten-incubation/walrus-console-mcp>@mysten/sui": "2.29.0",
 			"@mysten/sui": "catalog:",
 			"axios": "^1.20.0",
+			"body-parser@2": "^2.4.0",
+			"fast-uri@3": "^3.1.9",
+			"ip-address@10": "^10.7.4",
 			"shell-quote": "^1.11.0",
 			"tmp@<0.2.6": "^0.2.6",
-			"vite": "catalog:"
+			"toml@<5.0.1": "^5.0.1",
+			"undici@8": "^8.12.2",
+			"uuid@<11.1.1": "^11.1.1",
+			"vite": "catalog:",
+			"zod@>=4 <4.6.6": "^4.6.6"
 		}
 	},
 	"devDependencies": {
