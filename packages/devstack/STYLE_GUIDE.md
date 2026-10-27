@@ -66,7 +66,7 @@ Rules across all four styles:
 - Vitest tests live in `packages/devstack/test/` mirroring the `src/` directory structure. Never as
   `*.test.ts` siblings inside `src/`.
 - Effect-bearing tests use `it.effect` from `@effect/vitest`.
-- Browser / DOM tests opt into `@vitest/browser` per the repo pattern (see `running-vitest` skill).
+- Browser / DOM tests opt into `@vitest/browser` per the repo pattern.
 - The subprocess-runner pattern (`*-runner.cjs` + `*-impl.ts` that spawns a child
   `node --import tsx/esm <impl>.ts`) is forbidden by default. Tests import their implementation
   directly. The only sanctioned exception is per-plugin barrel module-load isolation; write a
