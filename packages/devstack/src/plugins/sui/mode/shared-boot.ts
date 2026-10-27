@@ -293,14 +293,15 @@ export const assembleSuiClient = (parts: {
 				);
 			}
 			// Fail at boot rather than on the first proxied request: `Headers`
-			// rejects names/values that are not valid HTTP tokens.
+			// rejects names/values that are not valid HTTP tokens. Its error
+			// echoes the rejected value — a credential — so it is not surfaced.
 			try {
 				new Headers(graphqlHeaders);
-			} catch (cause) {
+			} catch {
 				return yield* Effect.fail(
 					suiConfigError({
 						field: 'graphqlHeaders',
-						message: `sui: graphqlHeaders contains an invalid HTTP header: ${formatUnknownError(cause)}`,
+						message: 'sui: graphqlHeaders contains an invalid HTTP header',
 						hint: 'header names must be HTTP tokens and values must not contain newlines',
 					}),
 				);

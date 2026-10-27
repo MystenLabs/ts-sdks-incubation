@@ -169,12 +169,16 @@ builder.queryType({
 			nullable: true,
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.mode),
 		}),
-		/** Whether Sui GraphQL reads must go through the dashboard's
-		 *  `/sui-graphql` proxy (the sui plugin has `graphqlHeaders` set, which
-		 *  the server attaches so they never reach the browser). */
-		suiGraphqlProxied: t.boolean({
+		/** URL the SPA must send Sui GraphQL reads to instead of the stack's
+		 *  `graphql` endpoint, or `null` to read that endpoint directly. Set
+		 *  while the sui plugin has `graphqlHeaders`: the dashboard relay
+		 *  attaches them server-side so they never reach the browser. */
+		suiGraphqlProxyUrl: t.string({
+			nullable: true,
 			resolve: async (_parent, _args, ctx) =>
-				(await Effect.runPromise(ctx.pluginDomain.suiGraphqlUpstream)) !== null,
+				(await Effect.runPromise(ctx.pluginDomain.suiGraphqlUpstream)) === null
+					? null
+					: ctx.suiGraphqlProxyUrl,
 		}),
 		/** Snapshot catalog: id/label/created/participants/containers. */
 		snapshots: t.field({

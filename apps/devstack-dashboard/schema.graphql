@@ -374,7 +374,7 @@ type Query {
 	services(after: String, before: String, first: Int, last: Int): QueryServicesConnection!
 	snapshots: [SnapshotEntry!]!
 	state: StackState!
-	suiGraphqlProxied: Boolean!
+	suiGraphqlProxyUrl: String
 }
 
 type QueryAccountsConnection {

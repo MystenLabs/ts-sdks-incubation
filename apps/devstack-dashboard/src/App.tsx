@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import { useRoute, navigate } from './lib/router.ts';
 import { useProjection } from './lib/useProjection.ts';
-import { useMode, useSuiGraphqlProxied } from './lib/useChain.ts';
+import { useMode, useSuiGraphqlProxyUrl } from './lib/useChain.ts';
 import { summarize } from './lib/derive.ts';
 import { captureSnapshot, restartStack, runCodegen } from './lib/api.ts';
 import { suiRpcUrl } from './lib/chain.ts';
@@ -165,7 +165,10 @@ const Shell = () => {
 	const stackMode = useMode(endpoint, projection?.identity.network ?? '').data ?? null;
 	// Until this resolves the Sui GraphQL URL stays null (hooks disabled) rather
 	// than briefly pointing the browser at a credentialed endpoint directly.
-	const suiGraphqlProxied = useSuiGraphqlProxied(endpoint, projection?.identity.network ?? '').data;
+	const suiGraphqlProxyUrl = useSuiGraphqlProxyUrl(
+		endpoint,
+		projection?.identity.network ?? '',
+	).data;
 
 	// --- Persisted setters ---------------------------------------------------
 
@@ -325,12 +328,9 @@ const Shell = () => {
 		chain: {
 			rpcUrl: suiRpcUrl(projection.endpoints),
 			graphqlUrl:
-				suiGraphqlProxied === undefined
+				suiGraphqlProxyUrl === undefined
 					? null
-					: suiGraphqlUrl(projection.endpoints, {
-							proxied: suiGraphqlProxied,
-							dashboardEndpoint: endpoint,
-						}),
+					: (suiGraphqlProxyUrl ?? suiGraphqlUrl(projection.endpoints)),
 			network: projection.identity.network,
 		},
 		refresh: data.refresh,

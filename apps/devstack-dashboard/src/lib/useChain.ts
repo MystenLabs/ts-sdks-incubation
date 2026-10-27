@@ -30,7 +30,7 @@ import {
 	fetchDeepbookInfo,
 	fetchFundableCoins,
 	fetchMode,
-	fetchSuiGraphqlProxied,
+	fetchSuiGraphqlProxyUrl,
 	fetchSealInfo,
 	type FundableCoin,
 	type SealInfo,
@@ -53,7 +53,7 @@ import type {
 export interface ChainSource {
 	/** The stack's `rpc` endpoint URL, or null when unavailable (hooks disabled). */
 	readonly rpcUrl: string | null;
-	/** The stack's Sui GraphQL query URL (direct, or the dashboard proxy when
+	/** The stack's Sui GraphQL query URL (direct, or the dashboard relay when
 	 *  the sui plugin has `graphqlHeaders`), or null when there is none. */
 	readonly graphqlUrl: string | null;
 	/** Network identity (`projection.identity.network`) — the cache namespace. */
@@ -239,12 +239,19 @@ export const useMode = (endpoint: string, network: string): UseQueryResult<Stack
 		staleTime: DOMAIN_STALE_MS,
 	});
 
-/** Whether Sui GraphQL reads must go through the dashboard proxy. */
-export const useSuiGraphqlProxied = (endpoint: string, network: string): UseQueryResult<boolean> =>
+/** The dashboard relay URL for Sui GraphQL reads, or null to read directly. */
+export const useSuiGraphqlProxyUrl = (
+	endpoint: string,
+	network: string,
+): UseQueryResult<string | null> =>
 	useQuery({
-		queryKey: ['domain', network, endpoint, 'suiGraphqlProxied'],
-		queryFn: () => fetchSuiGraphqlProxied(endpoint),
+		queryKey: ['domain', network, endpoint, 'suiGraphqlProxyUrl'],
+		queryFn: () => fetchSuiGraphqlProxyUrl(endpoint),
 		staleTime: DOMAIN_STALE_MS,
+		// The sui value is absent from `resolvedValues` while sui boots or
+		// restarts (the dashboard does not wait for it), so an early `null`
+		// must not stick — poll so it heals once sui resolves.
+		refetchInterval: DOMAIN_STALE_MS,
 	});
 
 /** DeepBook deployments + pools. */

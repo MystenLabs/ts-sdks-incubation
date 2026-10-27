@@ -174,6 +174,18 @@ describe('assembleSuiClient graphqlHeaders', () => {
 		}),
 	);
 
+	it.effect('never echoes a rejected header value (a credential) in the error', () =>
+		Effect.gen(function* () {
+			const error = yield* assembleSuiClient({
+				...base,
+				graphqlUrl: 'https://graphql.example/graphql',
+				graphqlHeaders: { authorization: 'Bearer t0ken\ninjected' },
+			}).pipe(Effect.flip);
+			expect(error._tag).toBe('SuiConfigError');
+			expect(JSON.stringify(error)).not.toContain('t0ken');
+		}),
+	);
+
 	it.effect('rejects an invalid header name on the typed channel', () =>
 		Effect.gen(function* () {
 			const field = yield* assembleSuiClient({

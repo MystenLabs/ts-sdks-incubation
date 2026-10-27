@@ -616,9 +616,9 @@ const ModeDoc = graphql(`
 		mode
 	}
 `);
-const SuiGraphqlProxiedDoc = graphql(`
-	query SuiGraphqlProxied {
-		suiGraphqlProxied
+const SuiGraphqlProxyUrlDoc = graphql(`
+	query SuiGraphqlProxyUrl {
+		suiGraphqlProxyUrl
 	}
 `);
 const DeepbookInfoDoc = graphql(`
@@ -709,10 +709,10 @@ export const fetchSnapshots = (endpoint: string): Promise<ReadonlyArray<Snapshot
 export const fetchMode = (endpoint: string): Promise<StackMode> =>
 	execute(endpoint, ModeDoc).then((d) => d.mode);
 
-/** Whether Sui GraphQL reads must go through the dashboard's `/sui-graphql`
- *  proxy (the sui plugin has `graphqlHeaders`). */
-export const fetchSuiGraphqlProxied = (endpoint: string): Promise<boolean> =>
-	execute(endpoint, SuiGraphqlProxiedDoc).then((d) => d.suiGraphqlProxied);
+/** The dashboard relay URL Sui GraphQL reads must go through (the sui plugin
+ *  has `graphqlHeaders`), or null to read the `graphql` endpoint directly. */
+export const fetchSuiGraphqlProxyUrl = (endpoint: string): Promise<string | null> =>
+	execute(endpoint, SuiGraphqlProxyUrlDoc).then((d) => d.suiGraphqlProxyUrl);
 
 /** DeepBook deployments + pools. */
 export const fetchDeepbookInfo = (endpoint: string): Promise<ReadonlyArray<DeepbookInfo>> =>

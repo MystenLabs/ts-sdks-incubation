@@ -21,7 +21,11 @@ import { fileURLToPath } from 'node:url';
 import { createYoga, type CORSOptions } from 'graphql-yoga';
 import { dashboardSchema, type DashboardContext } from './schema.ts';
 import { checkOrigin, type OriginPolicy } from './origin-policy.ts';
-import { handleSuiGraphqlProxy, SUI_GRAPHQL_PROXY_PATH } from './sui-graphql-proxy.ts';
+import {
+	handleSuiGraphqlProxy,
+	sendProxyError,
+	SUI_GRAPHQL_PROXY_PATH,
+} from './sui-graphql-proxy.ts';
 import type { HttpRequestListener } from '../../substrate/runtime/scoped-http-server.ts';
 
 export interface DashboardListenerOptions {
@@ -242,9 +246,7 @@ export const makeDashboardListener = (opts: DashboardListenerOptions): HttpReque
 					res.destroy();
 					return;
 				}
-				res.statusCode = 500;
-				res.setHeader('content-type', 'application/json; charset=utf-8');
-				res.end(JSON.stringify({ errors: [{ message: `sui-graphql proxy: ${String(cause)}` }] }));
+				sendProxyError(res, 500, `sui-graphql proxy: ${String(cause)}`);
 			});
 			return;
 		}

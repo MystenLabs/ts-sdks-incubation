@@ -180,16 +180,17 @@ export interface DashboardFundableCoin {
 	readonly requiresAccountSigner: boolean;
 }
 
-/** The dashboard plugin-domain accessor surface. Each member is a
- *  self-contained Effect that never fails (`E = never`); they degrade to
- *  empty/`null` so a single missing plugin can't take down the dashboard
- *  query. */
-/** Upstream the dashboard's Sui GraphQL proxy forwards to. */
+/** Upstream the dashboard's Sui GraphQL relay forwards to: the sui plugin's
+ *  GraphQL query URL plus its caller-supplied `graphqlHeaders`. */
 export interface DashboardSuiGraphqlUpstream {
 	readonly url: string;
 	readonly headers: Readonly<Record<string, string>>;
 }
 
+/** The dashboard plugin-domain accessor surface. Each member is a
+ *  self-contained Effect that never fails (`E = never`); they degrade to
+ *  empty/`null` so a single missing plugin can't take down the dashboard
+ *  query. */
 export interface DashboardDomain {
 	/** Fork-vs-local mode, derived from the resolved sui plugin's chain
 	 *  identity. Used for advance-clock gating. `null` when no sui plugin
@@ -197,7 +198,7 @@ export interface DashboardDomain {
 	readonly mode: Effect.Effect<'fork' | 'local' | 'live' | null>;
 	/** The sui plugin's GraphQL endpoint + caller-supplied headers, ONLY when
 	 *  headers are configured (otherwise `null`: the browser reads the
-	 *  endpoint directly). Drives the server-side `/sui-graphql` proxy so
+	 *  endpoint directly). Drives the server-side Sui GraphQL relay so
 	 *  credentials never reach the browser. */
 	readonly suiGraphqlUpstream: Effect.Effect<DashboardSuiGraphqlUpstream | null>;
 	/** DeepBook deployments (registry/admin/pool ids + MM state). */
@@ -466,6 +467,23 @@ const matching = (
 	matches: (resourceId: string) => boolean,
 ): ReadonlyArray<ControlPlaneResolvedValue> => values.filter((v) => matches(v.id));
 
+/** The resolved sui value (resource id `sui`, a singleton), or `null`. */
+const resolvedSui = (values: ReadonlyArray<ControlPlaneResolvedValue>): SuiShape | null => {
+	const sui = matching(values, (id) => id === 'sui')[0];
+	return sui === undefined ? null : (sui.value as SuiShape);
+};
+
+/** Normalise a Sui GraphQL base URL onto its query path: the server serves
+ *  queries under `/graphql`, and a bare `host:port` base is common. This is
+ *  the SAME rule the SPA's `suiGraphqlUrl` applies to the endpoints it reads
+ *  directly (`apps/devstack-dashboard/src/lib/sui-graphql.ts`), so turning
+ *  on `graphqlHeaders` never changes which URL is queried. Keep them in
+ *  sync. */
+export const suiGraphqlQueryUrl = (base: string): string => {
+	const trimmed = base.replace(/\/+$/, '');
+	return trimmed.endsWith('/graphql') ? trimmed : `${trimmed}/graphql`;
+};
+
 // -----------------------------------------------------------------------------
 // Builder
 // -----------------------------------------------------------------------------
@@ -486,9 +504,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 
 	const mode: DashboardDomain['mode'] = control.resolvedValues.pipe(
 		Effect.map((values) => {
-			const sui = matching(values, (id) => id === 'sui')[0];
-			if (sui === undefined) return null;
-			const m = (sui.value as SuiShape).mode;
+			const m = resolvedSui(values)?.mode;
 			switch (m) {
 				case 'fork':
 					return 'fork';
@@ -505,18 +521,18 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 
 	const suiGraphqlUpstream: DashboardDomain['suiGraphqlUpstream'] = control.resolvedValues.pipe(
 		Effect.map((values) => {
-			const sui = matching(values, (id) => id === 'sui')[0];
-			if (sui === undefined) return null;
-			const { graphqlUrl, graphqlHeaders } = sui.value as SuiShape;
-			const url = optStr(graphqlUrl);
-			if (url === null || graphqlHeaders === null || typeof graphqlHeaders !== 'object') {
+			const sui = resolvedSui(values);
+			if (sui === null) return null;
+			const { graphqlUrl, graphqlHeaders } = sui;
+			const base = optStr(graphqlUrl);
+			if (base === null || graphqlHeaders === null || typeof graphqlHeaders !== 'object') {
 				return null;
 			}
 			const headers: Record<string, string> = {};
 			for (const [name, value] of Object.entries(graphqlHeaders)) {
 				if (typeof value === 'string') headers[name] = value;
 			}
-			return Object.keys(headers).length === 0 ? null : { url, headers };
+			return Object.keys(headers).length === 0 ? null : { url: suiGraphqlQueryUrl(base), headers };
 		}),
 	);
 
@@ -753,8 +769,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 	 *  value (same `chainId` field the sui codegen/snapshot decls stamp). */
 	const readChainId = control.resolvedValues.pipe(
 		Effect.map((values) => {
-			const sui = matching(values, (id) => id === 'sui')[0];
-			return sui === undefined ? null : optStr((sui.value as SuiShape).chainId);
+			return optStr(resolvedSui(values)?.chainId);
 		}),
 	);
 

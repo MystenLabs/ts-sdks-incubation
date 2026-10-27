@@ -1,7 +1,10 @@
-// Shared transport + reads for the node's Sui GraphQL endpoint (the new Sui
-// GraphQL beta). This talks to the stack's `graphql` endpoint (CORS-open) via
-// the official SDK's typed GraphQL client — distinct from `chain.ts` (gRPC
-// `client.core.*`) and from the dashboard's own control-plane GraphQL (`api.ts`).
+// Shared transport + reads for the node's Sui GraphQL (the new Sui GraphQL
+// beta), via the official SDK's typed GraphQL client — distinct from `chain.ts`
+// (gRPC `client.core.*`) and from the dashboard's own control-plane GraphQL
+// (`api.ts`). Reads go to the stack's `graphql` endpoint directly (CORS-open),
+// or — when the sui plugin has `graphqlHeaders` — to the dashboard's
+// loopback relay, which attaches the credentials server-side
+// (`ChainSource.graphqlUrl` carries whichever applies).
 //
 // gRPC `client.core` exposes object/balance reads keyed by address, but has no
 // address→transactions query; the node's Sui GraphQL does, via the first-class
@@ -23,27 +26,16 @@ import type { Endpoint } from './types.ts';
 
 // --- Endpoint resolution ----------------------------------------------------
 
-/** Same-origin dashboard route that relays Sui GraphQL with the sui plugin's
- *  `graphqlHeaders` attached server-side. Mirrors devstack's
- *  `SUI_GRAPHQL_PROXY_PATH` (`plugins/dashboard/sui-graphql-proxy.ts`). */
-export const SUI_GRAPHQL_PROXY_PATH = '/sui-graphql';
-
-/** The stack's Sui GraphQL query URL, or null. When `proxied` (the sui plugin
- *  has `graphqlHeaders`), queries go through the dashboard server's proxy at
- *  the control-plane `dashboardEndpoint`'s origin so credentials stay
- *  server-side. Otherwise the `graphql` endpoint is read directly: it is
- *  registered as the bare host:port base, but the Sui GraphQL server serves
- *  queries under `/graphql` — so normalise the base onto that path (the SDK's
- *  `SuiGraphQLClient` POSTs to the URL verbatim, it does not append a path). */
-export const suiGraphqlUrl = (
-	endpoints: ReadonlyArray<Endpoint>,
-	proxy: { readonly proxied: boolean; readonly dashboardEndpoint: string },
-): string | null => {
+/** The stack's Sui GraphQL query URL for direct reads, or null. The `graphql`
+ *  endpoint is registered as the bare host:port base, but the Sui GraphQL
+ *  server serves queries under `/graphql` — so normalise the base onto that
+ *  path (the SDK's `SuiGraphQLClient` POSTs to the URL verbatim, it does not
+ *  append a path). The dashboard relay applies the same rule server-side
+ *  (`suiGraphqlQueryUrl` in devstack's `plugins/dashboard/domain.ts`); keep
+ *  them in sync. */
+export const suiGraphqlUrl = (endpoints: ReadonlyArray<Endpoint>): string | null => {
 	const base = endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url;
 	if (base === undefined) return null;
-	if (proxy.proxied) {
-		return new URL(SUI_GRAPHQL_PROXY_PATH, new URL(proxy.dashboardEndpoint, location.href)).href;
-	}
 	const trimmed = base.replace(/\/+$/, '');
 	return trimmed.endsWith('/graphql') ? trimmed : `${trimmed}/graphql`;
 };

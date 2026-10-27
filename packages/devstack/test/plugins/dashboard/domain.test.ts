@@ -17,6 +17,7 @@ import { Effect } from 'effect';
 import {
 	buildDashboardDomain,
 	type DashboardDomain,
+	suiGraphqlQueryUrl,
 } from '../../../src/plugins/dashboard/domain.ts';
 import { emptyControlPlaneDomain } from '../../../src/substrate/runtime/control-plane/domain.ts';
 import type {
@@ -526,5 +527,34 @@ describe('dashboard suiGraphqlUpstream', () => {
 			url: 'https://g.example/graphql',
 			headers: { authorization: 'Bearer t0ken' },
 		});
+	});
+});
+
+describe('suiGraphqlQueryUrl', () => {
+	// Mirrors the SPA's direct-read `suiGraphqlUrl` rule, so enabling
+	// `graphqlHeaders` (which switches to the relay) never changes the URL.
+	it.each([
+		['http://127.0.0.1:9125', 'http://127.0.0.1:9125/graphql'],
+		['http://127.0.0.1:9125/', 'http://127.0.0.1:9125/graphql'],
+		['https://g.example/graphql', 'https://g.example/graphql'],
+		['https://g.example/graphql/', 'https://g.example/graphql'],
+	])('%s → %s', (base, expected) => {
+		expect(suiGraphqlQueryUrl(base)).toBe(expected);
+	});
+
+	it('is applied to the relay upstream', async () => {
+		const upstream = await Effect.runPromise(
+			makeFundDomain({
+				resolved: [
+					{
+						pluginKey: 'sui',
+						id: 'sui',
+						value: { graphqlUrl: 'https://g.example', graphqlHeaders: { a: 'b' } },
+					},
+				],
+				registry: null,
+			}).suiGraphqlUpstream,
+		);
+		expect(upstream?.url).toBe('https://g.example/graphql');
 	});
 });

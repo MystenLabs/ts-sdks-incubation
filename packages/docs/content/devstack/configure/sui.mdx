@@ -106,13 +106,18 @@ sidecar.
 
 ### Authenticated GraphQL
 
-`graphqlHeaders` adds HTTP headers (an `Authorization` token, an API key, …) to every request
-devstack makes to `graphqlUrl`. Known networks accept it too, so you can keep the default endpoint
-and just attach credentials, or pair it with your own `graphqlUrl`.
+`graphqlHeaders` attaches HTTP headers (an `Authorization` token, an API key, …) to the Sui GraphQL
+reads the devstack dashboard makes. Known networks accept it too, so you can keep the default
+endpoint and just add credentials, or pair it with your own `graphqlUrl`.
 
 The headers stay in the devstack process. They are never written to codegen output or the deployment
-envelope, and never sent to the browser: when they are set, the dashboard sends its Sui GraphQL
-reads through a same-origin `/sui-graphql` proxy that attaches them on the server. Setting
+envelope, and never sent to the browser: while they are set, the dashboard sends its Sui GraphQL
+reads through a relay on the dashboard server that attaches them. The relay only accepts connections
+from the same machine (loopback), so other hosts on your network can't use your credentials through
+it. Processes on your machine that can reach loopback, which may include containers on Docker
+Desktop, are not excluded.
+
+As with direct reads, a `graphqlUrl` that doesn't end in `/graphql` has `/graphql` appended. Setting
 `graphqlHeaders` on a network with no GraphQL endpoint (for example `devnet` without a `graphqlUrl`)
 fails at boot.
 

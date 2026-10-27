@@ -3,19 +3,25 @@
 // The SPA reads the node's Sui GraphQL straight from the browser. When the
 // sui plugin is configured with `graphqlHeaders` (e.g. an `Authorization`
 // token for a hosted GraphQL provider), those credentials must not be shipped
-// to the browser, so the SPA POSTs to this same-origin route instead and the
-// server forwards the body to the configured upstream with the headers
-// attached.
+// to the browser, so the SPA POSTs to this route instead and the server
+// forwards the body to the configured upstream with the headers attached.
 //
 // Hardening:
+//   - LOOPBACK PEERS ONLY. The dashboard listener binds `0.0.0.0` so the
+//     Dockerised router can reach it, which also exposes it to the LAN. An
+//     `Origin` check is browser CSRF protection, not caller authentication —
+//     any non-browser client can forge it — so the relay additionally refuses
+//     every connection whose TCP peer is not loopback. The SPA reaches the
+//     relay through the direct loopback URL (`suiGraphqlProxyUrl`), never
+//     through the router. Containers that can reach the host's loopback
+//     (e.g. via Docker Desktop's host networking) are not excluded by this.
 //   - The upstream URL is fixed by the resolved sui value; the request can
 //     never choose where it is forwarded (no SSRF surface).
-//   - Only the request BODY is forwarded — no client headers — so the browser
-//     can't override or observe the configured credentials.
-//   - Requests must carry an allowlisted `Origin` (browsers always send one on
-//     POST). Unlike `/graphql`, a missing Origin is refused: the only
-//     legitimate caller is the SPA, and this route spends the user's
-//     credentials.
+//   - Only the body and an explicit header allowlist are forwarded, so the
+//     browser can't override or observe the configured credentials.
+//   - Requests must also carry an allowlisted `Origin` (browsers always send
+//     one on POST and on CORS preflights), so a page on another origin can't
+//     drive the relay through the developer's browser.
 //   - The route 404s when no headers are configured — the browser reads the
 //     endpoint directly then, so the proxy has nothing to add.
 
@@ -24,10 +30,18 @@ import { Effect } from 'effect';
 import { checkOrigin, type OriginPolicy } from './origin-policy.ts';
 import type { DashboardDomain } from './domain.ts';
 
-/** Same-origin path the SPA POSTs Sui GraphQL queries to when
- *  `suiGraphqlProxied` is true. Mirrored in the dashboard app's
- *  `sui-graphql.ts`; pinned by `server.test.ts`. */
+/** Path of the relay on the dashboard listener. The SPA never builds this
+ *  itself — the control plane hands it the full URL (`suiGraphqlProxyUrl`). */
 export const SUI_GRAPHQL_PROXY_PATH = '/sui-graphql';
+
+/** Request header `SuiGraphQLClient` sends to tell the server the highest
+ *  protocol version whose types it can decode. Not exported by
+ *  `@mysten/sui`; pinned by the proxy test, which drives the real client. */
+export const SUI_CLIENT_PROTOCOL_VERSION_HEADER = 'x-sui-client-protocol-version';
+
+/** Client request headers the relay forwards upstream (besides the body).
+ *  Everything else the browser sends is dropped. */
+const FORWARDED_REQUEST_HEADERS = [SUI_CLIENT_PROTOCOL_VERSION_HEADER] as const;
 
 /** Request-body cap. Sui GraphQL queries are small documents; anything larger
  *  is a misuse of the relay. */
@@ -35,27 +49,48 @@ const MAX_BODY_BYTES = 1024 * 1024;
 
 const UPSTREAM_TIMEOUT_MS = 30_000;
 
-/** GraphQL-shaped error body, so the SDK client surfaces `message` as-is. */
-const sendError = (res: ServerResponse, status: number, message: string): void => {
+/** Loopback URL of the relay for a dashboard listening on `port`. */
+export const suiGraphqlProxyUrl = (port: number): string =>
+	`http://127.0.0.1:${port}${SUI_GRAPHQL_PROXY_PATH}`;
+
+/** Whether a socket's `remoteAddress` is a loopback peer (IPv4 `127/8`, IPv6
+ *  `::1`, or an IPv4-mapped loopback address on a dual-stack listener). */
+export const isLoopbackAddress = (address: string | undefined): boolean => {
+	if (address === undefined) return false;
+	const v4 = address.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address;
+	return v4.startsWith('127.') || address === '::1';
+};
+
+/** GraphQL-shaped error body, so the SDK client surfaces `message` as-is.
+ *  The one error envelope every relay failure goes through. */
+export const sendProxyError = (res: ServerResponse, status: number, message: string): void => {
 	res.statusCode = status;
 	res.setHeader('content-type', 'application/json; charset=utf-8');
 	res.end(JSON.stringify({ errors: [{ message }] }));
 };
 
+/** Buffer the request body, or `null` once it exceeds `MAX_BODY_BYTES`. An
+ *  oversized body is drained rather than destroyed so the 413 still reaches
+ *  the client. */
 const readBody = (req: IncomingMessage): Promise<Buffer | null> =>
 	new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
 		let size = 0;
+		let overflowed = false;
 		req.on('data', (chunk: Buffer) => {
+			if (overflowed) return;
 			size += chunk.length;
 			if (size > MAX_BODY_BYTES) {
+				overflowed = true;
+				chunks.length = 0;
 				resolve(null);
-				req.destroy();
 				return;
 			}
 			chunks.push(chunk);
 		});
-		req.on('end', () => resolve(Buffer.concat(chunks)));
+		req.on('end', () => {
+			if (!overflowed) resolve(Buffer.concat(chunks));
+		});
 		req.on('error', reject);
 	});
 
@@ -68,9 +103,13 @@ export const handleSuiGraphqlProxy = async (
 		readonly pluginDomain: DashboardDomain;
 	},
 ): Promise<void> => {
+	if (!isLoopbackAddress(req.socket.remoteAddress)) {
+		sendProxyError(res, 403, 'sui-graphql proxy: only loopback clients are allowed');
+		return;
+	}
 	const origin = req.headers.origin;
 	if (checkOrigin(deps.originPolicy, origin) !== 'ok') {
-		sendError(res, 403, 'sui-graphql proxy: origin not allowed');
+		sendProxyError(res, 403, 'sui-graphql proxy: origin not allowed');
 		return;
 	}
 	res.setHeader('access-control-allow-origin', origin as string);
@@ -79,26 +118,36 @@ export const handleSuiGraphqlProxy = async (
 	if (req.method === 'OPTIONS') {
 		res.statusCode = 204;
 		res.setHeader('access-control-allow-methods', 'POST');
-		res.setHeader('access-control-allow-headers', 'content-type');
+		res.setHeader(
+			'access-control-allow-headers',
+			['content-type', ...FORWARDED_REQUEST_HEADERS].join(', '),
+		);
 		res.end();
 		return;
 	}
 	if (req.method !== 'POST') {
 		res.setHeader('allow', 'POST, OPTIONS');
-		sendError(res, 405, 'sui-graphql proxy: only POST is supported');
+		sendProxyError(res, 405, 'sui-graphql proxy: only POST is supported');
 		return;
 	}
 
 	const upstream = await Effect.runPromise(deps.pluginDomain.suiGraphqlUpstream);
 	if (upstream === null) {
-		sendError(res, 404, 'sui-graphql proxy: no graphqlHeaders configured on the sui plugin');
+		sendProxyError(res, 404, 'sui-graphql proxy: no graphqlHeaders configured on the sui plugin');
 		return;
 	}
 
 	const body = await readBody(req);
 	if (body === null) {
-		sendError(res, 413, `sui-graphql proxy: request body exceeds ${MAX_BODY_BYTES} bytes`);
+		res.setHeader('connection', 'close');
+		sendProxyError(res, 413, `sui-graphql proxy: request body exceeds ${MAX_BODY_BYTES} bytes`);
 		return;
+	}
+
+	const forwarded: Record<string, string> = {};
+	for (const name of FORWARDED_REQUEST_HEADERS) {
+		const value = req.headers[name];
+		if (typeof value === 'string') forwarded[name] = value;
 	}
 
 	let response: Response;
@@ -108,6 +157,7 @@ export const handleSuiGraphqlProxy = async (
 			headers: {
 				'content-type': 'application/json',
 				accept: 'application/json',
+				...forwarded,
 				...upstream.headers,
 			},
 			body: new Uint8Array(body),
@@ -115,7 +165,7 @@ export const handleSuiGraphqlProxy = async (
 		});
 	} catch (cause) {
 		// Name the upstream, never the headers.
-		sendError(
+		sendProxyError(
 			res,
 			502,
 			`sui-graphql proxy: upstream ${upstream.url} unreachable: ${
