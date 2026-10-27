@@ -342,23 +342,30 @@ const createApiKeyResponseSchema = z.object({
   space_id: z.string().min(1),
   permissions: z
     .unknown()
+    .optional()
     .transform((v) => (typeof v === "string" && v.length > 0 ? v : UNREPORTED_PERMISSION)),
-  status: z.unknown().transform((v) => (typeof v === "string" && v.length > 0 ? v : "registering")),
-  private_buckets: z.unknown().transform((v): readonly PrivateBucketGrant[] | null => {
-    if (!Array.isArray(v)) return null; // missing, null, or simply not an array
-    if (v.length === 0) return []; // Console's own word: no private buckets
-    // A non-empty array is Console asserting buckets EXIST — if any element
-    // can't be read, the whole list is untrustworthy (not just that element):
-    // granting only the elements that DID parse would silently under-grant.
-    // See this schema's doc comment above.
-    const grants: PrivateBucketGrant[] = [];
-    for (const el of v) {
-      const parsed = privateBucketGrantSchema.safeParse(el);
-      if (!parsed.success) return null;
-      grants.push(parsed.data);
-    }
-    return grants;
-  }),
+  status: z
+    .unknown()
+    .optional()
+    .transform((v) => (typeof v === "string" && v.length > 0 ? v : "registering")),
+  private_buckets: z
+    .unknown()
+    .optional()
+    .transform((v): readonly PrivateBucketGrant[] | null => {
+      if (!Array.isArray(v)) return null; // missing, null, or simply not an array
+      if (v.length === 0) return []; // Console's own word: no private buckets
+      // A non-empty array is Console asserting buckets EXIST — if any element
+      // can't be read, the whole list is untrustworthy (not just that element):
+      // granting only the elements that DID parse would silently under-grant.
+      // See this schema's doc comment above.
+      const grants: PrivateBucketGrant[] = [];
+      for (const el of v) {
+        const parsed = privateBucketGrantSchema.safeParse(el);
+        if (!parsed.success) return null;
+        grants.push(parsed.data);
+      }
+      return grants;
+    }),
 });
 export type CreateApiKeyResponse = z.infer<typeof createApiKeyResponseSchema>;
 

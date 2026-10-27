@@ -126,11 +126,25 @@ When creating PRs, follow the template in `.github/PULL_REQUEST_TEMPLATE.md`:
 Three layers of guidance, in order:
 
 1. **Tool-usage skills** — invoke these whenever the trigger matches; they're
-   not optional reading.
-   - `.claude/skills/running-vitest/SKILL.md` — how to run `pnpm test`, filter
-     to a single file/case, iterate on failures without re-running the whole
-     suite, and read browser-test output. Use any time you invoke vitest — the
-     idiomatic flags here are not the vitest defaults.
+   not optional reading. Third-party skills are managed with the `skills` CLI
+   and pinned in `skills-lock.json` (add with
+   `npx skills add <owner/repo> --skill <name> -a claude-code`, refresh with
+   `npx skills update`); change them upstream, since an update overwrites
+   local edits.
+   Repo-authored skills (`writing-effect`) live directly in `.claude/skills/`.
+   - `fix-audit` — any `pnpm audit` failure. Repo specifics it doesn't know:
+     - Upgrade to the **latest** release, not the oldest patched one. Re-resolve
+       transitives with `pnpm update -r --depth Infinity <pkg>` (without
+       `--depth Infinity` the lockfile pin doesn't move); override only when the
+       parent at its latest still excludes the fix.
+     - CI gate is `pnpm audit --prod --audit-level high`; an advisory with no
+       usable fix goes in `auditConfig.ignoreGhsas` with a comment.
+     - `walrus-console-mcp` ships `npm-shrinkwrap.json`: after any dependency
+       change run its `shrinkwrap:generate` and prettier the file. The generator
+       resolves through npm, which ignores `minimumReleaseAge`, so a package at
+       two workspace versions lands on a too-new release — collapse it with
+       `pnpm update -r --depth Infinity <pkg>` first. Keep effect 3 there.
+     - `effect` is catalog-pinned to a v4 beta; moving it is its own migration.
 2. **Package-specific style** — each package has its own guidance covering
    its substrate, public-surface rules, and cookbooks. For devstack, read
    [`packages/devstack/STYLE_GUIDE.md`](packages/devstack/STYLE_GUIDE.md) and

@@ -990,8 +990,14 @@ server.registerTool(
         .describe(
           "New file name, keeping the current extension. Omit to leave the name unchanged.",
         ),
-      description: fileDescriptionSchema.nullable().optional(),
-      tags: fileTagsSchema.nullable().optional(),
+      description: fileDescriptionSchema
+        .nullable()
+        .optional()
+        .describe(`${fileDescriptionSchema.description} Pass null to clear it.`),
+      tags: fileTagsSchema
+        .nullable()
+        .optional()
+        .describe(`${fileTagsSchema.description} Pass null to clear them.`),
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },

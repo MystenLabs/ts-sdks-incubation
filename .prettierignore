@@ -8,6 +8,9 @@ npm-debug.log*
 package-lock.json
 yarn-debug.log*
 .claude
+# managed by the `skills` CLI (skills-lock.json hashes the unformatted files)
+.agents
+skills-lock.json
 build/
 coverage/
 dist/
