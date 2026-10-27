@@ -100,6 +100,8 @@ import {
   bucketTagsSchema,
   buildBucketMetadataPatch,
   buildFilePatch,
+  clearableFileDescriptionSchema,
+  clearableFileTagsSchema,
   fileDescriptionSchema,
   fileTagsSchema,
 } from "../src/console/fileMetadata";
@@ -990,8 +992,8 @@ server.registerTool(
         .describe(
           "New file name, keeping the current extension. Omit to leave the name unchanged.",
         ),
-      description: fileDescriptionSchema.nullable().optional(),
-      tags: fileTagsSchema.nullable().optional(),
+      description: clearableFileDescriptionSchema.optional(),
+      tags: clearableFileTagsSchema.optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },

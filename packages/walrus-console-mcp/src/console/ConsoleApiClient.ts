@@ -271,7 +271,7 @@ const UNREPORTED_PERMISSION = "(not reported by Console)";
  *    field on a bucket-grant element) must never discard a mint that
  *    otherwise succeeded (the createApiKey call is a point of no return — see
  *    its own message on a validation failure). Each is built on
- *    `z.unknown().transform(...)`, not a typed Zod primitive, specifically so
+ *    `z.unknown().optional().transform(...)`, not a typed Zod primitive, specifically so
  *    a WRONG-TYPED value (a number where a string was expected, a string
  *    where an array was expected) degrades the same way a missing one does,
  *    instead of failing `.safeParse` for the whole body. This closes a
@@ -340,25 +340,35 @@ const createApiKeyResponseSchema = z.object({
   id: z.string().min(1),
   key: z.string().min(1), // hbr_… raw bearer, shown once
   space_id: z.string().min(1),
+  // `.optional()` before each `.transform`: zod 4 otherwise treats a MISSING
+  // key as a validation failure instead of handing `undefined` to the
+  // transform, which would turn an omitted field into a failed mint.
   permissions: z
     .unknown()
+    .optional()
     .transform((v) => (typeof v === "string" && v.length > 0 ? v : UNREPORTED_PERMISSION)),
-  status: z.unknown().transform((v) => (typeof v === "string" && v.length > 0 ? v : "registering")),
-  private_buckets: z.unknown().transform((v): readonly PrivateBucketGrant[] | null => {
-    if (!Array.isArray(v)) return null; // missing, null, or simply not an array
-    if (v.length === 0) return []; // Console's own word: no private buckets
-    // A non-empty array is Console asserting buckets EXIST — if any element
-    // can't be read, the whole list is untrustworthy (not just that element):
-    // granting only the elements that DID parse would silently under-grant.
-    // See this schema's doc comment above.
-    const grants: PrivateBucketGrant[] = [];
-    for (const el of v) {
-      const parsed = privateBucketGrantSchema.safeParse(el);
-      if (!parsed.success) return null;
-      grants.push(parsed.data);
-    }
-    return grants;
-  }),
+  status: z
+    .unknown()
+    .optional()
+    .transform((v) => (typeof v === "string" && v.length > 0 ? v : "registering")),
+  private_buckets: z
+    .unknown()
+    .optional()
+    .transform((v): readonly PrivateBucketGrant[] | null => {
+      if (!Array.isArray(v)) return null; // missing, null, or simply not an array
+      if (v.length === 0) return []; // Console's own word: no private buckets
+      // A non-empty array is Console asserting buckets EXIST — if any element
+      // can't be read, the whole list is untrustworthy (not just that element):
+      // granting only the elements that DID parse would silently under-grant.
+      // See this schema's doc comment above.
+      const grants: PrivateBucketGrant[] = [];
+      for (const el of v) {
+        const parsed = privateBucketGrantSchema.safeParse(el);
+        if (!parsed.success) return null;
+        grants.push(parsed.data);
+      }
+      return grants;
+    }),
 });
 export type CreateApiKeyResponse = z.infer<typeof createApiKeyResponseSchema>;
 

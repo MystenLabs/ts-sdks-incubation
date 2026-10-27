@@ -25,10 +25,10 @@ const descriptionSchema = (max: number) => z.string().trim().max(max);
 const tagsSchema = (tagLength: number, maxTags: number) =>
   z.array(z.string().trim().min(1).max(tagLength)).max(maxTags);
 
-// Described here, once, rather than at each tool's use site: every tool below
-// wraps these in its own `.optional()` / `.nullable()`, and the description
-// carries through that wrapping into the JSON schema an agent actually sees
-// (verified against zod-to-json-schema, the converter the MCP SDK uses).
+// Described here, once, rather than at each tool's use site. Under zod 4 the
+// description carries through `.optional()` into the JSON schema an agent
+// sees, but NOT through `.nullable()` (it becomes an `anyOf` whose top level
+// has no description) — so the clearable variants below re-apply it.
 // Tags are searchable through Console's /search API, which no tool here calls;
 // list_files' `q` matches the file name only, and nothing searches descriptions.
 export const fileDescriptionSchema = descriptionSchema(MAX_FILE_DESCRIPTION_LENGTH).describe(
@@ -115,3 +115,14 @@ export function buildUploadMetadata(input: FileUserMetadata): Record<string, unk
   if (input.tags !== undefined) metadata["tags"] = input.tags;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
+
+/** `fileDescriptionSchema` that also accepts `null` (clear the description),
+ *  with the description re-applied at the top level — see the note above. */
+export const clearableFileDescriptionSchema = fileDescriptionSchema
+  .nullable()
+  .describe(`${fileDescriptionSchema.description} Pass null to clear it.`);
+/** `fileTagsSchema` that also accepts `null` (clear the tags), with the
+ *  description re-applied at the top level — see the note above. */
+export const clearableFileTagsSchema = fileTagsSchema
+  .nullable()
+  .describe(`${fileTagsSchema.description} Pass null to clear them.`);
