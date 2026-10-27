@@ -494,3 +494,37 @@ describe('dashboard fundAccount action', () => {
 		expect(result.detail).toContain('exchange empty');
 	});
 });
+
+describe('dashboard suiGraphqlUpstream', () => {
+	const domainFor = (value: unknown): DashboardDomain =>
+		makeFundDomain({ resolved: [{ pluginKey: 'sui', id: 'sui', value }], registry: null });
+
+	it('is null when no headers are configured (browser reads GraphQL directly)', async () => {
+		const upstream = await Effect.runPromise(
+			domainFor({ mode: 'live', graphqlUrl: 'https://g.example/graphql', graphqlHeaders: {} })
+				.suiGraphqlUpstream,
+		);
+		expect(upstream).toBeNull();
+	});
+
+	it('is null when there is no GraphQL endpoint', async () => {
+		const upstream = await Effect.runPromise(
+			domainFor({ mode: 'live', graphqlUrl: null, graphqlHeaders: { a: 'b' } }).suiGraphqlUpstream,
+		);
+		expect(upstream).toBeNull();
+	});
+
+	it('returns the endpoint + headers when headers are configured', async () => {
+		const upstream = await Effect.runPromise(
+			domainFor({
+				mode: 'live',
+				graphqlUrl: 'https://g.example/graphql',
+				graphqlHeaders: { authorization: 'Bearer t0ken' },
+			}).suiGraphqlUpstream,
+		);
+		expect(upstream).toEqual({
+			url: 'https://g.example/graphql',
+			headers: { authorization: 'Bearer t0ken' },
+		});
+	});
+});

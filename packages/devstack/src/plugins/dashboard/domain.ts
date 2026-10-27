@@ -184,11 +184,22 @@ export interface DashboardFundableCoin {
  *  self-contained Effect that never fails (`E = never`); they degrade to
  *  empty/`null` so a single missing plugin can't take down the dashboard
  *  query. */
+/** Upstream the dashboard's Sui GraphQL proxy forwards to. */
+export interface DashboardSuiGraphqlUpstream {
+	readonly url: string;
+	readonly headers: Readonly<Record<string, string>>;
+}
+
 export interface DashboardDomain {
 	/** Fork-vs-local mode, derived from the resolved sui plugin's chain
 	 *  identity. Used for advance-clock gating. `null` when no sui plugin
 	 *  is present. */
 	readonly mode: Effect.Effect<'fork' | 'local' | 'live' | null>;
+	/** The sui plugin's GraphQL endpoint + caller-supplied headers, ONLY when
+	 *  headers are configured (otherwise `null`: the browser reads the
+	 *  endpoint directly). Drives the server-side `/sui-graphql` proxy so
+	 *  credentials never reach the browser. */
+	readonly suiGraphqlUpstream: Effect.Effect<DashboardSuiGraphqlUpstream | null>;
 	/** DeepBook deployments (registry/admin/pool ids + MM state). */
 	readonly deepbook: Effect.Effect<ReadonlyArray<DashboardDeepbookInfo>>;
 	/** Seal key-server deployments (objectId/threshold/mode). */
@@ -280,6 +291,8 @@ interface SuiShape {
 	 *  `'sui:mainnet-fork@123'`). Composes the faucet capability key
 	 *  (`faucet:request:<chainId>`) the SUI funding path resolves. */
 	readonly chainId?: unknown;
+	readonly graphqlUrl?: unknown;
+	readonly graphqlHeaders?: unknown;
 }
 
 /** Structural shape of the resolved account value (`account/<name>`). The
@@ -487,6 +500,23 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				default:
 					return null;
 			}
+		}),
+	);
+
+	const suiGraphqlUpstream: DashboardDomain['suiGraphqlUpstream'] = control.resolvedValues.pipe(
+		Effect.map((values) => {
+			const sui = matching(values, (id) => id === 'sui')[0];
+			if (sui === undefined) return null;
+			const { graphqlUrl, graphqlHeaders } = sui.value as SuiShape;
+			const url = optStr(graphqlUrl);
+			if (url === null || graphqlHeaders === null || typeof graphqlHeaders !== 'object') {
+				return null;
+			}
+			const headers: Record<string, string> = {};
+			for (const [name, value] of Object.entries(graphqlHeaders)) {
+				if (typeof value === 'string') headers[name] = value;
+			}
+			return Object.keys(headers).length === 0 ? null : { url, headers };
 		}),
 	);
 
@@ -905,6 +935,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 
 	return {
 		mode,
+		suiGraphqlUpstream,
 		deepbook,
 		seal,
 		coinCaps,
@@ -919,6 +950,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
  *  empty/`null`. */
 export const emptyDashboardDomain: DashboardDomain = {
 	mode: Effect.succeed(null),
+	suiGraphqlUpstream: Effect.succeed(null),
 	deepbook: Effect.succeed([]),
 	seal: Effect.succeed([]),
 	coinCaps: Effect.succeed([]),

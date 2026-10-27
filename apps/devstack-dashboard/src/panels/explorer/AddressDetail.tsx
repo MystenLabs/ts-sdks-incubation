@@ -10,7 +10,7 @@
 import { useState } from 'react';
 import { timeAgo, truncateMiddle } from '../../lib/format.ts';
 import { gotoObject, gotoTx } from '../../lib/router.ts';
-import { suiGraphqlUrl, useAddressTransactions } from '../../lib/sui-graphql.ts';
+import { useAddressTransactions } from '../../lib/sui-graphql.ts';
 import type { AddressTransaction, TxDirection } from '../../lib/sui-graphql.ts';
 import type { Projection } from '../../lib/types.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
@@ -70,7 +70,7 @@ export const AddressDetail = ({ chain, projection, id }: AddressDetailProps) => 
 	// includes incoming transfers it didn't sign). Some fork configs register no
 	// `graphql` endpoint — then `graphqlUrl` is null, the hook stays disabled, and
 	// we render an honest "unavailable" note instead of fabricating rows.
-	const graphqlUrl = suiGraphqlUrl(projection.endpoints);
+	const graphqlUrl = chain.graphqlUrl;
 	const [direction, setDirection] = useState<TxDirection>('sent');
 	const txs = useAddressTransactions(graphqlUrl, id, direction);
 

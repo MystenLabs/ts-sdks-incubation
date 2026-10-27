@@ -30,6 +30,7 @@ import {
 	fetchDeepbookInfo,
 	fetchFundableCoins,
 	fetchMode,
+	fetchSuiGraphqlProxied,
 	fetchSealInfo,
 	type FundableCoin,
 	type SealInfo,
@@ -52,6 +53,9 @@ import type {
 export interface ChainSource {
 	/** The stack's `rpc` endpoint URL, or null when unavailable (hooks disabled). */
 	readonly rpcUrl: string | null;
+	/** The stack's Sui GraphQL query URL (direct, or the dashboard proxy when
+	 *  the sui plugin has `graphqlHeaders`), or null when there is none. */
+	readonly graphqlUrl: string | null;
 	/** Network identity (`projection.identity.network`) — the cache namespace. */
 	readonly network: string;
 }
@@ -232,6 +236,14 @@ export const useMode = (endpoint: string, network: string): UseQueryResult<Stack
 	useQuery({
 		queryKey: ['domain', network, endpoint, 'mode'],
 		queryFn: () => fetchMode(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+	});
+
+/** Whether Sui GraphQL reads must go through the dashboard proxy. */
+export const useSuiGraphqlProxied = (endpoint: string, network: string): UseQueryResult<boolean> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'suiGraphqlProxied'],
+		queryFn: () => fetchSuiGraphqlProxied(endpoint),
 		staleTime: DOMAIN_STALE_MS,
 	});
 

@@ -94,13 +94,27 @@ const custom = sui({
 	network: 'custom',
 	rpcUrl: 'https://my-fullnode.example:443',
 	faucetUrl: 'https://my-faucet.example', // optional
-	graphqlUrl: 'https://my-graphql.example', // optional
+	graphqlUrl: 'https://my-graphql.example/graphql', // optional
+	graphqlHeaders: { Authorization: `Bearer ${process.env.GRAPHQL_TOKEN}` }, // optional
 	chainId: '…', // optional pin; omit to probe the RPC endpoint
 });
 ```
 
 `local-rpc` mode is the local counterpart — pass `rpcUrl` (and optional `faucetUrl` / `graphqlUrl` /
-`chainId`) to wrap a Sui process you're already running, with no container and no sidecar.
+`graphqlHeaders` / `chainId`) to wrap a Sui process you're already running, with no container and no
+sidecar.
+
+### Authenticated GraphQL
+
+`graphqlHeaders` adds HTTP headers (an `Authorization` token, an API key, …) to every request
+devstack makes to `graphqlUrl`. Known networks accept it too, so you can keep the default endpoint
+and just attach credentials, or pair it with your own `graphqlUrl`.
+
+The headers stay in the devstack process. They are never written to codegen output or the deployment
+envelope, and never sent to the browser: when they are set, the dashboard sends its Sui GraphQL
+reads through a same-origin `/sui-graphql` proxy that attaches them on the server. Setting
+`graphqlHeaders` on a network with no GraphQL endpoint (for example `devnet` without a `graphqlUrl`)
+fails at boot.
 
 ## Fork mode
 

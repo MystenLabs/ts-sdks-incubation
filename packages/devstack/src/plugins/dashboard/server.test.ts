@@ -10,6 +10,7 @@ import { emptyControlPlaneDomain } from '../../substrate/runtime/control-plane/d
 import { emptyDashboardDomain } from './domain.ts';
 import type { EngineCommand } from '../../substrate/events.ts';
 import { makeDashboardListener } from './server.ts';
+import { SUI_GRAPHQL_PROXY_PATH } from './sui-graphql-proxy.ts';
 import type { OriginPolicy } from './origin-policy.ts';
 
 // Stack-scoped allowlist standing in for what `resolveOriginPolicy` produces:
@@ -258,5 +259,113 @@ describe('dashboard http server (UI bundle absent → API test page fallback)', 
 		});
 		const body = (await res.json()) as { data?: { ping?: string } };
 		expect(body.data?.ping).toBe('pong');
+	});
+});
+
+describe('dashboard http server (/sui-graphql proxy)', () => {
+	let upstream: Server;
+	let upstreamUrl: string;
+	let proxyServer: Server;
+	let proxyUrl: string;
+	let lastUpstream: { headers: Record<string, unknown>; body: string } | null = null;
+	let configured = true;
+
+	beforeAll(async () => {
+		upstream = createServer((req, res) => {
+			const chunks: Buffer[] = [];
+			req.on('data', (c: Buffer) => chunks.push(c));
+			req.on('end', () => {
+				lastUpstream = { headers: req.headers, body: Buffer.concat(chunks).toString('utf8') };
+				res.setHeader('content-type', 'application/json');
+				res.end(JSON.stringify({ data: { chainIdentifier: 'abc' } }));
+			});
+		});
+		await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+		upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/graphql`;
+
+		const state = Effect.runSync(SubscriptionRef.make(emptyProjection()));
+		proxyServer = createServer(
+			makeDashboardListener({
+				assetsDir: mkdtempSync(join(tmpdir(), 'devstack-dashboard-proxy.')),
+				originPolicy: TEST_ORIGIN_POLICY,
+				context: {
+					state,
+					publishCommand: () => Effect.void,
+					submitCommand: () => Effect.void,
+					domain: emptyControlPlaneDomain,
+					pluginDomain: {
+						...emptyDashboardDomain,
+						suiGraphqlUpstream: Effect.sync(() =>
+							configured ? { url: upstreamUrl, headers: { authorization: 'Bearer s3cret' } } : null,
+						),
+					},
+				},
+			}),
+		);
+		await new Promise<void>((resolve) => proxyServer.listen(0, '127.0.0.1', resolve));
+		proxyUrl = `http://127.0.0.1:${(proxyServer.address() as AddressInfo).port}`;
+	});
+
+	afterAll(async () => {
+		await new Promise<void>((resolve) => proxyServer.close(() => resolve()));
+		await new Promise<void>((resolve) => upstream.close(() => resolve()));
+	});
+
+	const post = (headers: Record<string, string>) =>
+		fetch(`${proxyUrl}${SUI_GRAPHQL_PROXY_PATH}`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', ...headers },
+			body: JSON.stringify({ query: '{ chainIdentifier }' }),
+		});
+
+	it('pins the proxy path the dashboard app mirrors', () => {
+		expect(SUI_GRAPHQL_PROXY_PATH).toBe('/sui-graphql');
+	});
+
+	it('forwards the body with the configured headers, ignoring client headers', async () => {
+		configured = true;
+		lastUpstream = null;
+		const res = await post({ origin: ALLOWED_ORIGIN, authorization: 'Bearer attacker' });
+		expect(res.status).toBe(200);
+		expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+		expect(await res.json()).toEqual({ data: { chainIdentifier: 'abc' } });
+		// Re-read through a cast: TS narrowed `lastUpstream` to null at the reset.
+		const seen = lastUpstream as { headers: Record<string, unknown>; body: string } | null;
+		expect(seen?.headers.authorization).toBe('Bearer s3cret');
+		expect(seen?.body).toBe(JSON.stringify({ query: '{ chainIdentifier }' }));
+	});
+
+	it('answers the CORS preflight for an allowed origin', async () => {
+		const res = await fetch(`${proxyUrl}${SUI_GRAPHQL_PROXY_PATH}`, {
+			method: 'OPTIONS',
+			headers: { origin: ALLOWED_ORIGIN, 'access-control-request-method': 'POST' },
+		});
+		expect(res.status).toBe(204);
+		expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+	});
+
+	it('refuses a missing or foreign Origin without contacting the upstream', async () => {
+		configured = true;
+		lastUpstream = null;
+		expect((await post({})).status).toBe(403);
+		expect((await post({ origin: 'https://evil.example.com' })).status).toBe(403);
+		expect(lastUpstream).toBeNull();
+	});
+
+	it('404s when the sui plugin has no graphqlHeaders', async () => {
+		configured = false;
+		const res = await post({ origin: ALLOWED_ORIGIN });
+		expect(res.status).toBe(404);
+		configured = true;
+	});
+
+	it('reports suiGraphqlProxied through the control-plane schema', async () => {
+		const res = await fetch(`${proxyUrl}/graphql`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ query: '{ suiGraphqlProxied }' }),
+		});
+		const body = (await res.json()) as { data?: { suiGraphqlProxied?: boolean } };
+		expect(body.data?.suiGraphqlProxied).toBe(true);
 	});
 });

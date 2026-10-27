@@ -6,10 +6,11 @@
 import { useCallback, useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import { useRoute, navigate } from './lib/router.ts';
 import { useProjection } from './lib/useProjection.ts';
-import { useMode } from './lib/useChain.ts';
+import { useMode, useSuiGraphqlProxied } from './lib/useChain.ts';
 import { summarize } from './lib/derive.ts';
 import { captureSnapshot, restartStack, runCodegen } from './lib/api.ts';
 import { suiRpcUrl } from './lib/chain.ts';
+import { suiGraphqlUrl } from './lib/sui-graphql.ts';
 import { ToastProvider, useToast } from './lib/toast.tsx';
 import { Banner, Button, EmptyState, Icon, IconButton, Input } from './ui/index.ts';
 import { NavRail } from './shell/NavRail.tsx';
@@ -162,6 +163,9 @@ const Shell = () => {
 	// fork from a plain local stack. The control plane exposes the real mode
 	// separately; surface it so the header/footer read "fork" instead of "local".
 	const stackMode = useMode(endpoint, projection?.identity.network ?? '').data ?? null;
+	// Until this resolves the Sui GraphQL URL stays null (hooks disabled) rather
+	// than briefly pointing the browser at a credentialed endpoint directly.
+	const suiGraphqlProxied = useSuiGraphqlProxied(endpoint, projection?.identity.network ?? '').data;
 
 	// --- Persisted setters ---------------------------------------------------
 
@@ -320,6 +324,13 @@ const Shell = () => {
 		connection: data.connection,
 		chain: {
 			rpcUrl: suiRpcUrl(projection.endpoints),
+			graphqlUrl:
+				suiGraphqlProxied === undefined
+					? null
+					: suiGraphqlUrl(projection.endpoints, {
+							proxied: suiGraphqlProxied,
+							dashboardEndpoint: endpoint,
+						}),
 			network: projection.identity.network,
 		},
 		refresh: data.refresh,

@@ -133,3 +133,92 @@ describe('mode boot empty-chain pin reaches the typed channel end-to-end', () =>
 		}),
 	);
 });
+
+describe('assembleSuiClient graphqlHeaders', () => {
+	const base = {
+		sdkClient: fakeSdkClient,
+		chainId: 'sui:custom-aabbcc',
+		rpcUrl: 'http://127.0.0.1:9000',
+		waitForTransactionsReady: fakeWaitForTransactionsReady,
+	};
+
+	it.effect('carries configured headers on the resolved client', () =>
+		Effect.gen(function* () {
+			const { client } = yield* assembleSuiClient({
+				...base,
+				graphqlUrl: 'https://graphql.example/graphql',
+				graphqlHeaders: { authorization: 'Bearer t0ken' },
+			});
+			expect(client.graphqlUrl).toBe('https://graphql.example/graphql');
+			expect(client.graphqlHeaders).toEqual({ authorization: 'Bearer t0ken' });
+		}),
+	);
+
+	it.effect('defaults to no headers', () =>
+		Effect.gen(function* () {
+			const { client } = yield* assembleSuiClient(base);
+			expect(client.graphqlHeaders).toEqual({});
+		}),
+	);
+
+	it.effect('rejects headers without a GraphQL endpoint on the typed channel', () =>
+		Effect.gen(function* () {
+			const field = yield* assembleSuiClient({
+				...base,
+				graphqlHeaders: { authorization: 'Bearer t0ken' },
+			}).pipe(
+				Effect.map(() => 'unexpected-success'),
+				Effect.catchTag('SuiConfigError', (e) => Effect.succeed(e.field)),
+			);
+			expect(field).toBe('graphqlHeaders');
+		}),
+	);
+
+	it.effect('rejects an invalid header name on the typed channel', () =>
+		Effect.gen(function* () {
+			const field = yield* assembleSuiClient({
+				...base,
+				graphqlUrl: 'https://graphql.example/graphql',
+				graphqlHeaders: { 'bad header': 'x' },
+			}).pipe(
+				Effect.map(() => 'unexpected-success'),
+				Effect.catchTag('SuiConfigError', (e) => Effect.succeed(e.field)),
+			);
+			expect(field).toBe('graphqlHeaders');
+		}),
+	);
+
+	it.effect('bootLocalRpcMode threads graphqlHeaders onto the client', () =>
+		Effect.gen(function* () {
+			// `chainId` pinned + no faucet → no network I/O.
+			const { client, resolved } = yield* Effect.scoped(
+				bootLocalRpcMode({
+					mode: 'local-rpc',
+					rpcUrl: 'http://127.0.0.1:9000',
+					graphqlUrl: 'https://graphql.example/graphql',
+					graphqlHeaders: { 'x-api-key': 'k' },
+					chainId: 'sui:custom-aabbcc',
+				}),
+			);
+			expect(client.graphqlHeaders).toEqual({ 'x-api-key': 'k' });
+			// Never reaches the codegen-facing projection.
+			expect(JSON.stringify(resolved)).not.toContain('x-api-key');
+		}),
+	);
+
+	it.effect('bootLiveMode threads graphqlHeaders onto the client', () =>
+		Effect.gen(function* () {
+			const { client } = yield* Effect.scoped(
+				bootLiveMode({
+					mode: 'live',
+					network: 'custom',
+					rpcUrl: 'http://127.0.0.1:9000',
+					graphqlUrl: 'https://graphql.example/graphql',
+					graphqlHeaders: { authorization: 'Bearer t0ken' },
+					chainId: 'sui:custom-aabbcc',
+				}),
+			);
+			expect(client.graphqlHeaders).toEqual({ authorization: 'Bearer t0ken' });
+		}),
+	);
+});

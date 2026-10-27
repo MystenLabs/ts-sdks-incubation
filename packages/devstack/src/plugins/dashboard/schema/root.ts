@@ -169,6 +169,13 @@ builder.queryType({
 			nullable: true,
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.mode),
 		}),
+		/** Whether Sui GraphQL reads must go through the dashboard's
+		 *  `/sui-graphql` proxy (the sui plugin has `graphqlHeaders` set, which
+		 *  the server attaches so they never reach the browser). */
+		suiGraphqlProxied: t.boolean({
+			resolve: async (_parent, _args, ctx) =>
+				(await Effect.runPromise(ctx.pluginDomain.suiGraphqlUpstream)) !== null,
+		}),
 		/** Snapshot catalog: id/label/created/participants/containers. */
 		snapshots: t.field({
 			type: [SnapshotEntry],

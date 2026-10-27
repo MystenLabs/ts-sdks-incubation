@@ -10,7 +10,7 @@
 
 import { timeAgo, truncateMiddle } from '../../lib/format.ts';
 import { gotoAddress, gotoObject, gotoTx } from '../../lib/router.ts';
-import { suiGraphqlUrl, useAddressTransactions } from '../../lib/sui-graphql.ts';
+import { useAddressTransactions } from '../../lib/sui-graphql.ts';
 import type { AddressTransaction } from '../../lib/sui-graphql.ts';
 import type { Projection } from '../../lib/types.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
@@ -103,7 +103,7 @@ export const ObjectDetail = ({ chain, projection, id }: ObjectDetailProps) => {
 	// An object's history is the transactions that use/affect it (`affectedObject`)
 	// — read from the node's Sui GraphQL (null endpoint → honest "unavailable",
 	// never faked). An object isn't a signer, so there's no sent/received split.
-	const graphqlUrl = suiGraphqlUrl(projection.endpoints);
+	const graphqlUrl = chain.graphqlUrl;
 	const txs = useAddressTransactions(graphqlUrl, id, 'object');
 
 	if (q.isLoading) return <DetailSkeleton />;

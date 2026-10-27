@@ -248,6 +248,7 @@ export const assembleSuiClient = (parts: {
 	readonly faucetUrl?: string;
 	readonly fundingFaucetUrl?: string;
 	readonly graphqlUrl?: string;
+	readonly graphqlHeaders?: Readonly<Record<string, string>>;
 	readonly waitForTransactionsReady: WaitForTransactionsReady;
 	/** Image ref consumed by package's path (b) (`docker run --rm`)
 	 *  build path. `null` for modes that have no in-stack image
@@ -280,6 +281,31 @@ export const assembleSuiClient = (parts: {
 				}),
 			);
 		}
+		const graphqlHeaders = parts.graphqlHeaders ?? {};
+		if (Object.keys(graphqlHeaders).length > 0) {
+			if (parts.graphqlUrl === undefined) {
+				return yield* Effect.fail(
+					suiConfigError({
+						field: 'graphqlHeaders',
+						message: 'sui: graphqlHeaders is set but this network resolves no GraphQL endpoint',
+						hint: 'pass graphqlUrl alongside graphqlHeaders, or drop graphqlHeaders',
+					}),
+				);
+			}
+			// Fail at boot rather than on the first proxied request: `Headers`
+			// rejects names/values that are not valid HTTP tokens.
+			try {
+				new Headers(graphqlHeaders);
+			} catch (cause) {
+				return yield* Effect.fail(
+					suiConfigError({
+						field: 'graphqlHeaders',
+						message: `sui: graphqlHeaders contains an invalid HTTP header: ${formatUnknownError(cause)}`,
+						hint: 'header names must be HTTP tokens and values must not contain newlines',
+					}),
+				);
+			}
+		}
 		const chainId = parts.chainId;
 		const sdkShim = makeSdkShim(parts.sdkClient);
 		const chainProbe = makeSuiChainProbe(sdkShim, chainId);
@@ -289,6 +315,7 @@ export const assembleSuiClient = (parts: {
 			faucetUrl: parts.faucetUrl ?? null,
 			fundingFaucetUrl: parts.fundingFaucetUrl ?? parts.faucetUrl ?? null,
 			graphqlUrl: parts.graphqlUrl ?? null,
+			graphqlHeaders,
 			hostGateway: parts.hostGateway ?? {
 				rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
 				faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),

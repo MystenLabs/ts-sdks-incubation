@@ -40,7 +40,6 @@ import {
 	type ProbeResult,
 } from '../../lib/probe.ts';
 import { navigate, gotoObject, gotoTx } from '../../lib/router.ts';
-import { suiGraphqlUrl } from '../../lib/sui-graphql.ts';
 import { useToast } from '../../lib/toast.tsx';
 import type { Endpoint } from '../../lib/types.ts';
 import {
@@ -146,7 +145,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 
 	// Browser-direct Walrus reads over the node's Sui GraphQL endpoint.
 	const source: WalrusSource = {
-		graphqlUrl: suiGraphqlUrl(projection.endpoints),
+		graphqlUrl: chain.graphqlUrl,
 		packageId: walrusPackageId(projection.packages),
 		network,
 	};
