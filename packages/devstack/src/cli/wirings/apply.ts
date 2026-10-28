@@ -93,6 +93,7 @@ const runApplyAgainstLiveSupervisor = (
 				error: new CliLiveGraphMismatchError({
 					app: String(identityValue.app),
 					stack: String(identityValue.stack),
+					reason: graphChanged ? 'graph' : 'runtime-config',
 					liveGraphInputId: presence.graphInputId,
 					currentGraphInputId: current.graphInputId,
 					hint: graphChanged

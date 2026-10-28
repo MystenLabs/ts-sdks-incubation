@@ -23,13 +23,14 @@
 //     plugin-key substrings: the resource id is the stable identity the
 //     plugin factories mint.
 
-import { Effect } from 'effect';
+import { Effect, SubscriptionRef } from 'effect';
 
 import type {
 	ControlPlaneDomain,
 	ControlPlaneResolvedValue,
 } from '../../substrate/runtime/control-plane/service.ts';
 import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
+import type { SubscribableState } from '../../substrate/projection.ts';
 import type { FaucetStrategy } from '../../contracts/faucet-strategy.ts';
 import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
 import type { AccountValue } from '../account/index.ts';
@@ -187,6 +188,14 @@ export interface DashboardSuiGraphql {
 	readonly headers: Readonly<Record<string, string>>;
 }
 
+/** Outcome of looking up the sui plugin's Sui GraphQL endpoint: `pending`
+ *  while the stack is still starting and sui hasn't resolved, `none` once it
+ *  is settled without one (no sui, sui failed, or sui exposes no GraphQL). */
+export type DashboardSuiGraphqlLookup =
+	| { readonly state: 'pending' }
+	| { readonly state: 'none' }
+	| ({ readonly state: 'ready' } & DashboardSuiGraphql);
+
 /** The dashboard plugin-domain accessor surface. Each member is a
  *  self-contained Effect that never fails (`E = never`); they degrade to
  *  empty/`null` so a single missing plugin can't take down the dashboard
@@ -196,10 +205,9 @@ export interface DashboardDomain {
 	 *  identity. Used for advance-clock gating. `null` when no sui plugin
 	 *  is present. */
 	readonly mode: Effect.Effect<'fork' | 'local' | 'live' | null>;
-	/** The sui plugin's Sui GraphQL endpoint + headers, or `null` when it
-	 *  exposes none (or hasn't resolved yet). The single source for both the
-	 *  URL the SPA is told to query and the relay's upstream. */
-	readonly suiGraphql: Effect.Effect<DashboardSuiGraphql | null>;
+	/** The sui plugin's Sui GraphQL endpoint + headers. The single source for
+	 *  both the URL the SPA is told to query and the relay's upstream. */
+	readonly suiGraphql: Effect.Effect<DashboardSuiGraphqlLookup>;
 	/** DeepBook deployments (registry/admin/pool ids + MM state). */
 	readonly deepbook: Effect.Effect<ReadonlyArray<DashboardDeepbookInfo>>;
 	/** Seal key-server deployments (objectId/threshold/mode). */
@@ -495,10 +503,20 @@ export interface DashboardDomainDeps {
 	 *  WAL/DEEP via `coinType:<fullCoinType>`. `null` in bare test paths; the
 	 *  fund accessors degrade to unavailable then. */
 	readonly strategyRegistry: StrategyRegistry | null;
+	/** The live projection — its cycle phase tells "sui hasn't resolved YET"
+	 *  apart from "sui never will" without naming plugin rows. */
+	readonly state: SubscriptionRef.SubscriptionRef<SubscribableState>;
 }
 
+/** Cycle phases during which plugins are still (re)acquiring. */
+const STARTING_PHASES: ReadonlySet<SubscribableState['cycle']['phase']> = new Set([
+	'booting',
+	'restarting',
+	'restoring',
+]);
+
 export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain => {
-	const { control, strategyRegistry } = deps;
+	const { control, strategyRegistry, state } = deps;
 
 	const mode: DashboardDomain['mode'] = control.resolvedValues.pipe(
 		Effect.map((values) => {
@@ -517,20 +535,24 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 		}),
 	);
 
-	const suiGraphql: DashboardDomain['suiGraphql'] = control.resolvedValues.pipe(
-		Effect.map((values) => {
-			const sui = resolvedSui(values);
-			const base = optStr(sui?.graphqlUrl);
-			if (sui === null || base === null) return null;
-			const headers: Record<string, string> = {};
-			if (sui.graphqlHeaders !== null && typeof sui.graphqlHeaders === 'object') {
-				for (const [name, value] of Object.entries(sui.graphqlHeaders)) {
-					if (typeof value === 'string') headers[name] = value;
-				}
+	const suiGraphql: DashboardDomain['suiGraphql'] = Effect.gen(function* () {
+		const sui = resolvedSui(yield* control.resolvedValues);
+		if (sui === null) {
+			const { cycle } = yield* SubscriptionRef.get(state);
+			return STARTING_PHASES.has(cycle.phase)
+				? ({ state: 'pending' } as const)
+				: ({ state: 'none' } as const);
+		}
+		const base = optStr(sui.graphqlUrl);
+		if (base === null) return { state: 'none' } as const;
+		const headers: Record<string, string> = {};
+		if (sui.graphqlHeaders !== null && typeof sui.graphqlHeaders === 'object') {
+			for (const [name, value] of Object.entries(sui.graphqlHeaders)) {
+				if (typeof value === 'string') headers[name] = value;
 			}
-			return { url: suiGraphqlQueryUrl(base), headers };
-		}),
-	);
+		}
+		return { state: 'ready', url: suiGraphqlQueryUrl(base), headers } as const;
+	});
 
 	const deepbook: DashboardDomain['deepbook'] = control.resolvedValues.pipe(
 		Effect.map((values) =>
@@ -961,7 +983,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
  *  empty/`null`. */
 export const emptyDashboardDomain: DashboardDomain = {
 	mode: Effect.succeed(null),
-	suiGraphql: Effect.succeed(null),
+	suiGraphql: Effect.succeed({ state: 'none' }),
 	deepbook: Effect.succeed([]),
 	seal: Effect.succeed([]),
 	coinCaps: Effect.succeed([]),

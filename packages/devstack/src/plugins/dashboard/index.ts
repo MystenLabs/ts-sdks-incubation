@@ -104,6 +104,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 				const pluginDomain = buildDashboardDomain({
 					control: control.domain,
 					strategyRegistry,
+					state: control.state,
 				});
 
 				const bindAddress = opts.bindAddress ?? DASHBOARD_DEFAULT_BIND;

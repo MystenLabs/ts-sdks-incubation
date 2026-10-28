@@ -99,6 +99,12 @@ export const StackMode = builder.enumType('StackMode', {
 	values: ['fork', 'local', 'live'] as const,
 });
 
+/** Whether the stack's Sui GraphQL URL is known yet: `pending` while sui is
+ *  still starting, `none` once settled without an endpoint, `ready` with one. */
+export const SuiGraphqlStatus = builder.enumType('SuiGraphqlStatus', {
+	values: ['pending', 'none', 'ready'] as const,
+});
+
 /** DeepBook deployment mode. */
 export const DeepbookMode = builder.enumType('DeepbookMode', {
 	values: ['local', 'override', 'known'] as const,

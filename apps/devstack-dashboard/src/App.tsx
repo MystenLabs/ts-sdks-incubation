@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import { useRoute, navigate } from './lib/router.ts';
 import { useProjection } from './lib/useProjection.ts';
-import { useMode, useSuiGraphqlUrl } from './lib/useChain.ts';
+import { useMode, useSuiGraphql } from './lib/useChain.ts';
 import { summarize } from './lib/derive.ts';
 import { captureSnapshot, restartStack, runCodegen } from './lib/api.ts';
 import { suiRpcUrl } from './lib/chain.ts';
@@ -165,8 +165,9 @@ const Shell = () => {
 	// The control plane resolves the one Sui GraphQL URL to use (direct, or the
 	// credential relay); the browser never derives it, so it can't briefly read
 	// a credentialed endpoint directly. Null (hooks disabled) until resolved;
-	// the status lets panels tell "resolving"/"failed" from "none".
-	const suiGraphqlUrlQuery = useSuiGraphqlUrl(
+	// the status lets panels tell "resolving" (lookup in flight, or sui still
+	// starting) and "failed" from "none".
+	const suiGraphqlQuery = useSuiGraphql(
 		endpoint,
 		projection?.identity.network ?? '',
 		projection?.endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url ?? null,
@@ -329,12 +330,13 @@ const Shell = () => {
 		connection: data.connection,
 		chain: {
 			rpcUrl: suiRpcUrl(projection.endpoints),
-			graphqlUrl: suiGraphqlUrlQuery.data ?? null,
-			graphqlUrlStatus: suiGraphqlUrlQuery.isSuccess
-				? 'resolved'
-				: suiGraphqlUrlQuery.isError
-					? 'failed'
-					: 'resolving',
+			graphqlUrl: suiGraphqlQuery.data?.url ?? null,
+			graphqlUrlStatus:
+				suiGraphqlQuery.data !== undefined && suiGraphqlQuery.data.status !== 'pending'
+					? 'resolved'
+					: suiGraphqlQuery.isError
+						? 'failed'
+						: 'resolving',
 			network: projection.identity.network,
 		},
 		refresh: data.refresh,

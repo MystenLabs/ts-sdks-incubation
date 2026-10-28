@@ -553,10 +553,12 @@ describe('cli/main', () => {
 					readonly code: string;
 					readonly summary: string;
 					readonly hint?: string;
+					readonly context?: { readonly reason?: string };
 				};
 			};
 			expect(envelope.error.code).toBe('SUPERVISOR_LIVE');
 			expect(envelope.error.summary).toContain('live supervisor graph is stale');
+			expect(envelope.error.context?.reason).toBe('graph');
 			expect(envelope.error.hint).toContain('restart the running `devstack up` session');
 		} finally {
 			process.exitCode = previousExitCode;
@@ -602,9 +604,16 @@ describe('cli/main', () => {
 			expect(process.exitCode).toBe(ExitCode.SUPERVISOR_LIVE);
 			expect(existsSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
 			const envelope = JSON.parse(stdout.join('')) as {
-				readonly error: { readonly code: string; readonly hint?: string };
+				readonly error: {
+					readonly code: string;
+					readonly summary: string;
+					readonly hint?: string;
+					readonly context?: { readonly reason?: string };
+				};
 			};
 			expect(envelope.error.code).toBe('SUPERVISOR_LIVE');
+			expect(envelope.error.summary).toContain('runtime config is stale');
+			expect(envelope.error.context?.reason).toBe('runtime-config');
 			expect(envelope.error.hint).toContain('runtime-only settings changed');
 			expect(envelope.error.hint).toContain('graphqlHeaders');
 		} finally {

@@ -27,7 +27,7 @@ import {
 	successEnvelope,
 	type SuccessParams,
 } from './envelope.ts';
-import { type CliError, exitCodeFor, hintFor, summaryFor } from './errors.ts';
+import { type CliError, contextFor, exitCodeFor, hintFor, summaryFor } from './errors.ts';
 import type { OutputMode } from './flags.ts';
 import { type ExitCode } from './sysexits.ts';
 
@@ -167,6 +167,7 @@ export const emitFailure = (
 			exitCode,
 			summary: summaryFor(params.error),
 			hint: hintFor(params.error),
+			context: contextFor(params.error),
 			cause: params.cause,
 			errorCause:
 				'cause' in params.error ? (params.error as { readonly cause?: unknown }).cause : undefined,
@@ -181,6 +182,7 @@ interface RenderFailureParams {
 	readonly exitCode: ExitCode;
 	readonly summary: string;
 	readonly hint?: string;
+	readonly context?: ReturnType<typeof contextFor>;
 	readonly cause?: Cause.Cause<unknown>;
 	readonly errorCause?: unknown;
 	readonly dryRun?: boolean;
@@ -203,6 +205,7 @@ const renderFailure = (io: CliIO, mode: OutputMode, p: RenderFailureParams): Eff
 				exitCode: p.exitCode,
 				summary: p.summary,
 				hint: p.hint,
+				...(p.context === undefined ? {} : { context: p.context }),
 				chain,
 				dryRun: p.dryRun,
 			};

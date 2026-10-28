@@ -14,6 +14,7 @@ import {
 	CliLiveGraphMismatchError,
 	CliSnapshotAmbiguousError,
 	CliUsageError,
+	contextFor,
 	exitCodeFor,
 	hintFor,
 	summaryFor,
@@ -41,6 +42,7 @@ describe('exitCodeFor', () => {
 				new CliLiveGraphMismatchError({
 					app: 'app',
 					stack: 'main',
+					reason: 'graph',
 					liveGraphInputId: 'old',
 					currentGraphInputId: 'new',
 				}),
@@ -89,6 +91,7 @@ describe('hintFor', () => {
 			new CliLiveGraphMismatchError({
 				app: 'app',
 				stack: 'main',
+				reason: 'graph',
 				liveGraphInputId: 'old',
 				currentGraphInputId: 'new',
 				hint: 'restart devstack up',
@@ -102,5 +105,32 @@ describe('summaryFor', () => {
 	it('CliConfigNotFoundError surfaces the message field directly', () => {
 		const message = 'searched ./, ../, ../../ — no devstack.config.ts';
 		expect(summaryFor(new CliConfigNotFoundError({ message }))).toBe(message);
+	});
+});
+
+describe('CliLiveGraphMismatchError reason', () => {
+	const mismatch = (reason: 'graph' | 'runtime-config') =>
+		new CliLiveGraphMismatchError({
+			app: 'app',
+			stack: 'main',
+			reason,
+			liveGraphInputId: 'g1',
+			currentGraphInputId: reason === 'graph' ? 'g2' : 'g1',
+		});
+
+	it('names what is stale in the summary', () => {
+		expect(summaryFor(mismatch('graph'))).toBe('live supervisor graph is stale for app/main');
+		expect(summaryFor(mismatch('runtime-config'))).toBe(
+			'live supervisor runtime config is stale for app/main',
+		);
+	});
+
+	it('exposes the reason and ids as structured envelope context', () => {
+		expect(contextFor(mismatch('runtime-config'))).toEqual({
+			reason: 'runtime-config',
+			liveGraphInputId: 'g1',
+			currentGraphInputId: 'g1',
+		});
+		expect(contextFor(new CliUsageError({ message: 'x' }))).toBeUndefined();
 	});
 });

@@ -7,7 +7,10 @@ import { describe, expect, it } from 'vitest';
 import { Effect, SubscriptionRef } from 'effect';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
-import { emptyDashboardDomain } from '../../../src/plugins/dashboard/domain.ts';
+import {
+	emptyDashboardDomain,
+	type DashboardSuiGraphqlLookup,
+} from '../../../src/plugins/dashboard/domain.ts';
 import type { OriginPolicy } from '../../../src/plugins/dashboard/origin-policy.ts';
 import { makeDashboardListener } from '../../../src/plugins/dashboard/server.ts';
 import {
@@ -50,12 +53,13 @@ const close = (server: Server): Promise<void> =>
 
 /** Run `body` against a dashboard listener whose relay forwards to a fake
  *  upstream. `configured: false` models a sui plugin without
- *  `graphqlHeaders`, `noEndpoint` one with no GraphQL endpoint at all; `peerAddress` overrides the TCP peer every request
+ *  `graphqlHeaders`, and `lookup` overrides the sui GraphQL lookup outright; `peerAddress` overrides the TCP peer every request
  *  appears to come from (the listener itself is on loopback). */
 const withProxy = (
 	opts: {
 		readonly configured?: boolean;
-		readonly noEndpoint?: boolean;
+		readonly headers?: Readonly<Record<string, string>>;
+		readonly lookup?: DashboardSuiGraphqlLookup;
 		readonly peerAddress?: string;
 	},
 	body: (harness: Harness) => Promise<void>,
@@ -75,7 +79,8 @@ const withProxy = (
 		const upstreamUrl = `http://127.0.0.1:${await listen(upstream)}/graphql`;
 
 		const configured = opts.configured ?? true;
-		const headers: Record<string, string> = configured ? { authorization: SECRET } : {};
+		const headers: Readonly<Record<string, string>> =
+			opts.headers ?? (configured ? { authorization: SECRET } : {});
 		const listener = makeDashboardListener({
 			assetsDir,
 			originPolicy: ORIGIN_POLICY,
@@ -86,9 +91,7 @@ const withProxy = (
 				domain: emptyControlPlaneDomain,
 				pluginDomain: {
 					...emptyDashboardDomain,
-					suiGraphql: Effect.succeed(
-						opts.noEndpoint === true ? null : { url: upstreamUrl, headers },
-					),
+					suiGraphql: Effect.succeed(opts.lookup ?? { state: 'ready', url: upstreamUrl, headers }),
 				},
 				suiGraphqlProxyUrl: 'http://127.0.0.1:1234/sui-graphql',
 			},
@@ -171,6 +174,29 @@ describe('dashboard sui-graphql proxy', () => {
 			expect(seen[0]!.headers.cookie).toBeUndefined();
 		}));
 
+	it('lets configured headers replace defaults and forwarded headers case-insensitively', () =>
+		withProxy(
+			{
+				headers: {
+					Authorization: SECRET,
+					'Content-Type': 'application/json; charset=utf-8',
+					'X-Sui-Client-Protocol-Version': '1',
+				},
+			},
+			async ({ proxyUrl, seen }) => {
+				const res = await post(proxyUrl, {
+					origin: ALLOWED_ORIGIN,
+					[SUI_CLIENT_PROTOCOL_VERSION_HEADER]: '99',
+				});
+				expect(res.status).toBe(200);
+				// One value each — not the comma-joined pair plain-object
+				// spreading produced.
+				expect(seen[0]!.headers['content-type']).toBe('application/json; charset=utf-8');
+				expect(seen[0]!.headers[SUI_CLIENT_PROTOCOL_VERSION_HEADER]).toBe('1');
+				expect(seen[0]!.headers.authorization).toBe(SECRET);
+			},
+		));
+
 	it('refuses a non-loopback peer even with an allowlisted (forgeable) Origin', () =>
 		withProxy({ peerAddress: '192.168.1.20' }, async ({ proxyUrl, seen }) => {
 			const res = await post(proxyUrl, { origin: ALLOWED_ORIGIN });
@@ -227,24 +253,41 @@ describe('dashboard sui-graphql proxy', () => {
 		}));
 });
 
-describe('dashboard schema suiGraphqlUrl', () => {
+describe('dashboard schema suiGraphql', () => {
 	const query = async (controlUrl: string) => {
-		const res = await post(controlUrl, {}, JSON.stringify({ query: '{ suiGraphqlUrl }' }));
-		return ((await res.json()) as { data?: { suiGraphqlUrl?: string | null } }).data?.suiGraphqlUrl;
+		const res = await post(
+			controlUrl,
+			{},
+			JSON.stringify({ query: '{ suiGraphql { status url } }' }),
+		);
+		return ((await res.json()) as { data?: { suiGraphql?: unknown } }).data?.suiGraphql;
 	};
 
 	it('is the relay URL while graphqlHeaders are configured', () =>
 		withProxy({}, async ({ controlUrl }) => {
-			expect(await query(controlUrl)).toBe('http://127.0.0.1:1234/sui-graphql');
+			expect(await query(controlUrl)).toEqual({
+				status: 'ready',
+				url: 'http://127.0.0.1:1234/sui-graphql',
+			});
 		}));
 
 	it('is the endpoint itself when no headers are configured', () =>
 		withProxy({ configured: false }, async ({ controlUrl, upstreamUrl }) => {
-			expect(await query(controlUrl)).toBe(upstreamUrl);
+			expect(await query(controlUrl)).toEqual({ status: 'ready', url: upstreamUrl });
 		}));
 
-	it('is null when sui exposes no GraphQL endpoint', () =>
-		withProxy({ noEndpoint: true }, async ({ controlUrl }) => {
-			expect(await query(controlUrl)).toBeNull();
+	it('reports pending while sui is still starting', () =>
+		withProxy({ lookup: { state: 'pending' } }, async ({ controlUrl }) => {
+			expect(await query(controlUrl)).toEqual({ status: 'pending', url: null });
+		}));
+
+	it('reports none when the stack has no GraphQL endpoint', () =>
+		withProxy({ lookup: { state: 'none' } }, async ({ controlUrl }) => {
+			expect(await query(controlUrl)).toEqual({ status: 'none', url: null });
+		}));
+
+	it('the relay 404s unless the lookup is ready', () =>
+		withProxy({ lookup: { state: 'pending' } }, async ({ proxyUrl }) => {
+			expect((await post(proxyUrl, { origin: ALLOWED_ORIGIN })).status).toBe(404);
 		}));
 });

@@ -12,7 +12,7 @@
 //     `Origin` check is browser CSRF protection, not caller authentication —
 //     any non-browser client can forge it — so the relay additionally refuses
 //     every connection whose TCP peer is not loopback. The SPA reaches the
-//     relay through the direct loopback URL (`suiGraphqlUrl`), never
+//     relay through the direct loopback URL (`suiGraphql.url`), never
 //     through the router. Containers that can reach the host's loopback
 //     (e.g. via Docker Desktop's host networking) are not excluded by this.
 //   - The upstream URL is fixed by the resolved sui value; the request can
@@ -31,7 +31,7 @@ import { checkOrigin, type OriginPolicy } from './origin-policy.ts';
 import type { DashboardDomain, DashboardSuiGraphql } from './domain.ts';
 
 /** Path of the relay on the dashboard listener. The SPA never builds this
- *  itself — the control plane hands it the URL to query (`suiGraphqlUrl`). */
+ *  itself — the control plane hands it the URL to query (`suiGraphql.url`). */
 export const SUI_GRAPHQL_PROXY_PATH = '/sui-graphql';
 
 /** Request header `SuiGraphQLClient` sends to tell the server the highest
@@ -138,7 +138,7 @@ export const handleSuiGraphqlProxy = async (
 	}
 
 	const upstream = await Effect.runPromise(deps.pluginDomain.suiGraphql);
-	if (upstream === null || !needsRelay(upstream)) {
+	if (upstream.state !== 'ready' || !needsRelay(upstream)) {
 		sendProxyError(res, 404, 'sui-graphql proxy: no graphqlHeaders configured on the sui plugin');
 		return;
 	}
@@ -150,22 +150,23 @@ export const handleSuiGraphqlProxy = async (
 		return;
 	}
 
-	const forwarded: Record<string, string> = {};
+	// `Headers.set` so configured values replace defaults and forwarded
+	// headers case-insensitively — spreading plain objects would keep
+	// `Content-Type` and `content-type` as two keys, which `fetch` joins.
+	const headers = new Headers({ 'content-type': 'application/json', accept: 'application/json' });
 	for (const name of FORWARDED_REQUEST_HEADERS) {
 		const value = req.headers[name];
-		if (typeof value === 'string') forwarded[name] = value;
+		if (typeof value === 'string') headers.set(name, value);
+	}
+	for (const [name, value] of Object.entries(upstream.headers)) {
+		headers.set(name, value);
 	}
 
 	let response: Response;
 	try {
 		response = await fetch(upstream.url, {
 			method: 'POST',
-			headers: {
-				'content-type': 'application/json',
-				accept: 'application/json',
-				...forwarded,
-				...upstream.headers,
-			},
+			headers,
 			body: new Uint8Array(body),
 			signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
 		});

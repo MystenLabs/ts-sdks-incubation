@@ -374,7 +374,7 @@ type Query {
 	services(after: String, before: String, first: Int, last: Int): QueryServicesConnection!
 	snapshots: [SnapshotEntry!]!
 	state: StackState!
-	suiGraphqlUrl: String
+	suiGraphql: SuiGraphqlEndpoint!
 }
 
 type QueryAccountsConnection {
@@ -522,6 +522,20 @@ type StackState {
 
 type Subscription {
 	state: StackState!
+}
+
+"""
+The one URL the SPA sends Sui GraphQL reads to — the dashboard relay while the sui plugin has graphqlHeaders, else the sui endpoint — plus whether it is known yet.
+"""
+type SuiGraphqlEndpoint {
+	status: SuiGraphqlStatus!
+	url: String
+}
+
+enum SuiGraphqlStatus {
+	none
+	pending
+	ready
 }
 
 enum WireProtocol {

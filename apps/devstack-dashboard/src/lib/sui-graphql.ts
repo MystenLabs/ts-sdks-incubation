@@ -2,7 +2,7 @@
 // beta), via the official SDK's typed GraphQL client — distinct from `chain.ts`
 // (gRPC `client.core.*`) and from the dashboard's own control-plane GraphQL
 // (`api.ts`). The URL to query (`ChainSource.graphqlUrl`) comes from the
-// control plane's `suiGraphqlUrl`: the stack's `graphql` endpoint (CORS-open),
+// control plane's `suiGraphql` lookup: the stack's `graphql` endpoint (CORS-open),
 // or — when the sui plugin has `graphqlHeaders` — the dashboard's loopback
 // relay, which attaches the credentials server-side.
 //

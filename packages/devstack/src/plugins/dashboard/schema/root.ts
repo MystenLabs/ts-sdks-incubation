@@ -22,6 +22,7 @@ import {
 	Service,
 	SnapshotEntry,
 	StackState,
+	SuiGraphqlEndpoint,
 	type ServiceSource,
 } from './types.ts';
 import { StackMode } from './enums.ts';
@@ -170,16 +171,18 @@ builder.queryType({
 			nullable: true,
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.mode),
 		}),
-		/** The one URL the SPA sends Sui GraphQL reads to: the dashboard relay
-		 *  while the sui plugin has `graphqlHeaders` (it attaches them
-		 *  server-side so they never reach the browser), otherwise the sui
-		 *  endpoint itself. `null` when there is none or sui hasn't resolved. */
-		suiGraphqlUrl: t.string({
-			nullable: true,
+		/** The Sui GraphQL URL the SPA sends reads to (the dashboard relay
+		 *  while the sui plugin has `graphqlHeaders`, so they never reach the
+		 *  browser; otherwise the sui endpoint), with whether it's known yet. */
+		suiGraphql: t.field({
+			type: SuiGraphqlEndpoint,
 			resolve: async (_parent, _args, ctx) => {
-				const graphql = await Effect.runPromise(ctx.pluginDomain.suiGraphql);
-				if (graphql === null) return null;
-				return needsRelay(graphql) ? ctx.suiGraphqlProxyUrl : graphql.url;
+				const lookup = await Effect.runPromise(ctx.pluginDomain.suiGraphql);
+				if (lookup.state !== 'ready') return { status: lookup.state, url: null };
+				return {
+					status: 'ready' as const,
+					url: needsRelay(lookup) ? ctx.suiGraphqlProxyUrl : lookup.url,
+				};
 			},
 		}),
 		/** Snapshot catalog: id/label/created/participants/containers. */
