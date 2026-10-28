@@ -9,8 +9,9 @@
 // gRPC `client.core` exposes object/balance reads keyed by address, but has no
 // address→transactions query; the node's Sui GraphQL does, via the first-class
 // `transactions(filter: …)` connection. `walrus.ts` also uses this transport for
-// event/tx reads; the shared client factory + endpoint resolution live here so
-// every Sui-GraphQL read (Walrus, address history, …) shares one shape.
+// event/tx reads; the shared client factory lives here so every Sui-GraphQL
+// read (Walrus, address history, …) shares one shape. Which URL to query is
+// decided server-side, not here.
 //
 // Queries are written with the SDK's `graphql()` tagged template
 // (`@mysten/sui/graphql/schema`), which is pre-configured with the Sui GraphQL
@@ -22,6 +23,22 @@
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { graphql } from '@mysten/sui/graphql/schema';
+import type { ChainSource } from './useChain.ts';
+
+// --- Availability -----------------------------------------------------------
+
+/** Why Sui GraphQL reads are unavailable while `ChainSource.graphqlUrl` is
+ *  null, phrased for an inline "unavailable (…)" note. */
+export const suiGraphqlUnavailableReason = (status: ChainSource['graphqlUrlStatus']): string => {
+	switch (status) {
+		case 'resolving':
+			return 'still looking up the GraphQL endpoint';
+		case 'failed':
+			return "couldn't look up the GraphQL endpoint";
+		case 'resolved':
+			return 'no GraphQL endpoint on this stack';
+	}
+};
 
 // --- GraphQL client ---------------------------------------------------------
 

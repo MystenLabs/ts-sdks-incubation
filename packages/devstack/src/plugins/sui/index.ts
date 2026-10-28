@@ -182,11 +182,21 @@ const DEFAULT_INDEXER_DATABASE = 'sui_indexer';
 /** In-network DNS alias siblings dial the indexer-db sidecar by. */
 const SUI_INDEXER_DB_ALIAS = 'sui-indexer-db';
 
+/** Runtime-only inputs: the GraphQL credentials. Excluded from
+ *  `suiInputIdentity` (rotating a token leaves snapshots valid) but recorded
+ *  as `runtimeInputIdentity`, so a live `apply` reports that the running
+ *  relay needs a restart to pick them up. */
+export const suiRuntimeInputIdentity = (opts: SuiOptions): unknown =>
+	(opts.mode === 'live' || opts.mode === 'local-rpc') && opts.graphqlHeaders !== undefined
+		? { graphqlHeaders: opts.graphqlHeaders }
+		: undefined;
+
 export const suiInputIdentity = (opts: SuiOptions): unknown => {
 	const { readyTimeout: _readyTimeout, ...authored } = opts;
 	if (authored.mode === 'live' || authored.mode === 'local-rpc') {
 		// Credentials don't change chain state: rotating a GraphQL token must
-		// not mark every snapshot of this network stale.
+		// not mark every snapshot of this network stale (they're tracked as
+		// `suiRuntimeInputIdentity` instead).
 		const { graphqlHeaders: _graphqlHeaders, ...chainInputs } = authored;
 		return { plugin: 'sui', ...chainInputs };
 	}
@@ -487,6 +497,7 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 		role: 'service',
 		section: 'service',
 		inputIdentity: staticInputIdentity(suiInputIdentity(opts)),
+		runtimeInputIdentity: suiRuntimeInputIdentity(opts),
 		// Stack-free codegen: the `codegen` verb derives the committed
 		// `config.ts`'s `network`/`networks` from this hook. Both are
 		// environment/live data (dynamic local rpc port; a real deployment

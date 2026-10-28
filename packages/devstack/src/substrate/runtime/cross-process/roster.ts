@@ -201,7 +201,7 @@ export const claim = (
 	paths: RosterPaths,
 	intent: 'normal' | 'snapshot' = 'normal',
 	policy: RosterSweepPolicy = DEFAULT_SWEEP_POLICY,
-	metadata: { readonly graphInputId?: string } = {},
+	metadata: { readonly graphInputId?: string; readonly liveConfigId?: string } = {},
 ): Effect.Effect<ClaimResult, RosterError | import('./stack-lock.ts').StackLockError> =>
 	withStackLock(
 		paths,

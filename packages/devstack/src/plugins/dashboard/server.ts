@@ -1,19 +1,17 @@
 // Dashboard HTTP listener.
 //
 // graphql-yoga hosts the Pothos schema at `/graphql` (with GraphiQL for
-// manual testing and SSE for subscriptions). Every other path serves the
-// built React SPA bundled with this package under `dashboard-ui/` (produced
-// by `pnpm build`'s `build:dashboard-ui` step and shipped via the package
-// `files` array). The listener is handed to `listenScopedHttpServer`, which
-// owns bind + graceful close.
+// manual testing and SSE for subscriptions), and `/sui-graphql` is the
+// loopback-only Sui GraphQL relay (`sui-graphql-proxy.ts`). Every other path
+// serves the built React SPA bundled with this package under `dashboard-ui/`
+// (produced by `pnpm build`'s `build:dashboard-ui` step and shipped via the
+// package `files` array). The listener is handed to `listenScopedHttpServer`,
+// which owns bind + graceful close.
 //
 // The SPA is served as static files with a client-side-routing fallback to
 // `index.html`. When the UI has not been built (the bundled dir is absent),
 // the listener logs a warning once and falls back to the inline test page so
 // `/graphql` and manual API checks keep working.
-//
-// `/sui-graphql` relays Sui GraphQL reads to the sui plugin's endpoint with
-// its `graphqlHeaders` attached (see `sui-graphql-proxy.ts`).
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, normalize, resolve, sep } from 'node:path';

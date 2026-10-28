@@ -117,6 +117,10 @@ from the same machine (loopback), so other hosts on your network can't use your 
 it. Processes on your machine that can reach loopback, which may include containers on Docker
 Desktop, are not excluded.
 
+Rotating a token doesn't invalidate your snapshots: the headers aren't part of the stack's snapshot
+identity. A running `devstack up` keeps the headers it started with, though, so restart it after
+changing them. `devstack apply` against a running session tells you when a restart is needed.
+
 As with direct reads, a `graphqlUrl` that doesn't end in `/graphql` has `/graphql` appended. Setting
 `graphqlHeaders` on a network with no GraphQL endpoint (for example `devnet` without a `graphqlUrl`)
 fails at boot.

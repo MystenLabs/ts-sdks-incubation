@@ -10,7 +10,7 @@
 import { useState } from 'react';
 import { timeAgo, truncateMiddle } from '../../lib/format.ts';
 import { gotoObject, gotoTx } from '../../lib/router.ts';
-import { useAddressTransactions } from '../../lib/sui-graphql.ts';
+import { suiGraphqlUnavailableReason, useAddressTransactions } from '../../lib/sui-graphql.ts';
 import type { AddressTransaction, TxDirection } from '../../lib/sui-graphql.ts';
 import type { Projection } from '../../lib/types.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
@@ -254,13 +254,14 @@ export const AddressDetail = ({ chain, projection, id }: AddressDetailProps) => 
 						<Segmented options={DIRECTION_OPTIONS} value={direction} onChange={setDirection} />
 					)}
 				</div>
-				{graphqlUrl === null ? (
+				{graphqlUrl === null && chain.graphqlUrlStatus !== 'resolving' ? (
 					<div className="panel-pad" style={{ padding: '4px 18px 16px' }}>
 						<span style={{ fontSize: 12, color: 'var(--tx-dim)' }}>
-							Transaction history unavailable (no GraphQL endpoint on this stack).
+							Transaction history unavailable ({suiGraphqlUnavailableReason(chain.graphqlUrlStatus)}
+							).
 						</span>
 					</div>
-				) : txs.isLoading ? (
+				) : graphqlUrl === null || txs.isLoading ? (
 					<SkeletonRows rows={5} cols={3} />
 				) : (
 					<DataTable

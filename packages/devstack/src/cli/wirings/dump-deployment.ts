@@ -41,7 +41,10 @@ import {
 import { LOCAL_NETWORK_NAME } from '../../api/inference-network.ts';
 import { type CliError, CliInternalError, CliUsageError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult } from '../../surfaces/cli/commands/index.ts';
-import { probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
+import {
+	NO_SUPERVISOR_PRESENCE,
+	probeSupervisorPresence,
+} from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
 import { type CliIO, emitSuccess } from '../../surfaces/cli/output.ts';
 import type { OutputMode } from '../../surfaces/cli/flags.ts';
@@ -201,9 +204,7 @@ export const runDumpDeployment = (
 		// live — it writes the deployment to `deploymentFile` and tears down — then
 		// read the file it produced.
 		const presence = yield* probeSupervisorPresence(effectiveIdentity.rosterFile).pipe(
-			Effect.catch(() =>
-				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
-			),
+			Effect.catch(() => Effect.succeed(NO_SUPERVISOR_PRESENCE)),
 		);
 		if (!presence.live) {
 			// `runApplyLive` re-probes (sees no live supervisor) and runs the

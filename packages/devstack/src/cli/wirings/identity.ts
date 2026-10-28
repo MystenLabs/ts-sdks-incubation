@@ -13,7 +13,10 @@ import { appName, stackName } from '../../substrate/brand.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 import { CliSupervisorLiveError } from '../../surfaces/cli/index.ts';
-import { probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
+import {
+	NO_SUPERVISOR_PRESENCE,
+	probeSupervisorPresence,
+} from '../../surfaces/cli/commands/index.ts';
 
 export interface ResolvedIdentity {
 	readonly app: string;
@@ -90,9 +93,7 @@ export const ensureNoLiveSupervisor = (
 ): Effect.Effect<void, CliSupervisorLiveError> =>
 	Effect.gen(function* () {
 		const presence = yield* probeSupervisorPresence(identity.rosterFile).pipe(
-			Effect.catch(() =>
-				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
-			),
+			Effect.catch(() => Effect.succeed(NO_SUPERVISOR_PRESENCE)),
 		);
 		if (presence.live) {
 			return yield* Effect.fail(

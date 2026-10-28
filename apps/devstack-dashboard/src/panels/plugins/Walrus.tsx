@@ -51,6 +51,7 @@ import {
 	type ShardAssignment,
 	type WalrusSource,
 } from '../../lib/walrus.ts';
+import { suiGraphqlUnavailableReason } from '../../lib/sui-graphql.ts';
 import {
 	Badge,
 	Banner,
@@ -432,7 +433,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 							title="Blob list unavailable"
 							hint={
 								source.graphqlUrl === null
-									? 'No Sui GraphQL endpoint is registered for this stack.'
+									? `Sui GraphQL unavailable: ${suiGraphqlUnavailableReason(chain.graphqlUrlStatus)}.`
 									: source.packageId === null
 										? 'No Walrus package was found in the projection for this stack.'
 										: `GraphQL read failed: ${

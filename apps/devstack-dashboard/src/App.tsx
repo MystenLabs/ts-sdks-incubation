@@ -164,13 +164,13 @@ const Shell = () => {
 	const stackMode = useMode(endpoint, projection?.identity.network ?? '').data ?? null;
 	// The control plane resolves the one Sui GraphQL URL to use (direct, or the
 	// credential relay); the browser never derives it, so it can't briefly read
-	// a credentialed endpoint directly. Null (hooks disabled) until resolved.
-	const suiGraphqlUrl =
-		useSuiGraphqlUrl(
-			endpoint,
-			projection?.identity.network ?? '',
-			projection?.endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url ?? null,
-		).data ?? null;
+	// a credentialed endpoint directly. Null (hooks disabled) until resolved;
+	// the status lets panels tell "resolving"/"failed" from "none".
+	const suiGraphqlUrlQuery = useSuiGraphqlUrl(
+		endpoint,
+		projection?.identity.network ?? '',
+		projection?.endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url ?? null,
+	);
 
 	// --- Persisted setters ---------------------------------------------------
 
@@ -329,7 +329,12 @@ const Shell = () => {
 		connection: data.connection,
 		chain: {
 			rpcUrl: suiRpcUrl(projection.endpoints),
-			graphqlUrl: suiGraphqlUrl,
+			graphqlUrl: suiGraphqlUrlQuery.data ?? null,
+			graphqlUrlStatus: suiGraphqlUrlQuery.isSuccess
+				? 'resolved'
+				: suiGraphqlUrlQuery.isError
+					? 'failed'
+					: 'resolving',
 			network: projection.identity.network,
 		},
 		refresh: data.refresh,

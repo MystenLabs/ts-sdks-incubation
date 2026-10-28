@@ -17,6 +17,7 @@ import { dirname, resolve as resolvePath } from 'node:path';
 import { Cause, Effect, Exit, Logger } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
+import { computeLiveConfigId } from '../../substrate/runtime/lifecycle/graph-input-id.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import {
 	commandChannelPaths,
@@ -35,7 +36,11 @@ import {
 	CliInternalError,
 	CliLiveGraphMismatchError,
 } from '../../surfaces/cli/errors.ts';
-import { type CommandResult, probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
+import {
+	type CommandResult,
+	NO_SUPERVISOR_PRESENCE,
+	probeSupervisorPresence,
+} from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
 
@@ -67,25 +72,32 @@ type ApplyDispatch =
 const runApplyAgainstLiveSupervisor = (
 	identity: ResolvedIdentity,
 	identityValue: Identity,
-	currentGraphInputId: string,
+	current: { readonly graphInputId: string; readonly liveConfigId: string },
 ): Effect.Effect<ApplyDispatch> =>
 	Effect.gen(function* () {
 		const stackRoot = stackRootFor(identity.runtimeRoot, String(identityValue.stack));
 		const presence = yield* probeSupervisorPresence(resolvePath(stackRoot, 'roster.json')).pipe(
-			Effect.catch(() =>
-				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
-			),
+			Effect.catch(() => Effect.succeed(NO_SUPERVISOR_PRESENCE)),
 		);
 		if (!presence.live) return { kind: 'direct' as const };
-		if (presence.graphInputId !== null && presence.graphInputId !== currentGraphInputId) {
+		const graphChanged =
+			presence.graphInputId !== null && presence.graphInputId !== current.graphInputId;
+		// A supervisor predating `liveConfigId` records only the graph id.
+		const runtimeOnlyChanged =
+			!graphChanged &&
+			presence.liveConfigId !== null &&
+			presence.liveConfigId !== current.liveConfigId;
+		if (graphChanged || runtimeOnlyChanged) {
 			return {
 				kind: 'live-failed' as const,
 				error: new CliLiveGraphMismatchError({
 					app: String(identityValue.app),
 					stack: String(identityValue.stack),
 					liveGraphInputId: presence.graphInputId,
-					currentGraphInputId,
-					hint: 'restart the running `devstack up` session so it loads the edited stack config, then re-run `devstack apply`.',
+					currentGraphInputId: current.graphInputId,
+					hint: graphChanged
+						? 'restart the running `devstack up` session so it loads the edited stack config, then re-run `devstack apply`.'
+						: 'runtime-only settings changed (e.g. credentials such as sui `graphqlHeaders`); they take effect only after a restart. Restart the running `devstack up` session, then re-run `devstack apply`.',
 				}),
 			};
 		}
@@ -150,11 +162,13 @@ export const runApplyLive = (
 					}),
 			),
 		);
-		const dispatch = yield* runApplyAgainstLiveSupervisor(
-			effectiveIdentity,
-			identityValue,
-			currentGraphInput.graphInputId,
-		);
+		const dispatch = yield* runApplyAgainstLiveSupervisor(effectiveIdentity, identityValue, {
+			graphInputId: currentGraphInput.graphInputId,
+			liveConfigId: computeLiveConfigId({
+				members: stack.members,
+				graphInputId: currentGraphInput.graphInputId,
+			}),
+		});
 		if (dispatch.kind === 'live-failed') {
 			return yield* Effect.fail(dispatch.error);
 		}

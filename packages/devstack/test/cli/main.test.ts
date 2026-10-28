@@ -29,6 +29,7 @@ import {
 	makeCommandChannelSubscriber,
 } from '../../src/substrate/runtime/cross-process/index.ts';
 import { processStartTime } from '../../src/substrate/runtime/cross-process/liveness.ts';
+import { computeLiveConfigId } from '../../src/substrate/runtime/lifecycle/graph-input-id.ts';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoots: Array<string> = [];
@@ -218,7 +219,9 @@ const writeRestorableSnapshotArtifact = async (
 	);
 };
 
-const graphInputIdForConfig = async (configPath: string): Promise<string> => {
+const liveIdsForConfig = async (
+	configPath: string,
+): Promise<{ readonly graphInputId: string; readonly liveConfigId: string }> => {
 	const loaded = await Effect.runPromise(loadDevstackConfig(configPath));
 	const graphInput = await Effect.runPromise(
 		computeSnapshotGraphInputFromStack({
@@ -226,12 +229,18 @@ const graphInputIdForConfig = async (configPath: string): Promise<string> => {
 			devstackVersion: readDevstackVersion({ fallback: '0.0.0' }),
 		}),
 	);
-	return graphInput.graphInputId;
+	return {
+		graphInputId: graphInput.graphInputId,
+		liveConfigId: computeLiveConfigId({
+			members: loaded.engine.members,
+			graphInputId: graphInput.graphInputId,
+		}),
+	};
 };
 
 const writeLiveRoster = (
 	stackRoot: string,
-	options: { readonly graphInputId?: string } = {},
+	options: { readonly graphInputId?: string; readonly liveConfigId?: string } = {},
 ): void => {
 	mkdirSync(stackRoot, { recursive: true });
 	writeFileSync(
@@ -247,6 +256,7 @@ const writeLiveRoster = (
 					heartbeatAt: Date.now(),
 					intent: 'normal',
 					...(options.graphInputId === undefined ? {} : { graphInputId: options.graphInputId }),
+					...(options.liveConfigId === undefined ? {} : { liveConfigId: options.liveConfigId }),
 				},
 			],
 		}),
@@ -378,7 +388,7 @@ describe('cli/main', () => {
 			DEVSTACK_CONFIG: process.env.DEVSTACK_CONFIG,
 		};
 
-		writeLiveRoster(stackRoot, { graphInputId: await graphInputIdForConfig(configPath) });
+		writeLiveRoster(stackRoot, await liveIdsForConfig(configPath));
 		const subscriberFiber = Effect.runFork(
 			Effect.scoped(
 				Effect.gen(function* () {
@@ -548,6 +558,55 @@ describe('cli/main', () => {
 			expect(envelope.error.code).toBe('SUPERVISOR_LIVE');
 			expect(envelope.error.summary).toContain('live supervisor graph is stale');
 			expect(envelope.error.hint).toContain('restart the running `devstack up` session');
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	}, 60_000);
+
+	it('apply refuses a live supervisor whose runtime-only config changed', async () => {
+		const appRoot = makeTempRoot('cli-live-apply-runtime-app');
+		const stateRoot = makeTempRoot('cli-live-apply-runtime-state');
+		const configPath = writeCodegenConfig(appRoot);
+		const stackRoot = join(stateRoot, 'stacks', 'main');
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+		// Same graph (snapshots stay valid), but the supervisor booted with
+		// different runtime-only inputs — e.g. a since-rotated credential.
+		const { graphInputId } = await liveIdsForConfig(configPath);
+		writeLiveRoster(stackRoot, { graphInputId, liveConfigId: 'booted-with-old-credentials' });
+
+		try {
+			process.exitCode = undefined;
+			await runCli([
+				'apply',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'cli-live-apply',
+				'--stack',
+				'main',
+				'--network',
+				'localnet',
+				'--json',
+			]);
+
+			expect(process.exitCode).toBe(ExitCode.SUPERVISOR_LIVE);
+			expect(existsSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly error: { readonly code: string; readonly hint?: string };
+			};
+			expect(envelope.error.code).toBe('SUPERVISOR_LIVE');
+			expect(envelope.error.hint).toContain('runtime-only settings changed');
+			expect(envelope.error.hint).toContain('graphqlHeaders');
 		} finally {
 			process.exitCode = previousExitCode;
 			stdoutSpy.mockRestore();

@@ -55,9 +55,13 @@ export interface ChainSource {
 	/** The stack's `rpc` endpoint URL, or null when unavailable (hooks disabled). */
 	readonly rpcUrl: string | null;
 	/** The stack's Sui GraphQL query URL (direct, or the dashboard relay when
-	 *  the sui plugin has `graphqlHeaders`), or null when there is none or it
-	 *  hasn't resolved yet (hooks disabled). */
+	 *  the sui plugin has `graphqlHeaders`), or null (hooks disabled) — see
+	 *  `graphqlUrlStatus` for why. */
 	readonly graphqlUrl: string | null;
+	/** Whether the control-plane lookup of `graphqlUrl` is still `resolving`,
+	 *  `failed`, or `resolved` — only a resolved null means the stack really
+	 *  has no GraphQL endpoint. */
+	readonly graphqlUrlStatus: 'resolving' | 'failed' | 'resolved';
 	/** Network identity (`projection.identity.network`) — the cache namespace. */
 	readonly network: string;
 }

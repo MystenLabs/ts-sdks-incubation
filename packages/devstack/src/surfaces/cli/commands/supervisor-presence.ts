@@ -23,7 +23,19 @@ export interface SupervisorPresence {
 	readonly pid: number | null;
 	readonly hostname: string | null;
 	readonly graphInputId: string | null;
+	/** `computeLiveConfigId` of the config the supervisor booted from, when it
+	 *  recorded one (supervisors predating it carry only `graphInputId`). */
+	readonly liveConfigId: string | null;
 }
+
+/** Presence when no live supervisor holds the stack. */
+export const NO_SUPERVISOR_PRESENCE: SupervisorPresence = {
+	live: false,
+	pid: null,
+	hostname: null,
+	graphInputId: null,
+	liveConfigId: null,
+};
 
 /**
  * Read `rosterFile` and report whether at least one live holder
@@ -56,8 +68,9 @@ export const probeSupervisorPresence = (
 					pid: holder.pid,
 					hostname: holder.hostname,
 					graphInputId: holder.graphInputId ?? null,
+					liveConfigId: holder.liveConfigId ?? null,
 				};
 			}
 		}
-		return { live: false, pid: null, hostname: null, graphInputId: null };
+		return NO_SUPERVISOR_PRESENCE;
 	}).pipe(Effect.provide(layerLivenessProbeScope));

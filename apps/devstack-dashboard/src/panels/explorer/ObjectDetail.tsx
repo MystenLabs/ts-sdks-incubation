@@ -10,7 +10,7 @@
 
 import { timeAgo, truncateMiddle } from '../../lib/format.ts';
 import { gotoAddress, gotoObject, gotoTx } from '../../lib/router.ts';
-import { useAddressTransactions } from '../../lib/sui-graphql.ts';
+import { suiGraphqlUnavailableReason, useAddressTransactions } from '../../lib/sui-graphql.ts';
 import type { AddressTransaction } from '../../lib/sui-graphql.ts';
 import type { Projection } from '../../lib/types.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
@@ -404,13 +404,14 @@ export const ObjectDetail = ({ chain, projection, id }: ObjectDetailProps) => {
 				<div className="panel-pad row between wrap" style={{ padding: '12px 18px', gap: 12 }}>
 					<SectionHead title="Transactions" count={graphqlUrl ? txRows.length : undefined} />
 				</div>
-				{graphqlUrl === null ? (
+				{graphqlUrl === null && chain.graphqlUrlStatus !== 'resolving' ? (
 					<div className="panel-pad" style={{ padding: '4px 18px 16px' }}>
 						<span style={{ fontSize: 12, color: 'var(--tx-dim)' }}>
-							Transaction history unavailable (no GraphQL endpoint on this stack).
+							Transaction history unavailable ({suiGraphqlUnavailableReason(chain.graphqlUrlStatus)}
+							).
 						</span>
 					</div>
-				) : txs.isLoading ? (
+				) : graphqlUrl === null || txs.isLoading ? (
 					<SkeletonRows rows={5} cols={3} />
 				) : (
 					<DataTable
