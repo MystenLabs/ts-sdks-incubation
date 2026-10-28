@@ -8,7 +8,8 @@
 //     (the proxy URL is a codegen binding, not a projection endpoint), so "Proxy"
 //     renders an honest "not registered" state rather than a fabricated URL.
 //   - Storage epoch, cluster shard layout, and recent blobs are read directly
-//     from the node's Sui GraphQL endpoint (browser-direct, CORS-open) — no
+//     from the node's Sui GraphQL (`ChainSource.graphqlUrl`: direct, or the
+//     dashboard relay when the endpoint needs credentials) — no
 //     Walrus indexer is involved. `lib/walrus.ts` queries the on-chain Walrus
 //     events/transactions: the storage epoch from the latest `EpochChange*`
 //     event, per-node shard counts from `ShardsReceived` events, and recent
@@ -40,7 +41,6 @@ import {
 	type ProbeResult,
 } from '../../lib/probe.ts';
 import { navigate, gotoObject, gotoTx } from '../../lib/router.ts';
-import { suiGraphqlUrl } from '../../lib/sui-graphql.ts';
 import { useToast } from '../../lib/toast.tsx';
 import type { Endpoint } from '../../lib/types.ts';
 import {
@@ -51,6 +51,7 @@ import {
 	type ShardAssignment,
 	type WalrusSource,
 } from '../../lib/walrus.ts';
+import { suiGraphqlUnavailableReason } from '../../lib/sui-graphql.ts';
 import {
 	Badge,
 	Banner,
@@ -144,9 +145,10 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 		.filter((e) => e.name.startsWith('walrus-node-'))
 		.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
-	// Browser-direct Walrus reads over the node's Sui GraphQL endpoint.
+	// Walrus reads over the node's Sui GraphQL (direct, or via the dashboard
+	// relay when the endpoint needs credentials — see `ChainSource.graphqlUrl`).
 	const source: WalrusSource = {
-		graphqlUrl: suiGraphqlUrl(projection.endpoints),
+		graphqlUrl: chain.graphqlUrl,
 		packageId: walrusPackageId(projection.packages),
 		network,
 	};
@@ -431,7 +433,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 							title="Blob list unavailable"
 							hint={
 								source.graphqlUrl === null
-									? 'No Sui GraphQL endpoint is registered for this stack.'
+									? `Sui GraphQL unavailable: ${suiGraphqlUnavailableReason(chain.graphqlUrlStatus)}.`
 									: source.packageId === null
 										? 'No Walrus package was found in the projection for this stack.'
 										: `GraphQL read failed: ${

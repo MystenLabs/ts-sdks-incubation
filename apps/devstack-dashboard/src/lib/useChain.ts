@@ -30,10 +30,12 @@ import {
 	fetchDeepbookInfo,
 	fetchFundableCoins,
 	fetchMode,
+	fetchSuiGraphql,
 	fetchSealInfo,
 	type FundableCoin,
 	type SealInfo,
 	type StackMode,
+	type SuiGraphqlEndpoint,
 } from './api.ts';
 import type {
 	BalanceView,
@@ -48,10 +50,19 @@ import type {
 	TxSummary,
 } from './explorerTypes.ts';
 
-/** What every chain hook needs: the node gRPC URL + a network cache namespace. */
+/** What every chain hook needs: the node gRPC URL, the Sui GraphQL URL, and a
+ *  network cache namespace. */
 export interface ChainSource {
 	/** The stack's `rpc` endpoint URL, or null when unavailable (hooks disabled). */
 	readonly rpcUrl: string | null;
+	/** The stack's Sui GraphQL query URL (direct, or the dashboard relay when
+	 *  the sui plugin has `graphqlHeaders`), or null (hooks disabled) — see
+	 *  `graphqlUrlStatus` for why. */
+	readonly graphqlUrl: string | null;
+	/** Whether `graphqlUrl` is still `resolving` (lookup in flight, or sui
+	 *  still starting), the lookup `failed`, or it is `resolved` — only a
+	 *  resolved null means the stack really has no GraphQL endpoint. */
+	readonly graphqlUrlStatus: 'resolving' | 'failed' | 'resolved';
 	/** Network identity (`projection.identity.network`) — the cache namespace. */
 	readonly network: string;
 }
@@ -233,6 +244,27 @@ export const useMode = (endpoint: string, network: string): UseQueryResult<Stack
 		queryKey: ['domain', network, endpoint, 'mode'],
 		queryFn: () => fetchMode(endpoint),
 		staleTime: DOMAIN_STALE_MS,
+	});
+
+/** While sui is still starting, poll faster so the panels settle promptly. */
+const SUI_GRAPHQL_PENDING_POLL_MS = 2_000;
+
+/** The Sui GraphQL URL to send reads to, as the control plane resolves it.
+ *  Keyed on the projection's raw `graphql` endpoint so it refetches when sui
+ *  (re)resolves. */
+export const useSuiGraphql = (
+	endpoint: string,
+	network: string,
+	projectionGraphqlEndpoint: string | null,
+): UseQueryResult<SuiGraphqlEndpoint> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'suiGraphql', projectionGraphqlEndpoint],
+		queryFn: () => fetchSuiGraphql(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+		// Backstop for changes the endpoint key can't see (sui resolving with no
+		// endpoint, or restarting with different headers).
+		refetchInterval: (query) =>
+			query.state.data?.status === 'pending' ? SUI_GRAPHQL_PENDING_POLL_MS : DOMAIN_STALE_MS,
 	});
 
 /** DeepBook deployments + pools. */

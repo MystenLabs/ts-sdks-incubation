@@ -82,6 +82,10 @@ export interface SuiClient {
 	readonly fundingFaucetUrl: string | null;
 	/** Host-reachable GraphQL URL when the mode exposes one. */
 	readonly graphqlUrl: string | null;
+	/** Caller-supplied headers for `graphqlUrl` requests (empty when none).
+	 *  Runtime-only: deliberately absent from codegen output and the
+	 *  endpoint projection's URL allowlist so credentials stay host-side. */
+	readonly graphqlHeaders: Readonly<Record<string, string>>;
 	/** Container-reachable mirrors of the host URLs. Loopback hosts are
 	 *  rewritten to `host.docker.internal`; public URLs pass through. */
 	readonly hostGateway: {

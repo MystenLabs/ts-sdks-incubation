@@ -1,10 +1,11 @@
-// Browser-direct Walrus reads over the node's Sui GraphQL endpoint.
+// Walrus reads over the node's Sui GraphQL.
 //
 // Unlike `chain.ts` (which talks gRPC `client.core.*`), Walrus's interesting
 // state lives in on-chain *events* and *transactions* that the Sui GraphQL RPC
 // exposes with first-class filters — so these reads go through the SDK's typed
-// GraphQL client (`suiGraphqlClient`, from `sui-graphql.ts`) against the stack's
-// `graphql` endpoint (CORS-open, same browser-direct pattern as the gRPC reads).
+// GraphQL client (`suiGraphqlClient`, from `sui-graphql.ts`) against
+// `ChainSource.graphqlUrl` — the stack's `graphql` endpoint read directly, or
+// the dashboard relay when that endpoint needs credentials.
 // The query documents are written with the SDK's schema-typed `graphql()` tag,
 // so each selection is checked against the real Sui schema at compile time and
 // its result type is inferred. No Walrus indexer is involved.

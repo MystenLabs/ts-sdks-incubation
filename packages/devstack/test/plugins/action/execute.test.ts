@@ -146,6 +146,7 @@ const makeFakeSui = (): SuiClient => {
 		faucetUrl: null,
 		fundingFaucetUrl: null,
 		graphqlUrl: null,
+		graphqlHeaders: {},
 		hostGateway: {
 			rpcUrl: 'http://host.docker.internal:9000',
 			faucetUrl: null,

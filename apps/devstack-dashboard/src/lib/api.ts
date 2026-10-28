@@ -616,6 +616,14 @@ const ModeDoc = graphql(`
 		mode
 	}
 `);
+const SuiGraphqlDoc = graphql(`
+	query SuiGraphql {
+		suiGraphql {
+			status
+			url
+		}
+	}
+`);
 const DeepbookInfoDoc = graphql(`
 	query DeepbookInfo {
 		deepbookInfo {
@@ -703,6 +711,14 @@ export const fetchSnapshots = (endpoint: string): Promise<ReadonlyArray<Snapshot
 /** Resolved stack mode. */
 export const fetchMode = (endpoint: string): Promise<StackMode> =>
 	execute(endpoint, ModeDoc).then((d) => d.mode);
+
+/** The Sui GraphQL URL to send reads to (the stack's endpoint, or the
+ *  dashboard relay when it needs credentials), with whether it's known yet. */
+export type SuiGraphqlEndpoint = ResultOf<typeof SuiGraphqlDoc>['suiGraphql'];
+
+/** Look up the Sui GraphQL URL to send reads to. */
+export const fetchSuiGraphql = (endpoint: string): Promise<SuiGraphqlEndpoint> =>
+	execute(endpoint, SuiGraphqlDoc).then((d) => d.suiGraphql);
 
 /** DeepBook deployments + pools. */
 export const fetchDeepbookInfo = (endpoint: string): Promise<ReadonlyArray<DeepbookInfo>> =>

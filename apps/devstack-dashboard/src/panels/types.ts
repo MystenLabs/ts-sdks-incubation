@@ -16,9 +16,9 @@ export interface PanelProps {
 	readonly endpoint: string;
 	readonly connection: Connection;
 	/**
-	 * Browser-direct chain-read source: the node's gRPC `rpc` URL (or null when
-	 * unavailable) plus the network cache namespace. Pass straight into the
-	 * `useChain` hooks (`useChainHead(props.chain)`, …).
+	 * Chain-read source: the node's gRPC `rpc` URL and Sui GraphQL URL (each
+	 * null when unavailable) plus the network cache namespace. Pass straight
+	 * into the `useChain` hooks (`useChainHead(props.chain)`, …).
 	 */
 	readonly chain: ChainSource;
 	/** Force an immediate projection refresh (e.g. right after a mutation). */

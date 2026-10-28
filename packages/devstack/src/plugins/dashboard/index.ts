@@ -28,6 +28,7 @@ import {
 	makeDashboardRoutable,
 } from './routable.ts';
 import { makeDashboardListener } from './server.ts';
+import { suiGraphqlProxyUrl } from './sui-graphql-proxy.ts';
 
 export interface DashboardOptions {
 	/** Preferred loopback port; the broker forward-scans if it's busy. */
@@ -103,6 +104,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 				const pluginDomain = buildDashboardDomain({
 					control: control.domain,
 					strategyRegistry,
+					state: control.state,
 				});
 
 				const bindAddress = opts.bindAddress ?? DASHBOARD_DEFAULT_BIND;
@@ -156,6 +158,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 							submitCommand: control.submitCommand,
 							domain: control.domain,
 							pluginDomain,
+							suiGraphqlProxyUrl: suiGraphqlProxyUrl(allocated.port),
 						},
 					}),
 					onListenError: (cause) =>

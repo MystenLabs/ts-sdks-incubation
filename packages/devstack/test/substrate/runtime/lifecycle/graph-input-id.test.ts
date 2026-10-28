@@ -2,6 +2,7 @@ import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
+	computeLiveConfigId,
 	computeStackGraphInputIdentity,
 	type StackGraphInputSource,
 } from '../../../../src/substrate/runtime/lifecycle/graph-input-id.ts';
@@ -30,6 +31,7 @@ interface FakeMemberSpec {
 	readonly keepAliveOnRestore?: boolean;
 	readonly inputIdentity?: unknown;
 	readonly computedInputIdentity?: unknown;
+	readonly runtimeInputIdentity?: unknown;
 }
 
 const fakeMember = (spec: FakeMemberSpec): AnyPlugin =>
@@ -55,6 +57,9 @@ const fakeMember = (spec: FakeMemberSpec): AnyPlugin =>
 		...(spec.computedInputIdentity === undefined
 			? {}
 			: { inputIdentity: computedInputIdentity(() => Effect.succeed(spec.computedInputIdentity)) }),
+		...(spec.runtimeInputIdentity === undefined
+			? {}
+			: { runtimeInputIdentity: spec.runtimeInputIdentity }),
 	}) as unknown as AnyPlugin;
 
 const fakeStack = (
@@ -308,6 +313,59 @@ describe('graph input identity', () => {
 				devstackVersion: DEVSTACK_VERSION,
 			}).pipe(Effect.flip);
 			expect(error._tag).toBe('DuplicateResourceIdError');
+		}),
+	);
+});
+
+describe('live config identity', () => {
+	const sui = (runtimeInputIdentity?: unknown): FakeMemberSpec => ({
+		id: 'sui',
+		pluginKey: 'sui',
+		inputIdentity: { mode: 'live' },
+		...(runtimeInputIdentity === undefined ? {} : { runtimeInputIdentity }),
+	});
+	const liveConfigIdFor = (stack: StackGraphInputSource) =>
+		graphInputIdFor({ stack }).pipe(
+			Effect.map((graphInputId) => ({
+				graphInputId,
+				liveConfigId: computeLiveConfigId({ members: stack.members, graphInputId }),
+			})),
+		);
+
+	it.effect('runtime-only inputs leave the graph input id unchanged but change the live id', () =>
+		Effect.gen(function* () {
+			const bare = yield* liveConfigIdFor(fakeStack([sui()]));
+			const one = yield* liveConfigIdFor(fakeStack([sui({ token: 'one' })]));
+			const two = yield* liveConfigIdFor(fakeStack([sui({ token: 'two' })]));
+			expect(one.graphInputId).toBe(bare.graphInputId);
+			expect(two.graphInputId).toBe(bare.graphInputId);
+			expect(new Set([bare.liveConfigId, one.liveConfigId, two.liveConfigId]).size).toBe(3);
+		}),
+	);
+
+	it.effect('changes whenever the graph input id changes', () =>
+		Effect.gen(function* () {
+			const a = fakeStack([sui({ token: 'one' })], { network: { chain: 'localnet' } });
+			const b = fakeStack([sui({ token: 'one' })], { network: { chain: 'testnet' } });
+			const ia = yield* liveConfigIdFor(a);
+			const ib = yield* liveConfigIdFor(b);
+			expect(ia.graphInputId).not.toBe(ib.graphInputId);
+			expect(ia.liveConfigId).not.toBe(ib.liveConfigId);
+		}),
+	);
+
+	it.effect('is independent of member order and never embeds raw values', () =>
+		Effect.gen(function* () {
+			const other: FakeMemberSpec = {
+				id: 'other',
+				pluginKey: 'other',
+				runtimeInputIdentity: { key: 'k' },
+			};
+			const ab = yield* liveConfigIdFor(fakeStack([sui({ token: 'secret' }), other]));
+			const ba = yield* liveConfigIdFor(fakeStack([other, sui({ token: 'secret' })]));
+			expect(ab.graphInputId).toBe(ba.graphInputId);
+			expect(ab.liveConfigId).toBe(ba.liveConfigId);
+			expect(ab.liveConfigId).toMatch(/^[0-9a-f]{64}$/);
 		}),
 	);
 });

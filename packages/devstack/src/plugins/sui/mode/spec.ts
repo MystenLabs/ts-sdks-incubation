@@ -85,6 +85,11 @@ export interface SuiLocalRpcOptions extends SuiCommonOptions {
 	readonly rpcUrl: string;
 	readonly faucetUrl?: string;
 	readonly graphqlUrl?: string;
+	/** Extra HTTP headers (e.g. `Authorization`) for requests to
+	 *  `graphqlUrl`. Kept runtime-only: never written to codegen output or
+	 *  the endpoint projection. The dashboard attaches them server-side by
+	 *  proxying its Sui GraphQL reads, so they never reach the browser. */
+	readonly graphqlHeaders?: Readonly<Record<string, string>>;
 	/** Optional chain id pin for caller-owned endpoints. Omit to
 	 *  probe the RPC endpoint. */
 	readonly chainId?: string;
@@ -99,6 +104,11 @@ export interface SuiLiveOptions extends SuiCommonOptions {
 	readonly rpcUrl?: string;
 	readonly faucetUrl?: string;
 	readonly graphqlUrl?: string;
+	/** Extra HTTP headers (e.g. `Authorization`) for requests to
+	 *  `graphqlUrl`. Kept runtime-only: never written to codegen output or
+	 *  the endpoint projection. The dashboard attaches them server-side by
+	 *  proxying its Sui GraphQL reads, so they never reach the browser. */
+	readonly graphqlHeaders?: Readonly<Record<string, string>>;
 	/** Optional chain id pin for custom/caller-owned live endpoints.
 	 *  Omit to probe the RPC endpoint. */
 	readonly chainId?: string;

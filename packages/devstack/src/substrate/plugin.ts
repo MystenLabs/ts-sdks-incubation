@@ -175,6 +175,12 @@ interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	 *  Dependencies' node input ids are included automatically; this field is
 	 *  for inputs owned by the node itself, including file hashes. */
 	readonly inputIdentity?: NodeInputContribution;
+	/** Inputs a running supervisor captures at boot that do NOT shape chain
+	 *  or snapshot state — credentials, typically. Kept out of the node input
+	 *  id (so editing them leaves snapshots valid) but folded into the
+	 *  live-config id, so a live `apply` refuses an edit that only takes
+	 *  effect after a restart. */
+	readonly runtimeInputIdentity?: unknown;
 	/** Stack-free codegen-decl source. When present, the `codegen` verb can
 	 *  emit this plugin's committed-projection contributions from config
 	 *  alone (no live acquire), drawing on-chain ids from the supplied
@@ -209,6 +215,7 @@ export interface Plugin<
 	readonly endpointSection?: RowSection;
 	readonly keepAliveOnRestore?: true;
 	readonly inputIdentity?: NodeInputContribution;
+	readonly runtimeInputIdentity?: unknown;
 	readonly staticCodegen?: StaticCodegenSource;
 }
 
@@ -353,6 +360,9 @@ export function definePlugin(
 			? {}
 			: { keepAliveOnRestore: spec.keepAliveOnRestore }),
 		...(spec.inputIdentity === undefined ? {} : { inputIdentity: spec.inputIdentity }),
+		...(spec.runtimeInputIdentity === undefined
+			? {}
+			: { runtimeInputIdentity: spec.runtimeInputIdentity }),
 		...(spec.staticCodegen === undefined ? {} : { staticCodegen: spec.staticCodegen }),
 	} as AnyPlugin;
 }

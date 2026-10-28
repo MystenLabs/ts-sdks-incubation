@@ -1,11 +1,12 @@
 // Dashboard HTTP listener.
 //
 // graphql-yoga hosts the Pothos schema at `/graphql` (with GraphiQL for
-// manual testing and SSE for subscriptions). Every other path serves the
-// built React SPA bundled with this package under `dashboard-ui/` (produced
-// by `pnpm build`'s `build:dashboard-ui` step and shipped via the package
-// `files` array). The listener is handed to `listenScopedHttpServer`, which
-// owns bind + graceful close.
+// manual testing and SSE for subscriptions), and `/sui-graphql` is the
+// loopback-only Sui GraphQL relay (`sui-graphql-proxy.ts`). Every other path
+// serves the built React SPA bundled with this package under `dashboard-ui/`
+// (produced by `pnpm build`'s `build:dashboard-ui` step and shipped via the
+// package `files` array). The listener is handed to `listenScopedHttpServer`,
+// which owns bind + graceful close.
 //
 // The SPA is served as static files with a client-side-routing fallback to
 // `index.html`. When the UI has not been built (the bundled dir is absent),
@@ -18,6 +19,11 @@ import { fileURLToPath } from 'node:url';
 import { createYoga, type CORSOptions } from 'graphql-yoga';
 import { dashboardSchema, type DashboardContext } from './schema.ts';
 import { checkOrigin, type OriginPolicy } from './origin-policy.ts';
+import {
+	handleSuiGraphqlProxy,
+	sendProxyError,
+	SUI_GRAPHQL_PROXY_PATH,
+} from './sui-graphql-proxy.ts';
 import type { HttpRequestListener } from '../../substrate/runtime/scoped-http-server.ts';
 
 export interface DashboardListenerOptions {
@@ -172,9 +178,11 @@ const safeResolve = (root: string, pathname: string): string | undefined => {
 	return abs;
 };
 
-/** Build a Node request listener routing `/graphql` to yoga and everything
- *  else to the bundled SPA (with an index.html fallback for client routing).
- *  Falls back to the inline API test page when the UI bundle is absent. */
+/** Build a Node request listener routing `/graphql` to yoga,
+ *  `SUI_GRAPHQL_PROXY_PATH` to the loopback-only Sui GraphQL relay, and
+ *  everything else to the bundled SPA (with an index.html fallback for client
+ *  routing). Falls back to the inline API test page when the UI bundle is
+ *  absent. */
 export const makeDashboardListener = (opts: DashboardListenerOptions): HttpRequestListener => {
 	const graphqlEndpoint = opts.graphqlEndpoint ?? '/graphql';
 	const assetsDir = opts.assetsDir ?? DASHBOARD_UI_DIR;
@@ -227,6 +235,19 @@ export const makeDashboardListener = (opts: DashboardListenerOptions): HttpReque
 		const pathname = requestPathname(url);
 		if (isGraphql(pathname)) {
 			void yoga(req, res);
+			return;
+		}
+		if (pathname === SUI_GRAPHQL_PROXY_PATH) {
+			handleSuiGraphqlProxy(req, res, {
+				originPolicy: opts.originPolicy,
+				pluginDomain: opts.context.pluginDomain,
+			}).catch((cause: unknown) => {
+				if (res.headersSent) {
+					res.destroy();
+					return;
+				}
+				sendProxyError(res, 500, `sui-graphql proxy: ${String(cause)}`);
+			});
 			return;
 		}
 

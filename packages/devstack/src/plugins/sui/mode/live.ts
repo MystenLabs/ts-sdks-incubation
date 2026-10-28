@@ -168,6 +168,7 @@ export const bootLiveMode = (
 			rpcUrl: endpoints.rpcUrl,
 			...(endpoints.faucetUrl !== undefined ? { faucetUrl: endpoints.faucetUrl } : {}),
 			...(endpoints.graphqlUrl !== undefined ? { graphqlUrl: endpoints.graphqlUrl } : {}),
+			...(opts.graphqlHeaders !== undefined ? { graphqlHeaders: opts.graphqlHeaders } : {}),
 			waitForTransactionsReady,
 		});
 		const resolved = makeResolvedNetwork({

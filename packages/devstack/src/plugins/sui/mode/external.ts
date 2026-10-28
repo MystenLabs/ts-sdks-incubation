@@ -110,6 +110,7 @@ export const bootLocalRpcMode = (
 			rpcUrl: opts.rpcUrl,
 			...(opts.faucetUrl !== undefined ? { faucetUrl: opts.faucetUrl } : {}),
 			...(opts.graphqlUrl !== undefined ? { graphqlUrl: opts.graphqlUrl } : {}),
+			...(opts.graphqlHeaders !== undefined ? { graphqlHeaders: opts.graphqlHeaders } : {}),
 			waitForTransactionsReady,
 		});
 		const resolved = makeResolvedNetwork({

@@ -26,6 +26,7 @@ import {
 	PluginRole,
 	RowSection,
 	WireProtocol,
+	SuiGraphqlStatus,
 } from './enums.ts';
 import type { Health } from './enums.ts';
 import type { ControlPlaneSnapshotEntry } from '../../../substrate/runtime/control-plane/service.ts';
@@ -516,3 +517,22 @@ export const StackState = builder.objectRef<SubscribableState>('StackState').imp
 		lastEvent: t.field({ type: LastEvent, nullable: true, resolve: (s) => s.lastEvent }),
 	}),
 });
+
+/** The Sui GraphQL URL the SPA should query, with lookup status. */
+export interface SuiGraphqlEndpointShape {
+	readonly status: 'pending' | 'none' | 'ready';
+	readonly url: string | null;
+}
+
+export const SuiGraphqlEndpoint = builder
+	.objectRef<SuiGraphqlEndpointShape>('SuiGraphqlEndpoint')
+	.implement({
+		description:
+			'The one URL the SPA sends Sui GraphQL reads to — the dashboard relay while the sui ' +
+			'plugin has graphqlHeaders, else the sui endpoint — plus whether it is known yet.',
+		fields: (t) => ({
+			status: t.field({ type: SuiGraphqlStatus, resolve: (e) => e.status }),
+			/** Set only when `status` is `ready`. */
+			url: t.exposeString('url', { nullable: true }),
+		}),
+	});

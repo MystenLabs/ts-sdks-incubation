@@ -94,13 +94,36 @@ const custom = sui({
 	network: 'custom',
 	rpcUrl: 'https://my-fullnode.example:443',
 	faucetUrl: 'https://my-faucet.example', // optional
-	graphqlUrl: 'https://my-graphql.example', // optional
+	graphqlUrl: 'https://my-graphql.example/graphql', // optional
+	graphqlHeaders: { Authorization: `Bearer ${process.env.GRAPHQL_TOKEN}` }, // optional
 	chainId: '…', // optional pin; omit to probe the RPC endpoint
 });
 ```
 
 `local-rpc` mode is the local counterpart — pass `rpcUrl` (and optional `faucetUrl` / `graphqlUrl` /
-`chainId`) to wrap a Sui process you're already running, with no container and no sidecar.
+`graphqlHeaders` / `chainId`) to wrap a Sui process you're already running, with no container and no
+sidecar.
+
+### Authenticated GraphQL
+
+`graphqlHeaders` attaches HTTP headers (an `Authorization` token, an API key, …) to the Sui GraphQL
+reads the devstack dashboard makes. Known networks accept it too, so you can keep the default
+endpoint and just add credentials, or pair it with your own `graphqlUrl`.
+
+The headers stay in the devstack process. They are never written to codegen output or the deployment
+envelope, and never sent to the browser: while they are set, the dashboard sends its Sui GraphQL
+reads through a relay on the dashboard server that attaches them. The relay only accepts connections
+from the same machine (loopback), so other hosts on your network can't use your credentials through
+it. Processes on your machine that can reach loopback, which may include containers on Docker
+Desktop, are not excluded.
+
+Rotating a token doesn't invalidate your snapshots: the headers aren't part of the stack's snapshot
+identity. A running `devstack up` keeps the headers it started with, though, so restart it after
+changing them. `devstack apply` against a running session tells you when a restart is needed.
+
+As with direct reads, a `graphqlUrl` that doesn't end in `/graphql` has `/graphql` appended. Setting
+`graphqlHeaders` on a network with no GraphQL endpoint (for example `devnet` without a `graphqlUrl`)
+fails at boot.
 
 ## Fork mode
 

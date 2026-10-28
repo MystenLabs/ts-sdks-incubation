@@ -95,9 +95,14 @@ export class CliNoSupervisorError extends Data.TaggedError('CliNoSupervisorError
  *  that only re-run post-acquire/codegen against the live supervisor
  *  must refuse this, otherwise generated static bindings can diverge
  *  from the live deployment values. */
+/** Why a live supervisor refused a CLI peer's config: the stack graph
+ *  changed, or only runtime-only inputs (e.g. credentials) did. */
+export type LiveConfigMismatchReason = 'graph' | 'runtime-config';
+
 export class CliLiveGraphMismatchError extends Data.TaggedError('CliLiveGraphMismatchError')<{
 	readonly app: string;
 	readonly stack: string;
+	readonly reason: LiveConfigMismatchReason;
 	readonly liveGraphInputId: string | null;
 	readonly currentGraphInputId: string;
 	readonly hint?: string;
@@ -226,7 +231,9 @@ export const summaryFor = (error: CliError): string => {
 		case 'CliNoSupervisorError':
 			return `no supervisor running for ${error.app}/${error.stack}`;
 		case 'CliLiveGraphMismatchError':
-			return `live supervisor graph is stale for ${error.app}/${error.stack}`;
+			return error.reason === 'graph'
+				? `live supervisor graph is stale for ${error.app}/${error.stack}`
+				: `live supervisor runtime config is stale for ${error.app}/${error.stack}`;
 		case 'CliInternalError':
 			return error.message;
 		case 'CliAlreadyReportedError':
@@ -274,3 +281,16 @@ export const hintFor = (error: CliError): string | undefined => {
 		}
 	}
 };
+
+/** Structured context for the JSON envelope's `error.context`, so consumers
+ *  can branch without parsing `summary`/`hint` text. */
+export const contextFor = (
+	error: CliError,
+): Readonly<Record<string, string | number | boolean | null>> | undefined =>
+	error._tag === 'CliLiveGraphMismatchError'
+		? {
+				reason: error.reason,
+				liveGraphInputId: error.liveGraphInputId,
+				currentGraphInputId: error.currentGraphInputId,
+			}
+		: undefined;

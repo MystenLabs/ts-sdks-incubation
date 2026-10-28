@@ -12,13 +12,16 @@
 // the dashboard plugin per ARCHITECTURE.md §"Substrate name-blindness".)
 
 import { describe, expect, it } from 'vitest';
-import { Effect } from 'effect';
+import { Effect, SubscriptionRef } from 'effect';
 
 import {
 	buildDashboardDomain,
 	type DashboardDomain,
+	suiGraphqlQueryUrl,
 } from '../../../src/plugins/dashboard/domain.ts';
 import { emptyControlPlaneDomain } from '../../../src/substrate/runtime/control-plane/domain.ts';
+import { emptyProjection } from '../../../src/substrate/runtime/projection/state-ref.ts';
+import type { SubscribableState } from '../../../src/substrate/projection.ts';
 import type {
 	ControlPlaneDomain,
 	ControlPlaneResolvedValue,
@@ -28,6 +31,14 @@ import type { StrategyRegistry } from '../../../src/contracts/strategy-contribut
 
 const COIN_TYPE = '0xpkg::mock_usdc::MOCK_USDC';
 const RECIPIENT = '0x' + 'a'.repeat(64);
+
+/** A projection ref whose stack cycle is in `phase`. */
+const projectionIn = (
+	phase: SubscribableState['cycle']['phase'],
+): SubscriptionRef.SubscriptionRef<SubscribableState> => {
+	const base = emptyProjection();
+	return Effect.runSync(SubscriptionRef.make({ ...base, cycle: { ...base.cycle, phase } }));
+};
 
 /** Build a dashboard domain whose control plane resolves one `coin:` node
  *  to `coinValue`. `mintFromCap` is whatever the test injects (or absent). */
@@ -41,6 +52,7 @@ const makeDomain = (coinValue: unknown): DashboardDomain => {
 	return buildDashboardDomain({
 		control,
 		strategyRegistry: null,
+		state: projectionIn('running'),
 	});
 };
 
@@ -62,10 +74,12 @@ const makeStubRegistry = (entries: Record<string, unknown>): StrategyRegistry =>
 const makeFundDomain = (args: {
 	readonly resolved: ReadonlyArray<ControlPlaneResolvedValue>;
 	readonly registry: StrategyRegistry | null;
+	readonly phase?: SubscribableState['cycle']['phase'];
 }): DashboardDomain =>
 	buildDashboardDomain({
 		control: { ...emptyControlPlaneDomain, resolvedValues: Effect.succeed(args.resolved) },
 		strategyRegistry: args.registry,
+		state: projectionIn(args.phase ?? 'running'),
 	});
 
 const SUI_TYPE = '0x2::sui::SUI';
@@ -173,6 +187,7 @@ describe('dashboard narrowing fail-loud (E2)', () => {
 		buildDashboardDomain({
 			control: { ...emptyControlPlaneDomain, resolvedValues: Effect.succeed(resolved) },
 			strategyRegistry: null,
+			state: projectionIn('running'),
 		});
 
 	it('deepbook mode=broken records a narrowingFault but still resolves (E=never)', async () => {
@@ -492,5 +507,62 @@ describe('dashboard fundAccount action', () => {
 		);
 		expect(result.ok).toBe(false);
 		expect(result.detail).toContain('exchange empty');
+	});
+});
+
+describe('dashboard suiGraphql', () => {
+	const read = (value: unknown) =>
+		Effect.runPromise(
+			makeFundDomain({ resolved: [{ pluginKey: 'sui', id: 'sui', value }], registry: null })
+				.suiGraphql,
+		);
+	const readUnresolved = (phase: SubscribableState['cycle']['phase']) =>
+		Effect.runPromise(makeFundDomain({ resolved: [], registry: null, phase }).suiGraphql);
+
+	it('is pending while sui has not resolved and the stack is still starting', async () => {
+		expect(await readUnresolved('booting')).toEqual({ state: 'pending' });
+		expect(await readUnresolved('restarting')).toEqual({ state: 'pending' });
+		expect(await readUnresolved('restoring')).toEqual({ state: 'pending' });
+	});
+
+	it('is none once the stack has settled without sui (absent or failed)', async () => {
+		expect(await readUnresolved('running')).toEqual({ state: 'none' });
+	});
+
+	it('is none when sui exposes no GraphQL endpoint', async () => {
+		expect(await read({ mode: 'fork', graphqlUrl: null, graphqlHeaders: {} })).toEqual({
+			state: 'none',
+		});
+	});
+
+	it('is ready with no headers when none are configured', async () => {
+		expect(
+			await read({ mode: 'local', graphqlUrl: 'http://graphql.app.s.localhost:9125' }),
+		).toEqual({ state: 'ready', url: 'http://graphql.app.s.localhost:9125/graphql', headers: {} });
+	});
+
+	it('is ready with the headers when they are configured', async () => {
+		expect(
+			await read({
+				mode: 'live',
+				graphqlUrl: 'https://g.example/graphql',
+				graphqlHeaders: { authorization: 'Bearer t0ken' },
+			}),
+		).toEqual({
+			state: 'ready',
+			url: 'https://g.example/graphql',
+			headers: { authorization: 'Bearer t0ken' },
+		});
+	});
+});
+
+describe('suiGraphqlQueryUrl', () => {
+	it.each([
+		['http://127.0.0.1:9125', 'http://127.0.0.1:9125/graphql'],
+		['http://127.0.0.1:9125/', 'http://127.0.0.1:9125/graphql'],
+		['https://g.example/graphql', 'https://g.example/graphql'],
+		['https://g.example/graphql/', 'https://g.example/graphql'],
+	])('%s → %s', (base, expected) => {
+		expect(suiGraphqlQueryUrl(base)).toBe(expected);
 	});
 });

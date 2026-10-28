@@ -18,6 +18,7 @@ import { Cause, Effect, Exit, FileSystem, Queue, Scope, Stream } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
 import type { EngineEvent } from '../../substrate/events.ts';
+import { computeLiveConfigId } from '../../substrate/runtime/lifecycle/graph-input-id.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import {
 	claim,
@@ -198,11 +199,13 @@ const installLiveSupervisorRoster = (params: {
 	readonly app: string;
 	readonly stack: string;
 	readonly graphInputId: string;
+	readonly liveConfigId: string;
 }): Effect.Effect<void, unknown, Scope.Scope> =>
 	Effect.gen(function* () {
 		const paths = rosterPathsFor(params.stackRoot);
 		const claimed = yield* claim(paths, 'normal', undefined, {
 			graphInputId: params.graphInputId,
+			liveConfigId: params.liveConfigId,
 		});
 		if (!claimed.soleHolder) {
 			yield* release(paths).pipe(Effect.catch(() => Effect.void));
@@ -387,6 +390,10 @@ export const buildUpBootBundle = (input: UpBootBundleInput): UpBootBundle => {
 					app: String(identityValue.app),
 					stack: String(identityValue.stack),
 					graphInputId: graphInput.graphInputId,
+					liveConfigId: computeLiveConfigId({
+						members: stack.members,
+						graphInputId: graphInput.graphInputId,
+					}),
 				});
 				const rendererEvents = yield* Queue.unbounded<EngineEvent>();
 				const renderer = makeTuiSurface({

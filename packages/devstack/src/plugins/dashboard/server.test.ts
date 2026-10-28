@@ -59,6 +59,7 @@ beforeAll(async () => {
 					}),
 				domain: emptyControlPlaneDomain,
 				pluginDomain: emptyDashboardDomain,
+				suiGraphqlProxyUrl: 'http://127.0.0.1:0/sui-graphql',
 			},
 		}),
 	);
@@ -231,6 +232,7 @@ describe('dashboard http server (UI bundle absent → API test page fallback)', 
 					submitCommand: () => Effect.void,
 					domain: emptyControlPlaneDomain,
 					pluginDomain: emptyDashboardDomain,
+					suiGraphqlProxyUrl: 'http://127.0.0.1:0/sui-graphql',
 				},
 			}),
 		);

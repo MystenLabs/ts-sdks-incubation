@@ -45,6 +45,10 @@ export interface RosterHolder {
 	 *  this to refuse live apply/codegen refreshes against a supervisor booted
 	 *  from a different stack graph. */
 	readonly graphInputId?: string;
+	/** Optional live-config identity (`computeLiveConfigId`): the graph input
+	 *  id plus runtime-only inputs. When present, CLI peers compare this
+	 *  instead, so runtime-only edits also require a restart. */
+	readonly liveConfigId?: string;
 }
 
 /** Roster document schema — versioned for schema validation. */
@@ -61,6 +65,7 @@ export const RosterHolderSchema = Schema.Struct({
 	heartbeatAt: Schema.Number,
 	intent: Schema.Literals(['normal', 'snapshot']),
 	graphInputId: Schema.optional(Schema.String),
+	liveConfigId: Schema.optional(Schema.String),
 });
 
 export const RosterDocumentSchema = versionedDocSchema(1, {

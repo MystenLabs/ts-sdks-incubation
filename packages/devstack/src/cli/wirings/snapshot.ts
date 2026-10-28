@@ -25,7 +25,10 @@ import {
 	type SnapshotMetadata,
 } from '../../orchestrators/snapshot/index.ts';
 import { CliInternalError, CliUnavailableError } from '../../surfaces/cli/index.ts';
-import { probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
+import {
+	NO_SUPERVISOR_PRESENCE,
+	probeSupervisorPresence,
+} from '../../surfaces/cli/commands/index.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
 
 import { makeConfigLoader, resolveConfigPath } from './config-loader.ts';
@@ -71,9 +74,7 @@ export const runSnapshotCaptureAgainstLiveSupervisor = (
 ): Effect.Effect<{ readonly snapshotId: string; readonly name: string } | null, unknown> =>
 	Effect.gen(function* () {
 		const presence = yield* probeSupervisorPresence(identity.rosterFile).pipe(
-			Effect.catch(() =>
-				Effect.succeed({ live: false, pid: null, hostname: null, graphInputId: null }),
-			),
+			Effect.catch(() => Effect.succeed(NO_SUPERVISOR_PRESENCE)),
 		);
 		if (!presence.live) return null;
 

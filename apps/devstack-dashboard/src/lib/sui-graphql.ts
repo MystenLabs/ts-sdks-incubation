@@ -1,13 +1,17 @@
-// Shared transport + reads for the node's Sui GraphQL endpoint (the new Sui
-// GraphQL beta). This talks to the stack's `graphql` endpoint (CORS-open) via
-// the official SDK's typed GraphQL client — distinct from `chain.ts` (gRPC
-// `client.core.*`) and from the dashboard's own control-plane GraphQL (`api.ts`).
+// Shared transport + reads for the node's Sui GraphQL (the new Sui GraphQL
+// beta), via the official SDK's typed GraphQL client — distinct from `chain.ts`
+// (gRPC `client.core.*`) and from the dashboard's own control-plane GraphQL
+// (`api.ts`). The URL to query (`ChainSource.graphqlUrl`) comes from the
+// control plane's `suiGraphql` lookup: the stack's `graphql` endpoint (CORS-open),
+// or — when the sui plugin has `graphqlHeaders` — the dashboard's loopback
+// relay, which attaches the credentials server-side.
 //
 // gRPC `client.core` exposes object/balance reads keyed by address, but has no
 // address→transactions query; the node's Sui GraphQL does, via the first-class
 // `transactions(filter: …)` connection. `walrus.ts` also uses this transport for
-// event/tx reads; the shared client factory + endpoint resolution live here so
-// every Sui-GraphQL read (Walrus, address history, …) shares one shape.
+// event/tx reads; the shared client factory lives here so every Sui-GraphQL
+// read (Walrus, address history, …) shares one shape. Which URL to query is
+// decided server-side, not here.
 //
 // Queries are written with the SDK's `graphql()` tagged template
 // (`@mysten/sui/graphql/schema`), which is pre-configured with the Sui GraphQL
@@ -19,19 +23,21 @@
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { graphql } from '@mysten/sui/graphql/schema';
-import type { Endpoint } from './types.ts';
+import type { ChainSource } from './useChain.ts';
 
-// --- Endpoint resolution ----------------------------------------------------
+// --- Availability -----------------------------------------------------------
 
-/** The stack's Sui GraphQL query URL, or null. The `graphql` endpoint is
- *  registered as the bare host:port base, but the Sui GraphQL server serves
- *  queries under `/graphql` — so normalise the base onto that path (the SDK's
- *  `SuiGraphQLClient` POSTs to the URL verbatim, it does not append a path). */
-export const suiGraphqlUrl = (endpoints: ReadonlyArray<Endpoint>): string | null => {
-	const base = endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url;
-	if (base === undefined) return null;
-	const trimmed = base.replace(/\/+$/, '');
-	return trimmed.endsWith('/graphql') ? trimmed : `${trimmed}/graphql`;
+/** Why Sui GraphQL reads are unavailable while `ChainSource.graphqlUrl` is
+ *  null, phrased for an inline "unavailable (…)" note. */
+export const suiGraphqlUnavailableReason = (status: ChainSource['graphqlUrlStatus']): string => {
+	switch (status) {
+		case 'resolving':
+			return 'still looking up the GraphQL endpoint';
+		case 'failed':
+			return "couldn't look up the GraphQL endpoint";
+		case 'resolved':
+			return 'no GraphQL endpoint on this stack';
+	}
 };
 
 // --- GraphQL client ---------------------------------------------------------

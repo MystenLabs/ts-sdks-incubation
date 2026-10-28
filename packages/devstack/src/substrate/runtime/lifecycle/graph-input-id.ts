@@ -16,6 +16,7 @@ import type { DevstackOptions } from '../../options.ts';
 import { resolveGraph, type DepGraphError, type DepNode, type ResolvedGraph } from './dep-graph.ts';
 
 const GRAPH_INPUT_ID_VERSION = 1 as const;
+const LIVE_CONFIG_ID_VERSION = 1 as const;
 
 export interface NodeInputIdentity {
 	readonly key: string;
@@ -224,3 +225,22 @@ export const computeStackGraphInputIdentity = (args: {
 			devstackVersion: args.devstackVersion,
 		});
 	});
+
+/** Identity of the config a live supervisor booted from: the graph input id
+ *  plus every member's `runtimeInputIdentity`. Recorded in the roster for the
+ *  live `apply` guard only — never stored with snapshots, so runtime-only
+ *  edits (rotated credentials) don't invalidate them. */
+export const computeLiveConfigId = (args: {
+	readonly members: StackGraphInputSource['members'];
+	readonly graphInputId: string;
+}): string =>
+	sha256Hex(
+		canonicalStringify({
+			v: LIVE_CONFIG_ID_VERSION,
+			graphInputId: args.graphInputId,
+			runtime: args.members
+				.filter((member) => member.runtimeInputIdentity !== undefined)
+				.map((member) => ({ id: member.id, value: member.runtimeInputIdentity }))
+				.sort((a, b) => a.id.localeCompare(b.id)),
+		}),
+	);

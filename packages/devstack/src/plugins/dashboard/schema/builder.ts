@@ -41,6 +41,10 @@ export interface DashboardContext {
 	 *  generic control-plane `resolvedValues`: fork-vs-local mode,
 	 *  deepbook/seal/coin capability ids, and the coin mint action. */
 	readonly pluginDomain: DashboardDomain;
+	/** Loopback URL of this listener's Sui GraphQL relay
+	 *  (`sui-graphql-proxy.ts`), advertised as `suiGraphql.url` while the sui
+	 *  plugin has `graphqlHeaders`. */
+	readonly suiGraphqlProxyUrl: string;
 }
 
 interface SchemaTypes {
