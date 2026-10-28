@@ -47,3 +47,32 @@ describe('suiInputIdentity and the sui-tools ref', () => {
 		expect(identity({ mode: 'live', network: 'testnet' })).not.toContain('from-env');
 	});
 });
+
+describe('suiInputIdentity and graphqlHeaders', () => {
+	it('ignores graphqlHeaders, so rotating a token keeps snapshots valid', () => {
+		const live = {
+			mode: 'live',
+			network: 'custom',
+			rpcUrl: 'https://rpc.example',
+			graphqlUrl: 'https://graphql.example/graphql',
+		} as const;
+		const bare = identity(live);
+		const withToken = identity({ ...live, graphqlHeaders: { authorization: 'Bearer one' } });
+		const rotated = identity({ ...live, graphqlHeaders: { authorization: 'Bearer two' } });
+		expect(withToken).toBe(bare);
+		expect(rotated).toBe(bare);
+		expect(withToken).not.toContain('Bearer');
+
+		const localRpc = { mode: 'local-rpc', rpcUrl: 'http://127.0.0.1:9000' } as const;
+		expect(identity({ ...localRpc, graphqlHeaders: { 'x-api-key': 'k' } })).toBe(
+			identity(localRpc),
+		);
+	});
+
+	it('still changes when the GraphQL endpoint itself changes', () => {
+		const live = { mode: 'live', network: 'custom', rpcUrl: 'https://rpc.example' } as const;
+		expect(identity({ ...live, graphqlUrl: 'https://a.example/graphql' })).not.toBe(
+			identity({ ...live, graphqlUrl: 'https://b.example/graphql' }),
+		);
+	});
+});

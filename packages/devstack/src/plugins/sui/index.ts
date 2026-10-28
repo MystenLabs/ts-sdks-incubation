@@ -185,7 +185,10 @@ const SUI_INDEXER_DB_ALIAS = 'sui-indexer-db';
 export const suiInputIdentity = (opts: SuiOptions): unknown => {
 	const { readyTimeout: _readyTimeout, ...authored } = opts;
 	if (authored.mode === 'live' || authored.mode === 'local-rpc') {
-		return { plugin: 'sui', ...authored };
+		// Credentials don't change chain state: rotating a GraphQL token must
+		// not mark every snapshot of this network stale.
+		const { graphqlHeaders: _graphqlHeaders, ...chainInputs } = authored;
+		return { plugin: 'sui', ...chainInputs };
 	}
 	// The EFFECTIVE sui-tools ref (config, then env) is part of the identity
 	// so flipping DEVSTACK_SUI_TOOLS_REF marks snapshots stale instead of

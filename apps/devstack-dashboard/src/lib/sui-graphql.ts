@@ -1,10 +1,10 @@
 // Shared transport + reads for the node's Sui GraphQL (the new Sui GraphQL
 // beta), via the official SDK's typed GraphQL client — distinct from `chain.ts`
 // (gRPC `client.core.*`) and from the dashboard's own control-plane GraphQL
-// (`api.ts`). Reads go to the stack's `graphql` endpoint directly (CORS-open),
-// or — when the sui plugin has `graphqlHeaders` — to the dashboard's
-// loopback relay, which attaches the credentials server-side
-// (`ChainSource.graphqlUrl` carries whichever applies).
+// (`api.ts`). The URL to query (`ChainSource.graphqlUrl`) comes from the
+// control plane's `suiGraphqlUrl`: the stack's `graphql` endpoint (CORS-open),
+// or — when the sui plugin has `graphqlHeaders` — the dashboard's loopback
+// relay, which attaches the credentials server-side.
 //
 // gRPC `client.core` exposes object/balance reads keyed by address, but has no
 // address→transactions query; the node's Sui GraphQL does, via the first-class
@@ -22,23 +22,6 @@
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { graphql } from '@mysten/sui/graphql/schema';
-import type { Endpoint } from './types.ts';
-
-// --- Endpoint resolution ----------------------------------------------------
-
-/** The stack's Sui GraphQL query URL for direct reads, or null. The `graphql`
- *  endpoint is registered as the bare host:port base, but the Sui GraphQL
- *  server serves queries under `/graphql` — so normalise the base onto that
- *  path (the SDK's `SuiGraphQLClient` POSTs to the URL verbatim, it does not
- *  append a path). The dashboard relay applies the same rule server-side
- *  (`suiGraphqlQueryUrl` in devstack's `plugins/dashboard/domain.ts`); keep
- *  them in sync. */
-export const suiGraphqlUrl = (endpoints: ReadonlyArray<Endpoint>): string | null => {
-	const base = endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url;
-	if (base === undefined) return null;
-	const trimmed = base.replace(/\/+$/, '');
-	return trimmed.endsWith('/graphql') ? trimmed : `${trimmed}/graphql`;
-};
 
 // --- GraphQL client ---------------------------------------------------------
 

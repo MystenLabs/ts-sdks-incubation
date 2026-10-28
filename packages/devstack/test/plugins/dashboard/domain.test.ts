@@ -496,43 +496,39 @@ describe('dashboard fundAccount action', () => {
 	});
 });
 
-describe('dashboard suiGraphqlUpstream', () => {
+describe('dashboard suiGraphql', () => {
 	const domainFor = (value: unknown): DashboardDomain =>
 		makeFundDomain({ resolved: [{ pluginKey: 'sui', id: 'sui', value }], registry: null });
+	const read = (value: unknown) => Effect.runPromise(domainFor(value).suiGraphql);
 
-	it('is null when no headers are configured (browser reads GraphQL directly)', async () => {
-		const upstream = await Effect.runPromise(
-			domainFor({ mode: 'live', graphqlUrl: 'https://g.example/graphql', graphqlHeaders: {} })
-				.suiGraphqlUpstream,
-		);
-		expect(upstream).toBeNull();
+	it('is null when sui has not resolved', async () => {
+		expect(
+			await Effect.runPromise(makeFundDomain({ resolved: [], registry: null }).suiGraphql),
+		).toBeNull();
 	});
 
 	it('is null when there is no GraphQL endpoint', async () => {
-		const upstream = await Effect.runPromise(
-			domainFor({ mode: 'live', graphqlUrl: null, graphqlHeaders: { a: 'b' } }).suiGraphqlUpstream,
-		);
-		expect(upstream).toBeNull();
+		expect(await read({ mode: 'fork', graphqlUrl: null, graphqlHeaders: {} })).toBeNull();
+	});
+
+	it('returns the endpoint with no headers when none are configured', async () => {
+		expect(
+			await read({ mode: 'local', graphqlUrl: 'http://graphql.app.s.localhost:9125' }),
+		).toEqual({ url: 'http://graphql.app.s.localhost:9125/graphql', headers: {} });
 	});
 
 	it('returns the endpoint + headers when headers are configured', async () => {
-		const upstream = await Effect.runPromise(
-			domainFor({
+		expect(
+			await read({
 				mode: 'live',
 				graphqlUrl: 'https://g.example/graphql',
 				graphqlHeaders: { authorization: 'Bearer t0ken' },
-			}).suiGraphqlUpstream,
-		);
-		expect(upstream).toEqual({
-			url: 'https://g.example/graphql',
-			headers: { authorization: 'Bearer t0ken' },
-		});
+			}),
+		).toEqual({ url: 'https://g.example/graphql', headers: { authorization: 'Bearer t0ken' } });
 	});
 });
 
 describe('suiGraphqlQueryUrl', () => {
-	// Mirrors the SPA's direct-read `suiGraphqlUrl` rule, so enabling
-	// `graphqlHeaders` (which switches to the relay) never changes the URL.
 	it.each([
 		['http://127.0.0.1:9125', 'http://127.0.0.1:9125/graphql'],
 		['http://127.0.0.1:9125/', 'http://127.0.0.1:9125/graphql'],
@@ -540,21 +536,5 @@ describe('suiGraphqlQueryUrl', () => {
 		['https://g.example/graphql/', 'https://g.example/graphql'],
 	])('%s → %s', (base, expected) => {
 		expect(suiGraphqlQueryUrl(base)).toBe(expected);
-	});
-
-	it('is applied to the relay upstream', async () => {
-		const upstream = await Effect.runPromise(
-			makeFundDomain({
-				resolved: [
-					{
-						pluginKey: 'sui',
-						id: 'sui',
-						value: { graphqlUrl: 'https://g.example', graphqlHeaders: { a: 'b' } },
-					},
-				],
-				registry: null,
-			}).suiGraphqlUpstream,
-		);
-		expect(upstream?.url).toBe('https://g.example/graphql');
 	});
 });

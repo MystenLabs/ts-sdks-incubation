@@ -42,7 +42,7 @@ export interface DashboardContext {
 	 *  deepbook/seal/coin capability ids, and the coin mint action. */
 	readonly pluginDomain: DashboardDomain;
 	/** Loopback URL of this listener's Sui GraphQL relay
-	 *  (`sui-graphql-proxy.ts`), advertised to the SPA only while the sui
+	 *  (`sui-graphql-proxy.ts`), advertised as `suiGraphqlUrl` while the sui
 	 *  plugin has `graphqlHeaders`. */
 	readonly suiGraphqlProxyUrl: string;
 }

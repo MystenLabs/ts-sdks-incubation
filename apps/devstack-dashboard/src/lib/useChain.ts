@@ -30,7 +30,7 @@ import {
 	fetchDeepbookInfo,
 	fetchFundableCoins,
 	fetchMode,
-	fetchSuiGraphqlProxyUrl,
+	fetchSuiGraphqlUrl,
 	fetchSealInfo,
 	type FundableCoin,
 	type SealInfo,
@@ -49,12 +49,14 @@ import type {
 	TxSummary,
 } from './explorerTypes.ts';
 
-/** What every chain hook needs: the node gRPC URL + a network cache namespace. */
+/** What every chain hook needs: the node gRPC URL, the Sui GraphQL URL, and a
+ *  network cache namespace. */
 export interface ChainSource {
 	/** The stack's `rpc` endpoint URL, or null when unavailable (hooks disabled). */
 	readonly rpcUrl: string | null;
 	/** The stack's Sui GraphQL query URL (direct, or the dashboard relay when
-	 *  the sui plugin has `graphqlHeaders`), or null when there is none. */
+	 *  the sui plugin has `graphqlHeaders`), or null when there is none or it
+	 *  hasn't resolved yet (hooks disabled). */
 	readonly graphqlUrl: string | null;
 	/** Network identity (`projection.identity.network`) — the cache namespace. */
 	readonly network: string;
@@ -239,18 +241,21 @@ export const useMode = (endpoint: string, network: string): UseQueryResult<Stack
 		staleTime: DOMAIN_STALE_MS,
 	});
 
-/** The dashboard relay URL for Sui GraphQL reads, or null to read directly. */
-export const useSuiGraphqlProxyUrl = (
+/** The URL to send Sui GraphQL reads to, as the control plane resolves it.
+ *  `trigger` is folded into the key so the query refetches the moment the
+ *  value it depends on changes (the projection's raw `graphql` endpoint),
+ *  instead of serving a result cached before sui resolved. */
+export const useSuiGraphqlUrl = (
 	endpoint: string,
 	network: string,
+	trigger: string | null,
 ): UseQueryResult<string | null> =>
 	useQuery({
-		queryKey: ['domain', network, endpoint, 'suiGraphqlProxyUrl'],
-		queryFn: () => fetchSuiGraphqlProxyUrl(endpoint),
+		queryKey: ['domain', network, endpoint, 'suiGraphqlUrl', trigger],
+		queryFn: () => fetchSuiGraphqlUrl(endpoint),
 		staleTime: DOMAIN_STALE_MS,
-		// The sui value is absent from `resolvedValues` while sui boots or
-		// restarts (the dashboard does not wait for it), so an early `null`
-		// must not stick — poll so it heals once sui resolves.
+		// Backstop for changes the trigger can't see (e.g. sui restarting with
+		// the same endpoint but different headers).
 		refetchInterval: DOMAIN_STALE_MS,
 	});
 

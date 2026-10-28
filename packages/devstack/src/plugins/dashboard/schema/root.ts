@@ -25,6 +25,7 @@ import {
 	type ServiceSource,
 } from './types.ts';
 import { StackMode } from './enums.ts';
+import { needsRelay } from '../sui-graphql-proxy.ts';
 import type { DashboardContext } from './builder.ts';
 import type { PluginKey } from '../../../substrate/brand.ts';
 import type { EngineCommand } from '../../../substrate/events.ts';
@@ -169,16 +170,17 @@ builder.queryType({
 			nullable: true,
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.mode),
 		}),
-		/** URL the SPA must send Sui GraphQL reads to instead of the stack's
-		 *  `graphql` endpoint, or `null` to read that endpoint directly. Set
-		 *  while the sui plugin has `graphqlHeaders`: the dashboard relay
-		 *  attaches them server-side so they never reach the browser. */
-		suiGraphqlProxyUrl: t.string({
+		/** The one URL the SPA sends Sui GraphQL reads to: the dashboard relay
+		 *  while the sui plugin has `graphqlHeaders` (it attaches them
+		 *  server-side so they never reach the browser), otherwise the sui
+		 *  endpoint itself. `null` when there is none or sui hasn't resolved. */
+		suiGraphqlUrl: t.string({
 			nullable: true,
-			resolve: async (_parent, _args, ctx) =>
-				(await Effect.runPromise(ctx.pluginDomain.suiGraphqlUpstream)) === null
-					? null
-					: ctx.suiGraphqlProxyUrl,
+			resolve: async (_parent, _args, ctx) => {
+				const graphql = await Effect.runPromise(ctx.pluginDomain.suiGraphql);
+				if (graphql === null) return null;
+				return needsRelay(graphql) ? ctx.suiGraphqlProxyUrl : graphql.url;
+			},
 		}),
 		/** Snapshot catalog: id/label/created/participants/containers. */
 		snapshots: t.field({

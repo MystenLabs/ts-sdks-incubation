@@ -180,9 +180,11 @@ const safeResolve = (root: string, pathname: string): string | undefined => {
 	return abs;
 };
 
-/** Build a Node request listener routing `/graphql` to yoga and everything
- *  else to the bundled SPA (with an index.html fallback for client routing).
- *  Falls back to the inline API test page when the UI bundle is absent. */
+/** Build a Node request listener routing `/graphql` to yoga,
+ *  `SUI_GRAPHQL_PROXY_PATH` to the loopback-only Sui GraphQL relay, and
+ *  everything else to the bundled SPA (with an index.html fallback for client
+ *  routing). Falls back to the inline API test page when the UI bundle is
+ *  absent. */
 export const makeDashboardListener = (opts: DashboardListenerOptions): HttpRequestListener => {
 	const graphqlEndpoint = opts.graphqlEndpoint ?? '/graphql';
 	const assetsDir = opts.assetsDir ?? DASHBOARD_UI_DIR;

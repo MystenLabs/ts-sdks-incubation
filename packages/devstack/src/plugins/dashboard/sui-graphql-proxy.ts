@@ -12,7 +12,7 @@
 //     `Origin` check is browser CSRF protection, not caller authentication —
 //     any non-browser client can forge it — so the relay additionally refuses
 //     every connection whose TCP peer is not loopback. The SPA reaches the
-//     relay through the direct loopback URL (`suiGraphqlProxyUrl`), never
+//     relay through the direct loopback URL (`suiGraphqlUrl`), never
 //     through the router. Containers that can reach the host's loopback
 //     (e.g. via Docker Desktop's host networking) are not excluded by this.
 //   - The upstream URL is fixed by the resolved sui value; the request can
@@ -28,10 +28,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Effect } from 'effect';
 import { checkOrigin, type OriginPolicy } from './origin-policy.ts';
-import type { DashboardDomain } from './domain.ts';
+import type { DashboardDomain, DashboardSuiGraphql } from './domain.ts';
 
 /** Path of the relay on the dashboard listener. The SPA never builds this
- *  itself — the control plane hands it the full URL (`suiGraphqlProxyUrl`). */
+ *  itself — the control plane hands it the URL to query (`suiGraphqlUrl`). */
 export const SUI_GRAPHQL_PROXY_PATH = '/sui-graphql';
 
 /** Request header `SuiGraphQLClient` sends to tell the server the highest
@@ -48,6 +48,12 @@ const FORWARDED_REQUEST_HEADERS = [SUI_CLIENT_PROTOCOL_VERSION_HEADER] as const;
 const MAX_BODY_BYTES = 1024 * 1024;
 
 const UPSTREAM_TIMEOUT_MS = 30_000;
+
+/** Whether reads of `graphql` must go through the relay: only when there are
+ *  credentials to attach. Shared by the relay's 404 and the URL the control
+ *  plane advertises, so the two can't disagree. */
+export const needsRelay = (graphql: DashboardSuiGraphql): boolean =>
+	Object.keys(graphql.headers).length > 0;
 
 /** Loopback URL of the relay for a dashboard listening on `port`. */
 export const suiGraphqlProxyUrl = (port: number): string =>
@@ -131,8 +137,8 @@ export const handleSuiGraphqlProxy = async (
 		return;
 	}
 
-	const upstream = await Effect.runPromise(deps.pluginDomain.suiGraphqlUpstream);
-	if (upstream === null) {
+	const upstream = await Effect.runPromise(deps.pluginDomain.suiGraphql);
+	if (upstream === null || !needsRelay(upstream)) {
 		sendProxyError(res, 404, 'sui-graphql proxy: no graphqlHeaders configured on the sui plugin');
 		return;
 	}

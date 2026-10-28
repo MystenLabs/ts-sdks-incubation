@@ -180,9 +180,9 @@ export interface DashboardFundableCoin {
 	readonly requiresAccountSigner: boolean;
 }
 
-/** Upstream the dashboard's Sui GraphQL relay forwards to: the sui plugin's
- *  GraphQL query URL plus its caller-supplied `graphqlHeaders`. */
-export interface DashboardSuiGraphqlUpstream {
+/** The sui plugin's Sui GraphQL query URL plus its caller-supplied
+ *  `graphqlHeaders` (empty when none). */
+export interface DashboardSuiGraphql {
 	readonly url: string;
 	readonly headers: Readonly<Record<string, string>>;
 }
@@ -196,11 +196,10 @@ export interface DashboardDomain {
 	 *  identity. Used for advance-clock gating. `null` when no sui plugin
 	 *  is present. */
 	readonly mode: Effect.Effect<'fork' | 'local' | 'live' | null>;
-	/** The sui plugin's GraphQL endpoint + caller-supplied headers, ONLY when
-	 *  headers are configured (otherwise `null`: the browser reads the
-	 *  endpoint directly). Drives the server-side Sui GraphQL relay so
-	 *  credentials never reach the browser. */
-	readonly suiGraphqlUpstream: Effect.Effect<DashboardSuiGraphqlUpstream | null>;
+	/** The sui plugin's Sui GraphQL endpoint + headers, or `null` when it
+	 *  exposes none (or hasn't resolved yet). The single source for both the
+	 *  URL the SPA is told to query and the relay's upstream. */
+	readonly suiGraphql: Effect.Effect<DashboardSuiGraphql | null>;
 	/** DeepBook deployments (registry/admin/pool ids + MM state). */
 	readonly deepbook: Effect.Effect<ReadonlyArray<DashboardDeepbookInfo>>;
 	/** Seal key-server deployments (objectId/threshold/mode). */
@@ -474,11 +473,10 @@ const resolvedSui = (values: ReadonlyArray<ControlPlaneResolvedValue>): SuiShape
 };
 
 /** Normalise a Sui GraphQL base URL onto its query path: the server serves
- *  queries under `/graphql`, and a bare `host:port` base is common. This is
- *  the SAME rule the SPA's `suiGraphqlUrl` applies to the endpoints it reads
- *  directly (`apps/devstack-dashboard/src/lib/sui-graphql.ts`), so turning
- *  on `graphqlHeaders` never changes which URL is queried. Keep them in
- *  sync. */
+ *  queries under `/graphql`, and a bare `host:port` base (local mode's routed
+ *  endpoint) is common. Applied once, here, to both the direct URL and the
+ *  relay upstream, so turning on `graphqlHeaders` never changes which URL is
+ *  queried. */
 export const suiGraphqlQueryUrl = (base: string): string => {
 	const trimmed = base.replace(/\/+$/, '');
 	return trimmed.endsWith('/graphql') ? trimmed : `${trimmed}/graphql`;
@@ -519,20 +517,18 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 		}),
 	);
 
-	const suiGraphqlUpstream: DashboardDomain['suiGraphqlUpstream'] = control.resolvedValues.pipe(
+	const suiGraphql: DashboardDomain['suiGraphql'] = control.resolvedValues.pipe(
 		Effect.map((values) => {
 			const sui = resolvedSui(values);
-			if (sui === null) return null;
-			const { graphqlUrl, graphqlHeaders } = sui;
-			const base = optStr(graphqlUrl);
-			if (base === null || graphqlHeaders === null || typeof graphqlHeaders !== 'object') {
-				return null;
-			}
+			const base = optStr(sui?.graphqlUrl);
+			if (sui === null || base === null) return null;
 			const headers: Record<string, string> = {};
-			for (const [name, value] of Object.entries(graphqlHeaders)) {
-				if (typeof value === 'string') headers[name] = value;
+			if (sui.graphqlHeaders !== null && typeof sui.graphqlHeaders === 'object') {
+				for (const [name, value] of Object.entries(sui.graphqlHeaders)) {
+					if (typeof value === 'string') headers[name] = value;
+				}
 			}
-			return Object.keys(headers).length === 0 ? null : { url: suiGraphqlQueryUrl(base), headers };
+			return { url: suiGraphqlQueryUrl(base), headers };
 		}),
 	);
 
@@ -950,7 +946,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 
 	return {
 		mode,
-		suiGraphqlUpstream,
+		suiGraphql,
 		deepbook,
 		seal,
 		coinCaps,
@@ -965,7 +961,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
  *  empty/`null`. */
 export const emptyDashboardDomain: DashboardDomain = {
 	mode: Effect.succeed(null),
-	suiGraphqlUpstream: Effect.succeed(null),
+	suiGraphql: Effect.succeed(null),
 	deepbook: Effect.succeed([]),
 	seal: Effect.succeed([]),
 	coinCaps: Effect.succeed([]),

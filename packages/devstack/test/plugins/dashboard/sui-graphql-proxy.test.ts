@@ -34,6 +34,8 @@ interface Harness {
 	readonly proxyUrl: string;
 	/** The dashboard's control-plane GraphQL endpoint. */
 	readonly controlUrl: string;
+	/** The fake upstream's GraphQL query URL. */
+	readonly upstreamUrl: string;
 	/** Requests the fake upstream received, in order. */
 	readonly seen: ReadonlyArray<SeenRequest>;
 }
@@ -48,10 +50,14 @@ const close = (server: Server): Promise<void> =>
 
 /** Run `body` against a dashboard listener whose relay forwards to a fake
  *  upstream. `configured: false` models a sui plugin without
- *  `graphqlHeaders`; `peerAddress` overrides the TCP peer every request
+ *  `graphqlHeaders`, `noEndpoint` one with no GraphQL endpoint at all; `peerAddress` overrides the TCP peer every request
  *  appears to come from (the listener itself is on loopback). */
 const withProxy = (
-	opts: { readonly configured?: boolean; readonly peerAddress?: string },
+	opts: {
+		readonly configured?: boolean;
+		readonly noEndpoint?: boolean;
+		readonly peerAddress?: string;
+	},
 	body: (harness: Harness) => Promise<void>,
 ): Promise<void> =>
 	withTempRootAsync('devstack-dashboard-proxy', async (assetsDir) => {
@@ -69,6 +75,7 @@ const withProxy = (
 		const upstreamUrl = `http://127.0.0.1:${await listen(upstream)}/graphql`;
 
 		const configured = opts.configured ?? true;
+		const headers: Record<string, string> = configured ? { authorization: SECRET } : {};
 		const listener = makeDashboardListener({
 			assetsDir,
 			originPolicy: ORIGIN_POLICY,
@@ -79,8 +86,8 @@ const withProxy = (
 				domain: emptyControlPlaneDomain,
 				pluginDomain: {
 					...emptyDashboardDomain,
-					suiGraphqlUpstream: Effect.succeed(
-						configured ? { url: upstreamUrl, headers: { authorization: SECRET } } : null,
+					suiGraphql: Effect.succeed(
+						opts.noEndpoint === true ? null : { url: upstreamUrl, headers },
 					),
 				},
 				suiGraphqlProxyUrl: 'http://127.0.0.1:1234/sui-graphql',
@@ -97,6 +104,7 @@ const withProxy = (
 			await body({
 				proxyUrl: `http://127.0.0.1:${port}${SUI_GRAPHQL_PROXY_PATH}`,
 				controlUrl: `http://127.0.0.1:${port}/graphql`,
+				upstreamUrl,
 				seen,
 			});
 		} finally {
@@ -219,20 +227,24 @@ describe('dashboard sui-graphql proxy', () => {
 		}));
 });
 
-describe('dashboard schema suiGraphqlProxyUrl', () => {
+describe('dashboard schema suiGraphqlUrl', () => {
 	const query = async (controlUrl: string) => {
-		const res = await post(controlUrl, {}, JSON.stringify({ query: '{ suiGraphqlProxyUrl }' }));
-		return ((await res.json()) as { data?: { suiGraphqlProxyUrl?: string | null } }).data
-			?.suiGraphqlProxyUrl;
+		const res = await post(controlUrl, {}, JSON.stringify({ query: '{ suiGraphqlUrl }' }));
+		return ((await res.json()) as { data?: { suiGraphqlUrl?: string | null } }).data?.suiGraphqlUrl;
 	};
 
-	it('advertises the relay URL while graphqlHeaders are configured', () =>
+	it('is the relay URL while graphqlHeaders are configured', () =>
 		withProxy({}, async ({ controlUrl }) => {
 			expect(await query(controlUrl)).toBe('http://127.0.0.1:1234/sui-graphql');
 		}));
 
-	it('is null when the browser should read the endpoint directly', () =>
-		withProxy({ configured: false }, async ({ controlUrl }) => {
+	it('is the endpoint itself when no headers are configured', () =>
+		withProxy({ configured: false }, async ({ controlUrl, upstreamUrl }) => {
+			expect(await query(controlUrl)).toBe(upstreamUrl);
+		}));
+
+	it('is null when sui exposes no GraphQL endpoint', () =>
+		withProxy({ noEndpoint: true }, async ({ controlUrl }) => {
 			expect(await query(controlUrl)).toBeNull();
 		}));
 });
