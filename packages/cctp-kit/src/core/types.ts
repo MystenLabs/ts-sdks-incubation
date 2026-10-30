@@ -7,6 +7,7 @@ import type { Transaction } from '@mysten/sui/transactions';
 import type { ChainFilter, ChainIconOverrides, Direction, RpcOverrides } from '../chains/index.js';
 import type { ChainDefinition, ChainKey, Network, SuiChainDefinition } from '../chains/types.js';
 import type { IrisClientOptions } from '../iris/client.js';
+import type { SponsorConfig } from '../sponsor/client.js';
 import type { StateStorage } from '../utils/storage.js';
 import type { EvmWalletAdapter, SolanaWalletAdapter, WalletAdapters } from '../wallets/types.js';
 
@@ -89,6 +90,12 @@ export interface CctpKitConfig {
 	/** `manual` stops transfers at `readyToMint` until `kit.claim(id)`. Defaults to `auto`. */
 	claim?: 'auto' | 'manual';
 	iris?: IrisClientOptions;
+	/**
+	 * A service that claims transfers into Sui with a key of its own and pays the gas, so that the
+	 * user's wallet is only asked when it cannot. Off unless `baseUrl` is set. One deployment
+	 * serves one Sui network, so pass the one for the kit's network.
+	 */
+	sponsor?: SponsorConfig;
 	defaults?: {
 		from?: ChainKey;
 		to?: ChainKey;
@@ -163,6 +170,12 @@ export interface TransferRecord {
 	completedAt?: number;
 	/** Archived by the user (Dismiss). Kept in storage and visible in history; not in the pending list. */
 	hidden?: boolean;
+	/**
+	 * Where the sponsor stands on this transfer's claim. `pending`: it is being, or is about to be,
+	 * asked. `unavailable`: it gave up or was not available, and the user claims with a wallet.
+	 * Only ever set on a transfer into Sui, and left out once the claim is done.
+	 */
+	sponsorClaim?: 'pending' | 'unavailable';
 }
 
 export type CctpKitEvent =

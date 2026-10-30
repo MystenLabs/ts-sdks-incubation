@@ -548,13 +548,18 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 			(transfer.status === 'pending' ||
 				transfer.status === 'approving' ||
 				transfer.status === 'burning');
-		const canResume = failed || transfer.status === 'readyToMint' || interrupted || unstarted;
+		// A sponsor that is at work needs nothing from anyone, and a press could only get in its way.
+		const sponsoring = running && transfer.sponsorClaim === 'pending';
+		const canResume =
+			!sponsoring && (failed || transfer.status === 'readyToMint' || interrupted || unstarted);
 		const canRemove = neverBurned(transfer) && !running;
 		const statusLabel = complete
 			? 'Complete'
 			: failed
 				? 'Needs attention'
-				: (STEP_LABELS[transfer.status as keyof typeof STEP_LABELS] ?? '');
+				: sponsoring
+					? `Claiming on ${to?.name ?? transfer.to} for you…`
+					: (STEP_LABELS[transfer.status as keyof typeof STEP_LABELS] ?? '');
 
 		return html`
 			<div class="transfer" part="transfer">

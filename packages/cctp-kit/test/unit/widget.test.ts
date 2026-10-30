@@ -19,6 +19,15 @@ const json = (status: number, body: unknown) =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The text of a template, with everything rendered into it. */
+function rendered(value: unknown): string {
+	if (Array.isArray(value)) return value.map(rendered).join('');
+	if (typeof value === 'string') return value;
+	if (!value || typeof value !== 'object' || !('strings' in value)) return '';
+	const { strings, values } = value as { strings: readonly string[]; values: unknown[] };
+	return strings.map((text, i) => text + rendered(values[i])).join('');
+}
+
 const unusedWallet = (ecosystem: 'evm' | 'solana') => ({
 	ecosystem,
 	getAccount: () => null,
@@ -241,6 +250,188 @@ describe('a claim on Sui', () => {
 		await settle(50);
 		expect(kit.stores.$transfers.get()[0]).toMatchObject({ id: SUI_BOUND.id, status: 'complete' });
 		expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		kit.destroy();
+	});
+});
+
+describe('a claim the sponsor is making', () => {
+	const SERVICE = 'https://claimer.example';
+	const HEALTHY = { ok: true, dryRun: false };
+	const DENYLIST = { sourceDomains: [{ domain: 10, name: 'Unichain' }] };
+	const SUI_BOUND: TransferRecord = {
+		id: 'transfer-3',
+		network: 'mainnet',
+		from: 'ethereum',
+		to: 'sui',
+		amount: '1000000',
+		maxFee: '0',
+		speed: 'standard',
+		sender: EVM_ADDRESS,
+		recipient: SUI_ADDRESS,
+		status: 'readyToMint',
+		sourceTxHash: `0x${'ab'.repeat(32)}`,
+		sourceConfirmed: true,
+		burnedAt: 1,
+		message: `0x${'aa'.repeat(376)}`,
+		attestation: `0x${'bb'.repeat(65)}`,
+		createdAt: 1,
+		updatedAt: 1,
+	};
+	/** The sponsor, answering claims with `claim`, on a chain where nothing has been claimed. */
+	function sponsoredKit(
+		storage = createInMemoryStorage(),
+		options: { claim?: () => Promise<Response>; network?: 'mainnet' | 'testnet' } = {},
+	) {
+		const signAndExecuteTransaction = vi.fn(() => new Promise(() => undefined));
+		const network = options.network ?? 'mainnet';
+		const kit = createCctpKit({
+			dAppKit: {
+				stores: {
+					$connection: atom({ account: { address: SUI_ADDRESS } }),
+					$currentNetwork: atom(network),
+				},
+				getClient: () => ({
+					core: {
+						getBalance: async () => ({ balance: { balance: '5000000' } }),
+						simulateTransaction: async () => ({
+							commandResults: [{ returnValues: [{ bcs: new Uint8Array([0]) }] }],
+						}),
+						waitForTransaction: async () => ({}),
+					},
+				}),
+				signAndExecuteTransaction,
+			} as unknown as AnyDAppKit,
+			network,
+			direction: 'inflow',
+			storage,
+			iris: { fetch: vi.fn<typeof fetch>(async () => json(404, { error: 'not found' })) },
+			wallets: { evm: unusedWallet('evm') as never, solana: unusedWallet('solana') as never },
+			sponsor: {
+				baseUrl: SERVICE,
+				fetch: vi.fn<typeof fetch>(async (input) => {
+					const url = String(input);
+					if (url.endsWith('/api/health')) return json(200, HEALTHY);
+					if (url.endsWith('/api/denylist')) return json(200, DENYLIST);
+					return options.claim ? options.claim() : new Promise(() => undefined);
+				}),
+			},
+		});
+		return { kit, signAndExecuteTransaction };
+	}
+	const card = (kit: unknown, transfer: TransferRecord) => {
+		const element = new CctpBridge() as unknown as {
+			renderTransfer(transfer: TransferRecord, kit: unknown): unknown;
+		};
+		return rendered(element.renderTransfer(transfer, kit));
+	};
+	const row = (kit: unknown, transfer: TransferRecord) => {
+		const element = new CctpBridge() as unknown as {
+			renderHistoryRow(transfer: TransferRecord, kit: unknown): unknown;
+		};
+		return rendered(element.renderHistoryRow(transfer, kit));
+	};
+	const CLAIM = /\bClaim\b/;
+
+	it('says so, and offers no Claim, from the moment the page has loaded', () => {
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
+		const { kit } = sponsoredKit(storage);
+		// Nothing has been awaited since the kit was created: this is what the first render draws.
+		const text = card(kit, kit.stores.$transfers.get()[0]!);
+		expect(text).toContain('Claiming on Sui for you…');
+		expect(text).not.toMatch(CLAIM);
+		kit.destroy();
+	});
+
+	it('uses the name of the destination chain', () => {
+		const storage = createInMemoryStorage();
+		const key = 'mysten-cctp-kit:transfers:testnet';
+		storage.setItem(key, JSON.stringify([{ ...SUI_BOUND, network: 'testnet' }]));
+		const { kit } = sponsoredKit(storage, { network: 'testnet' });
+		expect(card(kit, kit.stores.$transfers.get()[0]!)).toContain(
+			'Claiming on Sui Testnet for you…',
+		);
+		kit.destroy();
+	});
+
+	it('offers Claim once it has given up', async () => {
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
+		const { kit } = sponsoredKit(storage, {
+			claim: async () => json(422, { status: 'ineligible', reason: 'below_minimum' }),
+		});
+		await vi.waitFor(() => expect(kit.isRunning(SUI_BOUND.id)).toBe(false));
+		const text = card(kit, kit.stores.$transfers.get()[0]!);
+		expect(text).not.toContain('Claiming on');
+		expect(text).toMatch(CLAIM);
+		expect(text).toContain('Ready to claim');
+		kit.destroy();
+	});
+
+	it('never mentions it on a route it does not serve', async () => {
+		const { kit, signAndExecuteTransaction } = sponsoredKit();
+		await vi.waitFor(() => expect(kit.stores.$sponsor.get()).not.toBeNull());
+		// An id of its own: the wallet here never answers, so this run never ends.
+		const denied = { ...SUI_BOUND, id: 'denied', from: 'unichain', status: 'failed' } as const;
+		const storage = kit.config.storage!;
+		storage.setItem(KEY, JSON.stringify([denied]));
+		expect(card(kit, denied)).not.toContain('Claiming on');
+		expect(card(kit, denied)).toMatch(CLAIM);
+		// A press there goes to the wallet at once, and the card says what it always said.
+		void kit.resume(denied.id).catch(() => undefined);
+		expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+		expect(card(kit, kit.stores.$transfers.get()[0]!)).not.toContain('Claiming on');
+		kit.destroy();
+	});
+
+	it('shows what it always did for a "pending" nothing is driving', async () => {
+		// Left by a page that went away. Without this it would be stuck with no way forward.
+		const { kit } = sponsoredKit();
+		const left = { ...SUI_BOUND, status: 'minting', sponsorClaim: 'pending' } as const;
+		const text = card(kit, left);
+		expect(text).not.toContain('Claiming on');
+		expect(text).toContain('Minting');
+		expect(text).toContain('Resume');
+		kit.destroy();
+	});
+
+	it('is shown for a claim another tab is making', async () => {
+		const storage = createInMemoryStorage();
+		const pending = { ...SUI_BOUND, status: 'minting', sponsorClaim: 'pending' } as const;
+		storage.setItem(KEY, JSON.stringify([pending]));
+		storage.setItem(
+			`${KEY}:running:${pending.id}`,
+			JSON.stringify({ owner: 'another-tab', until: Date.now() + 60_000 }),
+		);
+		const { kit } = sponsoredKit(storage);
+		const text = card(kit, kit.stores.$transfers.get()[0]!);
+		expect(text).toContain('Claiming on Sui for you…');
+		expect(text).not.toMatch(CLAIM);
+		kit.destroy();
+	});
+
+	it('offers no Claim at any status while it is at work', () => {
+		const storage = createInMemoryStorage();
+		for (const status of ['readyToMint', 'failed'] as const) {
+			const pending = { ...SUI_BOUND, status, sponsorClaim: 'pending' } as const;
+			storage.setItem(KEY, JSON.stringify([pending]));
+			storage.setItem(
+				`${KEY}:running:${pending.id}`,
+				JSON.stringify({ owner: 'another-tab', until: Date.now() + 60_000 }),
+			);
+			const { kit } = sponsoredKit(storage);
+			expect(card(kit, pending)).not.toMatch(CLAIM);
+			kit.destroy();
+		}
+	});
+
+	it('stays "In progress" in the history', () => {
+		const storage = createInMemoryStorage();
+		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
+		const { kit } = sponsoredKit(storage);
+		const text = row(kit, kit.stores.$transfers.get()[0]!);
+		expect(text).toContain('In progress');
+		expect(text).not.toMatch(CLAIM);
 		kit.destroy();
 	});
 });

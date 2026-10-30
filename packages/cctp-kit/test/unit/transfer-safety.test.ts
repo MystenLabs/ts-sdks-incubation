@@ -14,12 +14,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChainRegistry } from '../../src/chains/index.js';
 import { SOLANA_MAINNET } from '../../src/chains/solana.js';
 import { isExpiredOnSui, runTransfer } from '../../src/core/transfer.js';
+import type { TransferContext } from '../../src/core/transfer.js';
 import type { AnyDAppKit, SuiExecutionRequest, TransferRecord } from '../../src/core/types.js';
 import * as evm from '../../src/engine/evm.js';
 import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '../../src/engine/solana.js';
 import { IrisClient } from '../../src/iris/client.js';
+import { SponsorClient } from '../../src/sponsor/client.js';
 import { MESSAGE_V2 } from '../../src/utils/bytes.js';
 import { TransactionRevertedError } from '../../src/utils/errors.js';
+import { sleep } from '../../src/utils/sleep.js';
 import type { WalletAdapters } from '../../src/wallets/types.js';
 import { solanaHasCctpLookupTable } from './solana-lookup-table.js';
 
@@ -1062,6 +1065,900 @@ describe('a claim on Sui', () => {
 			).rejects.toThrow('MoveAbort in the CCTP package');
 			expect(updates.at(-1)).toMatchObject({ status: 'failed' });
 			expect(updates.some((t) => t.sourceTxHash)).toBe(false);
+		});
+	});
+
+	describe('through a sponsor', () => {
+		const BASE_URL = 'https://claimer.example';
+		const SERVICE_DIGEST = '5sNhJ1QkBXPyZ7pWqtTbvNfmT2pQk4cZkVjRwGnYdE9x';
+		const HEALTHY = { ok: true, dryRun: false };
+		const DENYLIST = { sourceDomains: [{ domain: 10, name: 'Unichain' }] };
+		const claimedByService = () => json(200, { status: 'claimed', digest: SERVICE_DIGEST });
+		const refused = () => json(422, { status: 'ineligible', reason: 'below_minimum' });
+
+		/** The first lookup finds nothing, and every read after it finds the claim. */
+		const unusedUntilClaimed = () =>
+			vi.fn().mockImplementationOnce(nonceIs(false)).mockImplementation(nonceIs(true));
+
+		/** Claims are answered in turn, repeating the last answer; its waits take no time. */
+		function sponsorSays(
+			claims: (Response | Error)[],
+			service: { health?: Response | Error; denylist?: Response | Error } = {},
+		) {
+			const sponsorFetch = vi.fn<typeof fetch>(async (input) => {
+				const url = String(input);
+				const answer = url.endsWith('/api/health')
+					? (service.health ?? json(200, HEALTHY))
+					: url.endsWith('/api/denylist')
+						? (service.denylist ?? json(200, DENYLIST))
+						: claims.length > 1
+							? claims.shift()!
+							: claims[0]!;
+				if (answer instanceof Error) throw answer;
+				return answer.clone();
+			});
+			const sponsor = new SponsorClient({
+				baseUrl: BASE_URL,
+				fetch: sponsorFetch,
+				sleep: async () => undefined,
+			});
+			const posts = () =>
+				sponsorFetch.mock.calls.filter(([url]) => String(url).endsWith('/api/claim'));
+			return { sponsor, sponsorFetch, posts };
+		}
+		const sponsored = (
+			dAppKit: AnyDAppKit,
+			sponsor?: SponsorClient,
+			updates?: TransferRecord[],
+		): TransferContext => ({
+			...context(dAppKit, updates),
+			sponsor,
+			nonceRetryMs: 1,
+		});
+		const attested = () => ({
+			status: 'complete',
+			message: message(BigInt(Date.now() + 3_600_000)),
+			attestation: `0x${'11'.repeat(65)}`,
+		});
+		/** The run that follows the attestation: it starts with no attestation in hand. */
+		const follow = (ctx: TransferContext, over: Partial<TransferRecord> = {}) =>
+			runTransfer(
+				record({ status: 'attesting', sourceTxHash: BURN_HASH, sourceConfirmed: true, ...over }),
+				{
+					...ctx,
+					iris: new IrisClient('mainnet', {
+						fetch: vi.fn<typeof fetch>(async () => json(200, { messages: [attested()] })),
+					}),
+					pollIntervalMs: 1,
+				},
+			);
+		const resume = (ctx: TransferContext, over: Partial<TransferRecord> = {}) =>
+			runTransfer({ ...claimable(), ...over }, { ...ctx, stopAfterAttestation: true });
+
+		it('sends the message and attestation as the record holds them', async () => {
+			const { sponsor, posts } = sponsorSays([claimedByService()]);
+			const { dAppKit } = suiDAppKit({ core: { simulateTransaction: unusedUntilClaimed() } });
+			const start = claimable();
+			await runTransfer(start, { ...sponsored(dAppKit, sponsor), stopAfterAttestation: true });
+			expect(posts()).toHaveLength(1);
+			const [url, init] = posts()[0]!;
+			expect(url).toBe(`${BASE_URL}/api/claim`);
+			expect(init!.method).toBe('POST');
+			expect(init!.headers).toEqual({ 'content-type': 'text/plain;charset=UTF-8' });
+			expect(JSON.parse(init!.body as string)).toEqual({
+				message: start.message,
+				attestation: start.attestation,
+			});
+		});
+
+		it('completes with the service digest after 429 twice, and the wallet is never asked', async () => {
+			const { sponsor, posts } = sponsorSays([json(429, {}), json(429, {}), claimedByService()]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: unusedUntilClaimed() },
+			});
+			const updates: TransferRecord[] = [];
+			const result = await follow(sponsored(dAppKit, sponsor, updates));
+			expect(posts()).toHaveLength(3);
+			expect(result).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+			expect(result.completedAt).toBeTypeOf('number');
+			expect(result.sponsorClaim).toBeUndefined();
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		it('asks the wallet once after a rejected fetch four times', async () => {
+			const { sponsor, posts } = sponsorSays([new TypeError('Failed to fetch')]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			const result = await follow(sponsored(dAppKit, sponsor));
+			expect(posts()).toHaveLength(4);
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			expect(result).toMatchObject({
+				status: 'complete',
+				destinationTxHash: SUI_DIGEST,
+				sponsorClaim: 'unavailable',
+			});
+		});
+
+		it('honours Retry-After on the run: 1 s is waited out, 60 s gives up without waiting', async () => {
+			const waits: number[] = [];
+			const service = (header: string) => {
+				const claims = [
+					new Response('{}', { status: 429, headers: { 'retry-after': header } }),
+					claimedByService(),
+				];
+				const sponsorFetch = vi.fn<typeof fetch>(async (input) => {
+					const url = String(input);
+					if (url.endsWith('/api/health')) return json(200, HEALTHY);
+					if (url.endsWith('/api/denylist')) return json(200, DENYLIST);
+					return claims.shift()!;
+				});
+				return new SponsorClient({
+					baseUrl: BASE_URL,
+					fetch: sponsorFetch,
+					sleep: async (ms) => void waits.push(ms),
+				});
+			};
+			const first = suiDAppKit({ core: { simulateTransaction: unusedUntilClaimed() } });
+			const waited = await follow(sponsored(first.dAppKit, service('1')));
+			expect(waited).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+			expect(first.signAndExecuteTransaction).not.toHaveBeenCalled();
+			expect(waits).toEqual([1_000]);
+
+			waits.length = 0;
+			const second = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+			await follow(sponsored(second.dAppKit, service('60')));
+			expect(waits).toEqual([]);
+			expect(second.signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+		});
+
+		it('rejects the run, and never asks the wallet, when aborted between retries', async () => {
+			const controller = new AbortController();
+			const sponsorFetch = vi.fn<typeof fetch>(async (input) => {
+				const url = String(input);
+				if (url.endsWith('/api/health')) return json(200, HEALTHY);
+				if (url.endsWith('/api/denylist')) return json(200, DENYLIST);
+				return json(429, {});
+			});
+			const sponsor = new SponsorClient({
+				baseUrl: BASE_URL,
+				fetch: sponsorFetch,
+				sleep: (ms, signal) => {
+					const waiting = sleep(ms, signal);
+					controller.abort(new Error('destroyed'));
+					return waiting;
+				},
+			});
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			const updates: TransferRecord[] = [];
+			await expect(
+				follow({ ...sponsored(dAppKit, sponsor, updates), signal: controller.signal }),
+			).rejects.toThrow('destroyed');
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			// Aborted, not failed: the record is left as it was for whoever resumes it.
+			expect(updates.some((u) => u.status === 'failed')).toBe(false);
+			expect(updates.at(-1)).toMatchObject({ status: 'minting', sponsorClaim: 'pending' });
+		});
+
+		it('never asks the wallet when aborted while the nonce is read after giving up', async () => {
+			const controller = new AbortController();
+			const { sponsor } = sponsorSays([refused()]);
+			let reads = 0;
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: {
+					// The read after the "already claimed?" lookup never answers.
+					simulateTransaction: vi.fn(() => {
+						reads += 1;
+						if (reads === 1) return nonceIs(false)();
+						controller.abort(new Error('destroyed'));
+						return new Promise(() => undefined);
+					}),
+				},
+			});
+			await expect(
+				follow({ ...sponsored(dAppKit, sponsor), signal: controller.signal }),
+			).rejects.toThrow('destroyed');
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		it('does not complete on the word of the service: the chain has to agree', async () => {
+			// The service says it claimed. The nonce says otherwise, so the USDC is not there, and
+			// calling this complete would leave someone with a finished card and no funds.
+			const { sponsor, posts } = sponsorSays([claimedByService()]);
+			const simulateTransaction = nonceIs(false);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({ core: { simulateTransaction } });
+			const updates: TransferRecord[] = [];
+			const result = await follow(sponsored(dAppKit, sponsor, updates));
+			expect(posts()).toHaveLength(1);
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			// It was read more than once: a node can lag behind a claim that just executed.
+			expect(simulateTransaction.mock.calls.length).toBeGreaterThan(2);
+			// Complete only from the wallet's claim, and the service's digest appears nowhere.
+			expect(result).toMatchObject({ status: 'complete', destinationTxHash: SUI_DIGEST });
+			expect(updates.some((u) => u.destinationTxHash === SERVICE_DIGEST)).toBe(false);
+			expect(updates.filter((u) => u.status === 'complete')).toHaveLength(1);
+			expect(updates.at(-1)!.sponsorClaim).toBe('unavailable');
+		});
+
+		it('checks the chain even where the "already claimed?" lookup is turned off', async () => {
+			const { sponsor } = sponsorSays([claimedByService()]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			const result = await follow({ ...sponsored(dAppKit, sponsor), checkNonce: false });
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			expect(result.destinationTxHash).toBe(SUI_DIGEST);
+		});
+
+		it('does not complete when the nonce cannot be read at all', async () => {
+			const { sponsor } = sponsorSays([claimedByService()]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: vi.fn(async () => Promise.reject(new Error('no'))) },
+			});
+			const result = await follow(sponsored(dAppKit, sponsor));
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			expect(result.destinationTxHash).toBe(SUI_DIGEST);
+		});
+
+		it('waits for a node that lags behind the claim', async () => {
+			const { sponsor } = sponsorSays([claimedByService()]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: {
+					simulateTransaction: vi
+						.fn()
+						.mockImplementationOnce(nonceIs(false)) // the "already claimed?" lookup
+						.mockImplementationOnce(nonceIs(false))
+						.mockImplementationOnce(async () => Promise.reject(new Error('lagging')))
+						.mockImplementation(nonceIs(true)),
+				},
+			});
+			const result = await follow(sponsored(dAppKit, sponsor));
+			expect(result).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		it('completes with no digest and no wallet on already_claimed with the nonce used', async () => {
+			const { sponsor } = sponsorSays([json(200, { status: 'already_claimed' })]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: unusedUntilClaimed() },
+			});
+			const result = await follow(sponsored(dAppKit, sponsor));
+			expect(result.status).toBe('complete');
+			expect(result.destinationTxHash).toBeUndefined();
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		it('completes with no wallet when it gave up but the nonce now reads used', async () => {
+			// An attempt that timed out and landed all the same.
+			const { sponsor } = sponsorSays([json(503, { status: 'blocked', reason: 'paused' })]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: unusedUntilClaimed() },
+			});
+			const result = await follow(sponsored(dAppKit, sponsor));
+			expect(result.status).toBe('complete');
+			expect(result.destinationTxHash).toBeUndefined();
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		describe('when it does not apply to the route', () => {
+			it('sends a denied source to the wallet with no request and no "pending"', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				await sponsor.status();
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const updates: TransferRecord[] = [];
+				const result = await follow(sponsored(dAppKit, sponsor, updates), { from: 'unichain' });
+				expect(posts()).toHaveLength(0);
+				expect(updates.some((u) => u.sponsorClaim !== undefined)).toBe(false);
+				expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+				expect(result.destinationTxHash).toBe(SUI_DIGEST);
+			});
+
+			it('finds a denied source out when the denylist had not been read', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await follow(sponsored(dAppKit, sponsor), { from: 'unichain' });
+				expect(posts()).toHaveLength(0);
+				expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+				expect(result.sponsorClaim).toBe('unavailable');
+			});
+
+			it.each([
+				['answers 503', json(503, { ok: false, error: 'gas' })],
+				['is unreachable', new TypeError('Failed to fetch')],
+				['is in dry-run mode', json(200, { ok: true, dryRun: true })],
+			])('asks the wallet, with no request, when health %s', async (_name, health) => {
+				const { sponsor, posts } = sponsorSays([claimedByService()], { health });
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await follow(sponsored(dAppKit, sponsor));
+				expect(posts()).toHaveLength(0);
+				expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+				expect(result).toMatchObject({ status: 'complete', sponsorClaim: 'unavailable' });
+			});
+
+			it('asks the wallet, with no request, when the denylist cannot be read', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()], {
+					denylist: new TypeError('Failed to fetch'),
+				});
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await follow(sponsored(dAppKit, sponsor));
+				expect(posts()).toHaveLength(0);
+				expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+				expect(result.sponsorClaim).toBe('unavailable');
+			});
+		});
+
+		describe('showing the card', () => {
+			/** A run held at its first chain read, so what it has written so far can be looked at. */
+			function heldAtFirstRead() {
+				let answer: (value: unknown) => void = () => undefined;
+				const simulateTransaction = vi.fn(
+					() => new Promise((resolve) => (answer = resolve)) as never,
+				);
+				return { simulateTransaction, release: () => answer(nonceIs(true)()) };
+			}
+
+			it('marks a run that follows the attestation before the lookup is awaited', async () => {
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { simulateTransaction, release } = heldAtFirstRead();
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction } });
+				const updates: TransferRecord[] = [];
+				const run = follow(sponsored(dAppKit, sponsor, updates));
+				await vi.waitFor(() => expect(simulateTransaction).toHaveBeenCalled());
+				expect(updates.at(-1)).toMatchObject({ status: 'minting', sponsorClaim: 'pending' });
+				release();
+				await run;
+			});
+
+			it('marks a resumed run before the lookup is awaited, and in the same tick', async () => {
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { simulateTransaction, release } = heldAtFirstRead();
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction } });
+				const updates: TransferRecord[] = [];
+				const run = resume(sponsored(dAppKit, sponsor, updates), { status: 'failed' });
+				// Nothing has been awaited yet: this is as far as the call itself goes.
+				expect(updates.at(-1)).toMatchObject({ status: 'minting', sponsorClaim: 'pending' });
+				await vi.waitFor(() => expect(simulateTransaction).toHaveBeenCalled());
+				release();
+				await run;
+			});
+
+			it('does not leave "pending" on a transfer the lookup found claimed', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(true) } });
+				const result = await follow(sponsored(dAppKit, sponsor));
+				expect(result.status).toBe('complete');
+				expect(result.sponsorClaim).toBeUndefined();
+				expect(posts()).toHaveLength(0);
+			});
+
+			it('clears a "pending" left by a page that went away when Claim is pressed', async () => {
+				// Otherwise the card would say the sponsor is at work while the wallet is open.
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+				const updates: TransferRecord[] = [];
+				const stale = { ...claimable(), status: 'minting', sponsorClaim: 'pending' } as const;
+				const run = runTransfer(stale, sponsored(dAppKit, sponsor, updates));
+				expect(updates.at(-1)!.sponsorClaim).toBeUndefined();
+				await run;
+			});
+
+			it('does not stay "pending" on a run that fails at the reattest', async () => {
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+				const updates: TransferRecord[] = [];
+				const iris = new IrisClient('mainnet', {
+					fetch: vi.fn<typeof fetch>(async () => json(500, { error: 'no' })),
+				});
+				await expect(
+					runTransfer(
+						{ ...claimable(), message: message(BigInt(Date.now() - 1_000)) },
+						{ ...sponsored(dAppKit, sponsor, updates), iris },
+					),
+				).rejects.toThrow();
+				expect(updates.at(-1)).toMatchObject({ status: 'failed', sponsorClaim: 'unavailable' });
+			});
+		});
+
+		it('is not held up by a node that never answers the first lookup', async () => {
+			vi.useFakeTimers();
+			try {
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({
+					core: {
+						simulateTransaction: vi
+							.fn()
+							.mockImplementationOnce(() => new Promise(() => undefined))
+							.mockImplementation(nonceIs(true)),
+					},
+				});
+				const run = follow(sponsored(dAppKit, sponsor));
+				await vi.advanceTimersByTimeAsync(7_999);
+				expect(posts()).toHaveLength(0);
+				await vi.advanceTimersByTimeAsync(1);
+				expect(posts()).toHaveLength(1);
+				expect((await run).status).toBe('complete');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		describe('recording the digest', () => {
+			const used = () => ({ simulateTransaction: unusedUntilClaimed() });
+
+			it('leaves it out when the wait for it fails, which is not fatal', async () => {
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({
+					core: {
+						...used(),
+						waitForTransaction: vi.fn(async () => Promise.reject(new Error('no'))),
+					},
+				});
+				const result = await follow(sponsored(dAppKit, sponsor));
+				expect(result.status).toBe('complete');
+				expect(result.destinationTxHash).toBeUndefined();
+			});
+
+			it('leaves it out when the transaction it names failed', async () => {
+				// The nonce was spent by something else. This digest did not mint anything.
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({
+					core: {
+						...used(),
+						waitForTransaction: vi.fn(async () => ({
+							$kind: 'FailedTransaction',
+							FailedTransaction: { digest: SERVICE_DIGEST },
+						})),
+					},
+				});
+				const result = await follow(sponsored(dAppKit, sponsor));
+				expect(result.status).toBe('complete');
+				expect(result.destinationTxHash).toBeUndefined();
+			});
+
+			it('gives the wait 15 s, and leaves it out when that runs out', async () => {
+				vi.useFakeTimers();
+				try {
+					const { sponsor } = sponsorSays([claimedByService()]);
+					const { dAppKit } = suiDAppKit({
+						core: { ...used(), waitForTransaction: vi.fn(() => new Promise(() => undefined)) },
+					});
+					const outcome = follow(sponsored(dAppKit, sponsor));
+					await vi.advanceTimersByTimeAsync(15_000);
+					const result = await outcome;
+					expect(result.status).toBe('complete');
+					expect(result.destinationTxHash).toBeUndefined();
+				} finally {
+					vi.useRealTimers();
+				}
+			});
+
+			it('gives the SDK no signal: it would need AbortSignal.any for one', async () => {
+				// Older Safari lacks it, so the wait would fail every time and lose the digest.
+				const waitForTransaction = vi.fn(async () => ({}));
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({ core: { ...used(), waitForTransaction } });
+				const stop = new AbortController();
+				await follow({ ...sponsored(dAppKit, sponsor), signal: stop.signal });
+				expect(waitForTransaction).toHaveBeenCalledWith({
+					digest: SERVICE_DIGEST,
+					timeout: 15_000,
+				});
+			});
+
+			it('stops waiting at once when the run is aborted', async () => {
+				const controller = new AbortController();
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: {
+						...used(),
+						waitForTransaction: vi.fn(() => {
+							controller.abort(new Error('destroyed'));
+							return new Promise(() => undefined);
+						}),
+					},
+				});
+				await expect(
+					follow({ ...sponsored(dAppKit, sponsor), signal: controller.signal }),
+				).rejects.toThrow('destroyed');
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+		});
+
+		describe('when the wallet is asked after all', () => {
+			it('waits at Claim when the browser will not open the wallet window', async () => {
+				const { sponsor } = sponsorSays([refused()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				signAndExecuteTransaction.mockRejectedValueOnce(new Error('Failed to open new window'));
+				const updates: TransferRecord[] = [];
+				const result = await follow(sponsored(dAppKit, sponsor, updates));
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+				expect(result.error).toBeUndefined();
+				expect(updates.some((u) => u.status === 'failed')).toBe(false);
+			});
+
+			it('ends at failed, with the Claim button, when the user rejects', async () => {
+				const { sponsor } = sponsorSays([refused()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				signAndExecuteTransaction.mockRejectedValueOnce(new Error('User rejected the request'));
+				const updates: TransferRecord[] = [];
+				await expect(follow(sponsored(dAppKit, sponsor, updates))).rejects.toThrow(/rejected/);
+				expect(updates.at(-1)).toMatchObject({
+					status: 'failed',
+					error: 'The request was rejected in the wallet.',
+					sponsorClaim: 'unavailable',
+				});
+				expect(updates.at(-1)!.attestation).toBeTruthy();
+			});
+		});
+
+		it('sends the new message and attestation of a press on an expired one', async () => {
+			// A press that has already waited for Circle: the wallet's window is lost either way.
+			const expired = message(BigInt(Date.now() - 1_000));
+			const renewed = message(BigInt(Date.now() + 86_400_000), 0xcc);
+			const oldAttestation = `0x${'11'.repeat(65)}`;
+			const newAttestation = `0x${'22'.repeat(65)}`;
+			const iris = new IrisClient('mainnet', {
+				fetch: vi.fn<typeof fetch>(async (_input, init) =>
+					init?.method === 'POST'
+						? json(200, { message: 'ok' })
+						: json(200, {
+								messages: [{ status: 'complete', message: renewed, attestation: newAttestation }],
+							}),
+				),
+			});
+			const { sponsor, posts } = sponsorSays([claimedByService()]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: unusedUntilClaimed() },
+			});
+			const result = await runTransfer(
+				record({
+					status: 'readyToMint',
+					sourceTxHash: BURN_HASH,
+					message: expired,
+					attestation: oldAttestation,
+				}),
+				{ ...sponsored(dAppKit, sponsor), iris, pollIntervalMs: 1 },
+			);
+			expect(JSON.parse(posts()[0]![1]!.body as string)).toEqual({
+				message: renewed,
+				attestation: newAttestation,
+			});
+			expect(result).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		});
+
+		it('is left out of a full claim when none is configured', async () => {
+			const globalFetch = vi.spyOn(globalThis, 'fetch');
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			const updates: TransferRecord[] = [];
+			const result = await follow(sponsored(dAppKit, undefined, updates));
+			expect(result.status).toBe('complete');
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			// Not "no fetch at all": earlier tests can still be retrying their RPC reads through it.
+			expect(globalFetch.mock.calls.filter(([url]) => /\/api\//.test(String(url)))).toEqual([]);
+			expect(updates.some((u) => u.sponsorClaim !== undefined)).toBe(false);
+		});
+
+		it('is never called on a Claim press, and the wallet is asked at once', async () => {
+			const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			const run = runTransfer(claimable(), sponsored(dAppKit, sponsor));
+			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			const result = await run;
+			expect(result).toMatchObject({ status: 'complete', destinationTxHash: SUI_DIGEST });
+			expect(sponsorFetch).not.toHaveBeenCalled();
+		});
+
+		it('is not called when a Claim press fails either', async () => {
+			const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			signAndExecuteTransaction.mockRejectedValueOnce(new Error('User rejected the request'));
+			await expect(runTransfer(claimable(), sponsored(dAppKit, sponsor))).rejects.toThrow();
+			expect(sponsorFetch).not.toHaveBeenCalled();
+		});
+
+		describe('on a resumed run', () => {
+			it('ends at Claim with no error and no wallet when the sponsor gives up', async () => {
+				const { sponsor, posts } = sponsorSays([refused()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const updates: TransferRecord[] = [];
+				const result = await resume(sponsored(dAppKit, sponsor, updates));
+				expect(posts()).toHaveLength(1);
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+				expect(result.error).toBeUndefined();
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('never ends at failed, however the sponsor fails', async () => {
+				const { sponsor } = sponsorSays([new TypeError('Failed to fetch')]);
+				// The chain cannot be read either.
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit();
+				const updates: TransferRecord[] = [];
+				const result = await resume(sponsored(dAppKit, sponsor, updates), { status: 'failed' });
+				expect(result.status).toBe('readyToMint');
+				expect(updates.some((u) => u.status === 'failed')).toBe(false);
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('never ends at failed when the sponsor is not available', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()], {
+					health: new TypeError('Failed to fetch'),
+				});
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await resume(sponsored(dAppKit, sponsor));
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+				expect(posts()).toHaveLength(0);
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('stays at Claim, with no wallet, when the service says claimed and the chain does not', async () => {
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await resume(sponsored(dAppKit, sponsor));
+				expect(result.status).toBe('readyToMint');
+				expect(result.destinationTxHash).toBeUndefined();
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('ends complete when the sponsor succeeds', async () => {
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: unusedUntilClaimed() },
+				});
+				const result = await resume(sponsored(dAppKit, sponsor));
+				expect(result).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('completes without the sponsor when the nonce is already used', async () => {
+				const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(true) } });
+				const result = await resume(sponsored(dAppKit, sponsor));
+				expect(result.status).toBe('complete');
+				expect(result.sponsorClaim).toBeUndefined();
+				expect(sponsorFetch).not.toHaveBeenCalled();
+			});
+
+			describe('with an expired message', () => {
+				const expired = () => message(BigInt(Date.now() - 1_000));
+				const renewed = message(BigInt(Date.now() + 86_400_000), 0xcc);
+				const newAttestation = `0x${'22'.repeat(65)}`;
+				const circle = (reattest: () => Response) =>
+					new IrisClient('mainnet', {
+						fetch: vi.fn<typeof fetch>(async (_input, init) =>
+							init?.method === 'POST'
+								? reattest()
+								: json(200, {
+										messages: [
+											{ status: 'complete', message: renewed, attestation: newAttestation },
+										],
+									}),
+						),
+					});
+
+				it('is signed again, and the new message goes to the sponsor', async () => {
+					const { sponsor, posts } = sponsorSays([claimedByService()]);
+					const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+						core: { simulateTransaction: unusedUntilClaimed() },
+					});
+					const updates: TransferRecord[] = [];
+					const result = await resume(
+						{
+							...sponsored(dAppKit, sponsor, updates),
+							iris: circle(() => json(200, { message: 'ok' })),
+							pollIntervalMs: 1,
+						},
+						{ message: expired() },
+					);
+					expect(JSON.parse(posts()[0]![1]!.body as string)).toEqual({
+						message: renewed,
+						attestation: newAttestation,
+					});
+					expect(result).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+					expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+					// The card never had a moment with a Claim button on it.
+					expect(updates.slice(0, -1).every((u) => u.sponsorClaim === 'pending')).toBe(true);
+					expect(updates.some((u) => u.status === 'readyToMint')).toBe(false);
+				});
+
+				it('stops at Claim, not failed, when Circle will not sign it again', async () => {
+					const { sponsor, posts } = sponsorSays([claimedByService()]);
+					const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+						core: { simulateTransaction: nonceIs(false) },
+					});
+					const updates: TransferRecord[] = [];
+					const result = await resume(
+						{
+							...sponsored(dAppKit, sponsor, updates),
+							iris: circle(() => json(500, { error: 'no' })),
+						},
+						{ message: expired() },
+					);
+					expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+					expect(result.error).toBeUndefined();
+					expect(updates.some((u) => u.status === 'failed')).toBe(false);
+					expect(posts()).toHaveLength(0);
+					expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+				});
+
+				it('does not leave the card at "Claiming…" for an attestation that never comes', async () => {
+					vi.useFakeTimers();
+					try {
+						const { sponsor, posts } = sponsorSays([claimedByService()]);
+						const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+						const old = `0x${'11'.repeat(65)}`;
+						const stale = expired();
+						const outcome = resume(
+							{
+								...sponsored(dAppKit, sponsor),
+								iris: new IrisClient('mainnet', {
+									fetch: vi.fn<typeof fetch>(async (_input, init) =>
+										init?.method === 'POST'
+											? json(200, { message: 'ok' })
+											: json(200, {
+													messages: [{ status: 'complete', message: stale, attestation: old }],
+												}),
+									),
+								}),
+							},
+							{ message: stale, attestation: old },
+						);
+						await vi.advanceTimersByTimeAsync(130_000);
+						await expect(outcome).resolves.toMatchObject({
+							status: 'readyToMint',
+							sponsorClaim: 'unavailable',
+						});
+						expect(posts()).toHaveLength(0);
+					} finally {
+						vi.useRealTimers();
+					}
+				});
+			});
+
+			it('leaves a stored message it cannot read at Claim', async () => {
+				const { sponsor } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+				const result = await resume(sponsored(dAppKit, sponsor), { message: '0x1234' });
+				expect(result.status).toBe('readyToMint');
+				expect(result.error).toBeUndefined();
+			});
+
+			it('stays off the destination chain with no sponsor, as it always has', async () => {
+				const simulateTransaction = nonceIs(true);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction } });
+				const result = await resume(sponsored(dAppKit));
+				expect(result.status).toBe('readyToMint');
+				expect(simulateTransaction).not.toHaveBeenCalled();
+			});
+
+			it('stays off the destination chain for a denied source', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				await sponsor.status();
+				const simulateTransaction = nonceIs(true);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction } });
+				const updates: TransferRecord[] = [];
+				const result = await resume(sponsored(dAppKit, sponsor, updates), { from: 'unichain' });
+				expect(result.status).toBe('readyToMint');
+				expect(simulateTransaction).not.toHaveBeenCalled();
+				expect(posts()).toHaveLength(0);
+				expect(updates).toEqual([]);
+			});
+
+			it('rejects, leaving the record for the next page, when aborted', async () => {
+				const controller = new AbortController();
+				const sponsorFetch = vi.fn<typeof fetch>((input) =>
+					String(input).endsWith('/api/claim')
+						? new Promise((_resolve, reject) => {
+								controller.signal.addEventListener('abort', () => reject(controller.signal.reason));
+							})
+						: Promise.resolve(
+								json(200, String(input).endsWith('/api/health') ? HEALTHY : DENYLIST),
+							),
+				);
+				const sponsor = new SponsorClient({ baseUrl: BASE_URL, fetch: sponsorFetch });
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+				const updates: TransferRecord[] = [];
+				const outcome = resume({
+					...sponsored(dAppKit, sponsor, updates),
+					signal: controller.signal,
+				});
+				await vi.waitFor(() => expect(sponsorFetch).toHaveBeenCalledTimes(3));
+				controller.abort(new Error('destroyed'));
+				await expect(outcome).rejects.toThrow('destroyed');
+				expect(updates.map((u) => u.status)).toEqual(['minting']);
+			});
+		});
+
+		describe('on another destination', () => {
+			const outbound = (to: 'base' | 'solana', recipient: string) => ({
+				from: 'sui' as const,
+				to,
+				sender: SUI_ADDRESS,
+				recipient,
+				sourceConfirmed: true,
+				sourceTxHash: SUI_DIGEST,
+				maxFee: '0',
+			});
+			const irisAttests = () =>
+				new IrisClient('mainnet', {
+					fetch: vi.fn<typeof fetch>(async () =>
+						json(200, {
+							messages: [
+								{ status: 'complete', message: message(0n), attestation: `0x${'bb'.repeat(65)}` },
+							],
+						}),
+					),
+				});
+			const solanaRecipient = Keypair.generate().publicKey.toBase58();
+			const destinations = [
+				['EVM', outbound('base', EVM_ADDRESS)],
+				['Solana', outbound('solana', solanaRecipient)],
+			] as const;
+
+			it.each(destinations)('%s: a resumed run stops at Claim as before', async (_name, over) => {
+				const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+				const result = await runTransfer(
+					record({
+						...over,
+						status: 'readyToMint',
+						message: message(0n),
+						attestation: `0x${'bb'.repeat(65)}`,
+					}),
+					{ ...sponsored(suiDAppKit().dAppKit, sponsor), stopAfterAttestation: true },
+				);
+				expect(result.status).toBe('readyToMint');
+				expect(sponsorFetch).not.toHaveBeenCalled();
+			});
+
+			it.each(destinations)(
+				'%s: the run after the attestation asks no sponsor',
+				async (_name, over) => {
+					const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+					const updates: TransferRecord[] = [];
+					// No wallet on that chain in this test, so the claim stops there, past the sponsor.
+					await expect(
+						runTransfer(record({ ...over, status: 'attesting' }), {
+							...sponsored(suiDAppKit().dAppKit, sponsor, updates),
+							checkNonce: false,
+							iris: irisAttests(),
+							pollIntervalMs: 1,
+							wallets: async () =>
+								({
+									evm: { getWalletClient: () => Promise.reject(new Error('no wallet')) },
+									solana: { getAccount: () => null },
+								}) as unknown as WalletAdapters,
+						}),
+					).rejects.toThrow();
+					expect(sponsorFetch).not.toHaveBeenCalled();
+					expect(updates.some((u) => u.sponsorClaim !== undefined)).toBe(false);
+				},
+			);
 		});
 	});
 });

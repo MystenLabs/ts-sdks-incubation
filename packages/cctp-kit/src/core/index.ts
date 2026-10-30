@@ -43,6 +43,7 @@ import {
 } from '../engine/sui.js';
 import { IrisClient, IrisError } from '../iris/client.js';
 import type { IrisMessage } from '../iris/client.js';
+import { SponsorClient, sponsorServes } from '../sponsor/client.js';
 import { feeFromBps, parseUsdc } from '../utils/amount.js';
 import {
 	bytesToHex,
@@ -149,6 +150,7 @@ const LEASE_MS = 90_000;
 const LEASE_RENEW_MS = 20_000;
 
 const QUOTE_PENDING = 'Fetching quote…';
+const SETTLE_INTERVAL_MS = 15_000;
 
 /** Stands in for a wallet the host did not configure: nothing is connected, and asking says why. */
 function missingWallet<E extends 'evm' | 'solana'>(ecosystem: E): WalletAdapters[E] {
@@ -204,6 +206,9 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	});
 	/** The speed the user asked for; `$speed` is what the current route can honour. */
 	let preferredSpeed: TransferSpeed = initialSpeed;
+	const sponsor = config.sponsor?.baseUrl
+		? new SponsorClient({ ...config.sponsor, onStatus: (status) => stores.$sponsor.set(status) })
+		: undefined;
 
 	// --- Persistence: read-modify-write so kits sharing a storage key never clobber each other.
 	function readStored(): TransferRecord[] {
@@ -498,6 +503,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		// connected wallet's SUI nor a wallet at the recipient has anything to do with it.
 		if (to.ecosystem === 'sui' && config.sui?.executeTransaction) return [];
 		const coin = gasCoin(to);
+		// The claim is the sponsor's to make and to pay for.
+		if (sponsorServes(stores.$sponsor.get(), stores.$sourceChain.get(), to)) return [];
 		if (!stores.$destinationAccount.get()) {
 			// Sending to a typed address with no wallet for that chain connected: an exchange
 			// deposit address, or a wallet on another device.
@@ -517,6 +524,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	let quoteSeq = 0;
 	async function refreshQuote(): Promise<Quote | null> {
 		const seq = ++quoteSeq;
+		// The form changed, so what it says about the claim is being read: keep that current.
+		void sponsor?.status();
 		const from = stores.$sourceChain.get();
 		const to = stores.$destinationChain.get();
 		stores.$quote.set(null);
@@ -753,6 +762,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 				iris,
 				chains,
 				signal: controller.signal,
+				sponsor,
 				stopAfterAttestation: options.stopAfterAttestation,
 				onUpdate: (transfer) => {
 					// The run works on the copy of the record it started with. Whether the user has
@@ -1031,9 +1041,12 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		}
 		upsert(record);
 		track(record.id);
-		if (record.status === 'readyToMint') {
+		if (record.status === 'readyToMint' && !awaitsSponsor(record)) {
 			// It may have been claimed already. Say so now, not after a press on Claim.
-			await within(LOOKUP_MS, settleClaimed(record.id));
+			await within(
+				LOOKUP_MS,
+				settleClaimed((t) => t.id === record.id && waitsAtClaim(t)),
+			);
 		} else if (record.status !== 'complete') {
 			void execute(record, { stopAfterAttestation: true }).catch(() => undefined);
 		}
@@ -1125,10 +1138,22 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		for (const cleanup of cleanups.splice(0)) cleanup();
 	}
 
+	/** An attested transfer that only needs claiming, on a route the sponsor may serve. */
+	function awaitsSponsor(record: TransferRecord): boolean {
+		if (!sponsor || !record.message || !record.attestation || record.destinationTxHash)
+			return false;
+		if (record.hidden || !(waitsAtClaim(record) || record.status === 'minting')) return false;
+		const from = chains.find((c) => c.key === record.from);
+		const to = chains.find((c) => c.key === record.to);
+		return !!from && to?.ecosystem === 'sui' && !sponsor.denies(from.domain);
+	}
+
 	// Pick up transfers interrupted by a reload: keep polling for attestations, but stop short
-	// of the mint, which needs the user's wallet (the widget shows Claim). Skip anything another
-	// kit on the page, or another tab, is already driving. A tab that died without releasing its
-	// claim holds it a little longer, so look again once the claims seen here have lapsed.
+	// of the mint, which needs the user's wallet (the widget shows Claim). With a sponsor, one
+	// that only needs claiming is picked up too, whatever became of the last attempt: the service
+	// has no watcher, so nothing else will send it there. Skip anything another kit on the page,
+	// or another tab, is already driving. A tab that died without releasing its claim holds it a
+	// little longer, so look again once the claims seen here have lapsed.
 	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
 	cleanups.push(() => clearTimeout(resumeTimer));
 	function resumeInterrupted() {
@@ -1141,7 +1166,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 				// Failed while waiting for the attestation (e.g. an old timeout or a network
 				// outage): the burn was sent, so keep watching for it.
 				(record.status === 'failed' && !!record.sourceTxHash && !record.attestation);
-			if (!interrupted || RUNNING.has(runKey(record.id))) continue;
+			if (!(interrupted || awaitsSponsor(record)) || RUNNING.has(runKey(record.id))) continue;
 			const holder = leaseHolder(record.id);
 			if (holder && holder.owner !== PAGE_ID) {
 				lookAgainAt = Math.max(lookAgainAt, holder.until);
@@ -1158,28 +1183,82 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	}
 	resumeInterrupted();
 
+	function waitsAtClaim(record: TransferRecord) {
+		return record.status === 'readyToMint' || record.status === 'failed';
+	}
+
 	/**
 	 * A transfer that is waiting to be claimed may have been claimed already: from another
 	 * device, or by someone who submitted it for the recipient. Look when the page loads, so the
 	 * card does not offer a claim that can only fail. A lookup that cannot be made changes nothing.
 	 */
-	async function settleClaimed(only?: string) {
+	async function settleClaimed(looksAt: (record: TransferRecord, to: ChainDefinition) => boolean) {
 		for (const record of readStored()) {
-			if (only && record.id !== only) continue;
+			if (destroyed) return;
 			if (!record.message || !record.attestation || record.destinationTxHash) continue;
-			if (record.status !== 'readyToMint' && record.status !== 'failed') continue;
 			const to = chains.find((c) => c.key === record.to);
-			if (!to || isRunning(record.id)) continue;
-			const claimed = await isNonceUsed(to, record.message, { dAppKit });
+			if (!to || !looksAt(record, to) || isRunning(record.id)) continue;
+			// Bounded, because a pass that hangs would hold up every pass after it.
+			const claimed = await within(LOOKUP_MS, isNonceUsed(to, record.message, { dAppKit }));
 			const latest = readStored().find((t) => t.id === record.id);
-			if (!claimed || destroyed || !latest || latest.destinationTxHash || isRunning(latest.id)) {
+			if (
+				!claimed ||
+				destroyed ||
+				!latest ||
+				latest.destinationTxHash ||
+				latest.status === 'complete' ||
+				isRunning(latest.id)
+			) {
 				continue;
 			}
 			const now = Date.now();
-			upsert({ ...latest, status: 'complete', error: undefined, completedAt: now, updatedAt: now });
+			const settled: TransferRecord = {
+				...latest,
+				status: 'complete',
+				error: undefined,
+				sponsorClaim: undefined,
+				completedAt: now,
+				updatedAt: now,
+			};
+			upsert(settled);
+			emit({ type: 'transfer:complete', transfer: settled });
 		}
 	}
-	void settleClaimed();
+
+	let settling = false;
+	async function settleOnce(looksAt: Parameters<typeof settleClaimed>[0]) {
+		if (settling) return;
+		settling = true;
+		try {
+			await settleClaimed(looksAt);
+		} finally {
+			settling = false;
+		}
+	}
+	void settleOnce(waitsAtClaim);
+
+	// A transfer into Sui can be finished by someone else while this page sits at Claim: the
+	// sponsor, another tab or another device. Keep looking for as long as anyone can see the card.
+	const settleSuiClaims = () =>
+		settleOnce((t, to) => to.ecosystem === 'sui' && t.status !== 'complete' && !t.hidden);
+	if (typeof document !== 'undefined') {
+		const page = document;
+		const whenVisible = () => {
+			if (page.visibilityState === 'visible') void settleSuiClaims();
+		};
+		const timer = setInterval(whenVisible, SETTLE_INTERVAL_MS);
+		(timer as { unref?: () => void }).unref?.();
+		page.addEventListener?.('visibilitychange', whenVisible);
+		cleanups.push(() => {
+			clearInterval(timer);
+			page.removeEventListener?.('visibilitychange', whenVisible);
+		});
+	}
+	if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+		const onFocus = () => void settleSuiClaims();
+		window.addEventListener('focus', onFocus);
+		cleanups.push(() => window.removeEventListener('focus', onFocus));
+	}
 
 	void backfillBurnTimes();
 	void refreshBalance();

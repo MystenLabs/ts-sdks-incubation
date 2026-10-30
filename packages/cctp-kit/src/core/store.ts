@@ -6,6 +6,7 @@ import type { MapStore, ReadableAtom, WritableAtom } from 'nanostores';
 import { counterpartOptionsFor, destinationsFor, findChain, suiSideFor } from '../chains/index.js';
 import type { ResolvedRoutes } from '../chains/index.js';
 import type { ChainDefinition, ChainKey } from '../chains/types.js';
+import type { SponsorStatus } from '../sponsor/client.js';
 import type { WalletAccount } from '../wallets/types.js';
 import type { Quote, TransferRecord, TransferSpeed } from './types.js';
 
@@ -44,6 +45,8 @@ export interface CctpKitStores {
 	$balance: MapStore<BalanceState>;
 	/** What is known about the destination before anything is burned. */
 	$destination: WritableAtom<DestinationState>;
+	/** What the sponsor last said about itself; null with no sponsor, or until it has answered. */
+	$sponsor: WritableAtom<SponsorStatus | null>;
 	$quote: WritableAtom<Quote | null>;
 	$quoteError: WritableAtom<string | null>;
 	/** Whether Fast Transfer can be offered for the current route; null while unknown. */
@@ -114,6 +117,7 @@ export function createStores(args: {
 	});
 	const $balance: MapStore<BalanceState> = map<BalanceState>({ source: null });
 	const $destination = atom<DestinationState>({ gas: null, recipientProblem: null });
+	const $sponsor = atom<SponsorStatus | null>(null);
 	const $quote = atom<Quote | null>(null);
 	const $quoteError = atom<string | null>(null);
 	const $fastAvailable = atom<boolean | null>(null);
@@ -169,6 +173,7 @@ export function createStores(args: {
 		$wallets,
 		$balance,
 		$destination,
+		$sponsor,
 		$quote,
 		$quoteError,
 		$fastAvailable,

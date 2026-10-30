@@ -39,6 +39,8 @@ import {
 	suiIsNonceUsed,
 } from '../engine/sui.js';
 import type { IrisClient, IrisMessage } from '../iris/client.js';
+import { sponsorServes } from '../sponsor/client.js';
+import type { SponsorClient } from '../sponsor/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { bytesToHex, hexToBytes, parseMessageV2, toBytes32 } from '../utils/bytes.js';
 import type { Hex } from '../utils/bytes.js';
@@ -49,7 +51,7 @@ import {
 	isBlockedWindow,
 	TransactionRevertedError,
 } from '../utils/errors.js';
-import { sleep } from '../utils/sleep.js';
+import { sleep, untilAborted, within } from '../utils/sleep.js';
 import type { WalletAdapters } from '../wallets/types.js';
 import type {
 	AnyDAppKit,
@@ -66,17 +68,25 @@ export interface TransferContext {
 	iris: IrisClient;
 	chains: ChainDefinition[];
 	signal?: AbortSignal;
+	/** Asked before the user's wallet for a claim on Sui, except on a Claim press. */
+	sponsor?: SponsorClient;
 	/**
 	 * Stop once the attestation is in hand (status `readyToMint`) instead of minting. Used when
-	 * resuming automatically after a reload, since the mint needs the user's wallet.
+	 * resuming automatically after a reload, since the mint needs the user's wallet. A sponsor
+	 * needs no wallet, so it is still asked.
 	 */
 	stopAfterAttestation?: boolean;
-	/** Skip the destination "nonce already used" lookup (defaults to true; tests disable it). */
+	/**
+	 * Skip the destination "nonce already used" lookup (defaults to true; tests disable it). What
+	 * a sponsor says is always checked against the chain.
+	 */
 	checkNonce?: boolean;
 	/** Attestation polling interval (defaults to 5 s). */
 	pollIntervalMs?: number;
 	/** How long to wait before asking the source chain again about a burn it could not vouch for (defaults to 15 s). */
 	confirmRetryMs?: number;
+	/** How long to wait before reading a sponsored claim's nonce again (defaults to 2 s). */
+	nonceRetryMs?: number;
 	/** Called after every state change; the caller persists and re-renders. */
 	onUpdate: (transfer: TransferRecord) => void;
 }
@@ -123,10 +133,46 @@ export async function runTransfer(
 
 		if (!transfer.destinationTxHash) {
 			ctx.signal?.throwIfAborted();
-			// Resumed on load: stop at Claim without touching the destination chain; the nonce is
-			// checked when the user actually claims.
+			const route =
+				to.ecosystem === 'sui' && ctx.sponsor && !ctx.sponsor.denies(from.domain)
+					? { to, sponsor: ctx.sponsor }
+					: undefined;
+			const reattest = async (timeoutMs?: number) => {
+				update({ status: 'attesting' });
+				await ctx.iris.reattest(bytesToHex(parseMessageV2(transfer.message!).nonce), ctx.signal);
+				const fresh = await ctx.iris.waitForAttestation(from.domain, transfer.sourceTxHash!, {
+					signal: ctx.signal,
+					intervalMs: ctx.pollIntervalMs,
+					differentFrom: transfer.attestation,
+					timeoutMs,
+				});
+				update({ message: fresh.message, attestation: fresh.attestation });
+			};
+			// Resumed on load: stop at Claim without asking the wallet; the nonce is checked when the
+			// user actually claims. A sponsor can finish it, and nothing that goes wrong on the way
+			// is a failure of the transfer: nobody asked for this run, and Claim still works.
 			if (ctx.stopAfterAttestation) {
-				if (transfer.status !== 'readyToMint') update({ status: 'readyToMint' });
+				if (!route) {
+					if (transfer.status !== 'readyToMint') update({ status: 'readyToMint' });
+					return transfer;
+				}
+				// Before the lookup is awaited, so the card never offers Claim while it runs.
+				update({ status: 'minting', sponsorClaim: 'pending' });
+				try {
+					if (await readSuiNonce(route.to, transfer.message!, ctx)) {
+						update({ status: 'complete', sponsorClaim: undefined, completedAt: Date.now() });
+						return transfer;
+					}
+					if (isExpiredOnSui(transfer.message!)) {
+						await reattest(REATTEST_LIMIT_MS);
+						update({ status: 'minting' });
+					}
+					if (await sponsorPhase(transfer, from, route, ctx, update)) return transfer;
+				} catch (error) {
+					if (ctx.signal?.aborted) throw error;
+					update({ sponsorClaim: 'unavailable' });
+				}
+				update({ status: 'readyToMint' });
 				return transfer;
 			}
 			// A Sui wallet that signs in a window of its own can only open it while the press
@@ -135,23 +181,28 @@ export async function runTransfer(
 			// looked at when the page loads, and here only if the claim then fails.
 			const inPress =
 				startedAtClaim && to.ecosystem === 'sui' && !isExpiredOnSui(transfer.message!);
+			const sponsored = inPress ? undefined : route;
+			// Before the lookups are awaited, so the card never offers Claim while they run. A
+			// `pending` that is still here was left by a page that went away: it is not at work now.
+			if (sponsored) update({ status: 'minting', sponsorClaim: 'pending' });
+			else if (transfer.sponsorClaim === 'pending') update({ sponsorClaim: undefined });
+			// Bounded for the sponsor: a node that does not answer must not leave the card saying
+			// the claim is being made while nothing is.
 			const claimed = () =>
-				ctx.checkNonce === false ? false : isNonceUsed(to, transfer.message!, ctx);
+				ctx.checkNonce === false
+					? false
+					: sponsored
+						? readSuiNonce(sponsored.to, transfer.message!, ctx)
+						: isNonceUsed(to, transfer.message!, ctx);
 			if (!inPress && (await claimed())) {
-				update({ status: 'complete', completedAt: Date.now() });
+				update({ status: 'complete', sponsorClaim: undefined, completedAt: Date.now() });
 				return transfer;
 			}
-			if (to.ecosystem === 'sui' && isExpiredOnSui(transfer.message!)) {
-				update({ status: 'attesting' });
-				await ctx.iris.reattest(bytesToHex(parseMessageV2(transfer.message!).nonce), ctx.signal);
-				const fresh = await ctx.iris.waitForAttestation(from.domain, transfer.sourceTxHash!, {
-					signal: ctx.signal,
-					intervalMs: ctx.pollIntervalMs,
-					differentFrom: transfer.attestation,
-				});
-				update({ message: fresh.message, attestation: fresh.attestation });
-			}
+			if (to.ecosystem === 'sui' && isExpiredOnSui(transfer.message!)) await reattest();
 			update({ status: 'minting' });
+			if (sponsored && (await sponsorPhase(transfer, from, sponsored, ctx, update))) {
+				return transfer;
+			}
 			let destinationTxHash: string;
 			try {
 				destinationTxHash = await mint(transfer, to, ctx, update);
@@ -181,7 +232,11 @@ export async function runTransfer(
 		// A wallet fails on the source chain until the burn is sent, and on the destination once
 		// there is something to claim.
 		const chain = transfer.attestation ? to : transfer.sourceTxHash ? undefined : from;
-		update({ status: 'failed', error: describeError(error, { chain }) });
+		update({
+			status: 'failed',
+			error: describeError(error, { chain }),
+			...(transfer.sponsorClaim === 'pending' ? { sponsorClaim: 'unavailable' as const } : {}),
+		});
 		throw error;
 	}
 }
@@ -627,6 +682,83 @@ async function executeSui(
 		.core.waitForTransaction({ digest })
 		.catch(() => undefined);
 	return digest;
+}
+
+// A claim the service just made can take a moment to show on the node the page reads from.
+const SPONSOR_WAIT_MS = 15_000;
+const NONCE_READS = 4;
+const NONCE_READ_MS = 8_000;
+// Nobody is waiting on a run that resumed by itself, and while it waits the card offers nothing.
+const REATTEST_LIMIT_MS = 120_000;
+
+/**
+ * Have the sponsor claim, and complete the transfer only once the chain shows the message spent:
+ * the service's word alone would hide a claim that never happened behind a transfer shown as
+ * done, and the USDC would not arrive. False leaves the transfer for the wallet.
+ */
+async function sponsorPhase(
+	transfer: TransferRecord,
+	from: ChainDefinition,
+	{ to, sponsor }: { to: SuiChainDefinition; sponsor: SponsorClient },
+	ctx: TransferContext,
+	update: (patch: Partial<TransferRecord>) => TransferRecord,
+): Promise<boolean> {
+	if (!sponsorServes(await sponsor.status(ctx.signal), from, to)) {
+		update({ sponsorClaim: 'unavailable' });
+		return false;
+	}
+	const { message, attestation } = transfer;
+	const answer = await sponsor.claim(message!, attestation!, ctx.signal);
+	const digest = answer.status === 'claimed' ? answer.digest : undefined;
+	const found = digest !== undefined && (await transactionFound(to, digest, ctx));
+	// Having given up says nothing about the chain: an attempt that timed out may have landed.
+	const reads = answer.status === 'gaveUp' ? 1 : NONCE_READS;
+	for (let read = 1; read <= reads; read++) {
+		if (read > 1) await sleep(ctx.nonceRetryMs ?? 2_000, ctx.signal);
+		if (await readSuiNonce(to, message!, ctx)) {
+			update({
+				status: 'complete',
+				sponsorClaim: undefined,
+				destinationTxHash: found ? digest : undefined,
+				completedAt: Date.now(),
+			});
+			return true;
+		}
+	}
+	// What follows is the wallet, and a kit that was torn down must not reach it.
+	ctx.signal?.throwIfAborted();
+	update({ sponsorClaim: 'unavailable' });
+	return false;
+}
+
+/**
+ * Whether a transaction that succeeded has that digest. No failure of the wait is fatal, and no
+ * `signal` goes to the SDK: it needs `AbortSignal.any` to use one, which older Safari lacks.
+ */
+async function transactionFound(
+	to: SuiChainDefinition,
+	digest: string,
+	ctx: TransferContext,
+): Promise<boolean> {
+	const wait = async () =>
+		ctx.dAppKit
+			.getClient(to.suiNetwork)
+			.core.waitForTransaction({ digest, timeout: SPONSOR_WAIT_MS });
+	const found = await untilAborted(within(SPONSOR_WAIT_MS, wait()), ctx.signal);
+	return !!found && found.$kind !== 'FailedTransaction';
+}
+
+/**
+ * What the chain says of a message's nonce, or null when it could not tell. Unlike `isNonceUsed`
+ * this does not turn "could not tell" into "not used", does not hold the run up for longer than
+ * a slow node deserves, and stops with the run.
+ */
+function readSuiNonce(
+	to: SuiChainDefinition,
+	messageHex: string,
+	ctx: TransferContext,
+): Promise<boolean | null> {
+	return untilAborted(within(NONCE_READ_MS, isNonceUsedUnsafe(to, messageHex, ctx)), ctx.signal);
 }
 
 /** Best-effort "already minted?" check; any failure means "assume not", never a failed transfer. */

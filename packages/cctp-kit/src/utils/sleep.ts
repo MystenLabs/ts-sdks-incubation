@@ -16,6 +16,17 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
+/** The outcome of `work`, or the signal's reason as soon as it aborts, even if `work` ignores it. */
+export function untilAborted<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return work;
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		if (signal.aborted) onAbort();
+		else signal.addEventListener('abort', onAbort, { once: true });
+		work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+	});
+}
+
 /** The result of `work`, or null when it fails or takes longer than `ms`. For lookups nothing may wait on. */
 export async function within<T>(ms: number, work: Promise<T>): Promise<T | null> {
 	const giveUp = new AbortController();

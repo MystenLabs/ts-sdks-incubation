@@ -32,6 +32,15 @@ export type { TransferContext } from './core/transfer.js';
 export * from './chains/index.js';
 
 export { IrisClient, IrisError, IRIS_BASE_URL, isAttested } from './iris/client.js';
+export { classifySponsorResponse, SponsorClient, sponsorServes } from './sponsor/client.js';
+export type {
+	SponsorAnswer,
+	SponsorClaimResult,
+	SponsorClientOptions,
+	SponsorConfig,
+	SponsorStatus,
+	SponsorVerdict,
+} from './sponsor/client.js';
 export {
 	CctpKitError,
 	describeError,
