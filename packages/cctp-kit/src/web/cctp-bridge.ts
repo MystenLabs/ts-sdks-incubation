@@ -33,6 +33,12 @@ const STEPS: { key: string; label: string; statuses: TransferStatus[] }[] = [
 	{ key: 'mint', label: 'Mint', statuses: ['readyToMint', 'minting'] },
 ];
 
+const SPONSOR_NOTICES = {
+	unavailable:
+		'This could not be claimed for you. Claim it from a Sui wallet that holds SUI for gas, or wait and it will be tried again.',
+	refused: 'This could not be claimed for you. Claim it from a Sui wallet that holds SUI for gas.',
+};
+
 /**
  * The USDC bridge widget. Sui is always on one side of the form and is fixed to the
  * network of the host's dapp-kit instance; the other side is a chain picker.
@@ -463,10 +469,22 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 				</div>
 				<div class="row">
 					<span>Then</span>
-					<span>Mint on ${kit.stores.$destinationChain.get().name}, signed by you</span>
+					<span>${this.claimStep(kit)}</span>
 				</div>
 			</div>
 		`;
+	}
+
+	private claimStep(kit: CctpKit) {
+		const { name } = kit.stores.$destinationChain.get();
+		switch (kit.claimer()) {
+			case 'sponsor':
+				return `Claimed on ${name} for you`;
+			case 'executor':
+				return `Mint on ${name}`;
+			case 'wallet':
+				return `Mint on ${name}, signed by you`;
+		}
 	}
 
 	/** Transfers that are not finished and not dismissed, the active one first. */
@@ -548,13 +566,19 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 			(transfer.status === 'pending' ||
 				transfer.status === 'approving' ||
 				transfer.status === 'burning');
-		const canResume = failed || transfer.status === 'readyToMint' || interrupted || unstarted;
+		// A sponsor that is at work needs nothing from anyone, and a press could only get in its way.
+		const sponsoring = running && transfer.sponsorClaim === 'pending';
+		const canResume =
+			!sponsoring && (failed || transfer.status === 'readyToMint' || interrupted || unstarted);
 		const canRemove = neverBurned(transfer) && !running;
+		const sponsorState = kit.sponsorState(transfer);
 		const statusLabel = complete
 			? 'Complete'
 			: failed
 				? 'Needs attention'
-				: (STEP_LABELS[transfer.status as keyof typeof STEP_LABELS] ?? '');
+				: sponsorState === 'claiming'
+					? `Claiming on ${to?.name ?? transfer.to} for you…`
+					: (STEP_LABELS[transfer.status as keyof typeof STEP_LABELS] ?? '');
 
 		return html`
 			<div class="transfer" part="transfer">
@@ -601,6 +625,11 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					})}
 				</ol>
 				${failed && transfer.error ? html`<p class="error">${transfer.error}</p>` : nothing}
+				${
+					sponsorState === 'unavailable' || sponsorState === 'refused'
+						? html`<p class="notice" part="notice">${SPONSOR_NOTICES[sponsorState]}</p>`
+						: nothing
+				}
 				${
 					canResume
 						? html`<div class="actions">
