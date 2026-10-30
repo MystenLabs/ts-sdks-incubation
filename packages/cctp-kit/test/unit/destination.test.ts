@@ -8,7 +8,7 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { atom } from 'nanostores';
 import { describe, expect, it, vi } from 'vitest';
 import { createCctpKit } from '../../src/core/index.js';
-import type { AnyDAppKit } from '../../src/core/types.js';
+import type { AnyDAppKit, CctpKitConfig } from '../../src/core/types.js';
 import { TOKEN_PROGRAM_ID } from '../../src/engine/solana.js';
 import { createInMemoryStorage } from '../../src/utils/storage.js';
 
@@ -29,7 +29,14 @@ const noWallet = (ecosystem: 'evm' | 'solana') => ({
 });
 
 /** A kit with a Sui wallet holding 5 USDC and `sui` of SUI; no EVM or Solana wallet. */
-function kitWith(options: { sui?: string | Error; direction: 'inflow' | 'outflow'; to?: string }) {
+function kitWith(options: {
+	sui?: string | Error;
+	direction: 'inflow' | 'outflow';
+	to?: string;
+	/** Connected Sui account; `null` for none. */
+	account?: string | null;
+	config?: Partial<CctpKitConfig>;
+}) {
 	const getBalance = vi.fn(async ({ coinType }: { coinType: string }) => {
 		if (coinType !== '0x2::sui::SUI') return { balance: { balance: '5000000' } };
 		if (options.sui instanceof Error) throw options.sui;
@@ -38,7 +45,9 @@ function kitWith(options: { sui?: string | Error; direction: 'inflow' | 'outflow
 	return createCctpKit({
 		dAppKit: {
 			stores: {
-				$connection: atom({ account: { address: SUI_ADDRESS } }),
+				$connection: atom({
+					account: options.account === null ? null : { address: options.account ?? SUI_ADDRESS },
+				}),
 				$currentNetwork: atom('mainnet'),
 			},
 			getClient: () => ({ core: { getBalance } }),
@@ -51,6 +60,7 @@ function kitWith(options: { sui?: string | Error; direction: 'inflow' | 'outflow
 			fetch: vi.fn<typeof fetch>(async () => json(400, { error: 'no quote in this test' })),
 		},
 		wallets: { evm: noWallet('evm') as never, solana: noWallet('solana') as never },
+		...options.config,
 	});
 }
 
@@ -75,6 +85,44 @@ describe('gas on the destination', () => {
 		expect(unknown.warnings()).toEqual([]);
 		funded.destroy();
 		unknown.destroy();
+	});
+});
+
+describe("a Sui claim the host's executor submits", () => {
+	const executeTransaction = vi.fn();
+
+	it('asks for no SUI in the connected wallet, or a wallet at a typed recipient', async () => {
+		const empty = kitWith({
+			direction: 'inflow',
+			sui: '0',
+			config: { sui: { executeTransaction } },
+		});
+		const typed = kitWith({
+			direction: 'inflow',
+			account: null,
+			config: { sui: { executeTransaction } },
+		});
+		typed.setRecipient(SUI_ADDRESS);
+		await settle();
+		expect(empty.warnings()).toEqual([]);
+		expect(typed.warnings()).toEqual([]);
+		expect(executeTransaction).not.toHaveBeenCalled();
+		empty.destroy();
+		typed.destroy();
+	});
+
+	it('still warns about gas on a destination it does not submit to', async () => {
+		const kit = kitWith({
+			direction: 'outflow',
+			to: 'avalanche',
+			config: { sui: { executeTransaction } },
+		});
+		kit.setRecipient(EVM_ADDRESS);
+		await settle();
+		expect(kit.warnings()).toEqual([
+			'USDC does not arrive on Avalanche by itself. After the burn, it has to be claimed on Avalanche from a wallet that holds AVAX.',
+		]);
+		kit.destroy();
 	});
 });
 

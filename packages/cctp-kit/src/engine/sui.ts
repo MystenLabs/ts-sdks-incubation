@@ -3,14 +3,15 @@
 
 import { bcs } from '@mysten/sui/bcs';
 import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
+import type { TransactionObjectArgument } from '@mysten/sui/transactions';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { SuiChainDefinition } from '../chains/types.js';
 import { fromBase64 } from '@mysten/sui/utils';
 import { bytesToHex, isMessageV2For } from '../utils/bytes.js';
 
 export interface SuiDepositForBurnParams {
-	sender: string;
-	amount: bigint;
+	/** Burned whole, so it must hold exactly the amount to send. */
+	coin: TransactionObjectArgument;
 	destinationDomain: number;
 	/** 32-byte recipient. */
 	mintRecipient: Uint8Array;
@@ -22,71 +23,130 @@ export interface SuiDepositForBurnParams {
 }
 
 /**
- * Build the 3-call CCTP v2 burn PTB:
+ * The 3-call CCTP v2 burn, as a transaction thunk for `tx.add()`:
  *   token_messenger_minter_v2::deposit_for_burn::deposit_for_burn
  *   → stablecoin_handler::handler::burn
  *   → token_messenger_minter_v2::deposit_for_burn::complete_burn
  */
+export function suiDepositForBurn(chain: SuiChainDefinition, params: SuiDepositForBurnParams) {
+	return (tx: Transaction): void => {
+		const { packages, objects } = chain;
+		const usdcType = chain.usdcCoinType;
+
+		const [burnReceipt, returnedCoin] = tx.moveCall({
+			target: `${packages.tokenMessengerMinterV2}::deposit_for_burn::deposit_for_burn`,
+			arguments: [
+				params.coin,
+				tx.pure.u32(params.destinationDomain),
+				tx.pure.address(bytesToHex(params.mintRecipient)),
+				tx.pure.address(params.destinationCaller ? bytesToHex(params.destinationCaller) : '0x0'),
+				tx.pure.u256(params.maxFee),
+				tx.pure.u32(params.minFinalityThreshold),
+				tx.pure.vector('u8', Array.from(params.hookData ?? [])),
+				tx.object(objects.tokenMessengerMinterState),
+			],
+			typeArguments: [usdcType],
+		});
+
+		const [completeBurnTicket] = tx.moveCall({
+			target: `${packages.stablecoinHandler}::handler::burn`,
+			arguments: [
+				tx.object(objects.stablecoinHandlerState),
+				burnReceipt,
+				returnedCoin,
+				tx.object(objects.denyList),
+				tx.object(objects.treasury),
+			],
+		});
+
+		tx.moveCall({
+			target: `${packages.tokenMessengerMinterV2}::deposit_for_burn::complete_burn`,
+			arguments: [
+				completeBurnTicket,
+				tx.object(objects.tokenMessengerMinterState),
+				tx.object(objects.messageTransmitterState),
+			],
+			typeArguments: [usdcType, `${packages.stablecoinHandler}::handler::Auth`],
+		});
+	};
+}
+
+export interface SuiBurnTransactionParams extends Omit<SuiDepositForBurnParams, 'coin'> {
+	sender: string;
+	/** Base units, taken from the sender's own USDC. */
+	amount: bigint;
+}
+
+/** A transaction that burns `amount` of the sender's own USDC. */
 export function buildSuiBurnTransaction(
 	chain: SuiChainDefinition,
-	params: SuiDepositForBurnParams,
+	{ sender, amount, ...burn }: SuiBurnTransactionParams,
 ): Transaction {
 	const tx = new Transaction();
-	tx.setSender(params.sender);
-
-	const coin = tx.add(coinWithBalance({ type: chain.usdcCoinType, balance: params.amount }));
-	const { packages, objects } = chain;
-	const usdcType = chain.usdcCoinType;
-
-	const [burnReceipt, returnedCoin] = tx.moveCall({
-		target: `${packages.tokenMessengerMinterV2}::deposit_for_burn::deposit_for_burn`,
-		arguments: [
-			coin,
-			tx.pure.u32(params.destinationDomain),
-			tx.pure.address(bytesToHex(params.mintRecipient)),
-			tx.pure.address(params.destinationCaller ? bytesToHex(params.destinationCaller) : '0x0'),
-			tx.pure.u256(params.maxFee),
-			tx.pure.u32(params.minFinalityThreshold),
-			tx.pure.vector('u8', Array.from(params.hookData ?? [])),
-			tx.object(objects.tokenMessengerMinterState),
-		],
-		typeArguments: [usdcType],
-	});
-
-	const [completeBurnTicket] = tx.moveCall({
-		target: `${packages.stablecoinHandler}::handler::burn`,
-		arguments: [
-			tx.object(objects.stablecoinHandlerState),
-			burnReceipt,
-			returnedCoin,
-			tx.object(objects.denyList),
-			tx.object(objects.treasury),
-		],
-	});
-
-	tx.moveCall({
-		target: `${packages.tokenMessengerMinterV2}::deposit_for_burn::complete_burn`,
-		arguments: [
-			completeBurnTicket,
-			tx.object(objects.tokenMessengerMinterState),
-			tx.object(objects.messageTransmitterState),
-		],
-		typeArguments: [usdcType, `${packages.stablecoinHandler}::handler::Auth`],
-	});
-
+	tx.setSender(sender);
+	const coin = tx.add(coinWithBalance({ type: chain.usdcCoinType, balance: amount }));
+	tx.add(suiDepositForBurn(chain, { ...burn, coin }));
 	return tx;
 }
 
 /**
- * Build the 4-call CCTP v2 receive PTB:
+ * The 4-call CCTP v2 receive, as a transaction thunk for `tx.add()`:
  *   message_transmitter_v2::receive_message::receive_message
  *   → token_messenger_minter_v2::handle_receive_message::prepare_mint
  *   → stablecoin_handler::handler::mint
  *   → token_messenger_minter_v2::handle_receive_message::complete_mint
  *
- * Anyone may submit this when the message's destination caller is zero; USDC is minted to
- * the recipient encoded in the message, not to the transaction sender.
+ * Anyone may submit this when the message's destination caller is zero. Circle's handler sends the
+ * USDC to the message's recipient, so later calls in the transaction cannot use it.
  */
+export function suiReceiveMessage(
+	chain: SuiChainDefinition,
+	message: Uint8Array,
+	attestation: Uint8Array,
+) {
+	return (tx: Transaction): void => {
+		const { packages, objects } = chain;
+		const usdcType = chain.usdcCoinType;
+
+		const [receipt] = tx.moveCall({
+			target: `${packages.messageTransmitterV2}::receive_message::receive_message`,
+			arguments: [
+				tx.pure.vector('u8', Array.from(message)),
+				tx.pure.vector('u8', Array.from(attestation)),
+				tx.object(objects.messageTransmitterState),
+			],
+		});
+
+		const [mintReceipt] = tx.moveCall({
+			target: `${packages.tokenMessengerMinterV2}::handle_receive_message::prepare_mint`,
+			arguments: [receipt, tx.object(objects.tokenMessengerMinterState), tx.object(objects.clock)],
+			typeArguments: [usdcType],
+		});
+
+		const [completeMintTicket] = tx.moveCall({
+			target: `${packages.stablecoinHandler}::handler::mint`,
+			arguments: [
+				tx.object(objects.stablecoinHandlerState),
+				mintReceipt,
+				tx.object(objects.tokenMessengerMinterState),
+				tx.object(objects.treasury),
+				tx.object(objects.denyList),
+			],
+		});
+
+		tx.moveCall({
+			target: `${packages.tokenMessengerMinterV2}::handle_receive_message::complete_mint`,
+			arguments: [
+				completeMintTicket,
+				tx.object(objects.tokenMessengerMinterState),
+				tx.object(objects.messageTransmitterState),
+			],
+			typeArguments: [usdcType, `${packages.stablecoinHandler}::handler::Auth`],
+		});
+	};
+}
+
+/** A transaction that claims one attested message on Sui. */
 export function buildSuiReceiveTransaction(
 	chain: SuiChainDefinition,
 	message: Uint8Array,
@@ -95,45 +155,7 @@ export function buildSuiReceiveTransaction(
 ): Transaction {
 	const tx = new Transaction();
 	if (sender) tx.setSender(sender);
-	const { packages, objects } = chain;
-	const usdcType = chain.usdcCoinType;
-
-	const [receipt] = tx.moveCall({
-		target: `${packages.messageTransmitterV2}::receive_message::receive_message`,
-		arguments: [
-			tx.pure.vector('u8', Array.from(message)),
-			tx.pure.vector('u8', Array.from(attestation)),
-			tx.object(objects.messageTransmitterState),
-		],
-	});
-
-	const [mintReceipt] = tx.moveCall({
-		target: `${packages.tokenMessengerMinterV2}::handle_receive_message::prepare_mint`,
-		arguments: [receipt, tx.object(objects.tokenMessengerMinterState), tx.object(objects.clock)],
-		typeArguments: [usdcType],
-	});
-
-	const [completeMintTicket] = tx.moveCall({
-		target: `${packages.stablecoinHandler}::handler::mint`,
-		arguments: [
-			tx.object(objects.stablecoinHandlerState),
-			mintReceipt,
-			tx.object(objects.tokenMessengerMinterState),
-			tx.object(objects.treasury),
-			tx.object(objects.denyList),
-		],
-	});
-
-	tx.moveCall({
-		target: `${packages.tokenMessengerMinterV2}::handle_receive_message::complete_mint`,
-		arguments: [
-			completeMintTicket,
-			tx.object(objects.tokenMessengerMinterState),
-			tx.object(objects.messageTransmitterState),
-		],
-		typeArguments: [usdcType, `${packages.stablecoinHandler}::handler::Auth`],
-	});
-
+	tx.add(suiReceiveMessage(chain, message, attestation));
 	return tx;
 }
 

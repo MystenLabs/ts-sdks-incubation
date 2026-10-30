@@ -51,10 +51,17 @@ import {
 } from '../utils/errors.js';
 import { sleep } from '../utils/sleep.js';
 import type { WalletAdapters } from '../wallets/types.js';
-import type { AnyDAppKit, TransferRecord } from './types.js';
+import type {
+	AnyDAppKit,
+	SuiExecutionRequest,
+	SuiTransactionExecutor,
+	TransferRecord,
+} from './types.js';
 
 export interface TransferContext {
 	dAppKit: AnyDAppKit;
+	/** `sui.executeTransaction` from the config. */
+	executeSuiTransaction?: SuiTransactionExecutor;
 	wallets: () => Promise<WalletAdapters>;
 	iris: IrisClient;
 	chains: ChainDefinition[];
@@ -313,7 +320,9 @@ async function burn(
 				maxFee,
 				minFinalityThreshold,
 			});
-			await executeSui(ctx, from, tx, (digest) => update({ sourceTxHash: digest }));
+			await executeSui(ctx, from, { kind: 'burn', transaction: tx, transfer }, (digest) =>
+				update({ sourceTxHash: digest }),
+			);
 			return;
 		}
 		case 'evm': {
@@ -529,11 +538,15 @@ async function mint(
 	switch (to.ecosystem) {
 		case 'sui': {
 			const account = ctx.dAppKit.stores.$connection.get().account;
-			if (!account) throw new CctpKitError('Connect a Sui wallet to claim.');
-			const tx = buildSuiReceiveTransaction(to, message, attestation, account.address);
+			if (!account && !ctx.executeSuiTransaction) {
+				throw new CctpKitError('Connect a Sui wallet to claim.');
+			}
+			const tx = buildSuiReceiveTransaction(to, message, attestation, account?.address);
 			// Keep the digest the moment there is one. The message is spent from here on, so a
 			// claim that is forgotten can never be made again.
-			return executeSui(ctx, to, tx, (digest) => update({ destinationTxHash: digest }));
+			return executeSui(ctx, to, { kind: 'claim', transaction: tx, transfer }, (digest) =>
+				update({ destinationTxHash: digest }),
+			);
 		}
 		case 'evm': {
 			const wallets = await ctx.wallets();
@@ -586,17 +599,21 @@ async function mint(
 }
 
 /**
- * Sign and execute through dapp-kit on the chain's own network (not whatever network
- * dapp-kit happens to be on), surfacing Move aborts as readable errors.
+ * Sign and execute on the chain's own network, through the host's executor or dapp-kit's wallet.
+ * Nothing is awaited first, so a wallet window can still open inside the press.
  */
 async function executeSui(
 	ctx: TransferContext,
 	chain: SuiChainDefinition,
-	tx: ReturnType<typeof buildSuiBurnTransaction>,
+	request: Omit<SuiExecutionRequest, 'network'>,
 	onDigest?: (digest: string) => void,
 ): Promise<string> {
 	const network = chain.suiNetwork;
-	const result = await ctx.dAppKit.signAndExecuteTransaction({ transaction: tx, network });
+	const result = ctx.executeSuiTransaction
+		? await ctx.executeSuiTransaction({ ...request, network })
+		: await ctx.dAppKit.signAndExecuteTransaction({ transaction: request.transaction, network });
+	// A transaction that ran and failed burned or claimed nothing. Its digest is not kept: as a
+	// burn's it would wait forever for an attestation, as a claim's it would read as complete.
 	if (result.$kind === 'FailedTransaction') {
 		const error = result.FailedTransaction.status.error;
 		throw new Error(error?.message ?? 'Sui transaction failed');

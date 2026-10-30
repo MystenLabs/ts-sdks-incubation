@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { DAppKit } from '@mysten/dapp-kit-core';
+import type { SuiClientTypes } from '@mysten/sui/client';
+import type { Transaction } from '@mysten/sui/transactions';
 import type { ChainFilter, ChainIconOverrides, Direction, RpcOverrides } from '../chains/index.js';
-import type { ChainDefinition, ChainKey, Network } from '../chains/types.js';
+import type { ChainDefinition, ChainKey, Network, SuiChainDefinition } from '../chains/types.js';
 import type { IrisClientOptions } from '../iris/client.js';
 import type { StateStorage } from '../utils/storage.js';
 import type { EvmWalletAdapter, SolanaWalletAdapter, WalletAdapters } from '../wallets/types.js';
@@ -36,6 +38,31 @@ export interface CctpKitWalletConfig {
 	layer?: WalletLayer;
 }
 
+export interface SuiExecutionRequest {
+	kind: 'burn' | 'claim';
+	/** A claim made with no wallet connected has no sender yet: set the account that pays. */
+	transaction: Transaction;
+	/** The kit's Sui network, which need not be dapp-kit's current one. */
+	network: SuiChainDefinition['suiNetwork'];
+	transfer: TransferRecord;
+}
+
+/**
+ * Sign and execute, and resolve with the result as the SDK returns it (`signAndExecuteTransaction`,
+ * `core.executeTransaction`, the transaction executors). A `FailedTransaction` fails the step.
+ */
+export type SuiTransactionExecutor = (
+	request: SuiExecutionRequest,
+) => Promise<SuiClientTypes.TransactionResult>;
+
+export interface CctpKitSuiConfig {
+	/**
+	 * Replaces dapp-kit's `signAndExecuteTransaction` for the kit's Sui burns and claims. Anyone
+	 * may submit a claim, so with an executor a claim needs no connected wallet.
+	 */
+	executeTransaction?: SuiTransactionExecutor;
+}
+
 export interface CctpKitConfig {
 	/** The host app's dapp-kit instance; the widget never mounts its own Sui wallet connection. */
 	dAppKit: AnyDAppKit;
@@ -58,6 +85,9 @@ export interface CctpKitConfig {
 	/** Override chain icons (URL or data URI); `null` renders a text monogram instead. */
 	icons?: ChainIconOverrides;
 	wallets?: CctpKitWalletConfig;
+	sui?: CctpKitSuiConfig;
+	/** `manual` stops transfers at `readyToMint` until `kit.claim(id)`. Defaults to `auto`. */
+	claim?: 'auto' | 'manual';
 	iris?: IrisClientOptions;
 	defaults?: {
 		from?: ChainKey;

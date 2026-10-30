@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ClientWithCoreApi } from '@mysten/sui/client';
-import type { Transaction } from '@mysten/sui/transactions';
+import { Transaction } from '@mysten/sui/transactions';
 import { describe, expect, it, vi } from 'vitest';
 import { SUI_MAINNET } from '../../src/chains/sui.js';
 import {
 	buildSuiBurnTransaction,
 	buildSuiReceiveTransaction,
 	getSuiTransactionTime,
+	suiDepositForBurn,
 	suiIsNonceUsed,
 } from '../../src/engine/sui.js';
 import { toBytes32 } from '../../src/utils/bytes.js';
@@ -61,6 +62,30 @@ describe('Sui CCTP v2 PTB builders', () => {
 			`${packages.stablecoinHandler}::handler::mint`,
 			`${packages.tokenMessengerMinterV2}::handle_receive_message::complete_mint`,
 		]);
+	});
+
+	it('burns the coin it is given instead of taking one from the sender', () => {
+		const tx = new Transaction();
+		const [coin] = tx.moveCall({
+			target: `0x${'12'.repeat(32)}::account::withdraw`,
+			typeArguments: [SUI_MAINNET.usdcCoinType],
+		});
+		tx.add(
+			suiDepositForBurn(SUI_MAINNET, {
+				coin: coin!,
+				destinationDomain: base.domain,
+				mintRecipient: toBytes32('0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', base),
+				maxFee: 0n,
+				minFinalityThreshold: 2000,
+			}),
+		);
+		const commands = tx.getData().commands;
+		expect(commands[1]!.MoveCall!.function).toBe('deposit_for_burn');
+		expect(commands[1]!.MoveCall!.arguments[0]).toEqual({
+			$kind: 'NestedResult',
+			NestedResult: [0, 0],
+		});
+		expect(commands.some((c) => c.$kind === '$Intent')).toBe(false);
 	});
 });
 

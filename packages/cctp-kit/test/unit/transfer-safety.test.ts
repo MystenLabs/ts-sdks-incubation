@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChainRegistry } from '../../src/chains/index.js';
 import { SOLANA_MAINNET } from '../../src/chains/solana.js';
 import { isExpiredOnSui, runTransfer } from '../../src/core/transfer.js';
-import type { AnyDAppKit, TransferRecord } from '../../src/core/types.js';
+import type { AnyDAppKit, SuiExecutionRequest, TransferRecord } from '../../src/core/types.js';
 import * as evm from '../../src/engine/evm.js';
 import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '../../src/engine/solana.js';
 import { IrisClient } from '../../src/iris/client.js';
@@ -954,6 +954,115 @@ describe('a claim on Sui', () => {
 			expect(result.status).toBe('complete');
 			expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
 		}
+	});
+
+	describe("through the host's executor", () => {
+		const HOST_DIGEST = '8yW3bnTb1bvW9WqZBb8YjVt1g1q7RkFzvVr2nEwqM9Lz';
+		const executor = () =>
+			vi.fn(async (_request: SuiExecutionRequest) => ({
+				$kind: 'Transaction' as const,
+				Transaction: { digest: HOST_DIGEST } as never,
+			}));
+		/** What the SDK returns for a transaction that ran and aborted. */
+		const aborted = () =>
+			vi.fn(async (_request: SuiExecutionRequest) => ({
+				$kind: 'FailedTransaction' as const,
+				FailedTransaction: {
+					digest: HOST_DIGEST,
+					status: { success: false, error: { message: 'MoveAbort in the CCTP package' } },
+				} as never,
+			}));
+
+		it('is signed and executed by the host instead of the wallet, and keeps its digest', async () => {
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+				core: { simulateTransaction: nonceIs(false) },
+			});
+			const executeSuiTransaction = executor();
+			const run = runTransfer(claimable(), { ...context(dAppKit), executeSuiTransaction });
+			// Called inside the press, like a wallet.
+			expect(executeSuiTransaction).toHaveBeenCalledTimes(1);
+			expect(await run).toMatchObject({ status: 'complete', destinationTxHash: HOST_DIGEST });
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			const request = executeSuiTransaction.mock.calls[0]![0];
+			expect(request).toMatchObject({ kind: 'claim', network: 'mainnet', transfer: { id: 't' } });
+			expect(request.transaction.getData().sender).toBe(SUI_ADDRESS);
+		});
+
+		it('needs no connected wallet, since anyone may submit the claim', async () => {
+			const { dAppKit } = suiDAppKit({ account: null });
+			const executeSuiTransaction = executor();
+			const result = await runTransfer(claimable(), { ...context(dAppKit), executeSuiTransaction });
+			expect(result.status).toBe('complete');
+			expect(executeSuiTransaction.mock.calls[0]![0].transaction.getData().sender).toBeNull();
+			await expect(runTransfer(claimable(), context(dAppKit))).rejects.toThrow(
+				'Connect a Sui wallet to claim.',
+			);
+		});
+
+		it('fails, and can be claimed again, when the claim ran and aborted', async () => {
+			const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+			const updates: TransferRecord[] = [];
+			await expect(
+				runTransfer(claimable(), {
+					...context(dAppKit, updates),
+					executeSuiTransaction: aborted(),
+				}),
+			).rejects.toThrow('MoveAbort in the CCTP package');
+			// Not complete, and no digest that would make it look claimed.
+			expect(updates.at(-1)).toMatchObject({ status: 'failed' });
+			expect(updates.some((t) => t.destinationTxHash || t.status === 'complete')).toBe(false);
+			expect(updates.at(-1)!.attestation).toBeTruthy();
+		});
+
+		const suiBurn = () =>
+			record({ from: 'sui', to: 'ethereum', sender: SUI_ADDRESS, recipient: EVM_ADDRESS });
+		const attested = () =>
+			new IrisClient('mainnet', {
+				fetch: vi.fn<typeof fetch>(async () =>
+					json(200, {
+						messages: [
+							{ status: 'complete', message: message(0n), attestation: `0x${'bb'.repeat(65)}` },
+						],
+					}),
+				),
+			});
+
+		it('burns through the host too, from the connected wallet, and keeps its digest', async () => {
+			const { dAppKit, signAndExecuteTransaction } = suiDAppKit();
+			const executeSuiTransaction = executor();
+			const result = await runTransfer(suiBurn(), {
+				dAppKit,
+				wallets: evmWallets(),
+				iris: attested(),
+				chains,
+				executeSuiTransaction,
+				stopAfterAttestation: true,
+				pollIntervalMs: 1,
+				onUpdate: () => undefined,
+			});
+			expect(result).toMatchObject({ status: 'readyToMint', sourceTxHash: HOST_DIGEST });
+			expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			const request = executeSuiTransaction.mock.calls[0]![0];
+			expect(request).toMatchObject({ kind: 'burn', network: 'mainnet' });
+			expect(request.transaction.getData().sender).toBe(SUI_ADDRESS);
+		});
+
+		it('keeps no burn hash when the burn ran and aborted, so it can be tried again', async () => {
+			const updates: TransferRecord[] = [];
+			const iris = attested();
+			await expect(
+				runTransfer(suiBurn(), {
+					dAppKit: suiDAppKit().dAppKit,
+					wallets: evmWallets(),
+					iris,
+					chains,
+					executeSuiTransaction: aborted(),
+					onUpdate: (t: TransferRecord) => updates.push(t),
+				}),
+			).rejects.toThrow('MoveAbort in the CCTP package');
+			expect(updates.at(-1)).toMatchObject({ status: 'failed' });
+			expect(updates.some((t) => t.sourceTxHash)).toBe(false);
+		});
 	});
 });
 

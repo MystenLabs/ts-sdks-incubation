@@ -325,6 +325,57 @@ function fakeSolanaAdapter() {
 	};
 }
 
+describe("claim: 'manual'", () => {
+	it('stops at Claim after the burn, and on resume', async () => {
+		const kit = createCctpKit({
+			dAppKit: mockDAppKit().dAppKit,
+			network: 'mainnet',
+			claim: 'manual',
+			defaults: { from: 'sui', to: 'avalanche', amount: '1' },
+			storage: createInMemoryStorage(),
+			iris: { fetch: irisFetch() },
+			wallets: { evm: fakeEvmAdapter(EVM_ADDRESS), solana: fakeSolanaAdapter() },
+		});
+		await kit.wallets();
+		await Promise.all([kit.refreshBalance(), kit.refreshQuote()]);
+		// The fake EVM wallet cannot claim, so an attempt would reject.
+		const stopped = await kit.transfer();
+		expect(stopped.status).toBe('readyToMint');
+		expect((await kit.resume(stopped.id)).status).toBe('readyToMint');
+		kit.destroy();
+	});
+
+	it('claim() rejects a transfer Circle has not attested, without burning', async () => {
+		const mock = mockDAppKit();
+		const unburned: TransferRecord = {
+			id: 'never-burned',
+			network: 'mainnet',
+			from: 'sui',
+			to: 'avalanche',
+			amount: '1000000',
+			maxFee: '0',
+			speed: 'standard',
+			sender: SUI_ADDRESS,
+			recipient: EVM_ADDRESS,
+			status: 'failed',
+			createdAt: 1,
+			updatedAt: 1,
+		};
+		const storage = createInMemoryStorage();
+		storage.setItem('mysten-cctp-kit:transfers:mainnet', JSON.stringify([unburned]));
+		const kit = createCctpKit({
+			dAppKit: mock.dAppKit,
+			network: 'mainnet',
+			storage,
+			iris: { fetch: irisFetch() },
+			wallets: { evm: fakeEvmAdapter(), solana: fakeSolanaAdapter() },
+		});
+		await expect(kit.claim(unburned.id)).rejects.toThrow('nothing to claim');
+		expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
+		kit.destroy();
+	});
+});
+
 describe('archive, restore, remove', () => {
 	it('tracks a transfer from a block explorer link, and keeps the bare hash', async () => {
 		const storage = createInMemoryStorage();

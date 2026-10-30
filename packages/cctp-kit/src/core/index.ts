@@ -104,8 +104,10 @@ export interface CctpKit {
 	warnings(): string[];
 	/** Start a new transfer from the current form state. */
 	transfer(): Promise<TransferRecord>;
-	/** Resume a persisted transfer (e.g. after a reload, or to retry a failed mint). */
+	/** Resume a persisted transfer (e.g. after a reload, or to retry a failed step). */
 	resume(id: string): Promise<TransferRecord>;
+	/** Claim an attested transfer. Rejects, touching no chain, when there is nothing to claim. */
+	claim(id: string): Promise<TransferRecord>;
 	/**
 	 * Track a transfer that was not started here (another device, a dismissed card, a burn made
 	 * elsewhere) from its source transaction hash. Sui digests and Solana signatures are
@@ -183,6 +185,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	}
 	const allowedSpeeds = config.transferSpeed?.allow ?? ['fast', 'standard'];
 	if (allowedSpeeds.length === 0) throw new Error('transferSpeed.allow must not be empty');
+	const claimsByItself = (config.claim ?? 'auto') === 'auto';
 	const iris = new IrisClient(network, config.iris);
 	const storage: StateStorage | null =
 		config.storage === null ? null : (config.storage ?? getDefaultStorage());
@@ -491,6 +494,9 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 
 	function warnings(): string[] {
 		const to = stores.$destinationChain.get();
+		// The host's executor submits Sui claims and decides who pays for them, so neither the
+		// connected wallet's SUI nor a wallet at the recipient has anything to do with it.
+		if (to.ecosystem === 'sui' && config.sui?.executeTransaction) return [];
 		const coin = gasCoin(to);
 		if (!stores.$destinationAccount.get()) {
 			// Sending to a typed address with no wallet for that chain connected: an exchange
@@ -742,6 +748,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		try {
 			const result = await runTransfer(record, {
 				dAppKit,
+				executeSuiTransaction: config.sui?.executeTransaction,
 				wallets,
 				iris,
 				chains,
@@ -802,12 +809,23 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 			updatedAt: now,
 		};
 		upsert(record);
-		return execute(record);
+		return execute(record, { stopAfterAttestation: !claimsByItself });
 	}
 
 	async function resume(id: string): Promise<TransferRecord> {
 		const record = readStored().find((t) => t.id === id);
 		if (!record) throw new Error(`Unknown transfer ${id}`);
+		return execute({ ...record, error: undefined }, { stopAfterAttestation: !claimsByItself });
+	}
+
+	async function claim(id: string): Promise<TransferRecord> {
+		const record = readStored().find((t) => t.id === id);
+		if (!record) throw new Error(`Unknown transfer ${id}`);
+		if (!record.message || !record.attestation) {
+			throw new CctpKitError(
+				'Circle has not attested this transfer yet, so there is nothing to claim.',
+			);
+		}
 		return execute({ ...record, error: undefined });
 	}
 
@@ -1192,6 +1210,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		warnings,
 		transfer,
 		resume,
+		claim,
 		importTransfer,
 		isRunning,
 		dismiss,
