@@ -609,9 +609,16 @@ async function executeSui(
 	onDigest?: (digest: string) => void,
 ): Promise<string> {
 	const network = chain.suiNetwork;
-	const digest = ctx.executeSuiTransaction
-		? (await ctx.executeSuiTransaction({ ...request, network })).digest
-		: await executeWithDAppKit(ctx, network, request.transaction);
+	const result = ctx.executeSuiTransaction
+		? await ctx.executeSuiTransaction({ ...request, network })
+		: await ctx.dAppKit.signAndExecuteTransaction({ transaction: request.transaction, network });
+	// A transaction that ran and failed burned or claimed nothing. Its digest is not kept: as a
+	// burn's it would wait forever for an attestation, as a claim's it would read as complete.
+	if (result.$kind === 'FailedTransaction') {
+		const error = result.FailedTransaction.status.error;
+		throw new Error(error?.message ?? 'Sui transaction failed');
+	}
+	const digest = result.Transaction.digest;
 	onDigest?.(digest);
 	// The transaction has executed. Waiting only gives the node time to index it, so a wait
 	// that fails is no reason to fail a transfer whose transaction went through.
@@ -620,19 +627,6 @@ async function executeSui(
 		.core.waitForTransaction({ digest })
 		.catch(() => undefined);
 	return digest;
-}
-
-async function executeWithDAppKit(
-	ctx: TransferContext,
-	network: SuiChainDefinition['suiNetwork'],
-	transaction: SuiExecutionRequest['transaction'],
-): Promise<string> {
-	const result = await ctx.dAppKit.signAndExecuteTransaction({ transaction, network });
-	if (result.$kind === 'FailedTransaction') {
-		const error = result.FailedTransaction.status.error;
-		throw new Error(error?.message ?? 'Sui transaction failed');
-	}
-	return result.Transaction.digest;
 }
 
 /** Best-effort "already minted?" check; any failure means "assume not", never a failed transfer. */

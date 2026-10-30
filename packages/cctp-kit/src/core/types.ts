@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { DAppKit } from '@mysten/dapp-kit-core';
+import type { SuiClientTypes } from '@mysten/sui/client';
 import type { Transaction } from '@mysten/sui/transactions';
 import type { ChainFilter, ChainIconOverrides, Direction, RpcOverrides } from '../chains/index.js';
 import type { ChainDefinition, ChainKey, Network, SuiChainDefinition } from '../chains/types.js';
@@ -39,14 +40,20 @@ export interface CctpKitWalletConfig {
 
 export interface SuiExecutionRequest {
 	kind: 'burn' | 'claim';
+	/** A claim made with no wallet connected has no sender yet: set the account that pays. */
 	transaction: Transaction;
 	/** The kit's Sui network, which need not be dapp-kit's current one. */
 	network: SuiChainDefinition['suiNetwork'];
 	transfer: TransferRecord;
 }
 
-/** Resolve with the digest once the transaction has executed; throw if it failed. */
-export type SuiTransactionExecutor = (request: SuiExecutionRequest) => Promise<{ digest: string }>;
+/**
+ * Sign and execute, and resolve with the result as the SDK returns it (`signAndExecuteTransaction`,
+ * `core.executeTransaction`, the transaction executors). A `FailedTransaction` fails the step.
+ */
+export type SuiTransactionExecutor = (
+	request: SuiExecutionRequest,
+) => Promise<SuiClientTypes.TransactionResult>;
 
 export interface CctpKitSuiConfig {
 	/**

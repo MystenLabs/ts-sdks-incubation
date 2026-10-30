@@ -140,9 +140,9 @@ const kit = createCctpKit({
 	dAppKit,
 	claim: 'manual',
 	sui: {
-		executeTransaction: async ({ kind, transaction }) => {
-			if (kind === 'claim') transaction.setSender(relayerAddress);
-			return { digest: (await myExecutor(transaction)).digest };
+		executeTransaction: ({ kind, transaction }) => {
+			if (kind === 'claim') transaction.setSender(relayer.toSuiAddress());
+			return client.signAndExecuteTransaction({ transaction, signer: relayer });
 		},
 	},
 });
@@ -151,7 +151,11 @@ const kit = createCctpKit({
 - A burn spends the connected wallet's USDC. Anyone may submit a claim whose destination caller is
   zero and the USDC still goes to the recorded recipient, so with an executor a claim needs no
   connected wallet.
-- Resolve with the digest once the transaction has executed, and throw if it failed.
+- Resolve with the transaction result as the SDK returns it, from `signAndExecuteTransaction`,
+  `core.executeTransaction` or a transaction executor. A `FailedTransaction` result fails the burn
+  or claim. An executor that only gets a digest back can return
+  `client.core.waitForTransaction({ digest })`.
+- A claim made with no wallet connected has no sender: set the account that pays for it.
 
 `claim: 'manual'` stops transfers at `readyToMint` until `kit.claim(id)`, which rejects a transfer
 Circle has not attested and never burns.
