@@ -494,6 +494,9 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 
 	function warnings(): string[] {
 		const to = stores.$destinationChain.get();
+		// The host's executor submits Sui claims and decides who pays for them, so neither the
+		// connected wallet's SUI nor a wallet at the recipient has anything to do with it.
+		if (to.ecosystem === 'sui' && config.sui?.executeTransaction) return [];
 		const coin = gasCoin(to);
 		if (!stores.$destinationAccount.get()) {
 			// Sending to a typed address with no wallet for that chain connected: an exchange

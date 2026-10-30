@@ -5,4 +5,4 @@
 Add `sui.executeTransaction` to execute the kit's Sui burns and claims in place of dapp-kit's
 wallet, `claim: 'manual'` with `kit.claim(id)`, and `suiDepositForBurn` / `suiReceiveMessage`
 transaction thunks. `SuiDepositForBurnParams` now takes a `coin`; `buildSuiBurnTransaction` takes
-`SuiBurnTransactionParams`.
+`SuiBurnTransactionParams`. With an executor, `warnings()` no longer asks for SUI to claim on Sui.
