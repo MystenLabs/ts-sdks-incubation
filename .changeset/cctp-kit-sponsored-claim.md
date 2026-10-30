@@ -16,8 +16,9 @@ service serves the form's route and amount. The quote says "Mint on Sui" with an
 `TransferRecord.sponsorClaim` is `pending`, `unavailable` or `refused`. When the service could not
 claim a transfer waiting at Claim, the card says so. One marked `unavailable` is sent to the service
 again at most every 5 minutes while the page is visible, once each time. One marked `refused` is not
-sent again, on a reload either. A request worth retrying is retried after about 3, 20 and 60 seconds,
-with no attempt started after 120 seconds.
+sent again, on a reload either; only the service's own refusal counts (a 422 `ineligible`, a 400 for
+a body it rejected, or a recipient on USDC's deny list). A request worth retrying is retried after 3,
+20 and 60 seconds, each lengthened by up to a quarter, with no attempt started after 120 seconds.
 
 `CctpKitConfig`, `TransferContext` and `CctpKitStores` gain `sponsor`, `sponsor` and `$sponsor`.
 `CctpKit` gains `claimer()` and `sponsorState(transfer)`.

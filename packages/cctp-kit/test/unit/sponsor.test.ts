@@ -229,19 +229,29 @@ describe('classifySponsorResponse', () => {
 		const cases: [string, SponsorAnswer, SponsorFailure][] = [
 			['422 ineligible', { status: 422, body: { status: 'ineligible', reason: 'x' } }, 'refused'],
 			['400 with the error shape', { status: 400, body: { error: 'expected hex' } }, 'refused'],
-			['404', { status: 404 }, 'refused'],
-			['403', { status: 403, body: { error: 'firewall' } }, 'refused'],
-			['200 would_claim', { status: 200, body: { status: 'would_claim' } }, 'refused'],
-			['200 of an unknown shape', { status: 200, body: { ok: true } }, 'refused'],
-			['200 that is not JSON', { status: 200 }, 'refused'],
-			['200 claimed with no digest', { status: 200, body: { status: 'claimed' } }, 'refused'],
+			['404', { status: 404 }, 'unavailable'],
+			['403', { status: 403, body: { error: 'firewall' } }, 'unavailable'],
+			['200 would_claim', { status: 200, body: { status: 'would_claim' } }, 'unavailable'],
+			['200 of an unknown shape', { status: 200, body: { ok: true } }, 'unavailable'],
+			['200 that is not JSON', { status: 200 }, 'unavailable'],
+			['200 claimed with no digest', { status: 200, body: { status: 'claimed' } }, 'unavailable'],
 			['503 blocked denied', blocked('denied'), 'refused'],
-			['503 paused with a failedDigest', blocked('paused', { failedDigest: DIGEST }), 'refused'],
+			[
+				'503 paused with a failedDigest',
+				blocked('paused', { failedDigest: DIGEST }),
+				'unavailable',
+			],
 			[
 				'503 congested with a failedDigest',
 				blocked('congested', { failedDigest: DIGEST }),
-				'refused',
+				'unavailable',
 			],
+			// Only the claimer's own words are final; the same codes from the platform are not.
+			["422 that is not the claimer's", { status: 422 }, 'unavailable'],
+			['422 with another status', { status: 422, body: { status: 'error' } }, 'unavailable'],
+			["400 that is not the claimer's", { status: 400 }, 'unavailable'],
+			['400 with a status', { status: 400, body: { status: 'x', error: 'y' } }, 'unavailable'],
+			['410', { status: 410, body: { error: 'gone' } }, 'unavailable'],
 			['409 expired', { status: 409, body: { status: 'expired' } }, 'unavailable'],
 			['500 error', { status: 500, body: { status: 'error', message: 'x' } }, 'unavailable'],
 			['503 blocked for no reason', { status: 503, body: { status: 'blocked' } }, 'unavailable'],
@@ -545,8 +555,8 @@ describe('a claim', () => {
 			failure: 'unavailable',
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(4);
-		// 3 s, 20 s, 60 s, each scaled by the random factor (0.75 here), and none after the last.
-		expect(waits).toEqual([2_250, 15_000, 45_000]);
+		// 3 s, 20 s, 60 s, each stretched by the random factor (1.125 here), and none after the last.
+		expect(waits).toEqual([3_375, 22_500, 67_500]);
 	});
 
 	it('reports retries that ran out on 429s as unavailable', async () => {
@@ -560,7 +570,7 @@ describe('a claim', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(4);
 	});
 
-	it('waits about 3, 20 and 60 s, at most, before its retries', async () => {
+	it('waits at least 3, 20 and 60 s, and at most a quarter more, before its retries', async () => {
 		const client = (random: number) => {
 			const waits: number[] = [];
 			const claim = new SponsorClient({
@@ -572,11 +582,11 @@ describe('a claim', () => {
 			}).claim(MESSAGE, ATTESTATION);
 			return claim.then(() => waits);
 		};
-		expect(await client(0)).toEqual([1_500, 10_000, 30_000]);
+		expect(await client(0)).toEqual([3_000, 20_000, 60_000]);
 		const longest = await client(0.999_999);
-		expect(longest[0]).toBeCloseTo(3_000, 0);
-		expect(longest[1]).toBeCloseTo(20_000, 0);
-		expect(longest[2]).toBeCloseTo(60_000, 0);
+		expect(longest[0]).toBeCloseTo(3_750, 0);
+		expect(longest[1]).toBeCloseTo(25_000, 0);
+		expect(longest[2]).toBeCloseTo(75_000, 0);
 	});
 
 	describe('with a single attempt', () => {
@@ -616,10 +626,11 @@ describe('a claim', () => {
 		});
 	});
 
-	it('jitters each wait between half and all of its step', async () => {
+	it('only ever lengthens a wait with its jitter', async () => {
+		// A shorter wait could put the last retry back inside the minute the rate limit lasts.
 		for (const [random, first] of [
-			[0, 1_500],
-			[0.999, 2_998.5],
+			[0, 3_000],
+			[0.999, 3_749.25],
 		] as const) {
 			const waits: number[] = [];
 			const client = new SponsorClient({
@@ -713,7 +724,7 @@ describe('a claim', () => {
 				answering(json(429, {}), json(200, { status: 'already_claimed' })),
 			);
 			await client.claim(MESSAGE, ATTESTATION);
-			expect(waits).toEqual([2_250]);
+			expect(waits).toEqual([3_375]);
 		});
 
 		it('is ignored on an answer that gives up anyway', async () => {
@@ -758,9 +769,9 @@ describe('a claim', () => {
 				reason: 'HTTP 502',
 				failure: 'unavailable',
 			});
-			// The third attempt ends at 137.25 s: past the limit, with a retry still in hand.
+			// The third attempt ends at 145.875 s: past the limit, with a retry still in hand.
 			expect(fetchMock).toHaveBeenCalledTimes(3);
-			expect(waits).toEqual([2_250, 15_000]);
+			expect(waits).toEqual([3_375, 22_500]);
 		});
 
 		it('leaves room for the third retry when the answers are quick', async () => {
@@ -840,9 +851,11 @@ describe('a claim', () => {
 			const fetchMock = hanging();
 			const client = new SponsorClient({ baseUrl: BASE_URL, fetch: fetchMock, random: () => 1 });
 			const result = client.claim(MESSAGE, ATTESTATION);
-			// Attempts of 20 s, with 3 s and 20 s between them: the third ends at 83 s, and a wait
-			// of 60 s from there would end at 143 s.
-			await vi.advanceTimersByTimeAsync(83_000);
+			// Attempts of 20 s, with 3.75 s and 25 s between them: the third ends at 88.75 s, and a
+			// wait of 75 s from there would end at 163.75 s.
+			await vi.advanceTimersByTimeAsync(88_749);
+			expect(fetchMock).toHaveBeenCalledTimes(3);
+			await vi.advanceTimersByTimeAsync(1);
 			await expect(result).resolves.toEqual({
 				status: 'gaveUp',
 				reason: 'timeout',

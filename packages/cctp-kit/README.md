@@ -108,7 +108,9 @@ calls `${baseUrl}/api/claim`, `/api/health` and `/api/denylist`.
   transfer picked up on page load waits at **Claim** instead, since nobody asked for the wallet. A
   press on **Claim** always goes straight to the wallet.
 - `warnings()` drops what it says about needing SUI only while the service serves the form's route
-  and amount. No quote yet counts as not served, so the warnings show until there is one.
+  and amount. Between a keystroke and its quote the kit assumes a fee of 20 bps, above any Circle
+  charges into Sui, so the warnings do not come and go as someone types. With no amount entered they
+  follow the route alone.
 - The card says "Claiming on Sui for you…" only while the service serves the transfer as far as is
   known. Until its status has been read, a transfer picked up on page load shows its usual step, and
   still no **Claim** button.
@@ -117,23 +119,26 @@ When a transfer waits at **Claim** because of the service, the card says so, and
 `TransferRecord.sponsorClaim` says why:
 
 - `unavailable`: the service could not claim it now. Its status said no or could not be read, the
-  retries ran out, it was blocked, or it failed. The card says to claim from a Sui wallet that holds
+  retries ran out, it was blocked, it failed, or the answer was not one the service gives (a 403 or
+  404 from the platform during a deploy, say). The card says to claim from a Sui wallet that holds
   SUI, or to wait. While the page is visible the transfer is sent to the service again, at most
   every 5 minutes and once each time, on the 15 second pass that looks for finished claims. A reload
   sends it at once. These attempts never open a wallet and never end at `failed`, and a transfer
   that is running, here or in another tab, is left alone.
-- `refused`: the service answered and will not claim this message. It is any 4xx but 409 and 429,
-  anything but a claim in a 200, the recipient on USDC's deny list, or a claim that failed on chain.
-  The card says to claim from a wallet, and the transfer is not sent to the service again, on a
-  reload either.
+- `refused`: the service itself said it will not claim this message: a 422 `ineligible`, a 400 for a
+  body it rejected, or the recipient on USDC's deny list. Nothing else counts, because this is
+  final: the card says to claim from a wallet, and the transfer is not sent to the service again, on
+  a reload either. A claim that failed on chain (`failedDigest`) is `unavailable`, since it can go
+  through once the epoch changes.
 
 A transfer under the minimum or from a denied source never reaches the service, so it gets neither.
 
 The service sits behind a rate limit of 30 requests a minute per IP, whose 429 lasts about a minute
 and which a browser sees as a failed request. So the kit retries what is worth retrying after about
-3, 20 and 60 seconds, each scaled by a random factor between 0.5 and 1. It gives an attempt 20
-seconds, and starts none once 120 seconds have passed since the first. A `Retry-After` the page can
-read replaces the wait, and one over 90 seconds ends the retries.
+3, 20 and 60 seconds, each lengthened by up to a quarter at random (never shortened, so the last
+retry lands past the minute). It gives an attempt 20 seconds, and starts none once 120 seconds have
+passed since the first. A `Retry-After` the page can read replaces the wait, and one over 90 seconds
+ends the retries.
 
 With `sui.executeTransaction`, the service goes first and the executor takes the wallet's place: it
 is called once when the service gives up, and at once on a press on **Claim**. The quote then says

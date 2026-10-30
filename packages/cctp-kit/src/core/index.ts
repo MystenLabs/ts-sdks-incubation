@@ -43,7 +43,13 @@ import {
 } from '../engine/sui.js';
 import { IrisClient, IrisError } from '../iris/client.js';
 import type { IrisMessage } from '../iris/client.js';
-import { amountServed, netAmountOf, SponsorClient, sponsorServes } from '../sponsor/client.js';
+import {
+	amountServed,
+	MIN_SPONSORED_AMOUNT,
+	netAmountOf,
+	SponsorClient,
+	sponsorServes,
+} from '../sponsor/client.js';
 import type { SponsorFailure } from '../sponsor/client.js';
 import { feeFromBps, parseUsdc } from '../utils/amount.js';
 import {
@@ -162,6 +168,9 @@ const LEASE_RENEW_MS = 20_000;
 const QUOTE_PENDING = 'Fetching quote…';
 const SETTLE_INTERVAL_MS = 15_000;
 const SPONSOR_RETRY_MS = 5 * 60_000;
+// Circle's Fast fees into Sui ran from 0 to 13 bps in Oct 2026 (13 on Linea), and the kit allows
+// 1 bp more. This stands in until the quote arrives, so it has to be above all of them.
+const UNQUOTED_FEE_BPS = 20;
 
 /** Stands in for a wallet the host did not configure: nothing is connected, and asking says why. */
 function missingWallet<E extends 'evm' | 'solana'>(ecosystem: E): WalletAdapters[E] {
@@ -512,11 +521,28 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		cleanups.push(store.listen(() => void refreshDestination()));
 	}
 
+	/**
+	 * What the form's transfer mints at worst, net of fees: what Circle takes, up to `maxFee`, is
+	 * only known from the attested message. Between a keystroke and its quote, a fee far above any
+	 * Circle charges stands in, so the warnings do not come and go with every key: they show only
+	 * when even that leaves too little. With nothing entered there is no transfer to warn about.
+	 */
+	function formNetAmount(): bigint | null {
+		let amount: bigint;
+		try {
+			amount = parseUsdc(stores.$amount.get() || '0');
+		} catch {
+			return null;
+		}
+		if (amount <= 0n) return MIN_SPONSORED_AMOUNT;
+		const quote = currentQuote();
+		if (quote) return quote.amount - quote.maxFee;
+		return amount - feeFromBps(amount, UNQUOTED_FEE_BPS);
+	}
+
 	function claimer(): 'sponsor' | 'executor' | 'wallet' {
 		const to = stores.$destinationChain.get();
-		const quote = currentQuote();
-		// The worst case: what Circle takes, up to `maxFee`, is only known from the attested message.
-		const netAmount = quote && quote.amount - quote.maxFee;
+		const netAmount = formNetAmount();
 		if (sponsorServes(stores.$sponsor.get(), stores.$sourceChain.get(), to, netAmount)) {
 			return 'sponsor';
 		}

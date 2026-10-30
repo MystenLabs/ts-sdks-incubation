@@ -127,6 +127,7 @@ export function classifySponsorResponse(answer: SponsorAnswer): SponsorVerdict {
 		digest?: unknown;
 		reason?: unknown;
 		failedDigest?: unknown;
+		error?: unknown;
 	};
 	const said = typeof body.status === 'string' ? body.status : undefined;
 	if (status === 200 && said === 'claimed' && typeof body.digest === 'string' && body.digest) {
@@ -147,11 +148,14 @@ export function classifySponsorResponse(answer: SponsorAnswer): SponsorVerdict {
 	if (status === 429 || status === 502 || status === 504 || congested || platform) {
 		return { action: 'retry', reason };
 	}
-	// A 409 is not one of these: an expired message is signed again, and a run does that first.
+	// Refused is final, so only the claimer's own word that it will not take this message counts:
+	// `ineligible`, a body it rejected (its 400 says `error`), or a recipient on USDC's deny list.
+	// Anything else may pass. A 403 or 404 can come from the platform during a deploy that went
+	// wrong, and a claim that failed on chain (`failedDigest`) can go through once the epoch changes.
 	const refused =
-		status === 200 ||
-		(status >= 400 && status < 500 && status !== 409) ||
-		(said === 'blocked' && (body.reason === 'denied' || body.failedDigest !== undefined));
+		(status === 422 && said === 'ineligible') ||
+		(status === 400 && said === undefined && typeof body.error === 'string') ||
+		(said === 'blocked' && body.reason === 'denied');
 	return { action: 'giveUp', reason, failure: refused ? 'refused' : 'unavailable' };
 }
 
@@ -268,7 +272,9 @@ export class SponsorClient {
 			if (singleAttempt || retry > RETRY_DELAYS_MS.length) return unavailable;
 			const asked = parseRetryAfter(retryAfter, this.#now());
 			if (asked !== null && asked > MAX_RETRY_AFTER_MS) return unavailable;
-			const delay = asked ?? RETRY_DELAYS_MS[retry - 1]! * (0.5 + this.#random() / 2);
+			// The jitter only ever adds: a shorter wait could put the last retry back inside the
+			// minute the rate limit lasts.
+			const delay = asked ?? RETRY_DELAYS_MS[retry - 1]! * (1 + this.#random() / 4);
 			// A wait that ends past the limit has no attempt after it, so nobody sits through it.
 			if (this.#now() - started + delay >= TOTAL_LIMIT_MS) return unavailable;
 			signal?.throwIfAborted();

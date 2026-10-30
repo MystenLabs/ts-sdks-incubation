@@ -1046,14 +1046,29 @@ describe('a sponsor', () => {
 			kit.destroy();
 		});
 
-		it('show with no quote yet, and go when it arrives', async () => {
+		it('stay hidden between a keystroke and its quote, for an amount well over the minimum', async () => {
+			// They used to show until each quote arrived, so they came and went as someone typed.
 			const kit = inflow({ sponsorFetch: service().sponsorFetch });
 			await answered(kit);
 			await gasRead(kit);
 			kit.setAmount('2');
 			expect(kit.stores.$quote.get()).toBeNull();
-			expect(kit.warnings()).toEqual([NO_GAS]);
+			expect(kit.warnings()).toEqual([]);
+			expect(kit.claimer()).toBe('sponsor');
 			await quoted(kit);
+			expect(kit.warnings()).toEqual([]);
+			kit.destroy();
+		});
+
+		it('show before the quote when a high fee could take the amount under the minimum', async () => {
+			const kit = inflow({ sponsorFetch: service().sponsorFetch });
+			await answered(kit);
+			await gasRead(kit);
+			// 20 bps of 0.1002 USDC leaves 0.099999, under the minimum. 10 bps would leave 0.100099.
+			kit.setAmount('0.1002');
+			expect(kit.stores.$quote.get()).toBeNull();
+			expect(kit.warnings()).toEqual([NO_GAS]);
+			kit.setAmount('0.1003');
 			expect(kit.warnings()).toEqual([]);
 			kit.destroy();
 		});
@@ -1067,10 +1082,13 @@ describe('a sponsor', () => {
 			kit.destroy();
 		});
 
-		it('show when nothing has been entered', async () => {
+		it('stay hidden when nothing has been entered on a route the sponsor serves', async () => {
+			// There is no transfer yet, and most that could be entered here would be sponsored.
 			const kit = inflow({ sponsorFetch: service().sponsorFetch, amount: '' });
 			await answered(kit);
 			await gasRead(kit);
+			expect(kit.warnings()).toEqual([]);
+			kit.setFromChain('unichain');
 			expect(kit.warnings()).toEqual([NO_GAS]);
 			kit.destroy();
 		});
