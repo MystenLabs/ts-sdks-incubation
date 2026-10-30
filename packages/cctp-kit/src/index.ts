@@ -32,12 +32,18 @@ export type { TransferContext } from './core/transfer.js';
 export * from './chains/index.js';
 
 export { IrisClient, IrisError, IRIS_BASE_URL, isAttested } from './iris/client.js';
-export { classifySponsorResponse, SponsorClient, sponsorServes } from './sponsor/client.js';
+export {
+	classifySponsorResponse,
+	MIN_SPONSORED_AMOUNT,
+	SponsorClient,
+	sponsorServes,
+} from './sponsor/client.js';
 export type {
 	SponsorAnswer,
 	SponsorClaimResult,
 	SponsorClientOptions,
 	SponsorConfig,
+	SponsorFailure,
 	SponsorStatus,
 	SponsorVerdict,
 } from './sponsor/client.js';

@@ -10,6 +10,7 @@ import * as evm from '../../src/engine/evm.js';
 import { IrisClient } from '../../src/iris/client.js';
 import { createInMemoryStorage } from '../../src/utils/storage.js';
 import type { WalletAdapters } from '../../src/wallets/types.js';
+import { burnMessage } from './burn-message.js';
 
 // These tests reach no chain: not to ask when a burn happened, whether a claim was made on an
 // EVM chain, or what a typed Solana address is.
@@ -27,7 +28,7 @@ const SUI_ADDRESS = '0x' + 'ab'.repeat(32);
 const EVM_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
 const ATTESTED = {
 	// 148-byte header + 228-byte burn body: the minimum a real v2 message carries.
-	message: '0x' + 'aa'.repeat(376),
+	message: burnMessage(),
 	attestation: '0x' + 'bb'.repeat(130),
 	eventNonce: '0x' + '11'.repeat(32),
 	cctpVersion: 2,
@@ -116,6 +117,23 @@ const noWallets = (): Promise<WalletAdapters> =>
 	Promise.reject(new Error('no non-Sui wallets in tests'));
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+/** A page that can be shown, hidden and focused. */
+function page(visibilityState: 'visible' | 'hidden' = 'visible') {
+	const document = Object.assign(new EventTarget(), { visibilityState });
+	const window = new EventTarget();
+	vi.stubGlobal('document', document);
+	vi.stubGlobal('window', window);
+	return {
+		document,
+		window,
+		show(state: 'visible' | 'hidden') {
+			document.visibilityState = state;
+			document.dispatchEvent(new Event('visibilitychange'));
+		},
+		focus: () => window.dispatchEvent(new Event('focus')),
+	};
+}
 
 describe('createCctpKit', () => {
 	it('blocks the form until the quote matches the typed amount (stale quotes never burn)', async () => {
@@ -650,6 +668,7 @@ describe('a sponsor', () => {
 			storage?: ReturnType<typeof createInMemoryStorage>;
 			onEvent?: (event: { type: string }) => void;
 			iris?: typeof fetch;
+			claim?: 'manual';
 		} = {},
 	) {
 		const storage = options.storage ?? createInMemoryStorage();
@@ -667,6 +686,7 @@ describe('a sponsor', () => {
 				? { baseUrl: options.baseUrl ?? BASE_URL, fetch: options.sponsorFetch }
 				: undefined,
 			onEvent: options.onEvent,
+			claim: options.claim,
 		});
 		return { kit, mock, storage, simulateTransaction };
 	}
@@ -706,7 +726,7 @@ describe('a sponsor', () => {
 			const { kit, mock } = load([waiting()], { sponsorFetch });
 			await vi.waitFor(() => expect(kit.isRunning('waiting')).toBe(false));
 			expect(posts()).toHaveLength(1);
-			expect(stored(kit)).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+			expect(stored(kit)).toMatchObject({ status: 'readyToMint', sponsorClaim: 'refused' });
 			expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
 			kit.destroy();
 		});
@@ -744,6 +764,38 @@ describe('a sponsor', () => {
 			await vi.waitFor(() => expect(kit.isRunning('rejected')).toBe(false));
 			expect(stored(kit, 'interrupted').status).toBe('readyToMint');
 			expect(stored(kit, 'rejected').error).toBeUndefined();
+			kit.destroy();
+		});
+
+		it('is not asked again about what it refused, which is left as it was', async () => {
+			const { sponsorFetch, posts } = service();
+			const refusals = [
+				waiting({ id: 'waiting', sponsorClaim: 'refused' }),
+				waiting({ id: 'rejected', status: 'failed', error: 'Rejected.', sponsorClaim: 'refused' }),
+			];
+			const { kit } = load(refusals, { sponsorFetch });
+			await flush();
+			await flush();
+			expect(posts()).toHaveLength(0);
+			expect(kit.isRunning('waiting')).toBe(false);
+			expect(kit.stores.$transfers.get()).toEqual(refusals);
+			kit.destroy();
+		});
+
+		it('is not sent a message under its minimum, which is left as it was', async () => {
+			const { sponsorFetch, posts } = service();
+			const under = burnMessage({ amount: 100_099n, feeExecuted: 100n });
+			const small = [
+				waiting({ message: under }),
+				waiting({ id: 'rejected', status: 'failed', error: 'Rejected.', message: under }),
+			];
+			const { kit } = load(small, { sponsorFetch });
+			await flush();
+			await flush();
+			expect(posts()).toHaveLength(0);
+			expect(kit.isRunning('waiting')).toBe(false);
+			// A failed one keeps its error, which a run would have cleared.
+			expect(kit.stores.$transfers.get()).toEqual(small);
 			kit.destroy();
 		});
 
@@ -874,7 +926,7 @@ describe('a sponsor', () => {
 				expect(kit.stores.$transfers.get()[0]).toMatchObject({
 					to: 'sui',
 					status: 'readyToMint',
-					sponsorClaim: 'unavailable',
+					sponsorClaim: 'refused',
 				}),
 			);
 			expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
@@ -891,6 +943,10 @@ describe('a sponsor', () => {
 				sponsorFetch?: typeof fetch;
 				from?: 'ethereum' | 'unichain';
 				typed?: boolean;
+				amount?: string;
+				claim?: 'manual';
+				iris?: typeof fetch;
+				executeTransaction?: () => Promise<never>;
 			} = {},
 		) => {
 			const mock = mockDAppKit('mainnet', '0');
@@ -899,10 +955,12 @@ describe('a sponsor', () => {
 				dAppKit: mock.dAppKit,
 				network: 'mainnet',
 				direction: 'inflow',
-				defaults: { from: options.from ?? 'ethereum' },
+				defaults: { from: options.from ?? 'ethereum', amount: options.amount ?? '1' },
 				storage: null,
-				iris: { fetch: irisFetch() },
+				iris: { fetch: options.iris ?? irisFetch() },
 				wallets: { evm: fakeEvmAdapter(), solana: fakeSolanaAdapter() },
+				claim: options.claim,
+				sui: { executeTransaction: options.executeTransaction },
 				sponsor: options.sponsorFetch
 					? { baseUrl: BASE_URL, fetch: options.sponsorFetch }
 					: undefined,
@@ -910,10 +968,24 @@ describe('a sponsor', () => {
 			if (options.typed) kit.setRecipient(SUI_ADDRESS);
 			return kit;
 		};
-		const answered = (kit: ReturnType<typeof createCctpKit>) =>
-			vi.waitFor(() => expect(kit.stores.$sponsor.get()).not.toBeNull());
+		const quoted = (kit: ReturnType<typeof createCctpKit>) =>
+			vi.waitFor(() => expect(kit.stores.$quote.get()).not.toBeNull());
+		const answered = async (kit: ReturnType<typeof createCctpKit>) => {
+			await vi.waitFor(() => expect(kit.stores.$sponsor.get()).not.toBeNull());
+			await quoted(kit);
+		};
 		const gasRead = (kit: ReturnType<typeof createCctpKit>) =>
 			vi.waitFor(() => expect(kit.stores.$destination.get().gas).toBe(0n));
+		/** Circle's fees on a route with Fast, in basis points: 13, as on Ethereum to Sui. */
+		const fastFees = () =>
+			vi.fn<typeof fetch>(async (input) =>
+				String(input).includes('/fees/')
+					? json(200, [
+							{ finalityThreshold: 1000, minimumFee: 13 },
+							{ finalityThreshold: 2000, minimumFee: 0 },
+						])
+					: json(404, { error: 'unexpected' }),
+			);
 
 		it('are hidden only when the sponsor serves the route', async () => {
 			const kit = inflow({ sponsorFetch: service().sponsorFetch });
@@ -928,6 +1000,110 @@ describe('a sponsor', () => {
 			await answered(kit);
 			expect(kit.warnings()).toEqual([]);
 			kit.destroy();
+		});
+
+		it('are hidden at the minimum, and show one unit under it', async () => {
+			const kit = inflow({ sponsorFetch: service().sponsorFetch, amount: '0.1' });
+			await answered(kit);
+			await gasRead(kit);
+			expect(kit.warnings()).toEqual([]);
+			expect(kit.claimer()).toBe('sponsor');
+			kit.setAmount('0.099999');
+			await quoted(kit);
+			expect(kit.warnings()).toEqual([NO_GAS]);
+			expect(kit.claimer()).toBe('wallet');
+			kit.destroy();
+		});
+
+		it('show for a typed recipient under the minimum', async () => {
+			const kit = inflow({
+				sponsorFetch: service().sponsorFetch,
+				typed: true,
+				amount: '0.099999',
+			});
+			await answered(kit);
+			expect(kit.warnings()).toEqual([TYPED]);
+			kit.destroy();
+		});
+
+		it('go by the worst case: what is left if the whole of the allowed fee is taken', async () => {
+			// Over the minimum at the fee Circle quotes, and under it at the most the burn allows.
+			const kit = inflow({
+				sponsorFetch: service().sponsorFetch,
+				amount: '0.100135',
+				iris: fastFees(),
+			});
+			await answered(kit);
+			await gasRead(kit);
+			const quote = kit.stores.$quote.get()!;
+			expect(quote.speed).toBe('fast');
+			expect(quote.amount - quote.fee).toBeGreaterThanOrEqual(100_000n);
+			expect(quote.amount - quote.maxFee).toBeLessThan(100_000n);
+			expect(kit.warnings()).toEqual([NO_GAS]);
+			kit.setAmount('0.2');
+			await quoted(kit);
+			expect(kit.warnings()).toEqual([]);
+			kit.destroy();
+		});
+
+		it('show with no quote yet, and go when it arrives', async () => {
+			const kit = inflow({ sponsorFetch: service().sponsorFetch });
+			await answered(kit);
+			await gasRead(kit);
+			kit.setAmount('2');
+			expect(kit.stores.$quote.get()).toBeNull();
+			expect(kit.warnings()).toEqual([NO_GAS]);
+			await quoted(kit);
+			expect(kit.warnings()).toEqual([]);
+			kit.destroy();
+		});
+
+		it('show for a quote made for an amount the form no longer shows', async () => {
+			const kit = inflow({ sponsorFetch: service().sponsorFetch });
+			await answered(kit);
+			await gasRead(kit);
+			kit.stores.$amount.set('0.05');
+			expect(kit.warnings()).toEqual([NO_GAS]);
+			kit.destroy();
+		});
+
+		it('show when nothing has been entered', async () => {
+			const kit = inflow({ sponsorFetch: service().sponsorFetch, amount: '' });
+			await answered(kit);
+			await gasRead(kit);
+			expect(kit.warnings()).toEqual([NO_GAS]);
+			kit.destroy();
+		});
+
+		it("are as if there were no sponsor with claim: 'manual'", async () => {
+			const { sponsorFetch } = service();
+			const kit = inflow({ sponsorFetch, claim: 'manual' });
+			await quoted(kit);
+			await gasRead(kit);
+			expect(kit.warnings()).toEqual([NO_GAS]);
+			expect(kit.claimer()).toBe('wallet');
+			expect(kit.stores.$sponsor.get()).toBeNull();
+			expect(sponsorFetch).not.toHaveBeenCalled();
+			kit.destroy();
+			const typed = inflow({ sponsorFetch, claim: 'manual', typed: true });
+			await quoted(typed);
+			expect(typed.warnings()).toEqual([TYPED]);
+			typed.destroy();
+		});
+
+		it('name the sponsor first and the executor second as the one who claims', async () => {
+			const executeTransaction = async (): Promise<never> => {
+				throw new Error('not in tests');
+			};
+			const both = inflow({ sponsorFetch: service().sponsorFetch, executeTransaction });
+			await answered(both);
+			expect(both.claimer()).toBe('sponsor');
+			expect(both.warnings()).toEqual([]);
+			both.setFromChain('unichain');
+			await quoted(both);
+			expect(both.claimer()).toBe('executor');
+			expect(both.warnings()).toEqual([]);
+			both.destroy();
 		});
 
 		it('show with no sponsor', async () => {
@@ -979,6 +1155,7 @@ describe('a sponsor', () => {
 			});
 			const kit = inflow({ sponsorFetch });
 			await gasRead(kit);
+			await quoted(kit);
 			expect(kit.stores.$sponsor.get()).toBeNull();
 			expect(kit.warnings()).toEqual([NO_GAS]);
 			const render = vi.fn();
@@ -997,8 +1174,10 @@ describe('a sponsor', () => {
 			await answered(kit);
 			await gasRead(kit);
 			kit.setFromChain('unichain');
+			await quoted(kit);
 			expect(kit.warnings()).toEqual([NO_GAS]);
 			kit.setFromChain('ethereum');
+			await quoted(kit);
 			expect(kit.warnings()).toEqual([]);
 			kit.destroy();
 		});
@@ -1028,6 +1207,343 @@ describe('a sponsor', () => {
 			]);
 			evm.destroy();
 			solana.destroy();
+		});
+	});
+
+	describe("with claim: 'manual'", () => {
+		const options = (sponsorFetch: typeof fetch) => ({ sponsorFetch, claim: 'manual' as const });
+
+		it('is not asked for anything on reload', async () => {
+			const { sponsorFetch } = service();
+			const { kit, mock } = load(
+				[
+					waiting(),
+					waiting({ id: 'interrupted', status: 'minting', sponsorClaim: 'pending' }),
+					waiting({ id: 'gave-up', sponsorClaim: 'unavailable' }),
+				],
+				options(sponsorFetch),
+			);
+			await vi.waitFor(() => expect(stored(kit, 'interrupted').status).toBe('readyToMint'));
+			await flush();
+			expect(sponsorFetch).not.toHaveBeenCalled();
+			expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
+			expect(kit.stores.$sponsor.get()).toBeNull();
+			kit.destroy();
+		});
+
+		it('is not asked for anything after the attestation', async () => {
+			const { sponsorFetch } = service();
+			const { kit, mock } = load(
+				[waiting({ status: 'attesting', message: undefined, attestation: undefined })],
+				options(sponsorFetch),
+			);
+			await vi.waitFor(() => expect(stored(kit).status).toBe('readyToMint'));
+			await vi.waitFor(() => expect(kit.isRunning('waiting')).toBe(false));
+			expect(sponsorFetch).not.toHaveBeenCalled();
+			expect(stored(kit).sponsorClaim).toBeUndefined();
+			expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
+			kit.destroy();
+		});
+
+		it('leaves kit.resume at Claim, and kit.claim to the wallet', async () => {
+			const { sponsorFetch } = service();
+			const { kit, mock } = load([waiting()], options(sponsorFetch));
+			await expect(kit.resume('waiting')).resolves.toMatchObject({ status: 'readyToMint' });
+			expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
+			await expect(kit.claim('waiting')).resolves.toMatchObject({ status: 'complete' });
+			expect(mock.signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			expect(sponsorFetch).not.toHaveBeenCalled();
+			kit.destroy();
+		});
+
+		it('is not asked in the background either', async () => {
+			vi.useFakeTimers();
+			page();
+			try {
+				const { sponsorFetch } = service();
+				const { kit } = load([waiting({ sponsorClaim: 'unavailable' })], options(sponsorFetch));
+				await vi.advanceTimersByTimeAsync(20 * 60_000);
+				expect(sponsorFetch).not.toHaveBeenCalled();
+				expect(kit.sponsorState(stored(kit))).toBeNull();
+				kit.destroy();
+			} finally {
+				vi.useRealTimers();
+				vi.unstubAllGlobals();
+			}
+		});
+	});
+
+	describe('being tried again', () => {
+		const PAUSED = () => json(503, { status: 'blocked', reason: 'paused' });
+		const CLAIMED = () => json(200, { status: 'claimed', digest: SERVICE_DIGEST });
+		const MINUTE = 60_000;
+		const unavailable = (over: Partial<TransferRecord> = {}) =>
+			waiting({ sponsorClaim: 'unavailable', ...over });
+
+		/** A kit that has loaded, and made the attempt a reload makes, which `first` answers. */
+		async function loaded(
+			records: TransferRecord[],
+			claim: () => Response | Promise<Response> = PAUSED,
+			options: { storage?: ReturnType<typeof createInMemoryStorage> } = {},
+		) {
+			const answer = { claim };
+			const chain = { used: false };
+			const { sponsorFetch, posts } = service(() => answer.claim());
+			const loading = load(records, {
+				sponsorFetch,
+				used: () => nonceIs(chain.used)(),
+				storage: options.storage,
+			});
+			await vi.advanceTimersByTimeAsync(1_000);
+			return { ...loading, answer, chain, posts };
+		}
+
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		});
+
+		it('happens after 5 minutes while the page is visible, and not before', async () => {
+			page();
+			const { kit, posts } = await loaded([unavailable()]);
+			expect(posts()).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(298_000);
+			expect(posts()).toHaveLength(1);
+			// The next pass of the 15 s loop past the 5 minutes.
+			await vi.advanceTimersByTimeAsync(16_000);
+			expect(posts()).toHaveLength(2);
+			await vi.advanceTimersByTimeAsync(5 * MINUTE - 30_000);
+			expect(posts()).toHaveLength(2);
+			await vi.advanceTimersByTimeAsync(31_000);
+			expect(posts()).toHaveLength(3);
+			kit.destroy();
+		});
+
+		it('makes one request, however the answer could be retried, and frees the card', async () => {
+			page();
+			const { kit, posts, answer, mock } = await loaded([unavailable()]);
+			answer.claim = () => json(429, {});
+			await vi.advanceTimersByTimeAsync(5 * MINUTE + 15_000);
+			expect(posts()).toHaveLength(2);
+			expect(kit.isRunning('waiting')).toBe(false);
+			expect(stored(kit)).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+			// It is not still working through its retries.
+			await vi.advanceTimersByTimeAsync(4 * MINUTE);
+			expect(posts()).toHaveLength(2);
+			expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
+			kit.destroy();
+		});
+
+		it('does not happen while the page is hidden, and happens once it is shown', async () => {
+			const view = page('hidden');
+			const { kit, posts } = await loaded([unavailable()]);
+			expect(posts()).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(20 * MINUTE);
+			expect(posts()).toHaveLength(1);
+			view.show('visible');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(posts()).toHaveLength(2);
+			kit.destroy();
+		});
+
+		it('skips a transfer the wallet is open for, and a press is never kept waiting', async () => {
+			page();
+			const { kit, posts, mock } = await loaded([unavailable()]);
+			let answer: (value: never) => void = () => undefined;
+			mock.signAndExecuteTransaction.mockImplementationOnce(
+				() => new Promise((resolve) => (answer = resolve)),
+			);
+			const run = kit.claim('waiting').catch(() => undefined);
+			expect(mock.signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			expect(kit.isRunning('waiting')).toBe(true);
+			await vi.advanceTimersByTimeAsync(20 * MINUTE);
+			expect(posts()).toHaveLength(1);
+			answer({ $kind: 'Transaction', Transaction: { digest: 'digest' } } as never);
+			await run;
+			kit.destroy();
+		});
+
+		it('skips a transfer another tab is running', async () => {
+			page();
+			const { kit, posts, storage } = await loaded([unavailable()]);
+			storage.setItem(
+				`${KEY}:running:waiting`,
+				JSON.stringify({ owner: 'another-tab', until: Date.now() + 60 * MINUTE }),
+			);
+			await vi.advanceTimersByTimeAsync(20 * MINUTE);
+			expect(posts()).toHaveLength(1);
+			kit.destroy();
+		});
+
+		it('is never done for one that was refused, or dismissed', async () => {
+			page();
+			const { kit, posts } = await loaded([
+				waiting({ sponsorClaim: 'refused' }),
+				unavailable({ id: 'dismissed', hidden: true }),
+			]);
+			await vi.advanceTimersByTimeAsync(20 * MINUTE);
+			expect(posts()).toHaveLength(0);
+			kit.destroy();
+		});
+
+		it('leaves alone what is not waiting at Claim, or was left "pending" by a page', async () => {
+			page();
+			const storage = createInMemoryStorage();
+			const { kit, posts } = await loaded([], PAUSED, { storage });
+			storage.setItem(
+				KEY,
+				JSON.stringify([
+					unavailable({ status: 'minting' }),
+					waiting({ id: 'left', status: 'failed', sponsorClaim: 'pending' }),
+				]),
+			);
+			await vi.advanceTimersByTimeAsync(20 * MINUTE);
+			expect(posts()).toHaveLength(0);
+			kit.destroy();
+		});
+
+		it('stops once the sponsor has refused it', async () => {
+			page();
+			const { kit, posts, answer } = await loaded([unavailable()]);
+			answer.claim = refused;
+			await vi.advanceTimersByTimeAsync(5 * MINUTE + 15_000);
+			expect(posts()).toHaveLength(2);
+			expect(stored(kit).sponsorClaim).toBe('refused');
+			await vi.advanceTimersByTimeAsync(20 * MINUTE);
+			expect(posts()).toHaveLength(2);
+			kit.destroy();
+		});
+
+		it('finishes the transfer when it claims, with no wallet', async () => {
+			page();
+			const events: string[] = [];
+			const { sponsorFetch } = service(() => {
+				chain.used = true;
+				return CLAIMED();
+			});
+			const chain = { used: false };
+			let up = false;
+			const gated = vi.fn<typeof fetch>(async (input, init) =>
+				String(input).endsWith('/api/claim') && !up ? PAUSED() : sponsorFetch(input, init),
+			);
+			const { kit, mock } = load([unavailable()], {
+				sponsorFetch: gated,
+				used: () => nonceIs(chain.used)(),
+				onEvent: (event) => events.push(event.type),
+			});
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(stored(kit).status).toBe('readyToMint');
+			up = true;
+			await vi.advanceTimersByTimeAsync(5 * MINUTE + 15_000);
+			expect(stored(kit)).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+			expect(stored(kit).sponsorClaim).toBeUndefined();
+			expect(mock.signAndExecuteTransaction).not.toHaveBeenCalled();
+			expect(events.filter((type) => type === 'transfer:complete')).toHaveLength(1);
+			kit.destroy();
+		});
+
+		it('takes a transfer from failed to Claim, and never ends at failed', async () => {
+			page();
+			const events: string[] = [];
+			const storage = createInMemoryStorage();
+			const { sponsorFetch } = service(PAUSED);
+			const { kit } = load([waiting({ sponsorClaim: 'refused', id: 'other' })], {
+				sponsorFetch,
+				storage,
+				onEvent: (event) => events.push(event.type),
+			});
+			await vi.advanceTimersByTimeAsync(1_000);
+			// A Claim press was rejected in the wallet here, after this page's last try.
+			storage.setItem(
+				KEY,
+				JSON.stringify([unavailable({ status: 'failed', error: 'Rejected in the wallet.' })]),
+			);
+			await vi.advanceTimersByTimeAsync(5 * MINUTE + 30_000);
+			expect(stored(kit)).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+			expect(stored(kit).error).toBeUndefined();
+			expect(events).not.toContain('transfer:failed');
+			kit.destroy();
+		});
+
+		it('counts from when it sees one another tab left, which has only just asked', async () => {
+			page();
+			const storage = createInMemoryStorage();
+			const { kit, posts } = await loaded([], PAUSED, { storage });
+			storage.setItem(KEY, JSON.stringify([unavailable()]));
+			await vi.advanceTimersByTimeAsync(15_000);
+			expect(posts()).toHaveLength(0);
+			await vi.advanceTimersByTimeAsync(5 * MINUTE - 15_000);
+			expect(posts()).toHaveLength(0);
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(posts()).toHaveLength(1);
+			kit.destroy();
+		});
+
+		it('does not take the card off what the user is looking at', async () => {
+			page();
+			const { kit, posts } = await loaded([unavailable()]);
+			kit.stores.$activeTransferId.set('another-transfer');
+			await vi.advanceTimersByTimeAsync(5 * MINUTE + 15_000);
+			expect(posts()).toHaveLength(2);
+			expect(kit.stores.$activeTransferId.get()).toBe('another-transfer');
+			kit.destroy();
+		});
+
+		it('stops with the kit', async () => {
+			page();
+			const { kit, posts } = await loaded([unavailable()]);
+			kit.destroy();
+			await vi.advanceTimersByTimeAsync(20 * MINUTE);
+			expect(posts()).toHaveLength(1);
+		});
+
+		it('tells the card when a run has ended, which is not in any store by itself', async () => {
+			page();
+			const { sponsorFetch } = service(PAUSED);
+			const { kit } = load([unavailable()], { sponsorFetch });
+			const seen: boolean[] = [];
+			const stop = kit.stores.$transfers.listen(() => seen.push(kit.isRunning('waiting')));
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(seen.at(-1)).toBe(false);
+			expect(kit.sponsorState(stored(kit))).toBe('unavailable');
+			stop();
+			kit.destroy();
+		});
+	});
+
+	describe('what is said about a transfer', () => {
+		it('is nothing with no sponsor, whatever the record holds', async () => {
+			const records = [
+				waiting({ sponsorClaim: 'unavailable' }),
+				waiting({ id: 'refused', sponsorClaim: 'refused' }),
+			];
+			const { kit } = load(records);
+			for (const record of records) expect(kit.sponsorState(record)).toBeNull();
+			kit.destroy();
+		});
+
+		it('does not promise another try for a source denied since the last one', async () => {
+			const { sponsorFetch } = service();
+			const { kit } = load([], { sponsorFetch });
+			await vi.waitFor(() => expect(kit.stores.$sponsor.get()).not.toBeNull());
+			expect(
+				kit.sponsorState(waiting({ from: 'unichain', sponsorClaim: 'unavailable' })),
+			).toBeNull();
+			kit.destroy();
+		});
+
+		it('is nothing for a transfer not waiting at Claim', async () => {
+			const { sponsorFetch } = service();
+			const { kit } = load([], { sponsorFetch });
+			await vi.waitFor(() => expect(kit.stores.$sponsor.get()).not.toBeNull());
+			for (const status of ['attesting', 'minting', 'complete'] as const) {
+				expect(kit.sponsorState(waiting({ status, sponsorClaim: 'unavailable' }))).toBeNull();
+				expect(kit.sponsorState(waiting({ status, sponsorClaim: 'refused' }))).toBeNull();
+			}
+			kit.destroy();
 		});
 	});
 
@@ -1083,23 +1599,6 @@ describe('transfers into Sui finished somewhere else', () => {
 		updatedAt: 1,
 		...over,
 	});
-
-	/** A page that can be shown, hidden and focused. */
-	function page(visibilityState: 'visible' | 'hidden' = 'visible') {
-		const document = Object.assign(new EventTarget(), { visibilityState });
-		const window = new EventTarget();
-		vi.stubGlobal('document', document);
-		vi.stubGlobal('window', window);
-		return {
-			document,
-			window,
-			show(state: 'visible' | 'hidden') {
-				document.visibilityState = state;
-				document.dispatchEvent(new Event('visibilitychange'));
-			},
-			focus: () => window.dispatchEvent(new Event('focus')),
-		};
-	}
 
 	/** A kit over stored records, on a chain whose answer the test can change. */
 	function load(records: TransferRecord[], storage = createInMemoryStorage()) {

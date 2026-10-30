@@ -92,7 +92,8 @@ export interface CctpKitConfig {
 	iris?: IrisClientOptions;
 	/**
 	 * A service that claims transfers into Sui with a key of its own and pays the gas, so that the
-	 * user's wallet is only asked when it cannot. Off unless `baseUrl` is set. One deployment
+	 * user's wallet, or `sui.executeTransaction`, is only asked when it cannot. Off unless `baseUrl`
+	 * is set, and with `claim: 'manual'`, where the host decides when claims happen. One deployment
 	 * serves one Sui network, so pass the one for the kit's network.
 	 */
 	sponsor?: SponsorConfig;
@@ -172,10 +173,12 @@ export interface TransferRecord {
 	hidden?: boolean;
 	/**
 	 * Where the sponsor stands on this transfer's claim. `pending`: it is being, or is about to be,
-	 * asked. `unavailable`: it gave up or was not available, and the user claims with a wallet.
-	 * Only ever set on a transfer into Sui, and left out once the claim is done.
+	 * asked. `unavailable`: it could not claim this now, and is asked again later. `refused`: it
+	 * answered that it will not claim this message, and is not asked again. Set only on a transfer
+	 * into Sui that the sponsor could take, so never on one under its minimum or from a source it
+	 * denies, and left out once the sponsor has claimed.
 	 */
-	sponsorClaim?: 'pending' | 'unavailable';
+	sponsorClaim?: 'pending' | 'unavailable' | 'refused';
 }
 
 export type CctpKitEvent =

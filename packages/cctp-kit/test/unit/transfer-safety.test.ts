@@ -24,6 +24,7 @@ import { MESSAGE_V2 } from '../../src/utils/bytes.js';
 import { TransactionRevertedError } from '../../src/utils/errors.js';
 import { sleep } from '../../src/utils/sleep.js';
 import type { WalletAdapters } from '../../src/wallets/types.js';
+import { burnMessage } from './burn-message.js';
 import { solanaHasCctpLookupTable } from './solana-lookup-table.js';
 
 vi.mock('../../src/engine/evm.js', async (original) => ({
@@ -44,12 +45,7 @@ const chains = getChainRegistry('mainnet');
 
 /** A v2 message with the given expiry (Sui reads it as milliseconds). */
 function message(expiry: bigint, marker = 0xaa): `0x${string}` {
-	const bytes = new Uint8Array(MESSAGE_V2.body + MESSAGE_V2.bodyFields.hookData).fill(marker);
-	const view = new DataView(bytes.buffer);
-	const at = MESSAGE_V2.body + MESSAGE_V2.bodyFields.expirationBlock;
-	bytes.fill(0, at, at + 32);
-	view.setBigUint64(at + 24, expiry);
-	return hex(bytes);
+	return burnMessage({ expiry, fill: marker });
 }
 
 function hex(bytes: Uint8Array): `0x${string}` {
@@ -1180,7 +1176,7 @@ describe('a claim on Sui', () => {
 			});
 		});
 
-		it('honours Retry-After on the run: 1 s is waited out, 60 s gives up without waiting', async () => {
+		it('honours Retry-After on the run: 80 s is waited out, 100 s gives up without waiting', async () => {
 			const waits: number[] = [];
 			const service = (header: string) => {
 				const claims = [
@@ -1200,16 +1196,17 @@ describe('a claim on Sui', () => {
 				});
 			};
 			const first = suiDAppKit({ core: { simulateTransaction: unusedUntilClaimed() } });
-			const waited = await follow(sponsored(first.dAppKit, service('1')));
+			const waited = await follow(sponsored(first.dAppKit, service('80')));
 			expect(waited).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
 			expect(first.signAndExecuteTransaction).not.toHaveBeenCalled();
-			expect(waits).toEqual([1_000]);
+			expect(waits).toEqual([80_000]);
 
 			waits.length = 0;
 			const second = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
-			await follow(sponsored(second.dAppKit, service('60')));
+			const gaveUp = await follow(sponsored(second.dAppKit, service('100')));
 			expect(waits).toEqual([]);
 			expect(second.signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+			expect(gaveUp.sponsorClaim).toBe('unavailable');
 		});
 
 		it('rejects the run, and never asks the wallet, when aborted between retries', async () => {
@@ -1362,10 +1359,27 @@ describe('a claim on Sui', () => {
 				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
 					core: { simulateTransaction: nonceIs(false) },
 				});
-				const result = await follow(sponsored(dAppKit, sponsor), { from: 'unichain' });
+				const updates: TransferRecord[] = [];
+				const result = await follow(sponsored(dAppKit, sponsor, updates), { from: 'unichain' });
 				expect(posts()).toHaveLength(0);
 				expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
-				expect(result.sponsorClaim).toBe('unavailable');
+				// Marked before the status was known, and put right once it was: the sponsor did not
+				// fail at anything, so there is nothing to tell the user or to try again.
+				expect(updates.some((u) => u.sponsorClaim === 'pending')).toBe(true);
+				expect(updates.some((u) => u.sponsorClaim === 'unavailable')).toBe(false);
+				expect(result.sponsorClaim).toBeUndefined();
+			});
+
+			it('finds a denied source out on a resumed run too, and stops at Claim', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await resume(sponsored(dAppKit, sponsor), { from: 'unichain' });
+				expect(posts()).toHaveLength(0);
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+				expect(result.status).toBe('readyToMint');
+				expect(result.sponsorClaim).toBeUndefined();
 			});
 
 			it.each([
@@ -1394,6 +1408,214 @@ describe('a claim on Sui', () => {
 				expect(posts()).toHaveLength(0);
 				expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
 				expect(result.sponsorClaim).toBe('unavailable');
+			});
+		});
+
+		describe('telling a refusal from unavailability on the record', () => {
+			const atClaim = async (claims: (Response | Error)[], health?: Response | Error) => {
+				const { sponsor } = sponsorSays(claims, { health });
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+				return (await resume(sponsored(dAppKit, sponsor))).sponsorClaim;
+			};
+
+			it('a 422 is refused', async () => {
+				expect(await atClaim([refused()])).toBe('refused');
+			});
+
+			it('a health 503 is unavailable', async () => {
+				const down = json(503, { ok: false, error: 'gas' });
+				expect(await atClaim([claimedByService()], down)).toBe('unavailable');
+			});
+
+			it('retries that ran out on 429s are unavailable', async () => {
+				expect(await atClaim([json(429, {})])).toBe('unavailable');
+			});
+
+			it('a 409 is unavailable', async () => {
+				expect(await atClaim([json(409, { status: 'expired' })])).toBe('unavailable');
+			});
+
+			it('the recipient on the deny list is refused', async () => {
+				const denied = json(503, { status: 'blocked', reason: 'denied' });
+				expect(await atClaim([denied])).toBe('refused');
+			});
+
+			it('any other block is unavailable', async () => {
+				const paused = json(503, { status: 'blocked', reason: 'paused' });
+				expect(await atClaim([paused])).toBe('unavailable');
+			});
+
+			it('a claim the chain does not show is unavailable: a node may only be lagging', async () => {
+				expect(await atClaim([claimedByService()])).toBe('unavailable');
+			});
+		});
+
+		describe('for a message under the minimum', () => {
+			/** What a message is worth, as the attested message has it, not as the record does. */
+			const small = (amount: bigint, feeExecuted = 0n) => ({
+				message: burnMessage({ amount, feeExecuted, expiry: BigInt(Date.now() + 3_600_000) }),
+			});
+
+			it('asks the wallet as if there were no sponsor, with no request and no "pending"', async () => {
+				const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const updates: TransferRecord[] = [];
+				const ctx = {
+					...sponsored(dAppKit, sponsor, updates),
+					iris: new IrisClient('mainnet', {
+						fetch: vi.fn<typeof fetch>(async () =>
+							json(200, {
+								messages: [{ ...attested(), ...small(99_999n) }],
+							}),
+						),
+					}),
+					pollIntervalMs: 1,
+				};
+				const result = await runTransfer(
+					record({ status: 'attesting', sourceTxHash: BURN_HASH, sourceConfirmed: true }),
+					ctx,
+				);
+				expect(sponsorFetch).not.toHaveBeenCalled();
+				expect(updates.some((u) => u.sponsorClaim !== undefined)).toBe(false);
+				expect(signAndExecuteTransaction).toHaveBeenCalledTimes(1);
+				expect(result).toMatchObject({ status: 'complete', destinationTxHash: SUI_DIGEST });
+			});
+
+			it('stops at Claim on a resumed run, touching nothing', async () => {
+				const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+				const simulateTransaction = nonceIs(false);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction },
+				});
+				const updates: TransferRecord[] = [];
+				const result = await resume(sponsored(dAppKit, sponsor, updates), small(99_999n));
+				expect(result.status).toBe('readyToMint');
+				expect(sponsorFetch).not.toHaveBeenCalled();
+				expect(simulateTransaction).not.toHaveBeenCalled();
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+				expect(updates).toEqual([]);
+			});
+
+			it('goes by what is left after the fee', async () => {
+				const under = sponsorSays([claimedByService()]);
+				await resume(
+					sponsored(
+						suiDAppKit({ core: { simulateTransaction: nonceIs(false) } }).dAppKit,
+						under.sponsor,
+					),
+					small(100_099n, 100n),
+				);
+				expect(under.posts()).toHaveLength(0);
+
+				const exactly = sponsorSays([claimedByService()]);
+				await resume(
+					sponsored(
+						suiDAppKit({ core: { simulateTransaction: unusedUntilClaimed() } }).dAppKit,
+						exactly.sponsor,
+					),
+					small(100_100n, 100n),
+				);
+				expect(exactly.posts()).toHaveLength(1);
+			});
+
+			it('is noticed when a message signed again comes back under it', async () => {
+				// Fast messages expire and are signed again, and the fee is Circle's to set each time.
+				const expired = burnMessage({ expiry: BigInt(Date.now() - 1_000) });
+				const renewed = burnMessage({
+					amount: 99_999n,
+					expiry: BigInt(Date.now() + 86_400_000),
+					fill: 0xcc,
+				});
+				const iris = new IrisClient('mainnet', {
+					fetch: vi.fn<typeof fetch>(async (_input, init) =>
+						init?.method === 'POST'
+							? json(200, { message: 'ok' })
+							: json(200, {
+									messages: [
+										{ status: 'complete', message: renewed, attestation: `0x${'22'.repeat(65)}` },
+									],
+								}),
+					),
+				});
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await resume(
+					{ ...sponsored(dAppKit, sponsor), iris, pollIntervalMs: 1 },
+					{ message: expired },
+				);
+				expect(posts()).toHaveLength(0);
+				expect(result).toMatchObject({ status: 'readyToMint', message: renewed });
+				expect(result.sponsorClaim).toBeUndefined();
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+		});
+
+		describe('with an executor as well', () => {
+			const HOST_DIGEST = '8yW3bnTb1bvW9WqZBb8YjVt1g1q7RkFzvVr2nEwqM9Lz';
+			const executor = () =>
+				vi.fn(async (_request: SuiExecutionRequest) => ({
+					$kind: 'Transaction' as const,
+					Transaction: { digest: HOST_DIGEST } as never,
+				}));
+
+			it('goes to the sponsor first, and the executor is not called when it claims', async () => {
+				const { sponsor, posts } = sponsorSays([claimedByService()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: unusedUntilClaimed() },
+				});
+				const executeSuiTransaction = executor();
+				const result = await follow({ ...sponsored(dAppKit, sponsor), executeSuiTransaction });
+				expect(posts()).toHaveLength(1);
+				expect(result).toMatchObject({ status: 'complete', destinationTxHash: SERVICE_DIGEST });
+				expect(executeSuiTransaction).not.toHaveBeenCalled();
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('calls the executor once, and not the wallet, when the sponsor gives up', async () => {
+				const { sponsor, posts } = sponsorSays([refused()]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const order: string[] = [];
+				const executeSuiTransaction = vi.fn(async (_request: SuiExecutionRequest) => {
+					order.push(`executor after ${posts().length} request`);
+					return {
+						$kind: 'Transaction' as const,
+						Transaction: { digest: HOST_DIGEST } as never,
+					};
+				});
+				const result = await follow({ ...sponsored(dAppKit, sponsor), executeSuiTransaction });
+				expect(order).toEqual(['executor after 1 request']);
+				expect(executeSuiTransaction).toHaveBeenCalledTimes(1);
+				expect(executeSuiTransaction.mock.calls[0]![0].kind).toBe('claim');
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+				expect(result).toMatchObject({ status: 'complete', destinationTxHash: HOST_DIGEST });
+			});
+
+			it('leaves the executor alone on a resumed run, as it does the wallet', async () => {
+				const { sponsor } = sponsorSays([refused()]);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+				const executeSuiTransaction = executor();
+				const result = await resume({ ...sponsored(dAppKit, sponsor), executeSuiTransaction });
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'refused' });
+				expect(executeSuiTransaction).not.toHaveBeenCalled();
+			});
+
+			it('goes straight to the executor on a Claim press', async () => {
+				const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+				const { dAppKit } = suiDAppKit({ core: { simulateTransaction: nonceIs(false) } });
+				const executeSuiTransaction = executor();
+				const run = runTransfer(claimable(), {
+					...sponsored(dAppKit, sponsor),
+					executeSuiTransaction,
+				});
+				expect(executeSuiTransaction).toHaveBeenCalledTimes(1);
+				await run;
+				expect(sponsorFetch).not.toHaveBeenCalled();
 			});
 		});
 
@@ -1583,7 +1805,7 @@ describe('a claim on Sui', () => {
 				signAndExecuteTransaction.mockRejectedValueOnce(new Error('Failed to open new window'));
 				const updates: TransferRecord[] = [];
 				const result = await follow(sponsored(dAppKit, sponsor, updates));
-				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'refused' });
 				expect(result.error).toBeUndefined();
 				expect(updates.some((u) => u.status === 'failed')).toBe(false);
 			});
@@ -1599,7 +1821,7 @@ describe('a claim on Sui', () => {
 				expect(updates.at(-1)).toMatchObject({
 					status: 'failed',
 					error: 'The request was rejected in the wallet.',
-					sponsorClaim: 'unavailable',
+					sponsorClaim: 'refused',
 				});
 				expect(updates.at(-1)!.attestation).toBeTruthy();
 			});
@@ -1686,8 +1908,38 @@ describe('a claim on Sui', () => {
 				const updates: TransferRecord[] = [];
 				const result = await resume(sponsored(dAppKit, sponsor, updates));
 				expect(posts()).toHaveLength(1);
-				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'refused' });
 				expect(result.error).toBeUndefined();
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('asks nothing of a sponsor that has refused this transfer', async () => {
+				const { sponsor, sponsorFetch } = sponsorSays([claimedByService()]);
+				const simulateTransaction = nonceIs(false);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction },
+				});
+				const result = await resume(sponsored(dAppKit, sponsor), {
+					status: 'failed',
+					sponsorClaim: 'refused',
+				});
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'refused' });
+				expect(sponsorFetch).not.toHaveBeenCalled();
+				expect(simulateTransaction).not.toHaveBeenCalled();
+				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+			});
+
+			it('makes one attempt when told to, however the answer could be retried', async () => {
+				const { sponsor, posts } = sponsorSays([json(429, {})]);
+				const { dAppKit, signAndExecuteTransaction } = suiDAppKit({
+					core: { simulateTransaction: nonceIs(false) },
+				});
+				const result = await resume({
+					...sponsored(dAppKit, sponsor),
+					sponsorSingleAttempt: true,
+				});
+				expect(posts()).toHaveLength(1);
+				expect(result).toMatchObject({ status: 'readyToMint', sponsorClaim: 'unavailable' });
 				expect(signAndExecuteTransaction).not.toHaveBeenCalled();
 			});
 

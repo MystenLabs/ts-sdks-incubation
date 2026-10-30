@@ -57,23 +57,23 @@ Every hook accepts an optional `{ kit }` to bypass context, mirroring dapp-kit's
 
 ### Configuration
 
-| Option                   | Description                                                                                                                                                             |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dAppKit`                | The host's dapp-kit 2.0 instance (required).                                                                                                                            |
-| `network`                | `'mainnet'` or `'testnet'`; inferred from dapp-kit's current network.                                                                                                   |
-| `direction`              | `'both'`, `'inflow'` (all routes end on Sui) or `'outflow'`.                                                                                                            |
-| `chains`                 | `{ allow, deny, from: { allow, deny }, to: { allow, deny } }` by chain key.                                                                                             |
-| `transferSpeed`          | `{ default, allow }` with `'fast'` and/or `'standard'`.                                                                                                                 |
-| `rpc`                    | `{ urls: { base: ['https://a', 'https://b'] }, mode }`, where `mode` is `'prepend'` or `'replace'`.                                                                     |
-| `icons`                  | Override chain icons by key (URL / data URI), or `null` for a text monogram. Defaults load from `icons.llamao.fi`; allow it in `img-src` or override.                   |
-| `wallets.evm`            | Inject an EVM adapter, e.g. `createEvmWalletFromWagmiConfig(config)`.                                                                                                   |
-| `wallets.solana`         | Inject a Solana adapter.                                                                                                                                                |
-| `wallets.layer`          | Supplies the EVM and Solana wallets you do not inject. `appKitWallets({ projectId, metadata, themeMode })` from `/appkit` is the ready-made one, built on Reown AppKit. |
-| `sui.executeTransaction` | Signs and executes the kit's Sui burns and claims in place of dapp-kit's wallet. See [Executing Sui transactions yourself](#executing-sui-transactions-yourself).       |
-| `claim`                  | `'auto'` (default) claims as soon as Circle attests; `'manual'` stops at `readyToMint` until `kit.claim(id)`.                                                           |
-| `sponsor`                | `{ baseUrl, fetch? }`: a service that claims transfers into Sui and pays the gas. Off unless `baseUrl` is set. See [Sponsored claims on Sui](#sponsored-claims-on-sui). |
-| `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                                    |
-| `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                                   |
+| Option                   | Description                                                                                                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dAppKit`                | The host's dapp-kit 2.0 instance (required).                                                                                                                                                        |
+| `network`                | `'mainnet'` or `'testnet'`; inferred from dapp-kit's current network.                                                                                                                               |
+| `direction`              | `'both'`, `'inflow'` (all routes end on Sui) or `'outflow'`.                                                                                                                                        |
+| `chains`                 | `{ allow, deny, from: { allow, deny }, to: { allow, deny } }` by chain key.                                                                                                                         |
+| `transferSpeed`          | `{ default, allow }` with `'fast'` and/or `'standard'`.                                                                                                                                             |
+| `rpc`                    | `{ urls: { base: ['https://a', 'https://b'] }, mode }`, where `mode` is `'prepend'` or `'replace'`.                                                                                                 |
+| `icons`                  | Override chain icons by key (URL / data URI), or `null` for a text monogram. Defaults load from `icons.llamao.fi`; allow it in `img-src` or override.                                               |
+| `wallets.evm`            | Inject an EVM adapter, e.g. `createEvmWalletFromWagmiConfig(config)`.                                                                                                                               |
+| `wallets.solana`         | Inject a Solana adapter.                                                                                                                                                                            |
+| `wallets.layer`          | Supplies the EVM and Solana wallets you do not inject. `appKitWallets({ projectId, metadata, themeMode })` from `/appkit` is the ready-made one, built on Reown AppKit.                             |
+| `sui.executeTransaction` | Signs and executes the kit's Sui burns and claims in place of dapp-kit's wallet. See [Executing Sui transactions yourself](#executing-sui-transactions-yourself).                                   |
+| `claim`                  | `'auto'` (default) claims as soon as Circle attests; `'manual'` stops at `readyToMint` until `kit.claim(id)`.                                                                                       |
+| `sponsor`                | `{ baseUrl, fetch? }`: a service that claims transfers into Sui and pays the gas. Off unless `baseUrl` is set, and with `claim: 'manual'`. See [Sponsored claims on Sui](#sponsored-claims-on-sui). |
+| `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                                                                |
+| `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                                                               |
 
 ### Sponsored claims on Sui
 
@@ -87,14 +87,18 @@ const kit = createCctpKit({
 With `sponsor` set, a transfer into Sui goes to that service as soon as it is attested. The service
 claims it with its own key and pays the gas. Circle always mints to the recipient in the attested
 message, so the USDC never passes through the service. While it works, the card says "Claiming on
-Sui for you…" and shows no **Claim** button. The kit calls `${baseUrl}/api/claim`, `/api/health` and
-`/api/denylist`.
+Sui for you…" and shows no **Claim** button, and the quote says "Claimed on Sui for you". The kit
+calls `${baseUrl}/api/claim`, `/api/health` and `/api/denylist`.
 
 - It is off unless `baseUrl` is given. With no `baseUrl`, the kit never calls the service.
 - One deployment serves one Sui network. Pass the one for the kit's network.
 - Only Sui destinations use it. Transfers to EVM chains and Solana are claimed as before.
 - The service refuses some source chains, and lists them at `/api/denylist`. A transfer from one of
   those is claimed with a wallet as usual, with no request to the service.
+- The service refuses a transfer of less than 0.1 USDC after fees (`MIN_SPONSORED_AMOUNT`), and does
+  not publish that minimum, so the kit holds a copy. A transfer under it is claimed with a wallet as
+  usual, with no request to the service. The form goes by the worst case, the amount less `maxFee`,
+  and a transfer goes by what its attested message mints.
 - The service has no watcher: it only claims what the page sends it. The page has to be open after
   the attestation for the claim to be sent. If it was closed, the claim is sent the next time the
   page loads, for any transfer that is attested and not yet claimed.
@@ -103,7 +107,42 @@ Sui for you…" and shows no **Claim** button. The kit calls `${baseUrl}/api/cla
 - When the service cannot claim, or is not available, the user's wallet is asked as before. A
   transfer picked up on page load waits at **Claim** instead, since nobody asked for the wallet. A
   press on **Claim** always goes straight to the wallet.
-- `warnings()` drops what it says about needing SUI only while the service serves the form's route.
+- `warnings()` drops what it says about needing SUI only while the service serves the form's route
+  and amount. No quote yet counts as not served, so the warnings show until there is one.
+- The card says "Claiming on Sui for you…" only while the service serves the transfer as far as is
+  known. Until its status has been read, a transfer picked up on page load shows its usual step, and
+  still no **Claim** button.
+
+When a transfer waits at **Claim** because of the service, the card says so, and
+`TransferRecord.sponsorClaim` says why:
+
+- `unavailable`: the service could not claim it now. Its status said no or could not be read, the
+  retries ran out, it was blocked, or it failed. The card says to claim from a Sui wallet that holds
+  SUI, or to wait. While the page is visible the transfer is sent to the service again, at most
+  every 5 minutes and once each time, on the 15 second pass that looks for finished claims. A reload
+  sends it at once. These attempts never open a wallet and never end at `failed`, and a transfer
+  that is running, here or in another tab, is left alone.
+- `refused`: the service answered and will not claim this message. It is any 4xx but 409 and 429,
+  anything but a claim in a 200, the recipient on USDC's deny list, or a claim that failed on chain.
+  The card says to claim from a wallet, and the transfer is not sent to the service again, on a
+  reload either.
+
+A transfer under the minimum or from a denied source never reaches the service, so it gets neither.
+
+The service sits behind a rate limit of 30 requests a minute per IP, whose 429 lasts about a minute
+and which a browser sees as a failed request. So the kit retries what is worth retrying after about
+3, 20 and 60 seconds, each scaled by a random factor between 0.5 and 1. It gives an attempt 20
+seconds, and starts none once 120 seconds have passed since the first. A `Retry-After` the page can
+read replaces the wait, and one over 90 seconds ends the retries.
+
+With `sui.executeTransaction`, the service goes first and the executor takes the wallet's place: it
+is called once when the service gives up, and at once on a press on **Claim**. The quote then says
+"Mint on Sui", and the card has nothing to say about wallets, since a press needs nothing from the
+user. A transfer that waits at **Claim** is still sent to the service again.
+
+With `claim: 'manual'` the host decides when claims happen, so the kit never sends a claim to the
+service by itself, and does not read its status. `warnings()`, the quote and the card are as if no
+`sponsor` were set. `kit.claim(id)` goes to the wallet, or the executor, as it always does.
 
 ### Theming
 
@@ -148,8 +187,8 @@ Every transfer is a record in `storage` (browser `localStorage` by default, keye
 `storage: null` to disable) and is updated after each step, including the source transaction hash
 the moment the wallet returns it. On creation the kit resumes any record that was interrupted: it
 keeps polling for the attestation and stops at **Claim**, because the destination mint needs the
-user's wallet. With a `sponsor`, the service is asked first, whatever became of the last attempt.
-The card shows a Resume button for anything nothing is driving. A transfer started elsewhere can be
+user's wallet. With a `sponsor`, the service is asked first, unless it has refused the transfer. The
+card shows a Resume button for anything nothing is driving. A transfer started elsewhere can be
 brought in with "Track a transfer by transaction hash".
 
 A transfer into Sui can be finished by someone else: the sponsor, another tab or another device. So

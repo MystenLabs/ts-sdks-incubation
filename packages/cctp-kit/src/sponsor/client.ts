@@ -2,17 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ChainDefinition } from '../chains/types.js';
+import { parseMessageV2 } from '../utils/bytes.js';
 import { sleep, untilAborted } from '../utils/sleep.js';
+
+/**
+ * 0.1 USDC in base units, net of fees. The claimer refuses anything less as `below_minimum`, and
+ * says so only when asked to claim, so this follows `MIN_CLAIM_AMOUNT` in its `src/message.ts`.
+ */
+export const MIN_SPONSORED_AMOUNT = 100_000n;
 
 const STATUS_TTL_MS = 60_000;
 const STATUS_TIMEOUT_MS = 5_000;
-/** Retries after the first attempt. */
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 2_000;
-const MAX_RETRY_AFTER_MS = 20_000;
-// The function's own limit is 30 s, so this only ends an attempt nothing will answer.
-const ATTEMPT_TIMEOUT_MS = 35_000;
-const TOTAL_LIMIT_MS = 60_000;
+// The wait before each retry, before the jitter. The rate limit in front of the service lasts
+// about a minute, so the last one has to be able to land past it.
+const RETRY_DELAYS_MS = [3_000, 20_000, 60_000];
+const MAX_RETRY_AFTER_MS = 90_000;
+// The function's own limit is 15 s, so this only ends an attempt nothing will answer.
+const ATTEMPT_TIMEOUT_MS = 20_000;
+// Room for all three waits and the attempts between them, so the third retry can still start.
+const TOTAL_LIMIT_MS = 120_000;
 
 const TIMED_OUT = new Error('The sponsor did not answer in time');
 
@@ -48,29 +56,54 @@ export type SponsorAnswer =
 	/** `body` is the parsed JSON, and left out when the body is not JSON. */
 	{ status: number; body?: unknown } | { failed: 'network' | 'timeout' };
 
+/**
+ * Why the sponsor did not claim. `refused`: it answered, and will not claim this message.
+ * `unavailable`: it could not, and may be able to later.
+ */
+export type SponsorFailure = 'refused' | 'unavailable';
+
 export type SponsorVerdict =
 	| { action: 'claimed'; digest: string }
 	| { action: 'alreadyClaimed' }
 	| { action: 'retry'; reason: string }
-	| { action: 'giveUp'; reason: string };
+	| { action: 'giveUp'; reason: string; failure: SponsorFailure };
 
 export type SponsorClaimResult =
 	| { status: 'claimed'; digest: string }
 	| { status: 'alreadyClaimed' }
-	| { status: 'gaveUp'; reason: string };
+	| { status: 'gaveUp'; reason: string; failure: SponsorFailure };
+
+/** What an attested message mints, net of the fee, or null when there is none that can be read. */
+export function netAmountOf(message: string | undefined): bigint | null {
+	if (!message) return null;
+	try {
+		const { amount, feeExecuted } = parseMessageV2(message).body;
+		return amount - feeExecuted;
+	} catch {
+		return null;
+	}
+}
+
+/** Whether the sponsor takes this net amount. An amount that is not known counts as no. */
+export function amountServed(netAmount: bigint | null): boolean {
+	return netAmount !== null && netAmount >= MIN_SPONSORED_AMOUNT;
+}
 
 /**
- * Whether the sponsor will take a claim on this route. What is not known counts as no: the form
- * then says SUI is needed, and a transfer goes to the wallet as it would with no sponsor.
+ * Whether the sponsor will take a claim on this route, for this net amount. What is not known
+ * counts as no: the form then says SUI is needed, and a transfer goes to the wallet as it would
+ * with no sponsor.
  */
 export function sponsorServes(
 	status: SponsorStatus | null,
 	source: Pick<ChainDefinition, 'domain'>,
 	destination: Pick<ChainDefinition, 'ecosystem'>,
+	netAmount: bigint | null,
 ): boolean {
 	if (destination.ecosystem !== 'sui' || !status) return false;
 	const { health, deniedDomains } = status;
 	return (
+		amountServed(netAmount) &&
 		health?.ok === true &&
 		health.dryRun === false &&
 		deniedDomains !== null &&
@@ -114,7 +147,12 @@ export function classifySponsorResponse(answer: SponsorAnswer): SponsorVerdict {
 	if (status === 429 || status === 502 || status === 504 || congested || platform) {
 		return { action: 'retry', reason };
 	}
-	return { action: 'giveUp', reason };
+	// A 409 is not one of these: an expired message is signed again, and a run does that first.
+	const refused =
+		status === 200 ||
+		(status >= 400 && status < 500 && status !== 409) ||
+		(said === 'blocked' && (body.reason === 'denied' || body.failedDigest !== undefined));
+	return { action: 'giveUp', reason, failure: refused ? 'refused' : 'unavailable' };
 }
 
 /**
@@ -204,13 +242,15 @@ export class SponsorClient {
 	}
 
 	/**
-	 * Ask for a message to be claimed, retrying what `classifySponsorResponse` says to retry.
-	 * Resolves with what the service last said. Rejects only when `signal` aborts.
+	 * Ask for a message to be claimed, retrying what `classifySponsorResponse` says to retry,
+	 * unless `singleAttempt` is set. Resolves with what the service last said. Rejects only when
+	 * `signal` aborts.
 	 */
 	async claim(
 		message: string,
 		attestation: string,
 		signal?: AbortSignal,
+		{ singleAttempt = false }: { singleAttempt?: boolean } = {},
 	): Promise<SponsorClaimResult> {
 		const body = JSON.stringify({ message, attestation });
 		const started = this.#now();
@@ -220,16 +260,21 @@ export class SponsorClient {
 			if (verdict.action === 'claimed') return { status: 'claimed', digest: verdict.digest };
 			if (verdict.action === 'alreadyClaimed') return { status: 'alreadyClaimed' };
 			const { reason } = verdict;
-			if (verdict.action === 'giveUp' || retry > MAX_RETRIES) return { status: 'gaveUp', reason };
+			if (verdict.action === 'giveUp') {
+				return { status: 'gaveUp', reason, failure: verdict.failure };
+			}
+			// From here on it was worth another attempt, whatever stops that attempt being made.
+			const unavailable = { status: 'gaveUp', reason, failure: 'unavailable' } as const;
+			if (singleAttempt || retry > RETRY_DELAYS_MS.length) return unavailable;
 			const asked = parseRetryAfter(retryAfter, this.#now());
-			if (asked !== null && asked > MAX_RETRY_AFTER_MS) return { status: 'gaveUp', reason };
-			const delay = asked ?? BASE_DELAY_MS * 2 ** (retry - 1) * (0.5 + this.#random() / 2);
+			if (asked !== null && asked > MAX_RETRY_AFTER_MS) return unavailable;
+			const delay = asked ?? RETRY_DELAYS_MS[retry - 1]! * (0.5 + this.#random() / 2);
 			// A wait that ends past the limit has no attempt after it, so nobody sits through it.
-			if (this.#now() - started + delay >= TOTAL_LIMIT_MS) return { status: 'gaveUp', reason };
+			if (this.#now() - started + delay >= TOTAL_LIMIT_MS) return unavailable;
 			signal?.throwIfAborted();
 			await this.#sleep(delay, signal);
 			// Timers in a background tab can run a long way past what they were asked for.
-			if (this.#now() - started >= TOTAL_LIMIT_MS) return { status: 'gaveUp', reason };
+			if (this.#now() - started >= TOTAL_LIMIT_MS) return unavailable;
 		}
 	}
 

@@ -7,6 +7,7 @@ import { createCctpKit } from '../../src/core/index.js';
 import type { AnyDAppKit, CctpKitConfig, TransferRecord } from '../../src/core/types.js';
 import { createInMemoryStorage } from '../../src/utils/storage.js';
 import { CctpBridge } from '../../src/web/cctp-bridge.js';
+import { burnMessage } from './burn-message.js';
 
 vi.mock('@webcomponents/scoped-custom-element-registry', () => ({}));
 
@@ -272,7 +273,7 @@ describe('a claim the sponsor is making', () => {
 		sourceTxHash: `0x${'ab'.repeat(32)}`,
 		sourceConfirmed: true,
 		burnedAt: 1,
-		message: `0x${'aa'.repeat(376)}`,
+		message: burnMessage(),
 		attestation: `0x${'bb'.repeat(65)}`,
 		createdAt: 1,
 		updatedAt: 1,
@@ -280,7 +281,12 @@ describe('a claim the sponsor is making', () => {
 	/** The sponsor, answering claims with `claim`, on a chain where nothing has been claimed. */
 	function sponsoredKit(
 		storage = createInMemoryStorage(),
-		options: { claim?: () => Promise<Response>; network?: 'mainnet' | 'testnet' } = {},
+		options: {
+			claim?: () => Promise<Response>;
+			health?: () => Promise<Response>;
+			network?: 'mainnet' | 'testnet';
+			config?: Partial<CctpKitConfig>;
+		} = {},
 	) {
 		const signAndExecuteTransaction = vi.fn(() => new Promise(() => undefined));
 		const network = options.network ?? 'mainnet';
@@ -310,14 +316,17 @@ describe('a claim the sponsor is making', () => {
 				baseUrl: SERVICE,
 				fetch: vi.fn<typeof fetch>(async (input) => {
 					const url = String(input);
-					if (url.endsWith('/api/health')) return json(200, HEALTHY);
+					if (url.endsWith('/api/health')) return options.health?.() ?? json(200, HEALTHY);
 					if (url.endsWith('/api/denylist')) return json(200, DENYLIST);
 					return options.claim ? options.claim() : new Promise(() => undefined);
 				}),
 			},
+			...options.config,
 		});
 		return { kit, signAndExecuteTransaction };
 	}
+	const statusKnown = (kit: { stores: { $sponsor: { get(): unknown } } }) =>
+		vi.waitFor(() => expect(kit.stores.$sponsor.get()).not.toBeNull());
 	const card = (kit: unknown, transfer: TransferRecord) => {
 		const element = new CctpBridge() as unknown as {
 			renderTransfer(transfer: TransferRecord, kit: unknown): unknown;
@@ -331,23 +340,114 @@ describe('a claim the sponsor is making', () => {
 		return rendered(element.renderHistoryRow(transfer, kit));
 	};
 	const CLAIM = /\bClaim\b/;
+	const BUTTON = 'internal-button';
 
-	it('says so, and offers no Claim, from the moment the page has loaded', () => {
+	it('offers no Claim from the moment the page has loaded, and says so once it knows', async () => {
 		const storage = createInMemoryStorage();
 		storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
 		const { kit } = sponsoredKit(storage);
 		// Nothing has been awaited since the kit was created: this is what the first render draws.
-		const text = card(kit, kit.stores.$transfers.get()[0]!);
-		expect(text).toContain('Claiming on Sui for you…');
-		expect(text).not.toMatch(CLAIM);
+		const first = card(kit, kit.stores.$transfers.get()[0]!);
+		expect(first).toContain('Minting');
+		expect(first).not.toContain('Claiming on');
+		expect(first).not.toContain(BUTTON);
+		await statusKnown(kit);
+		const known = card(kit, kit.stores.$transfers.get()[0]!);
+		expect(known).toContain('Claiming on Sui for you…');
+		expect(known).not.toContain(BUTTON);
 		kit.destroy();
 	});
 
-	it('uses the name of the destination chain', () => {
+	it('does not say so for a denied source before the denylist has arrived', async () => {
+		const storage = createInMemoryStorage();
+		const denied = { ...SUI_BOUND, id: 'denied-source', from: 'unichain' } as const;
+		storage.setItem(KEY, JSON.stringify([denied]));
+		let answer: (response: Response) => void = () => undefined;
+		const { kit, signAndExecuteTransaction } = sponsoredKit(storage, {
+			health: () => new Promise((resolve) => (answer = resolve)),
+		});
+		const running = kit.stores.$transfers.get()[0]!;
+		expect(running).toMatchObject({ status: 'minting', sponsorClaim: 'pending' });
+		expect(kit.isRunning(denied.id)).toBe(true);
+		const text = card(kit, running);
+		expect(text).not.toContain('Claiming on');
+		expect(text).toContain('Minting');
+		expect(text).not.toContain(BUTTON);
+
+		// Once it has, nothing was asked of the sponsor, and it has nothing to say for itself.
+		await vi.waitFor(() => expect(answer).not.toBe(undefined));
+		await settle();
+		answer(json(200, HEALTHY));
+		await vi.waitFor(() => expect(kit.isRunning(denied.id)).toBe(false));
+		const atClaim = kit.stores.$transfers.get()[0]!;
+		expect(atClaim.status).toBe('readyToMint');
+		expect(atClaim.sponsorClaim).toBeUndefined();
+		const after = card(kit, atClaim);
+		expect(after).toMatch(CLAIM);
+		expect(after).not.toContain('class="notice"');
+		expect(signAndExecuteTransaction).not.toHaveBeenCalled();
+		kit.destroy();
+	});
+
+	it('does not say so while health says the sponsor cannot', async () => {
+		const storage = createInMemoryStorage();
+		const running = { ...SUI_BOUND, status: 'minting', sponsorClaim: 'pending' } as const;
+		storage.setItem(
+			`${KEY}:running:${running.id}`,
+			JSON.stringify({ owner: 'another-tab', until: Date.now() + 60_000 }),
+		);
+		const { kit } = sponsoredKit(storage, {
+			health: async () => json(503, { ok: false, error: 'gas' }),
+		});
+		await statusKnown(kit);
+		const text = card(kit, running);
+		expect(text).not.toContain('Claiming on');
+		expect(text).toContain('Minting');
+		expect(text).not.toContain(BUTTON);
+		kit.destroy();
+	});
+
+	it('does not say so for a message under the minimum, on a route it serves', async () => {
+		const storage = createInMemoryStorage();
+		const running = {
+			...SUI_BOUND,
+			status: 'minting',
+			sponsorClaim: 'pending',
+			message: burnMessage({ amount: 99_999n }),
+		} as const;
+		storage.setItem(
+			`${KEY}:running:${running.id}`,
+			JSON.stringify({ owner: 'another-tab', until: Date.now() + 60_000 }),
+		);
+		const { kit } = sponsoredKit(storage);
+		await statusKnown(kit);
+		expect(card(kit, running)).not.toContain('Claiming on');
+		expect(card(kit, { ...running, message: burnMessage({ amount: 100_000n }) })).toContain(
+			'Claiming on Sui for you…',
+		);
+		kit.destroy();
+	});
+
+	it('is drawn again when the status changes, through the store controller', () => {
+		const { kit } = sponsoredKit();
+		const element = new CctpBridge();
+		const addController = vi.spyOn(element, 'addController');
+		(element as unknown as { instance: unknown }).instance = kit;
+		const controller = addController.mock.calls[0]![0];
+		controller.hostConnected?.();
+		const update = vi.spyOn(element, 'requestUpdate');
+		kit.stores.$sponsor.set({ health: null, deniedDomains: [], checkedAt: 1 });
+		expect(update).toHaveBeenCalled();
+		controller.hostDisconnected?.();
+		kit.destroy();
+	});
+
+	it('uses the name of the destination chain', async () => {
 		const storage = createInMemoryStorage();
 		const key = 'mysten-cctp-kit:transfers:testnet';
 		storage.setItem(key, JSON.stringify([{ ...SUI_BOUND, network: 'testnet' }]));
 		const { kit } = sponsoredKit(storage, { network: 'testnet' });
+		await statusKnown(kit);
 		expect(card(kit, kit.stores.$transfers.get()[0]!)).toContain(
 			'Claiming on Sui Testnet for you…',
 		);
@@ -404,6 +504,7 @@ describe('a claim the sponsor is making', () => {
 			JSON.stringify({ owner: 'another-tab', until: Date.now() + 60_000 }),
 		);
 		const { kit } = sponsoredKit(storage);
+		await statusKnown(kit);
 		const text = card(kit, kit.stores.$transfers.get()[0]!);
 		expect(text).toContain('Claiming on Sui for you…');
 		expect(text).not.toMatch(CLAIM);
@@ -433,6 +534,208 @@ describe('a claim the sponsor is making', () => {
 		expect(text).toContain('In progress');
 		expect(text).not.toMatch(CLAIM);
 		kit.destroy();
+	});
+
+	describe('when it could not claim', () => {
+		const COULD_NOT = 'This could not be claimed for you.';
+		const WALLET = 'Claim it from a Sui wallet that holds SUI for gas';
+		const AGAIN = ', or wait and it will be tried again';
+		const unavailable = { ...SUI_BOUND, sponsorClaim: 'unavailable' } as const;
+		const refused = { ...SUI_BOUND, sponsorClaim: 'refused' } as const;
+
+		it.each(['readyToMint', 'failed'] as const)(
+			'says so, and that it will try again, at Claim (%s)',
+			async (status) => {
+				const { kit } = sponsoredKit();
+				await statusKnown(kit);
+				const text = card(kit, { ...unavailable, status, error: undefined });
+				expect(text).toContain(`${COULD_NOT} ${WALLET}${AGAIN}.`);
+				expect(text).toMatch(CLAIM);
+				kit.destroy();
+			},
+		);
+
+		it.each(['readyToMint', 'failed'] as const)(
+			'says so, with nothing about trying again, for a refusal (%s)',
+			async (status) => {
+				const { kit } = sponsoredKit();
+				await statusKnown(kit);
+				const text = card(kit, { ...refused, status, error: undefined });
+				expect(text).toContain(`${COULD_NOT} ${WALLET}.`);
+				expect(text).not.toContain('tried again');
+				kit.destroy();
+			},
+		);
+
+		it('puts it above the actions, styled as the form does', async () => {
+			const { kit } = sponsoredKit();
+			await statusKnown(kit);
+			const text = card(kit, unavailable);
+			expect(text).toContain('<p class="notice" part="notice">');
+			expect(text.indexOf('class="notice"')).toBeLessThan(text.indexOf('class="actions"'));
+			kit.destroy();
+		});
+
+		it('says nothing while it is running', async () => {
+			const storage = createInMemoryStorage();
+			for (const record of [unavailable, refused]) {
+				storage.setItem(
+					`${KEY}:running:${record.id}`,
+					JSON.stringify({ owner: 'another-tab', until: Date.now() + 60_000 }),
+				);
+			}
+			const { kit } = sponsoredKit(storage);
+			await statusKnown(kit);
+			expect(card(kit, unavailable)).not.toContain(COULD_NOT);
+			expect(card(kit, refused)).not.toContain(COULD_NOT);
+			kit.destroy();
+		});
+
+		it('says nothing away from Claim', async () => {
+			const { kit } = sponsoredKit();
+			await statusKnown(kit);
+			expect(card(kit, { ...unavailable, status: 'minting' })).not.toContain(COULD_NOT);
+			expect(card(kit, { ...refused, status: 'attesting' })).not.toContain(COULD_NOT);
+			kit.destroy();
+		});
+
+		it('says nothing with no sponsor, whatever the record holds', () => {
+			const { kit } = sponsoredKit(undefined, { config: { sponsor: undefined } });
+			expect(card(kit, unavailable)).not.toContain(COULD_NOT);
+			expect(card(kit, refused)).not.toContain(COULD_NOT);
+			kit.destroy();
+		});
+
+		it("says nothing with claim: 'manual'", async () => {
+			const { kit } = sponsoredKit(undefined, { config: { claim: 'manual' } });
+			await settle();
+			expect(card(kit, unavailable)).not.toContain(COULD_NOT);
+			kit.destroy();
+		});
+
+		it('does not send to a wallet someone whose host makes the claim', async () => {
+			const { kit } = sponsoredKit(undefined, {
+				config: { sui: { executeTransaction: async () => new Promise(() => undefined) } },
+			});
+			await statusKnown(kit);
+			expect(card(kit, unavailable)).not.toContain(COULD_NOT);
+			expect(card(kit, refused)).not.toContain(COULD_NOT);
+			expect(card(kit, unavailable)).toMatch(CLAIM);
+			kit.destroy();
+		});
+
+		it('says nothing of a source it never served', async () => {
+			const { kit } = sponsoredKit();
+			await statusKnown(kit);
+			expect(card(kit, { ...SUI_BOUND, from: 'unichain' })).not.toContain(COULD_NOT);
+			kit.destroy();
+		});
+
+		it('appears once a run gives up, on the card as the last update left it', async () => {
+			const storage = createInMemoryStorage();
+			storage.setItem(KEY, JSON.stringify([SUI_BOUND]));
+			const { kit } = sponsoredKit(storage, {
+				claim: async () => json(422, { status: 'ineligible', reason: 'invalid_burn' }),
+			});
+			// What the widget draws after the last change it is told about.
+			let last = '';
+			const stop = kit.stores.$transfers.subscribe((list) => {
+				last = card(kit, list[0]!);
+			});
+			await vi.waitFor(() => expect(kit.isRunning(SUI_BOUND.id)).toBe(false));
+			await settle();
+			expect(last).toContain(`${COULD_NOT} ${WALLET}.`);
+			stop();
+			kit.destroy();
+		});
+	});
+
+	describe('in the quote', () => {
+		const quote = (kit: unknown) => {
+			const element = new CctpBridge() as unknown as { renderQuote(kit: unknown): unknown };
+			return rendered(element.renderQuote(kit));
+		};
+		const form = (from: string, amount: string, config: Partial<CctpKitConfig> = {}) =>
+			sponsoredKit(undefined, {
+				config: { defaults: { from: from as 'ethereum', amount }, ...config },
+			}).kit;
+		const quoted = async (kit: ReturnType<typeof form>) => {
+			await vi.waitFor(() => expect(kit.stores.$quote.get()).not.toBeNull());
+		};
+		const executor = { executeTransaction: async () => new Promise<never>(() => undefined) };
+
+		it('says the claim is made for you when the sponsor serves the route and amount', async () => {
+			const kit = form('ethereum', '1');
+			await statusKnown(kit);
+			await quoted(kit);
+			expect(quote(kit)).toContain('Claimed on Sui for you');
+			expect(quote(kit)).not.toContain('signed by you');
+			kit.destroy();
+		});
+
+		it('says it is yours to sign for an amount under the minimum', async () => {
+			const kit = form('ethereum', '0.099999');
+			await statusKnown(kit);
+			await quoted(kit);
+			expect(quote(kit)).toContain('Mint on Sui, signed by you');
+			kit.destroy();
+		});
+
+		it('says it is yours to sign from a denied source', async () => {
+			const kit = form('unichain', '1');
+			await statusKnown(kit);
+			await quoted(kit);
+			expect(quote(kit)).toContain('Mint on Sui, signed by you');
+			kit.destroy();
+		});
+
+		it('leaves out who signs when a host executor handles the claim', async () => {
+			const kit = form('ethereum', '1', { sponsor: undefined, sui: executor });
+			await quoted(kit);
+			expect(quote(kit)).toContain('Mint on Sui');
+			expect(quote(kit)).not.toContain('signed by you');
+			expect(quote(kit)).not.toContain('for you');
+			kit.destroy();
+		});
+
+		it('names the sponsor before the executor, and the executor where it does not serve', async () => {
+			const served = form('ethereum', '1', { sui: executor });
+			await statusKnown(served);
+			await quoted(served);
+			expect(quote(served)).toContain('Claimed on Sui for you');
+			served.destroy();
+			const denied = form('unichain', '1', { sui: executor });
+			await statusKnown(denied);
+			await quoted(denied);
+			expect(quote(denied)).toContain('Mint on Sui');
+			expect(quote(denied)).not.toContain('signed by you');
+			denied.destroy();
+		});
+
+		it('is as it always was with neither', async () => {
+			const kit = form('ethereum', '1', { sponsor: undefined });
+			await quoted(kit);
+			expect(quote(kit)).toContain('Mint on Sui, signed by you');
+			kit.destroy();
+		});
+
+		it("is as it always was with a sponsor and claim: 'manual'", async () => {
+			const kit = form('ethereum', '1', { claim: 'manual' });
+			await quoted(kit);
+			await settle();
+			expect(kit.stores.$sponsor.get()).toBeNull();
+			expect(quote(kit)).toContain('Mint on Sui, signed by you');
+			kit.destroy();
+		});
+
+		it('leaves the executor out of a destination that is not Sui', async () => {
+			const { kit } = suiKit(undefined, undefined, { sui: executor });
+			kit.setRecipient(EVM_ADDRESS);
+			kit.setAmount('1');
+			await vi.waitFor(() => expect(kit.stores.$quote.get()).not.toBeNull());
+			expect(quote(kit)).toContain('Mint on Avalanche, signed by you');
+			kit.destroy();
+		});
 	});
 });
 

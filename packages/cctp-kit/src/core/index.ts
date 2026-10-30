@@ -43,7 +43,8 @@ import {
 } from '../engine/sui.js';
 import { IrisClient, IrisError } from '../iris/client.js';
 import type { IrisMessage } from '../iris/client.js';
-import { SponsorClient, sponsorServes } from '../sponsor/client.js';
+import { amountServed, netAmountOf, SponsorClient, sponsorServes } from '../sponsor/client.js';
+import type { SponsorFailure } from '../sponsor/client.js';
 import { feeFromBps, parseUsdc } from '../utils/amount.js';
 import {
 	bytesToHex,
@@ -103,6 +104,15 @@ export interface CctpKit {
 	 * These do not stop a transfer: `validate` is what stops one.
 	 */
 	warnings(): string[];
+	/** Who will make the claim on the destination, for the current form. */
+	claimer(): 'sponsor' | 'executor' | 'wallet';
+	/**
+	 * What the card has to say about the sponsor and a transfer, right now. `claiming`: it is being
+	 * asked, on a route it serves. `unavailable` or `refused`: the transfer waits at Claim because
+	 * of it, and a wallet has to make the claim. Null when there is nothing to say, and at Claim
+	 * with `sui.executeTransaction`, where a press needs nothing from the user.
+	 */
+	sponsorState(transfer: TransferRecord): 'claiming' | SponsorFailure | null;
 	/** Start a new transfer from the current form state. */
 	transfer(): Promise<TransferRecord>;
 	/** Resume a persisted transfer (e.g. after a reload, or to retry a failed step). */
@@ -151,6 +161,7 @@ const LEASE_RENEW_MS = 20_000;
 
 const QUOTE_PENDING = 'Fetching quote…';
 const SETTLE_INTERVAL_MS = 15_000;
+const SPONSOR_RETRY_MS = 5 * 60_000;
 
 /** Stands in for a wallet the host did not configure: nothing is connected, and asking says why. */
 function missingWallet<E extends 'evm' | 'solana'>(ecosystem: E): WalletAdapters[E] {
@@ -206,9 +217,11 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	});
 	/** The speed the user asked for; `$speed` is what the current route can honour. */
 	let preferredSpeed: TransferSpeed = initialSpeed;
-	const sponsor = config.sponsor?.baseUrl
-		? new SponsorClient({ ...config.sponsor, onStatus: (status) => stores.$sponsor.set(status) })
-		: undefined;
+	// With `claim: 'manual'` the host decides when claims happen, so the kit has no sponsor to ask.
+	const sponsor =
+		claimsByItself && config.sponsor?.baseUrl
+			? new SponsorClient({ ...config.sponsor, onStatus: (status) => stores.$sponsor.set(status) })
+			: undefined;
 
 	// --- Persistence: read-modify-write so kits sharing a storage key never clobber each other.
 	function readStored(): TransferRecord[] {
@@ -250,6 +263,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		cleanups.push(() => window.removeEventListener('storage', onStorage));
 	}
 	const controllers = new Map<string, AbortController>();
+	/** When each transfer's last run here ended. A reload retries at once, so memory is enough. */
+	const lastRun = new Map<string, number>();
 	let destroyed = false;
 
 	// --- Which tab is driving a transfer ----------------------------------------------------
@@ -497,14 +512,24 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		cleanups.push(store.listen(() => void refreshDestination()));
 	}
 
-	function warnings(): string[] {
+	function claimer(): 'sponsor' | 'executor' | 'wallet' {
 		const to = stores.$destinationChain.get();
-		// The host's executor submits Sui claims and decides who pays for them, so neither the
-		// connected wallet's SUI nor a wallet at the recipient has anything to do with it.
-		if (to.ecosystem === 'sui' && config.sui?.executeTransaction) return [];
+		const quote = currentQuote();
+		// The worst case: what Circle takes, up to `maxFee`, is only known from the attested message.
+		const netAmount = quote && quote.amount - quote.maxFee;
+		if (sponsorServes(stores.$sponsor.get(), stores.$sourceChain.get(), to, netAmount)) {
+			return 'sponsor';
+		}
+		return to.ecosystem === 'sui' && config.sui?.executeTransaction ? 'executor' : 'wallet';
+	}
+
+	function warnings(): string[] {
+		// The sponsor makes the claim and pays for it. The host's executor submits Sui claims and
+		// decides who pays for them. Either way, neither the connected wallet's SUI nor a wallet at
+		// the recipient has anything to do with it.
+		if (claimer() !== 'wallet') return [];
+		const to = stores.$destinationChain.get();
 		const coin = gasCoin(to);
-		// The claim is the sponsor's to make and to pay for.
-		if (sponsorServes(stores.$sponsor.get(), stores.$sourceChain.get(), to)) return [];
 		if (!stores.$destinationAccount.get()) {
 			// Sending to a typed address with no wallet for that chain connected: an exchange
 			// deposit address, or a wallet on another device.
@@ -740,7 +765,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 
 	async function execute(
 		record: TransferRecord,
-		options: { stopAfterAttestation?: boolean } = {},
+		options: { stopAfterAttestation?: boolean; background?: boolean } = {},
 	): Promise<TransferRecord> {
 		const key = runKey(record.id);
 		if (RUNNING.has(key)) throw new Error('Transfer is already running');
@@ -751,7 +776,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		const releaseLease = takeLease(record.id);
 		const controller = new AbortController();
 		controllers.set(record.id, controller);
-		stores.$activeTransferId.set(record.id);
+		// The card puts the active transfer first, and one nobody asked for must not move it.
+		if (!options.background) stores.$activeTransferId.set(record.id);
 		let burned = !!record.sourceTxHash;
 		const stored = () => readStored().find((t) => t.id === record.id);
 		try {
@@ -763,6 +789,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 				chains,
 				signal: controller.signal,
 				sponsor,
+				sponsorSingleAttempt: options.background,
 				stopAfterAttestation: options.stopAfterAttestation,
 				onUpdate: (transfer) => {
 					// The run works on the copy of the record it started with. Whether the user has
@@ -790,6 +817,10 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 			controllers.delete(record.id);
 			RUNNING.delete(key);
 			releaseLease();
+			lastRun.set(record.id, Date.now());
+			// That a run has ended is in no store, and the last update of a run reaches the card
+			// while it still counts as running. Draw it again, as another tab's ending does.
+			stores.$transfers.set([...stores.$transfers.get()]);
 		}
 	}
 
@@ -1138,20 +1169,44 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		for (const cleanup of cleanups.splice(0)) cleanup();
 	}
 
-	/** An attested transfer that only needs claiming, on a route the sponsor may serve. */
+	/** An attested transfer that only needs claiming, and that the sponsor may yet claim. */
 	function awaitsSponsor(record: TransferRecord): boolean {
 		if (!sponsor || !record.message || !record.attestation || record.destinationTxHash)
 			return false;
-		if (record.hidden || !(waitsAtClaim(record) || record.status === 'minting')) return false;
+		if (record.hidden || record.sponsorClaim === 'refused') return false;
+		if (!(waitsAtClaim(record) || record.status === 'minting')) return false;
 		const from = chains.find((c) => c.key === record.from);
 		const to = chains.find((c) => c.key === record.to);
-		return !!from && to?.ecosystem === 'sui' && !sponsor.denies(from.domain);
+		return (
+			!!from &&
+			to?.ecosystem === 'sui' &&
+			!sponsor.denies(from.domain) &&
+			amountServed(netAmountOf(record.message))
+		);
+	}
+
+	function sponsorState(record: TransferRecord): 'claiming' | SponsorFailure | null {
+		if (!sponsor) return null;
+		if (isRunning(record.id)) {
+			const from = chains.find((c) => c.key === record.from);
+			const to = chains.find((c) => c.key === record.to);
+			const claiming =
+				record.sponsorClaim === 'pending' &&
+				!!from &&
+				!!to &&
+				sponsorServes(stores.$sponsor.get(), from, to, netAmountOf(record.message));
+			return claiming ? 'claiming' : null;
+		}
+		if (!waitsAtClaim(record) || config.sui?.executeTransaction) return null;
+		if (record.sponsorClaim === 'refused') return 'refused';
+		// Only what will be tried again is said to be: a source denied since then will not be.
+		return record.sponsorClaim === 'unavailable' && awaitsSponsor(record) ? 'unavailable' : null;
 	}
 
 	// Pick up transfers interrupted by a reload: keep polling for attestations, but stop short
 	// of the mint, which needs the user's wallet (the widget shows Claim). With a sponsor, one
-	// that only needs claiming is picked up too, whatever became of the last attempt: the service
-	// has no watcher, so nothing else will send it there. Skip anything another kit on the page,
+	// that only needs claiming is picked up too, unless the sponsor refused it: the service has no
+	// watcher, so nothing else will send it there. Skip anything another kit on the page,
 	// or another tab, is already driving. A tab that died without releasing its claim holds it a
 	// little longer, so look again once the claims seen here have lapsed.
 	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1237,6 +1292,27 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	}
 	void settleOnce(waitsAtClaim);
 
+	/**
+	 * A sponsor that could not claim a transfer may be able to now, and with no watcher it will not
+	 * find out by itself. A press wins: a transfer that is running is left alone, and the card
+	 * offers no Claim during the one attempt this makes. It stops at Claim, so no wallet is asked.
+	 */
+	function retrySponsor() {
+		const now = Date.now();
+		for (const record of readStored()) {
+			if (record.sponsorClaim !== 'unavailable' || !waitsAtClaim(record)) continue;
+			if (!awaitsSponsor(record) || isRunning(record.id)) continue;
+			const last = lastRun.get(record.id);
+			// Not run here, so another tab has just asked: its wait is not known, so count from now.
+			if (last === undefined) lastRun.set(record.id, now);
+			if (last === undefined || now - last < SPONSOR_RETRY_MS) continue;
+			void execute(
+				{ ...record, error: undefined },
+				{ stopAfterAttestation: true, background: true },
+			).catch(() => undefined);
+		}
+	}
+
 	// A transfer into Sui can be finished by someone else while this page sits at Claim: the
 	// sponsor, another tab or another device. Keep looking for as long as anyone can see the card.
 	const settleSuiClaims = () =>
@@ -1244,7 +1320,9 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	if (typeof document !== 'undefined') {
 		const page = document;
 		const whenVisible = () => {
-			if (page.visibilityState === 'visible') void settleSuiClaims();
+			if (page.visibilityState !== 'visible') return;
+			void settleSuiClaims();
+			retrySponsor();
 		};
 		const timer = setInterval(whenVisible, SETTLE_INTERVAL_MS);
 		(timer as { unref?: () => void }).unref?.();
@@ -1287,6 +1365,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		refreshQuote,
 		validate,
 		warnings,
+		claimer,
+		sponsorState,
 		transfer,
 		resume,
 		claim,

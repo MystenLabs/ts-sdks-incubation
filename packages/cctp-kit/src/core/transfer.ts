@@ -39,7 +39,7 @@ import {
 	suiIsNonceUsed,
 } from '../engine/sui.js';
 import type { IrisClient, IrisMessage } from '../iris/client.js';
-import { sponsorServes } from '../sponsor/client.js';
+import { amountServed, netAmountOf, sponsorServes } from '../sponsor/client.js';
 import type { SponsorClient } from '../sponsor/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { bytesToHex, hexToBytes, parseMessageV2, toBytes32 } from '../utils/bytes.js';
@@ -70,6 +70,8 @@ export interface TransferContext {
 	signal?: AbortSignal;
 	/** Asked before the user's wallet for a claim on Sui, except on a Claim press. */
 	sponsor?: SponsorClient;
+	/** Ask the sponsor once, with no retries: nobody is waiting, and the card is held meanwhile. */
+	sponsorSingleAttempt?: boolean;
 	/**
 	 * Stop once the attestation is in hand (status `readyToMint`) instead of minting. Used when
 	 * resuming automatically after a reload, since the mint needs the user's wallet. A sponsor
@@ -133,8 +135,13 @@ export async function runTransfer(
 
 		if (!transfer.destinationTxHash) {
 			ctx.signal?.throwIfAborted();
+			// A message under the minimum is known to be refused, and one that was refused stays so.
 			const route =
-				to.ecosystem === 'sui' && ctx.sponsor && !ctx.sponsor.denies(from.domain)
+				to.ecosystem === 'sui' &&
+				ctx.sponsor &&
+				transfer.sponsorClaim !== 'refused' &&
+				!ctx.sponsor.denies(from.domain) &&
+				amountServed(netAmountOf(transfer.message))
 					? { to, sponsor: ctx.sponsor }
 					: undefined;
 			const reattest = async (timeoutMs?: number) => {
@@ -703,12 +710,23 @@ async function sponsorPhase(
 	ctx: TransferContext,
 	update: (patch: Partial<TransferRecord>) => TransferRecord,
 ): Promise<boolean> {
-	if (!sponsorServes(await sponsor.status(ctx.signal), from, to)) {
+	const { message, attestation } = transfer;
+	const status = await sponsor.status(ctx.signal);
+	// Read here and not as the run began: the denylist may only just have arrived, and a message
+	// that Circle signed again can carry another fee.
+	const netAmount = netAmountOf(message);
+	if (sponsor.denies(from.domain) || !amountServed(netAmount)) {
+		// Never the sponsor's to claim, so it has not failed at anything.
+		update({ sponsorClaim: undefined });
+		return false;
+	}
+	if (!sponsorServes(status, from, to, netAmount)) {
 		update({ sponsorClaim: 'unavailable' });
 		return false;
 	}
-	const { message, attestation } = transfer;
-	const answer = await sponsor.claim(message!, attestation!, ctx.signal);
+	const answer = await sponsor.claim(message!, attestation!, ctx.signal, {
+		singleAttempt: ctx.sponsorSingleAttempt,
+	});
 	const digest = answer.status === 'claimed' ? answer.digest : undefined;
 	const found = digest !== undefined && (await transactionFound(to, digest, ctx));
 	// Having given up says nothing about the chain: an attempt that timed out may have landed.
@@ -727,7 +745,8 @@ async function sponsorPhase(
 	}
 	// What follows is the wallet, and a kit that was torn down must not reach it.
 	ctx.signal?.throwIfAborted();
-	update({ sponsorClaim: 'unavailable' });
+	// It said it claimed and the chain does not show it: that may only be a node that lags.
+	update({ sponsorClaim: answer.status === 'gaveUp' ? answer.failure : 'unavailable' });
 	return false;
 }
 
