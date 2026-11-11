@@ -266,6 +266,45 @@ describe('createCctpKit', () => {
 	});
 });
 
+describe('recipient: { editable: false }', () => {
+	const kitFor = (locked: boolean, direction: 'inflow' | 'outflow') =>
+		createCctpKit({
+			dAppKit: mockDAppKit().dAppKit,
+			network: 'mainnet',
+			direction,
+			defaults: direction === 'inflow' ? { from: 'ethereum' } : { to: 'avalanche' },
+			storage: null,
+			iris: { fetch: irisFetch() },
+			recipient: { editable: !locked },
+			wallets: { evm: fakeEvmAdapter(), solana: fakeSolanaAdapter() },
+		});
+
+	it("keeps the host's address when the route changes", async () => {
+		const locked = kitFor(true, 'inflow');
+		const editable = kitFor(false, 'inflow');
+		await flush();
+		for (const kit of [locked, editable]) {
+			kit.setRecipient(SUI_ADDRESS);
+			kit.setFromChain('base');
+		}
+		expect(locked.stores.$recipient.get()).toBe(SUI_ADDRESS);
+		expect(editable.stores.$recipient.get()).toBe('');
+		locked.destroy();
+		editable.destroy();
+	});
+
+	it('asks only for a wallet when none is connected on the destination', async () => {
+		const locked = kitFor(true, 'outflow');
+		const editable = kitFor(false, 'outflow');
+		await flush();
+		for (const kit of [locked, editable]) kit.setAmount('1');
+		expect(locked.validate()).toBe('Connect your Avalanche wallet');
+		expect(editable.validate()).toBe('Connect your Avalanche wallet or enter a recipient');
+		locked.destroy();
+		editable.destroy();
+	});
+});
+
 describe('runTransfer (Sui source)', () => {
 	it('burns on the kit network, persists the digest immediately, polls Iris and stops at readyToMint', async () => {
 		const mock = mockDAppKit();

@@ -103,13 +103,22 @@ export interface CctpKitConfig {
 		/** Human-readable USDC amount, e.g. "25". */
 		amount?: string;
 	};
+	recipient?: {
+		/**
+		 * `false` takes the recipient out of the user's hands: the widget offers no address to
+		 * type, and transfers go to the connected destination wallet, or to the address the host
+		 * set with `kit.setRecipient()`, which then stays put when the route changes. Defaults
+		 * to `true`.
+		 */
+		editable?: boolean;
+	};
 	/** Persist in-flight transfers so they can be resumed after a reload. `null` disables. */
 	storage?: StateStorage | null;
 	storageKey?: string;
 	onEvent?: (event: CctpKitEvent) => void;
 	ui?: {
-		/** Heading shown at the top of the widget. Defaults to "Bridge USDC". */
-		title?: string;
+		/** Heading shown at the top of the widget. Defaults to "Bridge USDC"; `false` shows none. */
+		title?: string | false;
 	};
 }
 

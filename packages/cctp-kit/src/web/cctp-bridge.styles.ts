@@ -171,6 +171,7 @@ export const styles = [
 
 		.segmented {
 			display: inline-flex;
+			margin-left: auto;
 			background: var(--cctp-kit-muted);
 			border-radius: var(--cctp-kit-radius-xl);
 			padding: 3px;

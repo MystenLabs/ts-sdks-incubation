@@ -29,6 +29,18 @@ function rendered(value: unknown): string {
 	return strings.map((text, i) => text + rendered(values[i])).join('');
 }
 
+/** What a template binds to an attribute, e.g. `?readonly`, searching nested templates too. */
+function bound(value: unknown, attribute: string): unknown {
+	if (!value || typeof value !== 'object' || !('strings' in value)) return undefined;
+	const { strings, values } = value as { strings: readonly string[]; values: unknown[] };
+	for (const [i, inner] of values.entries()) {
+		if (strings[i]!.trimEnd().endsWith(`${attribute}=`)) return inner;
+		const found = bound(inner, attribute);
+		if (found !== undefined) return found;
+	}
+	return undefined;
+}
+
 const unusedWallet = (ecosystem: 'evm' | 'solana') => ({
 	ecosystem,
 	getAccount: () => null,
@@ -882,6 +894,84 @@ describe('a typed recipient', () => {
 		kit.setRecipient('');
 		expect(element.showRecipientField(kit, destination, connected)).toBe(false);
 		kit.destroy();
+	});
+});
+
+describe('a locked recipient', () => {
+	// Sui to Avalanche with no Avalanche wallet: where an editable form asks for an address.
+	const toPanel = async (locked: boolean) => {
+		const { kit } = suiKit(undefined, undefined, { recipient: { editable: !locked } });
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			renderPanel(kit: unknown, side: 'from' | 'to'): unknown;
+		};
+		element.instance = kit;
+		await settle();
+		return { kit, panel: () => element.renderPanel(kit, 'to') };
+	};
+
+	it('offers no toggle and no address field', async () => {
+		const locked = await toPanel(true);
+		const text = rendered(locked.panel());
+		expect(text).not.toContain('Send to a different address');
+		expect(text).not.toContain('Sending to a custom address');
+		expect(text).not.toContain('class="field"');
+		expect(text).toContain('Connect wallet');
+
+		const editable = await toPanel(false);
+		expect(rendered(editable.panel())).toContain('class="field"');
+		locked.kit.destroy();
+		editable.kit.destroy();
+	});
+
+	it("shows the host's address, read-only", async () => {
+		const locked = await toPanel(true);
+		const editable = await toPanel(false);
+		for (const { kit } of [locked, editable]) kit.setRecipient(EVM_ADDRESS);
+
+		expect(rendered(locked.panel())).toContain('class="field"');
+		expect(rendered(locked.panel())).not.toContain('Use connected wallet');
+		expect(bound(locked.panel(), '?readonly')).toBe(true);
+		expect(bound(editable.panel(), '?readonly')).toBe(false);
+		locked.kit.destroy();
+		editable.kit.destroy();
+	});
+});
+
+describe('the heading', () => {
+	const bridgeView = async (config: Partial<CctpKitConfig>) => {
+		const { kit } = suiKit(undefined, undefined, config);
+		const element = new CctpBridge() as unknown as {
+			instance: unknown;
+			renderBridgeView(kit: unknown): unknown;
+		};
+		element.instance = kit;
+		await settle();
+		const text = rendered(element.renderBridgeView(kit));
+		kit.destroy();
+		return text;
+	};
+
+	it('is "Bridge USDC" unless the host names it', async () => {
+		expect(await bridgeView({})).toContain('<h2 class="title">Bridge USDC</h2>');
+		expect(await bridgeView({ ui: { title: 'Deposit' } })).toContain(
+			'<h2 class="title">Deposit</h2>',
+		);
+	});
+
+	it('is left out with ui.title false, and the speed toggle stays', async () => {
+		const text = await bridgeView({ ui: { title: false } });
+		expect(text).not.toContain('<h2');
+		expect(text).toContain('class="header"');
+		expect(text).toContain('aria-label="Transfer speed"');
+	});
+
+	it('takes the header row with it when there is no speed to pick', async () => {
+		const text = await bridgeView({
+			ui: { title: false },
+			transferSpeed: { allow: ['standard'] },
+		});
+		expect(text).not.toContain('class="header"');
 	});
 });
 

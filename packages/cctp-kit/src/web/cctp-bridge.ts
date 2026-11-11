@@ -220,12 +220,17 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	private renderBridgeView(kit: CctpKit) {
 		const canFlip = (kit.config.direction ?? 'both') === 'both';
 		const problem = kit.validate();
+		const title = kit.config.ui?.title ?? 'Bridge USDC';
+		const speed = this.renderSpeed(kit);
 
 		return html`
-			<div class="header">
-				<h2 class="title">${kit.config.ui?.title ?? 'Bridge USDC'}</h2>
-				${this.renderSpeed(kit)}
-			</div>
+			${
+				title || speed !== nothing
+					? html`<div class="header">
+							${title ? html`<h2 class="title">${title}</h2>` : nothing} ${speed}
+						</div>`
+					: nothing
+			}
 
 			<div class="panels">
 				${this.renderPanel(kit, 'from')}
@@ -303,6 +308,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 								class="field"
 								type="text"
 								placeholder="Recipient address on ${chain.name}"
+								?readonly=${kit.config.recipient?.editable === false}
 								.value=${stores.$recipient.get()}
 								@input=${(e: Event) => kit.setRecipient((e.target as HTMLInputElement).value)}
 							/>`
@@ -359,6 +365,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	private renderRecipientToggle(kit: CctpKit, chain: ChainDefinition) {
+		if (kit.config.recipient?.editable === false) return html`<span></span>`;
 		const account = kit.stores.$destinationAccount.get();
 		if (!account && chain.ecosystem !== 'sui') {
 			return html`<span class="muted">Sending to a custom address</span>`;
@@ -387,13 +394,14 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	/**
 	 * A typed recipient is what the transfer will use, whatever wallet is connected, so it is
 	 * never off screen: connecting a wallet after typing an address must not make it look as if
-	 * the funds will go to that wallet.
+	 * the funds will go to that wallet. The same holds, read-only, for a locked one the host set.
 	 */
 	private showRecipientField(
 		kit: CctpKit,
 		chain: ChainDefinition,
 		account: { address: string } | null,
 	) {
+		if (kit.config.recipient?.editable === false) return !!kit.stores.$recipient.get();
 		return (
 			this._customRecipient ||
 			!!kit.stores.$recipient.get() ||
