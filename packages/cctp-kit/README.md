@@ -72,8 +72,10 @@ Every hook accepts an optional `{ kit }` to bypass context, mirroring dapp-kit's
 | `sui.executeTransaction` | Signs and executes the kit's Sui burns and claims in place of dapp-kit's wallet. See [Executing Sui transactions yourself](#executing-sui-transactions-yourself).                                   |
 | `claim`                  | `'auto'` (default) claims as soon as Circle attests; `'manual'` stops at `readyToMint` until `kit.claim(id)`.                                                                                       |
 | `sponsor`                | `{ baseUrl, fetch? }`: a service that claims transfers into Sui and pays the gas. Off unless `baseUrl` is set, and with `claim: 'manual'`. See [Sponsored claims on Sui](#sponsored-claims-on-sui). |
+| `recipient.editable`     | `false` removes the user's choice of recipient. See [Form behaviour](#form-behaviour).                                                                                                              |
 | `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                                                                |
 | `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                                                               |
+| `ui.title`               | The widget's heading, `'Bridge USDC'` by default; `false` renders none (the speed toggle keeps its place).                                                                                          |
 
 ### Sponsored claims on Sui
 
@@ -166,6 +168,18 @@ Sui is always on one side of the form and is fixed to the network of the host's 
 (the host decides mainnet vs testnet; the widget never shows a Sui network picker). The other side
 is a chain dropdown limited to the configured routes. In `both` mode the round button between the
 panels swaps which side Sui is on.
+
+Transfers go to the connected destination wallet unless a recipient is set: by the user, through
+"Send to a different address", or by the host with `kit.setRecipient(address)`. Changing the route
+clears it. With `recipient: { editable: false }` the user cannot set one: the widget shows no toggle
+and no address field, and a recipient the host sets is shown read-only and survives route changes.
+Pick a `direction` whose destination it belongs to: an address that does not fit the destination
+chain blocks the form rather than being sent to.
+
+```ts
+const kit = createCctpKit({ dAppKit, direction: 'inflow', recipient: { editable: false } });
+kit.setRecipient(accountAddress); // every transfer mints to this Sui address
+```
 
 ### Tracking transfers started elsewhere
 

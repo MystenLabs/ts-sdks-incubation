@@ -208,6 +208,7 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	const allowedSpeeds = config.transferSpeed?.allow ?? ['fast', 'standard'];
 	if (allowedSpeeds.length === 0) throw new Error('transferSpeed.allow must not be empty');
 	const claimsByItself = (config.claim ?? 'auto') === 'auto';
+	const recipientEditable = config.recipient?.editable ?? true;
 	const iris = new IrisClient(network, config.iris);
 	const storage: StateStorage | null =
 		config.storage === null ? null : (config.storage ?? getDefaultStorage());
@@ -712,7 +713,9 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	}
 
 	function onRouteChanged() {
-		stores.$recipient.set('');
+		// A locked recipient is the host's: an address that does not fit the new route fails
+		// `validate`, and nothing is sent to it.
+		if (recipientEditable) stores.$recipient.set('');
 		stores.$balance.setKey('source', null);
 		stores.$quote.set(null);
 		if (needsNonSui()) void wallets().catch(() => undefined);
@@ -767,7 +770,11 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		const balance = stores.$balance.get().source;
 		if (balance !== null && amount > balance) return 'Insufficient USDC balance';
 		const recipient = stores.$recipient.get() || stores.$destinationAccount.get()?.address;
-		if (!recipient) return `Connect your ${to.name} wallet or enter a recipient`;
+		if (!recipient) {
+			return recipientEditable
+				? `Connect your ${to.name} wallet or enter a recipient`
+				: `Connect your ${to.name} wallet`;
+		}
 		if (!isValidAddress(recipient, to)) return `Invalid ${to.name} address`;
 		const recipientProblem = stores.$recipient.get() && stores.$destination.get().recipientProblem;
 		if (recipientProblem) return recipientProblem;
