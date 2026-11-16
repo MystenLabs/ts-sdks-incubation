@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   version:
+    environment: npm-release
     runs-on: ubuntu-latest
     steps:
       - name: checkout code repository
