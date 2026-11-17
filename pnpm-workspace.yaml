@@ -12,6 +12,8 @@ auditConfig:
     - GHSA-gv7w-rqvm-qjhr
     # braces <=3.0.3 (no patched release yet); reached via fumadocs → fast-glob → micromatch in the docs site.
     - GHSA-vfj7-8cjw-p6xm
+    # picomatch <=4.0.7 ReDoS (no patched release yet); reached via fumadocs → fast-glob/tinyglobby → picomatch in the docs site.
+    - GHSA-fc5q-39xc-vjpf
 
 autoInstallPeers: false
 

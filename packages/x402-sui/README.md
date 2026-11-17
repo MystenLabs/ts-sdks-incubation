@@ -1,9 +1,12 @@
 # `@mysten-incubation/x402-sui`
 
-> **Incubation copy.** This mirrors the `@x402/sui` package proposed upstream in
+> [!WARNING]
+> **This is a temporary package.** It is a copy of the `@x402/sui` package proposed upstream in
 > [x402-foundation/x402#3082](https://github.com/x402-foundation/x402/pull/3082), with the scheme
 > spec from [#3081](https://github.com/x402-foundation/x402/pull/3081) included as
-> [`SPEC.md`](./SPEC.md). Use it until those land, then switch to `@x402/sui`.
+> [`SPEC.md`](./SPEC.md). It exists only until those PRs merge and `@x402/sui` is published. Then
+> this package will be deprecated, and you should switch to `@x402/sui`. Don't build anything that
+> depends on it long term.
 
 Sui implementation of the x402 `exact` payment scheme. The facilitator accepts any transaction whose
 effects credit `payTo` with exactly `amount`, so a payment may be funded from an address balance,
