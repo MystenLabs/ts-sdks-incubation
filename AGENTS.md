@@ -119,7 +119,6 @@ bumps).
 When creating PRs, follow the template in `.github/PULL_REQUEST_TEMPLATE.md`:
 
 - Include a description of the changes
-- Check the appropriate checkbox in the AI Assistance Notice section
 
 ## Engineering style
 
