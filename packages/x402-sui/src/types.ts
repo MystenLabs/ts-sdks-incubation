@@ -47,31 +47,62 @@ export type SettlementKey = {
 };
 
 /**
+ * The result of {@link SettlementGuard.claim}:
+ *
+ * - `claimed`: the key was free and the caller now holds it.
+ * - `pending`: an earlier settlement of the key ended with an unknown outcome
+ *   (`settlement_pending`). The caller now holds it and reconciles that attempt.
+ * - `held`: the key is settled, or another settle holds it.
+ */
+export type SettlementClaim = 'claimed' | 'pending' | 'held';
+
+/**
  * Records which transactions have been settled so the facilitator reports
  * success at most once per digest. The facilitator claims a key before
- * submitting and releases it when settlement does not succeed. Keep a
- * successful claim until the network is two epochs past `maxEpoch`: one epoch
- * for the window to end, and one of margin for a lagging fullnode.
+ * submitting. It keeps the claim on success, marks it pending when the outcome
+ * is unknown, and releases it otherwise. Keep successful and pending claims
+ * until the network is two epochs past `maxEpoch`: one epoch for the window to
+ * end, and one of margin for a lagging fullnode.
  *
  * When several processes serve `/settle`, they MUST share one claim store with
  * atomic claims. A single process MAY keep claims in memory, as the default
- * {@link SettlementCache} does.
+ * {@link SettlementCache} does. Claims kept in memory are lost on restart. The
+ * facilitator then falls back on a best-effort digest lookup before it submits,
+ * so a facilitator that must not depend on node history SHOULD use a durable
+ * store.
  */
 export interface SettlementGuard {
 	/**
-	 * Atomically claim a key.
+	 * Atomically claim a key. A free key and a pending key both become held.
 	 *
 	 * @param key - The settlement identity
-	 * @returns `true` if the key was claimed, `false` if it is already held
+	 * @returns The claim result
 	 */
-	claim(key: SettlementKey): boolean | Promise<boolean>;
+	claim(key: SettlementKey): SettlementClaim | Promise<SettlementClaim>;
 
 	/**
-	 * Release a claimed key after a settlement that did not succeed.
+	 * Mark a held key as pending: its submission may still execute, and the next
+	 * claim reconciles it.
+	 *
+	 * @param key - The settlement identity
+	 */
+	markPending(key: SettlementKey): void | Promise<void>;
+
+	/**
+	 * Release a held key after a settlement that did not succeed.
 	 *
 	 * @param key - The settlement identity
 	 */
 	release(key: SettlementKey): void | Promise<void>;
+
+	/**
+	 * Optional. Receives each epoch the facilitator reads from a network, so the
+	 * store can drop claims more than one epoch past their `maxEpoch`.
+	 *
+	 * @param network - The CAIP-2 network id
+	 * @param epoch - The network's current epoch
+	 */
+	observeEpoch?(network: string, epoch: bigint): void | Promise<void>;
 }
 
 /**

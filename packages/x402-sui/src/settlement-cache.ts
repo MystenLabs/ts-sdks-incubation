@@ -1,27 +1,41 @@
-import type { SettlementGuard, SettlementKey } from './types.js';
+import type { SettlementClaim, SettlementGuard, SettlementKey } from './types.js';
+
+type Entry = { network: string; maxEpoch: bigint; pending: boolean };
 
 /**
- * In-process settlement guard. Successful claims are kept as long as
- * {@link SettlementGuard} requires. Not shared across processes: when several
- * processes serve `/settle`, supply a {@link SettlementGuard} backed by one
- * shared store with atomic claims.
+ * In-process settlement guard. Successful and pending claims are kept as long
+ * as {@link SettlementGuard} requires. Not shared across processes and lost on
+ * restart: when several processes serve `/settle`, or settle may run without a
+ * prior verify, supply a {@link SettlementGuard} backed by one shared, durable
+ * store with atomic claims.
  */
 export class SettlementCache implements SettlementGuard {
-	private readonly entries = new Map<string, { network: string; maxEpoch: bigint }>();
+	private readonly entries = new Map<string, Entry>();
 	private readonly latestEpoch = new Map<string, bigint>();
 
 	/**
-	 * Claim a key. The check and insert are synchronous, so concurrent settles of
-	 * the same transaction cannot both claim it.
+	 * Claim a key. The check and update are synchronous, so concurrent settles of
+	 * the same transaction cannot both hold it.
 	 *
 	 * @param key - The settlement identity
-	 * @returns `true` if claimed, `false` if already held
+	 * @returns The claim result
 	 */
-	claim(key: SettlementKey): boolean {
+	claim(key: SettlementKey): SettlementClaim {
 		const id = cacheKey(key);
-		if (this.entries.has(id)) return false;
-		this.entries.set(id, { network: key.network, maxEpoch: BigInt(key.maxEpoch) });
-		return true;
+		const entry = this.entries.get(id);
+		if (entry && !entry.pending) return 'held';
+		this.entries.set(id, { network: key.network, maxEpoch: BigInt(key.maxEpoch), pending: false });
+		return entry ? 'pending' : 'claimed';
+	}
+
+	/**
+	 * Mark a held key as pending, so the next claim reconciles it.
+	 *
+	 * @param key - The settlement identity
+	 */
+	markPending(key: SettlementKey): void {
+		const entry = this.entries.get(cacheKey(key));
+		if (entry) entry.pending = true;
 	}
 
 	/**

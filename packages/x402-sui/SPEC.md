@@ -26,8 +26,8 @@ address balance, `Coin<T>` objects, a swap, a contract withdrawal, or any mix.
 
 The client signs a full transaction and the facilitator submits it. This is a
 "facilitator-submitted" method in the
-[generic `exact` spec](./scheme_exact.md#asset-transfer-method-families), which asks each such
-method to state the following:
+[generic `exact` spec](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact.md#asset-transfer-method-families),
+which asks each such method to state the following:
 
 - **Fee payer**: the payer, or the facilitator when it sponsors gas. Gasless transfers pay no fee.
   See [Gas](#gas).
@@ -226,7 +226,8 @@ rejected, not charged.
 
 ## Verification
 
-The facilitator returns a `VerifyResponse` (core spec [§5.4](../../x402-specification-v2.md)) with
+The facilitator returns a `VerifyResponse` (core spec
+[§5.4](https://github.com/x402-foundation/x402/blob/main/specs/x402-specification-v2.md)) with
 `payer` set to the transaction's `sender`. Steps 1-5 are the offline checks.
 
 1. **Envelope.** `x402Version` MUST be `2` (`invalid_x402_version`). The scheme MUST be `"exact"`
@@ -284,27 +285,48 @@ fetches the transaction by digest. If they're still missing, it returns `transac
 1. Re-run the offline checks (verification steps 1-5), with the same reason codes. If a signature
    check fails because of an outside error, such as a zkLogin RPC failure, return
    `transaction_failed`.
-2. Check that the current epoch is within `[minEpoch, maxEpoch]`
+2. Claim the transaction digest (see [Settlement deduplication](#settlement-deduplication)). If it
+   is already held, return `duplicate_settlement`. If an earlier settle left it pending, skip to
+   [Reconciliation](#reconciliation).
+3. Check that the current epoch is within `[minEpoch, maxEpoch]`
    (`invalid_exact_sui_payload_invalid_expiration`). A fullnode returns the cached result of an
    executed transaction without checking its expiration again, so without this check a claim would
    have to be kept forever.
-3. Claim the transaction digest. If it is already claimed, return `duplicate_settlement`.
-4. Submit the transaction and wait for finality. If the payer covers its own gas, or the transfer is
+4. Look the digest up. If the transaction has already executed, return `duplicate_settlement`. A
+   claim store can lose claims, for example on a restart, and submitting an executed transaction
+   again would return its original success.
+5. If the payment is sponsored, simulate it as in verification steps 7 and 8, with the same reason
+   codes. The sponsor pays gas for whatever it co-signs, so the payment MUST be checked before the
+   sponsor signs, not only after execution.
+6. Submit the transaction and wait for finality. If the payer covers its own gas, or the transfer is
    gasless, the facilitator just submits the signed bytes. If the payment is sponsored, the sponsor
    co-signs and submits it, or declines (`sponsor_rejected`).
-5. Require a successful execution status (`transaction_failed`) and pass the
+7. Require a successful execution status (`transaction_failed`) and pass the
    [effects check](#effects-check) on the executed `balanceChanges` (`settlement_effects_mismatch`).
 
 If submitting or waiting for finality fails, the facilitator SHOULD look the transaction up by
-digest and report what actually happened. If the lookup also fails, it releases the claim and
-returns the digest in `transaction` so the resource server can follow up. When submission was
-acknowledged but finality could not be established, it MUST return `settlement_pending`, enabling
-the resource server's single automatic retry of the same signed transaction. When submission itself
-failed without an acknowledgement, it returns `transaction_failed`.
+digest and report what actually happened. If the lookup does not find it, the outcome is unknown: a
+submission that failed or timed out may still have reached a validator and can still execute. The
+facilitator MUST return `settlement_pending` with the digest in `transaction`, and mark the claim
+pending. This enables the resource server's single automatic retry of the same signed transaction,
+which reconciles it.
 
 On success the facilitator returns a `SettlementResponse` (core spec
-[§5.3](../../x402-specification-v2.md)) with the digest as `transaction`, the `network`, and the
-`payer`.
+[§5.3](https://github.com/x402-foundation/x402/blob/main/specs/x402-specification-v2.md)) with the
+digest as `transaction`, the `network`, and the `payer`.
+
+### Reconciliation
+
+A settle that claims a pending digest reconciles the earlier attempt instead of starting a new one.
+It skips the epoch check, because a transaction submitted near the end of `maxEpoch` can execute and
+only be found after the window has ended:
+
+1. Look the digest up. If the transaction executed, report it as in settlement step 7.
+2. If the lookup fails, return `settlement_pending` again and keep the claim pending.
+3. If the transaction is not found and the current epoch is past `maxEpoch`, it can no longer
+   execute. Return `transaction_failed` and release the claim.
+4. Otherwise submit it again, as in settlement steps 6 and 7. Submitting the same signed bytes again
+   can't execute the payment twice.
 
 ### Settlement deduplication
 
@@ -315,18 +337,20 @@ at most once per transaction:
 1. The claim key is the transaction digest, per network.
 2. The facilitator claims the key before submitting, and only after the offline checks pass, so a
    forged payload can't hold a real payment's key.
-3. Checking and recording a claim MUST be atomic across concurrent settle requests.
-4. The facilitator keeps the claim only if settlement succeeds, and releases it otherwise. This is
-   safe: a transaction that executed and failed returns the same failure when submitted again, so a
-   retry can't turn it into a success.
-5. A successful claim MUST be kept until at least one epoch after `maxEpoch` ends. Otherwise a node
-   running an epoch behind could accept the payment again once the claim is gone.
+3. Checking and recording a claim MUST be atomic across concurrent settle requests. A claim is free,
+   pending or held. Claiming a free or pending key makes it held.
+4. The facilitator keeps the claim if settlement succeeds or the transaction had already executed.
+   It marks the claim pending when the result is `settlement_pending`, and releases it otherwise.
+   Releasing is safe: a transaction that executed and failed returns the same failure when submitted
+   again, so a retry can't turn it into a success.
+5. Successful and pending claims MUST be kept until at least one epoch after `maxEpoch` ends.
+   Otherwise a node running an epoch behind could accept the payment again once the claim is gone.
 6. When several processes serve `/settle`, they MUST share one claim store. A single process MAY
    keep claims in memory. After a restart, the only protection against settling a forgotten payment
-   again is verify's best-effort [digest lookup](#verification), which the standard resource server
-   flow always runs first. A facilitator whose settle can be called without verify SHOULD use a
-   durable claim store. Two facilitators that don't share a claim store can both report the same
-   payment as settled.
+   again is the best-effort digest lookup in settlement step 4, which depends on the node still
+   having the transaction. A facilitator whose settle can be called without verify, as in the
+   `upfront` flow, SHOULD use a durable claim store. Two facilitators that don't share a claim store
+   can both report the same payment as settled.
 7. So `duplicate_settlement` means the payment has already settled, or a settle for it is in
    progress.
 
@@ -349,26 +373,26 @@ Replay and repeat settlement are covered in [Expiration](#expiration) and
 
 ### Reason codes
 
-| Code                                                         | Stage           | Meaning                                                                                     |
-| ------------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------- |
-| `invalid_x402_version`                                       | verify / settle | `x402Version` is not `2`.                                                                   |
-| `unsupported_scheme`                                         | verify / settle | Scheme is not `"exact"`.                                                                    |
-| `network_mismatch`                                           | verify / settle | Payload network does not match the requirements.                                            |
-| `invalid_network`                                            | verify / settle | Network is not a supported Sui network.                                                     |
-| `invalid_payload`                                            | verify / settle | Payload is not `{ transaction, signature }`.                                                |
-| `invalid_exact_sui_payload_transaction_could_not_be_decoded` | verify / settle | Transaction bytes failed to decode.                                                         |
-| `invalid_exact_sui_payload_missing_sender`                   | verify / settle | Transaction has no `sender`.                                                                |
-| `invalid_exact_sui_payload_invalid_signature`                | verify / settle | Signatures are missing, extra, or invalid for the required signers.                         |
-| `invalid_exact_sui_payload_missing_nonce`                    | verify / settle | Declared `extra.nonce` is not valid Base64 or no `Pure` input equals it.                    |
-| `invalid_exact_sui_payload_invalid_expiration`               | verify / settle | Expiration missing or malformed, span exceeds one epoch, or (settle) outside window.        |
-| `invalid_exact_sui_payload_sponsorship_rejected`             | verify / settle | A sponsored transaction fails the sponsorship checks.                                       |
-| `invalid_exact_sui_payload_already_executed`                 | verify          | Transaction has already executed.                                                           |
-| `invalid_exact_sui_payload_simulation_failed`                | verify          | Simulation failed, including for an expired transaction.                                    |
-| `invalid_exact_sui_payload_transfer_mismatch`                | verify          | Simulated effects do not credit `payTo` with exactly `amount`.                              |
-| `invalid_exact_sui_payload_verification_error`               | verify          | Unexpected error or RPC failure during verification.                                        |
-| `invalid_payment_requirements`                               | verify / settle | `amount` is not a positive integer.                                                         |
-| `sponsor_rejected`                                           | settle          | The sponsor declined the transaction.                                                       |
-| `duplicate_settlement`                                       | settle          | The transaction has already settled successfully, or a settle for it is in progress.        |
-| `settlement_pending`                                         | settle          | Submission was acknowledged, but finality could not be established and the lookup failed.   |
-| `transaction_failed`                                         | settle          | Execution failed or outcome unknown, balance changes missing, or a signature check errored. |
-| `settlement_effects_mismatch`                                | settle          | Executed effects do not credit `payTo` with exactly `amount`.                               |
+| Code                                                         | Stage           | Meaning                                                                                    |
+| ------------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------ |
+| `invalid_x402_version`                                       | verify / settle | `x402Version` is not `2`.                                                                  |
+| `unsupported_scheme`                                         | verify / settle | Scheme is not `"exact"`.                                                                   |
+| `network_mismatch`                                           | verify / settle | Payload network does not match the requirements.                                           |
+| `invalid_network`                                            | verify / settle | Network is not a supported Sui network.                                                    |
+| `invalid_payload`                                            | verify / settle | Payload is not `{ transaction, signature }`.                                               |
+| `invalid_exact_sui_payload_transaction_could_not_be_decoded` | verify / settle | Transaction bytes failed to decode.                                                        |
+| `invalid_exact_sui_payload_missing_sender`                   | verify / settle | Transaction has no `sender`.                                                               |
+| `invalid_exact_sui_payload_invalid_signature`                | verify / settle | Signatures are missing, extra, or invalid for the required signers.                        |
+| `invalid_exact_sui_payload_missing_nonce`                    | verify / settle | Declared `extra.nonce` is not valid Base64 or no `Pure` input equals it.                   |
+| `invalid_exact_sui_payload_invalid_expiration`               | verify / settle | Expiration missing or malformed, span exceeds one epoch, or (settle) outside window.       |
+| `invalid_exact_sui_payload_sponsorship_rejected`             | verify / settle | A sponsored transaction fails the sponsorship checks.                                      |
+| `invalid_exact_sui_payload_already_executed`                 | verify          | Transaction has already executed.                                                          |
+| `invalid_exact_sui_payload_simulation_failed`                | verify / settle | Simulation failed, including for an expired transaction.                                   |
+| `invalid_exact_sui_payload_transfer_mismatch`                | verify / settle | Simulated effects do not credit `payTo` with exactly `amount`.                             |
+| `invalid_exact_sui_payload_verification_error`               | verify          | Unexpected error or RPC failure during verification.                                       |
+| `invalid_payment_requirements`                               | verify / settle | `amount` is not a positive integer.                                                        |
+| `sponsor_rejected`                                           | settle          | The sponsor declined the transaction.                                                      |
+| `duplicate_settlement`                                       | settle          | The transaction already settled or executed, or a settle for it is in progress.            |
+| `settlement_pending`                                         | settle          | Submission or finality failed and the transaction was not found; a retry reconciles it.    |
+| `transaction_failed`                                         | settle          | Execution failed, window passed unexecuted, balance changes missing, or a signature error. |
+| `settlement_effects_mismatch`                                | settle          | Executed effects do not credit `payTo` with exactly `amount`.                              |
