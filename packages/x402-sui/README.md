@@ -30,7 +30,8 @@ pnpm add @mysten-incubation/x402-sui
 
 The package exports the `exact` scheme for all three x402 roles under
 `@mysten-incubation/x402-sui/exact/{client,server,facilitator}`. Each is registered on the matching
-core object for the `sui:*` network family.
+core object: clients and resource servers can register the `sui:*` network family, and a facilitator
+registers the concrete networks it serves.
 
 ### Client
 
@@ -51,10 +52,11 @@ owner with an empty gas payment, and the client refuses to sign if the gas budge
 advertised `extra.maxGasBudget`.
 
 The client funds each payment with `tx.balance`, which draws on the address balance first and then
-on coin objects. Coin selection is per transaction, so two payments built at the same time from the
-same signer can pick the same coin objects, and at least one of them fails to settle. Concurrent
-payments are only supported when the signer's address balance covers them. Otherwise, build and send
-payments from one signer one at a time.
+on coin objects. Coin selection, including the payer's own gas coin, is per transaction, so two
+payments built at the same time from the same signer can pick the same coin objects, and at least
+one of them fails to settle. Payments from one signer can only run concurrently when they use no
+coin objects at all: paid from the address balance, with gas sponsored by the facilitator or a
+gasless transfer. Otherwise, build and send them one at a time.
 
 Sui USDC is a recognized default asset, so `x402Client` caps each USDC payment at $1 by default
 (`DEFAULT_MAX_AMOUNT_PER_PAYMENT`). Change the cap, or allow other coin types such as SUI, with the
@@ -159,17 +161,13 @@ Per-sender rate limiting is left to the executor or sponsor.
 
 Re-submitting an executed Sui transaction returns its original result, so the facilitator claims
 each transaction digest before submitting. A second settle of the same transaction fails with
-`duplicate_settlement`. Before it submits a newly claimed payment, the facilitator also looks the
-digest up, and reports a transaction that already executed as `duplicate_settlement`. The claim is
-released if settlement fails. If it succeeds, the claim is kept for as long as the `SettlementGuard`
-documentation requires.
+`duplicate_settlement`. The claim is released if settlement fails, and kept for as long as the
+`SettlementGuard` documentation requires if it succeeds.
 
-If submission or the finality wait throws and the digest lookup finds nothing, the outcome is
-unknown: the transaction may still execute. Settlement returns `settlement_pending` with the digest
-in `transaction`, and marks the claim pending. The resource server's automatic retry of the same
-signed transaction then reconciles it: it looks the digest up and reports what executed, even after
-the transaction's window has ended. A transaction still not found is submitted again while its
-window is open, and fails with `transaction_failed` once the window has passed.
+If the outcome of a submission can't be established, settlement returns `settlement_pending` with
+the digest in `transaction`, so the caller can reconcile on chain before retrying. A retry of the
+same signed transaction is safe: it executes at most once, and a retry of an executed transaction
+reports its result.
 
 A sponsored payment's simulated effects are checked before the sponsor co-signs it, so a payment
 that would not credit `payTo` with exactly `amount` is rejected without spending the sponsor's gas.
@@ -177,43 +175,28 @@ If this facilitator verified the same payment against the same requirements with
 `maxTimeoutSeconds` (capped at 10 minutes), settle reuses that result. Otherwise, for example in the
 `upfront` flow, it simulates at settle.
 
-A single facilitator process may keep its claims in memory, which is what the default in-process
-guard does. If the process restarts and forgets its claims, the digest lookup is the only protection
-against settling an executed payment again, and it depends on the node still having the transaction.
-When several processes serve `/settle`, they must share one claim store with atomic claims. A
-durable store is also worth it when `settle` can be called without `verify`, as in the `upfront`
-flow. For example, with Redis:
+Claims must be shared by every process serving `/settle` and survive restarts. The default
+in-process guard is enough only for a single process whose settles always follow a verify, since
+verify rejects a transaction that already executed. For the `upfront` flow, or a `/settle` that can
+be called directly, use a durable store. For example, with Redis:
 
 ```typescript
-import type { SettlementClaim, SettlementGuard } from '@mysten-incubation/x402-sui';
+import type { SettlementGuard } from '@mysten-incubation/x402-sui';
 
 // Covers the retention SettlementGuard requires; mainnet epochs last about
 // 24 hours, so four days leaves room to spare.
 const CLAIM_TTL_SECONDS = 4 * 24 * 60 * 60;
 
-// Atomically: a held key stays held, and a free or pending key becomes held.
-const CLAIM_SCRIPT = `
-local state = redis.call('GET', KEYS[1])
-if state == 'held' then return 'held' end
-redis.call('SET', KEYS[1], 'held', 'EX', ARGV[1])
-if state == 'pending' then return 'pending' end
-return 'claimed'`;
-
-const claimKey = ({ network, digest }: { network: string; digest: string }) =>
-	`x402:sui:${network}:${digest}`;
-
 const settlementGuard: SettlementGuard = {
-	async claim(key) {
-		return (await redis.eval(CLAIM_SCRIPT, {
-			keys: [claimKey(key)],
-			arguments: [String(CLAIM_TTL_SECONDS)],
-		})) as SettlementClaim;
+	async claim({ network, digest }) {
+		const set = await redis.set(`x402:sui:${network}:${digest}`, '1', {
+			NX: true,
+			EX: CLAIM_TTL_SECONDS,
+		});
+		return set !== null;
 	},
-	async markPending(key) {
-		await redis.set(claimKey(key), 'pending', { XX: true, KEEPTTL: true });
-	},
-	async release(key) {
-		await redis.del(claimKey(key));
+	async release({ network, digest }) {
+		await redis.del(`x402:sui:${network}:${digest}`);
 	},
 };
 ```

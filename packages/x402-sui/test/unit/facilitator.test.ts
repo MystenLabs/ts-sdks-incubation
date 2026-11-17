@@ -1,4 +1,3 @@
-import { TransactionError } from '@mysten/sui/client';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { MultiSigPublicKey } from '@mysten/sui/multisig';
@@ -44,16 +43,6 @@ async function executed({ transaction }: { transaction: Uint8Array }) {
 	return { $kind: 'Transaction', Transaction: successRecord(exactBalanceChanges(), digest) };
 }
 const OTHER_NONCE = 'zc3Nzc3Nzc3Nzc3Nzc3NzQ==';
-
-/**
- * The node's error for a digest it has not executed.
- *
- * @param digest - The looked-up digest
- * @returns The not-found error
- */
-function notFound(digest = 'unknown') {
-	return new TransactionError('notFound', digest);
-}
 
 describe('ExactSuiScheme facilitator', () => {
 	let mock: ReturnType<typeof mockClient>;
@@ -569,7 +558,7 @@ describe('ExactSuiScheme facilitator', () => {
 			const bare = { ...successRecord([], digest), balanceChanges: undefined };
 			mock.core.executeTransaction.mockResolvedValue({ $kind: 'Transaction', Transaction: bare });
 			mock.core.waitForTransaction.mockResolvedValue({ $kind: 'Transaction', Transaction: bare });
-			mock.core.getTransaction.mockRejectedValueOnce(notFound(digest)).mockResolvedValue({
+			mock.core.getTransaction.mockResolvedValue({
 				$kind: 'Transaction',
 				Transaction: successRecord(exactBalanceChanges(), digest),
 			});
@@ -725,10 +714,9 @@ describe('ExactSuiScheme facilitator', () => {
 				expect((await s.settle(payload, requirements)).success).toBe(true);
 			});
 
-			it('claims after validation with the digest and maxEpoch, then marks or releases', async () => {
+			it('claims after validation with the digest and maxEpoch, and releases on failure', async () => {
 				const guard: SettlementGuard = {
-					claim: vi.fn().mockResolvedValue('claimed'),
-					markPending: vi.fn(),
+					claim: vi.fn().mockResolvedValue(true),
 					release: vi.fn(),
 				};
 				const s = new ExactSuiScheme({
@@ -751,21 +739,23 @@ describe('ExactSuiScheme facilitator', () => {
 					maxEpoch: String(EPOCH + 1),
 				};
 				expect(guard.claim).toHaveBeenCalledWith(key);
-				expect(guard.markPending).toHaveBeenCalledWith(key);
-				expect(guard.release).not.toHaveBeenCalled();
-
-				mock.core.executeTransaction.mockResolvedValue({
-					$kind: 'FailedTransaction',
-					FailedTransaction: failureRecord('abort'),
-				});
-				await s.settle(testPayload(await signPayload(transaction)), testRequirements());
 				expect(guard.release).toHaveBeenCalledWith(key);
+			});
+
+			it('reports a duplicate when a shared guard refuses the claim', async () => {
+				const s = new ExactSuiScheme({
+					clients: { [SUI_TESTNET_CAIP2]: mock.client },
+					settlementGuard: { claim: async () => false, release: vi.fn() },
+				});
+				expect((await s.settle(await payment(), testRequirements())).errorReason).toBe(
+					'duplicate_settlement',
+				);
+				expect(mock.core.executeTransaction).not.toHaveBeenCalled();
 			});
 
 			it('passes each epoch it reads to the guard', async () => {
 				const guard: SettlementGuard = {
-					claim: vi.fn().mockResolvedValue('claimed'),
-					markPending: vi.fn(),
+					claim: vi.fn().mockResolvedValue(true),
 					release: vi.fn(),
 					observeEpoch: vi.fn(),
 				};
@@ -778,22 +768,7 @@ describe('ExactSuiScheme facilitator', () => {
 				expect(guard.observeEpoch).toHaveBeenCalledWith(SUI_TESTNET_CAIP2, BigInt(EPOCH));
 			});
 
-			it('reports a duplicate when a shared guard refuses the claim', async () => {
-				const s = new ExactSuiScheme({
-					clients: { [SUI_TESTNET_CAIP2]: mock.client },
-					settlementGuard: {
-						claim: async () => 'held' as const,
-						markPending: vi.fn(),
-						release: vi.fn(),
-					},
-				});
-				expect((await s.settle(await payment(), testRequirements())).errorReason).toBe(
-					'duplicate_settlement',
-				);
-				expect(mock.core.executeTransaction).not.toHaveBeenCalled();
-			});
-
-			it('keeps a successful claim two epochs past maxEpoch, then refuses by epoch', async () => {
+			it('keeps a successful claim through maxEpoch, then refuses by epoch', async () => {
 				const payload = await payment({ expiration: validDuring(EPOCH, EPOCH + 1) });
 				settled(successRecord(exactBalanceChanges(), 'a'));
 				expect((await scheme.settle(payload, testRequirements())).success).toBe(true);
@@ -809,22 +784,9 @@ describe('ExactSuiScheme facilitator', () => {
 					systemState: { epoch: String(EPOCH + 2) },
 				});
 				expect((await scheme.settle(payload, testRequirements())).errorReason).toBe(
-					'duplicate_settlement',
-				);
-
-				// Another settle observes EPOCH + 3, two epochs past maxEpoch, which lets
-				// the cache drop the claim.
-				mock.core.getCurrentSystemState.mockResolvedValue({
-					systemState: { epoch: String(EPOCH + 3) },
-				});
-				await scheme.settle(
-					await payment({ amount: 2, expiration: validDuring(EPOCH + 3, EPOCH + 4) }),
-					testRequirements(),
-				);
-				expect((await scheme.settle(payload, testRequirements())).errorReason).toBe(
 					'invalid_exact_sui_payload_invalid_expiration',
 				);
-				expect(mock.core.executeTransaction).toHaveBeenCalledTimes(2);
+				expect(mock.core.executeTransaction).toHaveBeenCalledOnce();
 			});
 		});
 
@@ -847,9 +809,7 @@ describe('ExactSuiScheme facilitator', () => {
 					mock.core.executeTransaction.mockResolvedValue(submitted);
 					mock.core.waitForTransaction.mockRejectedValueOnce(new Error('confirmation timeout'));
 					if (sponsored) {
-						mock.core.getTransaction
-							.mockRejectedValueOnce(notFound(digest))
-							.mockRejectedValueOnce(new Error('lookup unavailable'));
+						mock.core.getTransaction.mockRejectedValueOnce(new Error('lookup unavailable'));
 					}
 
 					expect(await facilitator.settle(payload, requirements)).toMatchObject({
@@ -879,7 +839,7 @@ describe('ExactSuiScheme facilitator', () => {
 				const payload = await payment();
 				const digest = await digestOf((payload.payload as { transaction: string }).transaction);
 				mock.core.executeTransaction.mockRejectedValue(new Error('deadline exceeded'));
-				mock.core.getTransaction.mockRejectedValueOnce(notFound(digest)).mockResolvedValue({
+				mock.core.getTransaction.mockResolvedValue({
 					$kind: 'Transaction',
 					Transaction: successRecord(exactBalanceChanges(), digest),
 				});
@@ -897,7 +857,7 @@ describe('ExactSuiScheme facilitator', () => {
 					Transaction: successRecord([], 'submitted'),
 				});
 				mock.core.waitForTransaction.mockRejectedValue(new Error('timeout'));
-				mock.core.getTransaction.mockRejectedValueOnce(notFound()).mockResolvedValue({
+				mock.core.getTransaction.mockResolvedValue({
 					$kind: 'FailedTransaction',
 					FailedTransaction: failureRecord('abort', 'landed-failed'),
 				});
@@ -908,7 +868,7 @@ describe('ExactSuiScheme facilitator', () => {
 				});
 			});
 
-			it('reports an unacknowledged submission as pending, then reconciles it', async () => {
+			it('reports an unknown outcome as pending with the digest and releases the claim', async () => {
 				const payload = await payment();
 				const digest = await digestOf((payload.payload as { transaction: string }).transaction);
 				mock.core.executeTransaction.mockRejectedValueOnce(new Error('fullnode unavailable'));
@@ -920,99 +880,6 @@ describe('ExactSuiScheme facilitator', () => {
 				});
 				settled(successRecord(exactBalanceChanges(), digest));
 				expect((await scheme.settle(payload, testRequirements())).success).toBe(true);
-			});
-
-			/**
-			 * Leave a payment pending: the submission is acknowledged, then the
-			 * finality wait and the digest lookup both fail.
-			 *
-			 * @returns The payload and its digest
-			 */
-			async function pendingPayment() {
-				const payload = await payment({ expiration: validDuring(EPOCH, EPOCH + 1) });
-				const digest = await digestOf((payload.payload as { transaction: string }).transaction);
-				mock.core.executeTransaction.mockResolvedValueOnce({
-					$kind: 'Transaction',
-					Transaction: successRecord([], digest),
-				});
-				mock.core.waitForTransaction.mockRejectedValueOnce(new Error('confirmation timeout'));
-				expect((await scheme.settle(payload, testRequirements())).errorReason).toBe(
-					'settlement_pending',
-				);
-				return { payload, digest };
-			}
-
-			it('reconciles a pending payment that executed, after its window ended', async () => {
-				const { payload, digest } = await pendingPayment();
-				mock.core.getCurrentSystemState.mockResolvedValue({
-					systemState: { epoch: String(EPOCH + 2) },
-				});
-				mock.core.getTransaction.mockResolvedValue({
-					$kind: 'Transaction',
-					Transaction: successRecord(exactBalanceChanges(), digest),
-				});
-				expect(await scheme.settle(payload, testRequirements())).toMatchObject({
-					success: true,
-					transaction: digest,
-				});
-				expect(mock.core.executeTransaction).toHaveBeenCalledOnce();
-				expect((await scheme.settle(payload, testRequirements())).errorReason).toBe(
-					'duplicate_settlement',
-				);
-			});
-
-			it('fails a pending payment that never executed once its window ended', async () => {
-				const { payload } = await pendingPayment();
-				mock.core.getCurrentSystemState.mockResolvedValue({
-					systemState: { epoch: String(EPOCH + 2) },
-				});
-				expect((await scheme.settle(payload, testRequirements())).errorReason).toBe(
-					'transaction_failed',
-				);
-				expect(mock.core.executeTransaction).toHaveBeenCalledOnce();
-				// The claim was released, so a later settle is a new one, refused by epoch.
-				expect((await scheme.settle(payload, testRequirements())).errorReason).toBe(
-					'invalid_exact_sui_payload_invalid_expiration',
-				);
-			});
-
-			it('keeps a payment pending while the lookup keeps failing', async () => {
-				const { payload, digest } = await pendingPayment();
-				mock.core.getTransaction.mockRejectedValueOnce(new Error('lookup unavailable'));
-				expect(await scheme.settle(payload, testRequirements())).toMatchObject({
-					errorReason: 'settlement_pending',
-					transaction: digest,
-				});
-				settled(successRecord(exactBalanceChanges(), digest));
-				expect((await scheme.settle(payload, testRequirements())).success).toBe(true);
-			});
-		});
-
-		describe('restart', () => {
-			it('refuses to settle again a payment that already executed', async () => {
-				const payload = await payment();
-				const digest = await digestOf((payload.payload as { transaction: string }).transaction);
-				// A fresh facilitator, as after a restart, has no claim for the digest.
-				mock.core.getTransaction.mockResolvedValue({
-					$kind: 'Transaction',
-					Transaction: successRecord(exactBalanceChanges(), digest),
-				});
-				expect(await scheme.settle(payload, testRequirements())).toMatchObject({
-					success: false,
-					errorReason: 'duplicate_settlement',
-					payer,
-				});
-				expect(mock.core.executeTransaction).not.toHaveBeenCalled();
-				expect((await scheme.settle(payload, testRequirements())).errorReason).toBe(
-					'duplicate_settlement',
-				);
-			});
-
-			it('fails when the executed lookup errors, without submitting', async () => {
-				mock.core.getTransaction.mockRejectedValue(new Error('node unavailable'));
-				const result = await scheme.settle(await payment(), testRequirements());
-				expect(result).toMatchObject({ errorReason: 'transaction_failed' });
-				expect(mock.core.executeTransaction).not.toHaveBeenCalled();
 			});
 		});
 	});
@@ -1308,12 +1175,34 @@ describe('ExactSuiScheme facilitator', () => {
 			},
 		);
 
+		it('reports an already-executed sponsored payment without co-signing it again', async () => {
+			const { s, executeTransaction, requirements } = withExecutor(null);
+			const payload = await payment({ sponsored: true }, requirements);
+			const digest = await digestOf((payload.payload as { transaction: string }).transaction);
+			mock.core.getTransaction.mockResolvedValue({
+				$kind: 'Transaction',
+				Transaction: successRecord(exactBalanceChanges(), digest),
+			});
+			expect(await s.settle(payload, requirements)).toMatchObject({
+				success: true,
+				transaction: digest,
+			});
+			expect(executeTransaction).not.toHaveBeenCalled();
+			expect(mock.core.simulateTransaction).not.toHaveBeenCalled();
+		});
+
+		it('does not simulate a payment the payer pays gas for', async () => {
+			settled(successRecord(exactBalanceChanges(), 'self-paid'));
+			expect((await scheme.settle(await payment(), testRequirements())).success).toBe(true);
+			expect(mock.core.simulateTransaction).not.toHaveBeenCalled();
+		});
+
 		describe('reusing verify', () => {
 			/**
 			 * A sponsoring facilitator and a sponsored payment.
 			 *
 			 * @param maxTimeoutSeconds - The requirements' timeout
-			 * @returns The scheme, executor, requirements and payload
+			 * @returns The scheme, requirements and payload
 			 */
 			async function sponsoredPayment(maxTimeoutSeconds = 300) {
 				const { s, executeTransaction, requirements } = withExecutor(null);
@@ -1336,11 +1225,6 @@ describe('ExactSuiScheme facilitator', () => {
 			it('simulates again when the requirements differ from the verified ones', async () => {
 				const { s, reqs, payload } = await sponsoredPayment();
 				expect((await s.verify(payload, reqs)).isValid).toBe(true);
-				mock.core.simulateTransaction.mockResolvedValue({
-					$kind: 'Transaction',
-					Transaction: successRecord(exactBalanceChanges()),
-					gasPaymentMocked: false,
-				});
 				const other = { ...reqs, amount: '2' };
 				expect((await s.settle(payload, other)).errorReason).toBe(
 					'invalid_exact_sui_payload_transfer_mismatch',
@@ -1355,12 +1239,6 @@ describe('ExactSuiScheme facilitator', () => {
 				expect((await s.settle(payload, reqs)).success).toBe(true);
 				expect(mock.core.simulateTransaction).toHaveBeenCalledTimes(2);
 			});
-		});
-
-		it('does not simulate a payment the payer pays gas for', async () => {
-			settled(successRecord(exactBalanceChanges(), 'self-paid'));
-			expect((await scheme.settle(await payment(), testRequirements())).success).toBe(true);
-			expect(mock.core.simulateTransaction).not.toHaveBeenCalled();
 		});
 
 		it('rejects a payment that fails the sponsorship checks before calling the executor', async () => {
@@ -1401,43 +1279,25 @@ describe('SettlementCache', () => {
 
 	it('claims once until released', () => {
 		const cache = new SettlementCache();
-		expect(cache.claim(key)).toBe('claimed');
-		expect(cache.claim(key)).toBe('held');
+		expect(cache.claim(key)).toBe(true);
+		expect(cache.claim(key)).toBe(false);
 		cache.release(key);
-		expect(cache.claim(key)).toBe('claimed');
-	});
-
-	it('hands a pending claim to exactly one later claim', () => {
-		const cache = new SettlementCache();
-		cache.claim(key);
-		cache.markPending(key);
-		expect(cache.claim(key)).toBe('pending');
-		expect(cache.claim(key)).toBe('held');
-	});
-
-	it('ignores markPending for a key it does not hold', () => {
-		const cache = new SettlementCache();
-		cache.markPending(key);
-		expect(cache.claim(key)).toBe('claimed');
+		expect(cache.claim(key)).toBe(true);
 	});
 
 	it('scopes claims by network', () => {
 		const cache = new SettlementCache();
-		expect(cache.claim(key)).toBe('claimed');
-		expect(cache.claim({ ...key, network: SUI_MAINNET_CAIP2 })).toBe('claimed');
+		expect(cache.claim(key)).toBe(true);
+		expect(cache.claim({ ...key, network: SUI_MAINNET_CAIP2 })).toBe(true);
 	});
 
-	it.each([false, true])(
-		'drops claims two epochs after maxEpoch on the same network (pending: %s)',
-		(pending) => {
-			const cache = new SettlementCache();
-			cache.claim(key);
-			if (pending) cache.markPending(key);
-			cache.observeEpoch(SUI_TESTNET_CAIP2, '11');
-			cache.observeEpoch(SUI_MAINNET_CAIP2, '50');
-			expect(cache.claim(key)).toBe(pending ? 'pending' : 'held');
-			cache.observeEpoch(SUI_TESTNET_CAIP2, '12');
-			expect(cache.claim(key)).toBe('claimed');
-		},
-	);
+	it('drops claims two epochs after maxEpoch on the same network', () => {
+		const cache = new SettlementCache();
+		cache.claim(key);
+		cache.observeEpoch(SUI_TESTNET_CAIP2, '11');
+		cache.observeEpoch(SUI_MAINNET_CAIP2, '50');
+		expect(cache.claim(key)).toBe(false);
+		cache.observeEpoch(SUI_TESTNET_CAIP2, '12');
+		expect(cache.claim(key)).toBe(true);
+	});
 });

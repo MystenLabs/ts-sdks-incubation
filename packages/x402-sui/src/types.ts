@@ -47,49 +47,30 @@ export type SettlementKey = {
 };
 
 /**
- * The result of {@link SettlementGuard.claim}:
- *
- * - `claimed`: the key was free and the caller now holds it.
- * - `pending`: an earlier settlement of the key ended with an unknown outcome
- *   (`settlement_pending`). The caller now holds it and reconciles that attempt.
- * - `held`: the key is settled, or another settle holds it.
- */
-export type SettlementClaim = 'claimed' | 'pending' | 'held';
-
-/**
  * Records which transactions have been settled so the facilitator reports
  * success at most once per digest. The facilitator claims a key before
- * submitting. It keeps the claim on success, marks it pending when the outcome
- * is unknown, and releases it otherwise. Keep successful and pending claims
- * until the network is two epochs past `maxEpoch`: one epoch for the window to
- * end, and one of margin for a lagging fullnode.
+ * submitting and releases it when settlement does not succeed. Keep a
+ * successful claim until the network is two epochs past `maxEpoch`: one epoch
+ * for the window to end, and one of margin for a lagging fullnode.
  *
- * When several processes serve `/settle`, they MUST share one claim store with
- * atomic claims. A single process MAY keep claims in memory, as the default
- * {@link SettlementCache} does. Claims kept in memory are lost on restart. The
- * facilitator then falls back on a best-effort digest lookup before it submits,
- * so a facilitator that must not depend on node history SHOULD use a durable
- * store.
+ * Claims MUST be shared, with atomic claims, by every process serving
+ * `/settle`, and MUST survive restarts for as long as they are kept. The
+ * default in-memory {@link SettlementCache} is only enough for a single process
+ * whose settles always follow a verify, since verify rejects a transaction that
+ * already executed. Use a durable store for the `upfront` flow or when
+ * `/settle` can be called directly.
  */
 export interface SettlementGuard {
 	/**
-	 * Atomically claim a key. A free key and a pending key both become held.
+	 * Atomically claim a key.
 	 *
 	 * @param key - The settlement identity
-	 * @returns The claim result
+	 * @returns `true` if the key was claimed, `false` if it is already held
 	 */
-	claim(key: SettlementKey): SettlementClaim | Promise<SettlementClaim>;
+	claim(key: SettlementKey): boolean | Promise<boolean>;
 
 	/**
-	 * Mark a held key as pending: its submission may still execute, and the next
-	 * claim reconciles it.
-	 *
-	 * @param key - The settlement identity
-	 */
-	markPending(key: SettlementKey): void | Promise<void>;
-
-	/**
-	 * Release a held key after a settlement that did not succeed.
+	 * Release a claimed key after a settlement that did not succeed.
 	 *
 	 * @param key - The settlement identity
 	 */
