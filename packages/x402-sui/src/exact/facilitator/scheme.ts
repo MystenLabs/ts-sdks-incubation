@@ -224,7 +224,7 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 			}
 			await this.guard.observeEpoch?.(network, epoch);
 		} catch (error) {
-			return settleFailure(network, 'transaction_failed', errorMessage(error), sender);
+			return settleFailure(network, 'transaction_failed', errorMessage(error), sender, digest);
 		}
 
 		const key: SettlementKey = { network, digest, maxEpoch };
@@ -232,7 +232,7 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 		try {
 			claimed = await this.guard.claim(key);
 		} catch (error) {
-			return settleFailure(network, 'transaction_failed', errorMessage(error), sender);
+			return settleFailure(network, 'transaction_failed', errorMessage(error), sender, digest);
 		}
 		if (!claimed) {
 			return settleFailure(
@@ -256,7 +256,7 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 						requirements,
 					);
 		} catch (error) {
-			result = settleFailure(network, 'transaction_failed', errorMessage(error), sender);
+			result = settleFailure(network, 'transaction_failed', errorMessage(error), sender, digest);
 		}
 
 		if (!result.success) {

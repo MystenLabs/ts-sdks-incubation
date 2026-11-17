@@ -1,12 +1,7 @@
+import { ExactSuiScheme } from '../../src/exact/facilitator/scheme.js';
 import { describe, expect, it, vi } from 'vitest';
 import { SUI_TESTNET_CAIP2 } from '../../src/constants.js';
-import {
-	mockClient,
-	payerKeypair,
-	testRequirements,
-	buildTestTransaction,
-	facilitatorScheme,
-} from './helpers.js';
+import { mockClient, payerKeypair, testRequirements, buildTestTransaction } from './helpers.js';
 import { signPayload, testPayload } from './helpers.js';
 
 const { isValidTransactionSignature } = vi.hoisted(() => ({
@@ -26,7 +21,7 @@ describe('signature verification errors', () => {
 	 */
 	async function setup() {
 		const mock = mockClient();
-		const scheme = facilitatorScheme({ clients: { [SUI_TESTNET_CAIP2]: mock.client } });
+		const scheme = new ExactSuiScheme({ clients: { [SUI_TESTNET_CAIP2]: mock.client } });
 		const payload = testPayload(await signPayload(await buildTestTransaction(), payerKeypair));
 		return { mock, scheme, payload };
 	}

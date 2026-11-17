@@ -3,8 +3,9 @@ import type { SettlementGuard, SettlementKey } from './types.js';
 /**
  * In-process settlement guard, and the facilitator's default. Successful claims
  * are kept as long as {@link SettlementGuard} requires. Not shared across
- * processes and lost on restart: see {@link SettlementGuard} for when to supply
- * a shared, durable store instead.
+ * processes and lost on restart, so it suits only development, tests, or a
+ * single process that accepts repeat-settlement risk. Production SHOULD use a
+ * shared, durable {@link SettlementGuard} with atomic claims.
  */
 export class SettlementCache implements SettlementGuard {
 	private readonly entries = new Map<string, { network: string; maxEpoch: bigint }>();

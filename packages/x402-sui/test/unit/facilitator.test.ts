@@ -9,7 +9,6 @@ import { SUI_MAINNET_CAIP2, SUI_TESTNET_CAIP2, USDC_TESTNET } from '../../src/co
 import { SettlementCache } from '../../src/settlement-cache.js';
 import type { SettlementGuard } from '../../src/types.js';
 import {
-	facilitatorScheme,
 	buildTestTransaction,
 	digestOf,
 	EPOCH,
@@ -51,7 +50,7 @@ describe('ExactSuiScheme facilitator', () => {
 
 	beforeEach(() => {
 		mock = mockClient();
-		scheme = facilitatorScheme({ clients: { [SUI_TESTNET_CAIP2]: mock.client } });
+		scheme = new ExactSuiScheme({ clients: { [SUI_TESTNET_CAIP2]: mock.client } });
 		mock.core.simulateTransaction.mockResolvedValue({
 			$kind: 'Transaction',
 			Transaction: successRecord(exactBalanceChanges()),
@@ -279,7 +278,7 @@ describe('ExactSuiScheme facilitator', () => {
 			const requirements = testRequirements({ extra: { feePayer } });
 
 			beforeEach(() => {
-				sponsored = facilitatorScheme({
+				sponsored = new ExactSuiScheme({
 					clients: { [SUI_TESTNET_CAIP2]: mock.client },
 					feePayer,
 					executeTransaction: vi.fn(),
@@ -356,7 +355,7 @@ describe('ExactSuiScheme facilitator', () => {
 			});
 
 			it('applies a configured budget cap', async () => {
-				const strict = facilitatorScheme({
+				const strict = new ExactSuiScheme({
 					clients: { [SUI_TESTNET_CAIP2]: mock.client },
 					feePayer,
 					executeTransaction: vi.fn(),
@@ -378,7 +377,7 @@ describe('ExactSuiScheme facilitator', () => {
 			});
 
 			it('does not apply when the sender is the fee payer', async () => {
-				const sponsorAsSender = facilitatorScheme({
+				const sponsorAsSender = new ExactSuiScheme({
 					clients: { [SUI_TESTNET_CAIP2]: mock.client },
 					feePayer: payer,
 					executeTransaction: vi.fn(),
@@ -510,7 +509,7 @@ describe('ExactSuiScheme facilitator', () => {
 				$kind: 'Transaction',
 				Transaction: successRecord(exactBalanceChanges()),
 			} as never);
-			return facilitatorScheme({ clients: { [SUI_TESTNET_CAIP2]: client } });
+			return new ExactSuiScheme({ clients: { [SUI_TESTNET_CAIP2]: client } });
 		}
 
 		it('treats a missing transaction as not executed', async () => {
@@ -716,7 +715,7 @@ describe('ExactSuiScheme facilitator', () => {
 					$kind: 'Transaction',
 					Transaction: successRecord(exactBalanceChanges(), 'sponsored'),
 				});
-				const s = facilitatorScheme({
+				const s = new ExactSuiScheme({
 					clients: { [SUI_TESTNET_CAIP2]: mock.client },
 					feePayer,
 					executeTransaction,
@@ -732,7 +731,7 @@ describe('ExactSuiScheme facilitator', () => {
 					claim: vi.fn().mockResolvedValue(true),
 					release: vi.fn(),
 				};
-				const s = facilitatorScheme({
+				const s = new ExactSuiScheme({
 					clients: { [SUI_TESTNET_CAIP2]: mock.client },
 					settlementGuard: guard,
 				});
@@ -756,7 +755,7 @@ describe('ExactSuiScheme facilitator', () => {
 			});
 
 			it('reports a duplicate when a shared guard refuses the claim', async () => {
-				const s = facilitatorScheme({
+				const s = new ExactSuiScheme({
 					clients: { [SUI_TESTNET_CAIP2]: mock.client },
 					settlementGuard: { claim: async () => false, release: vi.fn() },
 				});
@@ -766,13 +765,37 @@ describe('ExactSuiScheme facilitator', () => {
 				expect(mock.core.executeTransaction).not.toHaveBeenCalled();
 			});
 
+			it.each([
+				[
+					'the epoch read',
+					() => mock.core.getCurrentSystemState.mockRejectedValue(new Error('rpc down')),
+				],
+				['the claim', () => undefined],
+			])('returns the digest when %s throws', async (which, fail) => {
+				fail();
+				const s = new ExactSuiScheme({
+					clients: { [SUI_TESTNET_CAIP2]: mock.client },
+					settlementGuard: {
+						claim: () => Promise.reject(new Error('store down')),
+						release: vi.fn(),
+					},
+				});
+				const payload = await payment();
+				const digest = await digestOf((payload.payload as { transaction: string }).transaction);
+				expect(await s.settle(payload, testRequirements())).toMatchObject({
+					errorReason: 'transaction_failed',
+					errorMessage: which === 'the claim' ? 'store down' : 'rpc down',
+					transaction: digest,
+				});
+			});
+
 			it('passes each epoch it reads to the guard', async () => {
 				const guard: SettlementGuard = {
 					claim: vi.fn().mockResolvedValue(true),
 					release: vi.fn(),
 					observeEpoch: vi.fn(),
 				};
-				const s = facilitatorScheme({
+				const s = new ExactSuiScheme({
 					clients: { [SUI_TESTNET_CAIP2]: mock.client },
 					settlementGuard: guard,
 				});
@@ -813,7 +836,7 @@ describe('ExactSuiScheme facilitator', () => {
 					const submitted = { $kind: 'Transaction', Transaction: successRecord([], digest) };
 					const executor = vi.fn().mockResolvedValue(submitted);
 					const facilitator = sponsored
-						? facilitatorScheme({
+						? new ExactSuiScheme({
 								clients: { [SUI_TESTNET_CAIP2]: mock.client },
 								feePayer,
 								executeTransaction: executor,
@@ -926,7 +949,7 @@ describe('ExactSuiScheme facilitator', () => {
 		});
 
 		it('reports an invalid expiration before a sponsorship problem', async () => {
-			const s = facilitatorScheme({
+			const s = new ExactSuiScheme({
 				clients: { [SUI_TESTNET_CAIP2]: mock.client },
 				feePayer,
 				executeTransaction: vi.fn(),
@@ -1014,7 +1037,7 @@ describe('ExactSuiScheme facilitator', () => {
 		 */
 		function sponsoring() {
 			const executeTransaction = vi.fn();
-			const s = facilitatorScheme({
+			const s = new ExactSuiScheme({
 				clients: { [SUI_TESTNET_CAIP2]: mock.client },
 				feePayer,
 				executeTransaction,
@@ -1085,7 +1108,7 @@ describe('ExactSuiScheme facilitator', () => {
 		 */
 		function withExecutor(result: unknown) {
 			const executeTransaction = vi.fn().mockResolvedValue(result);
-			const s = facilitatorScheme({
+			const s = new ExactSuiScheme({
 				clients: { [SUI_TESTNET_CAIP2]: mock.client },
 				executeTransaction,
 				feePayer,
@@ -1104,7 +1127,7 @@ describe('ExactSuiScheme facilitator', () => {
 		});
 
 		it('requires an executor when a fee payer is set', () => {
-			expect(() => facilitatorScheme({ feePayer })).toThrow('executeTransaction');
+			expect(() => new ExactSuiScheme({ feePayer })).toThrow('executeTransaction');
 		});
 
 		it('advertises the fee payer via getExtra / getSigners', () => {
@@ -1273,10 +1296,9 @@ describe('ExactSuiScheme facilitator', () => {
 
 					mock.core.simulateTransaction.mockClear();
 					const expired = await sponsoredPayment(maxTimeoutSeconds);
-					const payload = await payment({ sponsored: true, amount: 2 }, expired.reqs);
-					expect((await expired.s.verify(payload, expired.reqs)).isValid).toBe(true);
+					expect((await expired.s.verify(expired.payload, expired.reqs)).isValid).toBe(true);
 					vi.advanceTimersByTime(lifetimeMs + 1);
-					expect((await expired.s.settle(payload, expired.reqs)).success).toBe(true);
+					expect((await expired.s.settle(expired.payload, expired.reqs)).success).toBe(true);
 					expect(mock.core.simulateTransaction).toHaveBeenCalledTimes(2);
 				} finally {
 					vi.useRealTimers();
@@ -1290,6 +1312,7 @@ describe('ExactSuiScheme facilitator', () => {
 				expect((await s.settle(payload, reqs)).errorReason).toBe('settlement_pending');
 				expect(mock.core.simulateTransaction).toHaveBeenCalledOnce();
 
+				mock.core.getTransaction.mockClear();
 				expect((await s.settle(payload, reqs)).success).toBe(true);
 				expect(mock.core.getTransaction).toHaveBeenCalledWith(
 					expect.objectContaining({ include: { balanceChanges: true } }),

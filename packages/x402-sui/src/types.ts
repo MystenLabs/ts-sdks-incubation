@@ -55,15 +55,16 @@ export type SettlementKey = {
  *
  * Claims MUST be shared, with atomic claims, by every process serving
  * `/settle`. They SHOULD survive restarts for as long as they are kept. The
- * default in-memory {@link SettlementCache} is lost on restart: until the
- * transaction's window ends, a payment that already settled could be settled
- * again and reported as a second success. Facilitators running several
- * processes, or that restart while payments are in flight, SHOULD supply a
- * shared, durable store.
+ * default in-memory {@link SettlementCache} loses them on every restart: until
+ * the transaction's window ends (up to two epochs), a payment that already
+ * settled can be settled again and reported as a second success. Facilitators
+ * running several processes, or that may restart, SHOULD supply a shared,
+ * durable store.
  *
- * A claim held by a process that dies mid-settlement blocks that digest until
- * the store expires it, so a store's expiry bounds how long such a payment
- * stays unsettleable.
+ * A claim held by a process that dies mid-settlement, or one whose release
+ * fails, blocks that digest until the store expires it. Settle returns
+ * `duplicate_settlement` meanwhile, and since the expiry outlasts the
+ * transaction's window, the caller should reconcile such a payment by digest.
  */
 export interface SettlementGuard {
 	/**

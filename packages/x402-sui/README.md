@@ -102,7 +102,8 @@ No key is needed unless the facilitator sponsors gas. Options:
 - `executeTransaction`: submits facilitator-sponsored payments. Required when `feePayer` is set.
 - `maxSponsoredGasBudget`: the gas budget cap for sponsored payments, in MIST, advertised as
   `extra.maxGasBudget`. Defaults to `10_000_000n` (0.01 SUI).
-- `settlementGuard`: the settlement dedup store. Defaults to an in-memory store; see
+- `settlementGuard`: the settlement dedup store. Defaults to an in-memory store that is lost on
+  restart and not shared across processes. See
   [Settlement deduplication](#settlement-deduplication).
 
 The facilitator rejects a transaction without a `ValidDuring` or `Validity` expiration, or one that
@@ -179,13 +180,14 @@ lose. If this facilitator verified the same payment against the same requirement
 `maxTimeoutSeconds` (capped at 10 minutes), settle reuses that result. Otherwise, for example in the
 `upfront` flow, it simulates at settle.
 
-By default the facilitator keeps claims in memory, as the SVM and EVM facilitators do. That suits a
-single process, but claims are lost on restart: until the transaction's window ends (up to two
-epochs), a payment that already settled could be settled again and reported as a second success.
-When several processes serve `/settle`, they must share one store with atomic claims, and a
-facilitator that may restart with payments in flight should use a durable one. A claim held by a
-process that dies mid-settlement blocks that digest until the store expires it. For example, with
-Redis:
+By default the facilitator keeps claims in memory, which suits only a single process. Claims are
+lost on every restart, not only one with payments in flight: until a transaction's window ends (up
+to two epochs, about 48 hours on mainnet), a payment that already settled can be settled again and
+reported as a second success. When several processes serve `/settle`, or the facilitator may
+restart, supply one shared, durable store with atomic claims. A claim held by a process that dies
+mid-settlement, or whose release fails, blocks that digest until the store expires it, which is
+after the transaction's window closes; settle returns `duplicate_settlement` meanwhile, so reconcile
+such a payment by digest. For example, with Redis:
 
 ```typescript
 import type { SettlementGuard } from '@mysten-incubation/x402-sui';
