@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/x402-sui",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"description": "x402 exact payment scheme for Sui (client, resource server and facilitator). Incubation copy of the upstream @x402/sui package until it lands in the x402 Foundation repo.",
 	"license": "Apache-2.0",
 	"author": "Mysten Labs <build@mystenlabs.com>",
