@@ -1308,6 +1308,55 @@ describe('ExactSuiScheme facilitator', () => {
 			},
 		);
 
+		describe('reusing verify', () => {
+			/**
+			 * A sponsoring facilitator and a sponsored payment.
+			 *
+			 * @param maxTimeoutSeconds - The requirements' timeout
+			 * @returns The scheme, executor, requirements and payload
+			 */
+			async function sponsoredPayment(maxTimeoutSeconds = 300) {
+				const { s, executeTransaction, requirements } = withExecutor(null);
+				executeTransaction.mockImplementation(executed);
+				mock.core.waitForTransaction.mockResolvedValue({
+					$kind: 'Transaction',
+					Transaction: successRecord(exactBalanceChanges(), 'sponsored'),
+				});
+				const reqs = { ...requirements, maxTimeoutSeconds };
+				return { s, reqs, payload: await payment({ sponsored: true }, reqs) };
+			}
+
+			it('skips the settle simulation after a verify of the same payment', async () => {
+				const { s, reqs, payload } = await sponsoredPayment();
+				expect((await s.verify(payload, reqs)).isValid).toBe(true);
+				expect((await s.settle(payload, reqs)).success).toBe(true);
+				expect(mock.core.simulateTransaction).toHaveBeenCalledOnce();
+			});
+
+			it('simulates again when the requirements differ from the verified ones', async () => {
+				const { s, reqs, payload } = await sponsoredPayment();
+				expect((await s.verify(payload, reqs)).isValid).toBe(true);
+				mock.core.simulateTransaction.mockResolvedValue({
+					$kind: 'Transaction',
+					Transaction: successRecord(exactBalanceChanges()),
+					gasPaymentMocked: false,
+				});
+				const other = { ...reqs, amount: '2' };
+				expect((await s.settle(payload, other)).errorReason).toBe(
+					'invalid_exact_sui_payload_transfer_mismatch',
+				);
+				expect(mock.core.simulateTransaction).toHaveBeenCalledTimes(2);
+			});
+
+			it('simulates again once the verify record has expired', async () => {
+				const { s, reqs, payload } = await sponsoredPayment(0);
+				expect((await s.verify(payload, reqs)).isValid).toBe(true);
+				await new Promise((resolve) => setTimeout(resolve, 2));
+				expect((await s.settle(payload, reqs)).success).toBe(true);
+				expect(mock.core.simulateTransaction).toHaveBeenCalledTimes(2);
+			});
+		});
+
 		it('does not simulate a payment the payer pays gas for', async () => {
 			settled(successRecord(exactBalanceChanges(), 'self-paid'));
 			expect((await scheme.settle(await payment(), testRequirements())).success).toBe(true);

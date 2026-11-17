@@ -171,8 +171,11 @@ signed transaction then reconciles it: it looks the digest up and reports what e
 the transaction's window has ended. A transaction still not found is submitted again while its
 window is open, and fails with `transaction_failed` once the window has passed.
 
-A sponsored payment is simulated before the sponsor co-signs it, so a payment that would not credit
-`payTo` with exactly `amount` is rejected without spending the sponsor's gas.
+A sponsored payment's simulated effects are checked before the sponsor co-signs it, so a payment
+that would not credit `payTo` with exactly `amount` is rejected without spending the sponsor's gas.
+If this facilitator verified the same payment against the same requirements within
+`maxTimeoutSeconds` (capped at 10 minutes), settle reuses that result. Otherwise, for example in the
+`upfront` flow, it simulates at settle.
 
 A single facilitator process may keep its claims in memory, which is what the default in-process
 guard does. If the process restarts and forgets its claims, the digest lookup is the only protection

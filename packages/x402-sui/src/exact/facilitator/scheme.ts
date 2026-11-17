@@ -53,6 +53,11 @@ type ValidatedPayment =
 type Rejection = { reason: string; message: string };
 
 /**
+ * The longest a verify's simulation of a sponsored payment is reused by settle.
+ */
+const MAX_VERIFIED_SIMULATION_MS = 10 * 60 * 1000;
+
+/**
  * Sui facilitator implementation for the Exact payment scheme. Verification is
  * effects-only: the facilitator checks that the transaction's balance changes
  * credit `payTo` with exactly `amount`, not how the transaction is built.
@@ -68,6 +73,12 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 	private readonly feePayer?: string;
 	private readonly maxSponsoredGasBudget: bigint;
 	private readonly guard: SettlementGuard;
+	/**
+	 * Sponsored payments whose simulation passed at verify, keyed by digest and
+	 * requirements, with the time the result expires. Lets settle skip a second
+	 * simulation in the `authorization` flow.
+	 */
+	private readonly verifiedSimulations = new Map<string, number>();
 
 	/**
 	 * Creates a new ExactSuiScheme facilitator instance.
@@ -155,6 +166,7 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 				};
 			}
 
+			if (validated.sponsored) this.recordVerifiedSimulation(digest, requirements);
 			return { isValid: true, invalidReason: undefined, payer: sender };
 		} catch (error) {
 			return {
@@ -285,8 +297,10 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 		}
 
 		// The sponsor pays for whatever it co-signs, so check the payment before
-		// spending its gas, rather than after execution.
-		if (sponsored) {
+		// spending its gas, rather than after execution. A recent verify of the
+		// same payment already did; settle can't assume one ran (`upfront`, or a
+		// direct call), so it simulates otherwise.
+		if (sponsored && !this.takeVerifiedSimulation(digest, requirements)) {
 			const rejection = await this.simulate(client, transactionBytes, requirements);
 			if (rejection) {
 				return settleFailure(network, rejection.reason, rejection.message, sender);
@@ -336,6 +350,39 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 			return this.submit(suiPayload, transactionBytes, digest, sender, sponsored, requirements);
 		}
 		return this.finish(client, found, digest, sender, requirements);
+	}
+
+	/**
+	 * Record that a sponsored payment's simulation passed at verify. The record
+	 * lasts `maxTimeoutSeconds`, capped at {@link MAX_VERIFIED_SIMULATION_MS}.
+	 *
+	 * @param digest - The transaction digest
+	 * @param requirements - The requirements it was checked against
+	 */
+	private recordVerifiedSimulation(digest: string, requirements: PaymentRequirements): void {
+		const now = Date.now();
+		for (const [key, expiresAt] of this.verifiedSimulations) {
+			if (expiresAt < now) this.verifiedSimulations.delete(key);
+		}
+		const ttl = Math.min(
+			Math.max(Number(requirements.maxTimeoutSeconds) || 0, 0) * 1000,
+			MAX_VERIFIED_SIMULATION_MS,
+		);
+		this.verifiedSimulations.set(simulationKey(digest, requirements), now + ttl);
+	}
+
+	/**
+	 * Consume a verify's record for a sponsored payment.
+	 *
+	 * @param digest - The transaction digest
+	 * @param requirements - The requirements being settled
+	 * @returns True when verify simulated this payment against these requirements recently
+	 */
+	private takeVerifiedSimulation(digest: string, requirements: PaymentRequirements): boolean {
+		const key = simulationKey(digest, requirements);
+		const expiresAt = this.verifiedSimulations.get(key);
+		this.verifiedSimulations.delete(key);
+		return expiresAt !== undefined && expiresAt >= Date.now();
 	}
 
 	/**
@@ -922,4 +969,22 @@ function settleFailure(
 	transaction = '',
 ): SettleResponse {
 	return { success: false, errorReason, errorMessage, transaction, network, payer };
+}
+
+/**
+ * The key for a verified simulation: the transaction and everything the
+ * effects check compared it against.
+ *
+ * @param digest - The transaction digest
+ * @param requirements - The payment requirements
+ * @returns The map key
+ */
+function simulationKey(digest: string, requirements: PaymentRequirements): string {
+	return JSON.stringify([
+		requirements.network,
+		digest,
+		requirements.asset,
+		requirements.payTo,
+		requirements.amount,
+	]);
 }

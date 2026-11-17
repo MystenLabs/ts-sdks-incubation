@@ -209,6 +209,15 @@ A sponsored transaction rejected for lack of funds costs the sponsor nothing. On
 execution costs up to its gas budget. The sponsor SHOULD rate-limit each sender and MAY apply other
 policy.
 
+A facilitator SHOULD NOT co-sign a sponsored transaction unless it has checked that transaction's
+simulated effects, as in verification steps 7 and 8. It can rely on a verify of the same digest
+against the same requirements that it recorded within `maxTimeoutSeconds`, or simulate at settle
+with the same reason codes. Settle can't assume a verify ran: in the `upfront` flow, or when
+`/settle` is reachable directly, the payer's transaction reaches settle unchecked. Like simulation
+on other chains, this saves the sponsor's gas. Correctness for the resource server comes from the
+effects check on the executed transaction, so a payment that skipped it still can't settle
+successfully.
+
 #### Gasless transfers
 
 Sui runs some stablecoin transfers without gas. The full rules are in the
@@ -295,13 +304,11 @@ fetches the transaction by digest. If they're still missing, it returns `transac
 4. Look the digest up. If the transaction has already executed, return `duplicate_settlement`. A
    claim store can lose claims, for example on a restart, and submitting an executed transaction
    again would return its original success.
-5. If the payment is sponsored, simulate it as in verification steps 7 and 8, with the same reason
-   codes. The sponsor pays gas for whatever it co-signs, so the payment MUST be checked before the
-   sponsor signs, not only after execution.
-6. Submit the transaction and wait for finality. If the payer covers its own gas, or the transfer is
+5. Submit the transaction and wait for finality. If the payer covers its own gas, or the transfer is
    gasless, the facilitator just submits the signed bytes. If the payment is sponsored, the sponsor
-   co-signs and submits it, or declines (`sponsor_rejected`).
-7. Require a successful execution status (`transaction_failed`) and pass the
+   co-signs and submits it, or declines (`sponsor_rejected`). Before co-signing, the sponsor SHOULD
+   have checked the transaction's simulated effects (see [Gas sponsorship](#gas-sponsorship)).
+6. Require a successful execution status (`transaction_failed`) and pass the
    [effects check](#effects-check) on the executed `balanceChanges` (`settlement_effects_mismatch`).
 
 If submitting or waiting for finality fails, the facilitator SHOULD look the transaction up by
@@ -321,11 +328,11 @@ A settle that claims a pending digest reconciles the earlier attempt instead of 
 It skips the epoch check, because a transaction submitted near the end of `maxEpoch` can execute and
 only be found after the window has ended:
 
-1. Look the digest up. If the transaction executed, report it as in settlement step 7.
+1. Look the digest up. If the transaction executed, report it as in settlement step 6.
 2. If the lookup fails, return `settlement_pending` again and keep the claim pending.
 3. If the transaction is not found and the current epoch is past `maxEpoch`, it can no longer
    execute. Return `transaction_failed` and release the claim.
-4. Otherwise submit it again, as in settlement steps 6 and 7. Submitting the same signed bytes again
+4. Otherwise submit it again, as in settlement steps 5 and 6. Submitting the same signed bytes again
    can't execute the payment twice.
 
 ### Settlement deduplication
