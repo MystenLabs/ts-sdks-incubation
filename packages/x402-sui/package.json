@@ -1,0 +1,86 @@
+{
+	"name": "@mysten-incubation/x402-sui",
+	"version": "0.0.0",
+	"description": "x402 exact payment scheme for Sui (client, resource server and facilitator). Incubation copy of the upstream @x402/sui package until it lands in the x402 Foundation repo.",
+	"license": "Apache-2.0",
+	"author": "Mysten Labs <build@mystenlabs.com>",
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"module": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs",
+			"default": "./dist/index.mjs"
+		},
+		"./exact/client": {
+			"types": "./dist/exact/client/index.d.mts",
+			"import": "./dist/exact/client/index.mjs",
+			"default": "./dist/exact/client/index.mjs"
+		},
+		"./exact/server": {
+			"types": "./dist/exact/server/index.d.mts",
+			"import": "./dist/exact/server/index.mjs",
+			"default": "./dist/exact/server/index.mjs"
+		},
+		"./exact/facilitator": {
+			"types": "./dist/exact/facilitator/index.d.mts",
+			"import": "./dist/exact/facilitator/index.mjs",
+			"default": "./dist/exact/facilitator/index.mjs"
+		}
+	},
+	"files": [
+		"CHANGELOG.md",
+		"LICENSE",
+		"NOTICE",
+		"README.md",
+		"SPEC.md",
+		"dist",
+		"src"
+	],
+	"scripts": {
+		"clean": "rm -rf tsconfig.tsbuildinfo ./dist",
+		"build": "rm -rf dist && tsc --noEmit && tsdown",
+		"typecheck": "tsc --noEmit && tsc -p ./test --noEmit",
+		"prettier:check": "prettier -c --ignore-unknown .",
+		"prettier:fix": "prettier -w --ignore-unknown .",
+		"oxlint:check": "oxlint .",
+		"oxlint:fix": "oxlint --fix",
+		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
+		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
+		"test": "vitest run",
+		"test:integration": "vitest run --config vitest.integration.config.mts"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/x402-sui"
+	},
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"keywords": [
+		"sui",
+		"x402",
+		"payment",
+		"http-402"
+	],
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/x402-sui#readme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"devDependencies": {
+		"@mysten/sui": "catalog:",
+		"@types/node": "catalog:",
+		"tsdown": "^0.23.0",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"dependencies": {
+		"@x402/core": "^2.31.0"
+	},
+	"peerDependencies": {
+		"@mysten/sui": "^2.38.0"
+	}
+}
