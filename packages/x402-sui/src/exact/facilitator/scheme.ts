@@ -11,7 +11,6 @@ import type {
 	VerifyResponse,
 } from '@x402/core/types';
 import { DEFAULT_MAX_SPONSORED_GAS_BUDGET } from '../../constants.js';
-import { SettlementCache } from '../../settlement-cache.js';
 import type {
 	ExactSuiPayload,
 	FacilitatorSuiOptions,
@@ -82,17 +81,20 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 	/**
 	 * Creates a new ExactSuiScheme facilitator instance.
 	 *
-	 * @param options - Optional client overrides, executor, fee payer, gas cap, and guard
+	 * @param options - The settlement guard, plus optional client overrides, executor, fee payer and gas cap
 	 */
-	constructor(options?: FacilitatorSuiOptions) {
-		if (options?.feePayer && !options.executeTransaction) {
+	constructor(options: FacilitatorSuiOptions) {
+		if (!options?.settlementGuard) {
+			throw new Error('settlementGuard is required: see SettlementGuard for what it must provide');
+		}
+		if (options.feePayer && !options.executeTransaction) {
 			throw new Error("feePayer requires executeTransaction to add the sponsor's signature");
 		}
 		this.getClient = createSuiClientResolver(options?.clients);
 		this.executeTransaction = options?.executeTransaction;
 		this.feePayer = options?.feePayer;
 		this.maxSponsoredGasBudget = options?.maxSponsoredGasBudget ?? DEFAULT_MAX_SPONSORED_GAS_BUDGET;
-		this.guard = options?.settlementGuard ?? new SettlementCache();
+		this.guard = options.settlementGuard;
 	}
 
 	/**
@@ -217,6 +219,9 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 					'invalid_exact_sui_payload_invalid_expiration',
 					`current epoch ${epoch} is outside the transaction's window ${minEpoch}..${maxEpoch}`,
 					sender,
+					// An earlier attempt may have executed it, so return the digest
+					// for the caller to reconcile.
+					digest,
 				);
 			}
 			await this.guard.observeEpoch?.(network, epoch);
@@ -295,7 +300,9 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 
 			const rejection = await this.simulate(client, transactionBytes, requirements);
 			if (rejection) {
-				return settleFailure(network, rejection.reason, rejection.message, sender);
+				// A retry after `settlement_pending` can land here while the original
+				// submission is still in flight, so return the digest to reconcile.
+				return settleFailure(network, rejection.reason, rejection.message, sender, digest);
 			}
 		}
 
@@ -311,14 +318,20 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 	 */
 	private recordVerifiedSimulation(digest: string, requirements: PaymentRequirements): void {
 		const now = Date.now();
+		// Map iteration is in insertion order and no entry outlives
+		// MAX_VERIFIED_SIMULATION_MS, so stop at the first live entry: each entry
+		// is visited once, and an expired entry lingers at most that long.
 		for (const [key, expiresAt] of this.verifiedSimulations) {
-			if (expiresAt < now) this.verifiedSimulations.delete(key);
+			if (expiresAt >= now) break;
+			this.verifiedSimulations.delete(key);
 		}
 		const ttl = Math.min(
 			Math.max(Number(requirements.maxTimeoutSeconds) || 0, 0) * 1000,
 			MAX_VERIFIED_SIMULATION_MS,
 		);
-		this.verifiedSimulations.set(simulationKey(digest, requirements), now + ttl);
+		const key = simulationKey(digest, requirements);
+		this.verifiedSimulations.delete(key);
+		this.verifiedSimulations.set(key, now + ttl);
 	}
 
 	/**
@@ -518,7 +531,7 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 	 * straight to the network client. If submission or the wait throws, the
 	 * transaction is looked up by digest once. When it is not found, the outcome
 	 * is unknown: the submission may still execute, so the result is
-	 * `settlement_pending` and a later settle reconciles it.
+	 * `settlement_pending` with the digest, and a retry resubmits the same bytes.
 	 *
 	 * @param suiPayload - The signed payload
 	 * @param transactionBytes - The decoded transaction bytes
@@ -589,8 +602,8 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 			const found = await this.lookup(client, digest);
 			if (!found) {
 				// A submission that threw, even without an acknowledgement, may have
-				// reached a validator and can still execute. Report it as pending so
-				// core retries, and the retry reconciles by digest.
+				// reached a validator and can still execute. Report it as pending with
+				// the digest; a retry resubmits the same signed bytes.
 				return settleFailure(network, 'settlement_pending', errorMessage(error), sender, digest);
 			}
 			finalized = found;

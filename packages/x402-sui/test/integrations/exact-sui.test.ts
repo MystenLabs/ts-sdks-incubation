@@ -36,6 +36,7 @@ import { SUI_TESTNET_CAIP2, USDC_TESTNET } from '../../src/constants.js';
 import { ExactSuiScheme as ExactSuiClient } from '../../src/exact/client/index.js';
 import { ExactSuiScheme as ExactSuiFacilitator } from '../../src/exact/facilitator/index.js';
 import { ExactSuiScheme as ExactSuiServer } from '../../src/exact/server/index.js';
+import { SettlementCache } from '../../src/settlement-cache.js';
 import type { ExactSuiPayload, SuiExecutor } from '../../src/types.js';
 
 const CLIENT_PRIVATE_KEY = process.env.SUI_CLIENT_PRIVATE_KEY;
@@ -128,6 +129,7 @@ const sponsorExecutor: SuiExecutor = async ({ transaction, signatures }) => {
  */
 function facilitatorScheme(sponsored = false): ExactSuiFacilitator {
 	return new ExactSuiFacilitator({
+		settlementGuard: new SettlementCache(),
 		clients: { [NETWORK]: suiClient },
 		...(sponsored
 			? { feePayer: sponsorKeypair!.toSuiAddress(), executeTransaction: sponsorExecutor }

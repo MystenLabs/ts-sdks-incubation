@@ -55,10 +55,14 @@ export type SettlementKey = {
  *
  * Claims MUST be shared, with atomic claims, by every process serving
  * `/settle`, and MUST survive restarts for as long as they are kept. The
- * default in-memory {@link SettlementCache} is only enough for a single process
- * whose settles always follow a verify, since verify rejects a transaction that
- * already executed. Use a durable store for the `upfront` flow or when
- * `/settle` can be called directly.
+ * in-memory {@link SettlementCache} meets neither: after a restart, a payment
+ * that already settled can be settled again and reported as a second success.
+ * Use it only for development, tests, or a single process that accepts that
+ * risk.
+ *
+ * A claim held by a process that dies mid-settlement blocks that digest until
+ * the store expires it, so a store's expiry bounds how long such a payment
+ * stays unsettleable.
  */
 export interface SettlementGuard {
 	/**
@@ -117,7 +121,9 @@ export type FacilitatorSuiOptions = SuiClientOptions & {
 	 */
 	maxSponsoredGasBudget?: bigint;
 	/**
-	 * Settlement dedup guard. Defaults to an in-process {@link SettlementCache}.
+	 * Settlement dedup store. Required, so the choice of store is explicit: see
+	 * {@link SettlementGuard} for what it must provide. {@link SettlementCache}
+	 * keeps claims in memory.
 	 */
-	settlementGuard?: SettlementGuard;
+	settlementGuard: SettlementGuard;
 };

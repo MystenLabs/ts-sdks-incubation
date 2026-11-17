@@ -6,7 +6,9 @@ import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import type { PaymentPayload, PaymentRequirements } from '@x402/core/types';
 import { vi } from 'vitest';
 import { SUI_TESTNET_CAIP2, USDC_TESTNET } from '../../src/constants.js';
-import type { ExactSuiPayload } from '../../src/types.js';
+import { ExactSuiScheme } from '../../src/exact/facilitator/scheme.js';
+import { SettlementCache } from '../../src/settlement-cache.js';
+import type { ExactSuiPayload, FacilitatorSuiOptions } from '../../src/types.js';
 
 export const payerKeypair = new Ed25519Keypair();
 export const payer = payerKeypair.toSuiAddress();
@@ -338,3 +340,13 @@ export function mockClient(): { client: ClientWithCoreApi; core: MockCore } {
 }
 
 export { toBase64, fromBase64 };
+
+/**
+ * A facilitator scheme with an in-memory settlement guard unless one is given.
+ *
+ * @param options - Facilitator options
+ * @returns The facilitator scheme
+ */
+export function facilitatorScheme(options: Partial<FacilitatorSuiOptions> = {}): ExactSuiScheme {
+	return new ExactSuiScheme({ settlementGuard: new SettlementCache(), ...options });
+}

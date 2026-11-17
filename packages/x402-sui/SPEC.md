@@ -308,7 +308,7 @@ digest and report what actually happened. If the outcome still can't be establis
 may yet execute, so the facilitator MAY return `settlement_pending` (core spec
 [§9](https://github.com/x402-foundation/x402/blob/main/specs/x402-specification-v2.md#9-error-handling))
 with the digest in `transaction`, so the caller can reconcile on chain before retrying. Retrying the
-same signed transaction is safe: it executes at most once.
+same signed transaction is safe and idempotent.
 
 On success the facilitator returns a `SettlementResponse` (core spec
 [§5.3](https://github.com/x402-foundation/x402/blob/main/specs/x402-specification-v2.md)) with the
@@ -325,9 +325,9 @@ submitting, and returns `duplicate_settlement` if the digest is already claimed.
 atomic across every process serving `/settle`. A claim is kept if settlement succeeds, until at
 least one epoch after `maxEpoch` ends, and released otherwise.
 
-Claims MUST also survive restarts. A single process MAY keep them in memory if every settle follows
-a verify, because verify rejects a transaction that already executed. Otherwise, as in the `upfront`
-flow, the facilitator needs a durable claim store.
+Claims MUST also survive restarts, for as long as they are kept. A store that loses them, such as
+one kept in memory, lets a payment that already settled settle again and be reported as a second
+success.
 
 ## Security Considerations
 
@@ -348,26 +348,26 @@ Replay and repeat settlement are covered in [Expiration](#expiration) and
 
 ### Reason codes
 
-| Code                                                         | Stage           | Meaning                                                                                     |
-| ------------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------- |
-| `invalid_x402_version`                                       | verify / settle | `x402Version` is not `2`.                                                                   |
-| `unsupported_scheme`                                         | verify / settle | Scheme is not `"exact"`.                                                                    |
-| `network_mismatch`                                           | verify / settle | Payload network does not match the requirements.                                            |
-| `invalid_network`                                            | verify / settle | Network is not a supported Sui network.                                                     |
-| `invalid_payload`                                            | verify / settle | Payload is not `{ transaction, signature }`.                                                |
-| `invalid_exact_sui_payload_transaction_could_not_be_decoded` | verify / settle | Transaction bytes failed to decode.                                                         |
-| `invalid_exact_sui_payload_missing_sender`                   | verify / settle | Transaction has no `sender`.                                                                |
-| `invalid_exact_sui_payload_invalid_signature`                | verify / settle | Signatures are missing, extra, or invalid for the required signers.                         |
-| `invalid_exact_sui_payload_missing_nonce`                    | verify / settle | Declared `extra.nonce` is not valid Base64 or no `Pure` input equals it.                    |
-| `invalid_exact_sui_payload_invalid_expiration`               | verify / settle | Expiration missing or malformed, span exceeds one epoch, or (settle) outside window.        |
-| `invalid_exact_sui_payload_sponsorship_rejected`             | verify / settle | A sponsored transaction fails the sponsorship checks.                                       |
-| `invalid_exact_sui_payload_already_executed`                 | verify          | Transaction has already executed.                                                           |
-| `invalid_exact_sui_payload_simulation_failed`                | verify / settle | Simulation failed, including for an expired transaction.                                    |
-| `invalid_exact_sui_payload_transfer_mismatch`                | verify / settle | Simulated effects do not credit `payTo` with exactly `amount`.                              |
-| `invalid_exact_sui_payload_verification_error`               | verify          | Unexpected error or RPC failure during verification.                                        |
-| `invalid_payment_requirements`                               | verify / settle | `amount` is not a positive integer.                                                         |
-| `sponsor_rejected`                                           | settle          | The sponsor declined the transaction.                                                       |
-| `duplicate_settlement`                                       | settle          | The transaction has already settled successfully, or a settle for it is in progress.        |
-| `settlement_pending`                                         | settle          | The outcome of a submitted transaction could not be established.                            |
-| `transaction_failed`                                         | settle          | Execution failed or outcome unknown, balance changes missing, or a signature check errored. |
-| `settlement_effects_mismatch`                                | settle          | Executed effects do not credit `payTo` with exactly `amount`.                               |
+| Code                                                         | Stage           | Meaning                                                                                                                 |
+| ------------------------------------------------------------ | --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `invalid_x402_version`                                       | verify / settle | `x402Version` is not `2`.                                                                                               |
+| `unsupported_scheme`                                         | verify / settle | Scheme is not `"exact"`.                                                                                                |
+| `network_mismatch`                                           | verify / settle | Payload network does not match the requirements.                                                                        |
+| `invalid_network`                                            | verify / settle | Network is not a supported Sui network.                                                                                 |
+| `invalid_payload`                                            | verify / settle | Payload is not `{ transaction, signature }`.                                                                            |
+| `invalid_exact_sui_payload_transaction_could_not_be_decoded` | verify / settle | Transaction bytes failed to decode.                                                                                     |
+| `invalid_exact_sui_payload_missing_sender`                   | verify / settle | Transaction has no `sender`.                                                                                            |
+| `invalid_exact_sui_payload_invalid_signature`                | verify / settle | Signatures are missing, extra, or invalid for the required signers.                                                     |
+| `invalid_exact_sui_payload_missing_nonce`                    | verify / settle | Declared `extra.nonce` is not valid Base64 or no `Pure` input equals it.                                                |
+| `invalid_exact_sui_payload_invalid_expiration`               | verify / settle | Expiration missing or malformed, span exceeds one epoch, or (settle) outside window.                                    |
+| `invalid_exact_sui_payload_sponsorship_rejected`             | verify / settle | A sponsored transaction fails the sponsorship checks.                                                                   |
+| `invalid_exact_sui_payload_already_executed`                 | verify          | Transaction has already executed.                                                                                       |
+| `invalid_exact_sui_payload_simulation_failed`                | verify / settle | Simulation failed, including for an expired transaction.                                                                |
+| `invalid_exact_sui_payload_transfer_mismatch`                | verify / settle | Simulated effects do not credit `payTo` with exactly `amount`.                                                          |
+| `invalid_exact_sui_payload_verification_error`               | verify          | Unexpected error or RPC failure during verification.                                                                    |
+| `invalid_payment_requirements`                               | verify / settle | `amount` is not a positive integer.                                                                                     |
+| `sponsor_rejected`                                           | settle          | The sponsor declined the transaction.                                                                                   |
+| `duplicate_settlement`                                       | settle          | The transaction has already settled successfully, or a settle for it is in progress.                                    |
+| `settlement_pending`                                         | settle          | The outcome of a submitted transaction could not be established.                                                        |
+| `transaction_failed`                                         | settle          | Execution failed, balance changes missing, or an error before submission, such as a failed signature check or RPC call. |
+| `settlement_effects_mismatch`                                | settle          | Executed effects do not credit `payTo` with exactly `amount`.                                                           |

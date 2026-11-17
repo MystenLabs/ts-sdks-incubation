@@ -87,6 +87,7 @@ import { ExactSuiScheme } from '@mysten-incubation/x402-sui/exact/facilitator';
 const facilitator = new x402Facilitator().register(
 	['sui:mainnet', 'sui:testnet', 'sui:devnet'],
 	new ExactSuiScheme({
+		settlementGuard, // see Settlement deduplication
 		clients: {
 			'sui:mainnet': new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://my-node:443' }),
 		},
@@ -102,7 +103,8 @@ No key is needed unless the facilitator sponsors gas. Options:
 - `executeTransaction`: submits facilitator-sponsored payments. Required when `feePayer` is set.
 - `maxSponsoredGasBudget`: the gas budget cap for sponsored payments, in MIST, advertised as
   `extra.maxGasBudget`. Defaults to `10_000_000n` (0.01 SUI).
-- `settlementGuard`: settlement deduplication. Defaults to an in-process guard.
+- `settlementGuard` (required): the settlement dedup store. See
+  [Settlement deduplication](#settlement-deduplication).
 
 The facilitator rejects a transaction without a `ValidDuring` or `Validity` expiration, or one that
 is not valid in at most two consecutive epochs (`maxEpoch - minEpoch <= 1`). Settlement also
@@ -130,7 +132,7 @@ const sponsor = createSponsor({
 const executeTransaction: SuiExecutor = ({ transaction, signatures }) =>
 	sponsor.signAndExecuteTransaction({ transaction, userSignature: signatures });
 
-new ExactSuiScheme({ feePayer: sponsor.address, executeTransaction });
+new ExactSuiScheme({ settlementGuard, feePayer: sponsor.address, executeTransaction });
 ```
 
 The sponsor address SHOULD be dedicated to paying gas, with no roles or privileges in other
@@ -165,20 +167,32 @@ each transaction digest before submitting. A second settle of the same transacti
 `SettlementGuard` documentation requires if it succeeds.
 
 If the outcome of a submission can't be established, settlement returns `settlement_pending` with
-the digest in `transaction`, so the caller can reconcile on chain before retrying. A retry of the
-same signed transaction is safe: it executes at most once, and a retry of an executed transaction
-reports its result.
+the digest in `transaction`, so the caller can reconcile on chain before retrying. Retrying the same
+signed transaction is safe, since it executes at most once. Within the transaction's window, a retry
+of a transaction that already executed reports its result. Outside the window, settle refuses it and
+returns the digest so the caller can look it up.
 
 A sponsored payment's simulated effects are checked before the sponsor co-signs it, so a payment
-that would not credit `payTo` with exactly `amount` is rejected without spending the sponsor's gas.
-If this facilitator verified the same payment against the same requirements within
+that simulates as not crediting `payTo` with exactly `amount` is rejected without spending the
+sponsor's gas. Simulation can't guarantee what executes: a transaction can behave differently on
+chain than in simulation. The gas cap and per-sender rate limiting still bound what the sponsor can
+lose. If this facilitator verified the same payment against the same requirements within
 `maxTimeoutSeconds` (capped at 10 minutes), settle reuses that result. Otherwise, for example in the
 `upfront` flow, it simulates at settle.
 
-Claims must be shared by every process serving `/settle` and survive restarts. The default
-in-process guard is enough only for a single process whose settles always follow a verify, since
-verify rejects a transaction that already executed. For the `upfront` flow, or a `/settle` that can
-be called directly, use a durable store. For example, with Redis:
+`settlementGuard` is required. Claims must be shared by every process serving `/settle` and survive
+restarts. Otherwise a payment that already settled can be settled again after a restart, or on
+another process, and be reported as a second success. `SettlementCache` keeps claims in memory, so
+it only suits development, tests, or a single process that accepts that risk:
+
+```typescript
+import { SettlementCache } from '@mysten-incubation/x402-sui';
+
+new ExactSuiScheme({ settlementGuard: new SettlementCache() });
+```
+
+For production, use a shared, durable store. A claim held by a process that dies mid-settlement
+blocks that digest until the store expires it. For example, with Redis:
 
 ```typescript
 import type { SettlementGuard } from '@mysten-incubation/x402-sui';
