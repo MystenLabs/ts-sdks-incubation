@@ -11,6 +11,7 @@ import type {
 	VerifyResponse,
 } from '@x402/core/types';
 import { DEFAULT_MAX_SPONSORED_GAS_BUDGET } from '../../constants.js';
+import { SettlementCache } from '../../settlement-cache.js';
 import type {
 	ExactSuiPayload,
 	FacilitatorSuiOptions,
@@ -81,20 +82,17 @@ export class ExactSuiScheme implements SchemeNetworkFacilitator {
 	/**
 	 * Creates a new ExactSuiScheme facilitator instance.
 	 *
-	 * @param options - The settlement guard, plus optional client overrides, executor, fee payer and gas cap
+	 * @param options - Optional client overrides, executor, fee payer, gas cap, and guard
 	 */
-	constructor(options: FacilitatorSuiOptions) {
-		if (!options?.settlementGuard) {
-			throw new Error('settlementGuard is required: see SettlementGuard for what it must provide');
-		}
-		if (options.feePayer && !options.executeTransaction) {
+	constructor(options?: FacilitatorSuiOptions) {
+		if (options?.feePayer && !options.executeTransaction) {
 			throw new Error("feePayer requires executeTransaction to add the sponsor's signature");
 		}
 		this.getClient = createSuiClientResolver(options?.clients);
 		this.executeTransaction = options?.executeTransaction;
 		this.feePayer = options?.feePayer;
 		this.maxSponsoredGasBudget = options?.maxSponsoredGasBudget ?? DEFAULT_MAX_SPONSORED_GAS_BUDGET;
-		this.guard = options.settlementGuard;
+		this.guard = options?.settlementGuard ?? new SettlementCache();
 	}
 
 	/**

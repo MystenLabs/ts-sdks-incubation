@@ -54,11 +54,12 @@ export type SettlementKey = {
  * for the window to end, and one of margin for a lagging fullnode.
  *
  * Claims MUST be shared, with atomic claims, by every process serving
- * `/settle`, and MUST survive restarts for as long as they are kept. The
- * in-memory {@link SettlementCache} meets neither: after a restart, a payment
- * that already settled can be settled again and reported as a second success.
- * Use it only for development, tests, or a single process that accepts that
- * risk.
+ * `/settle`. They SHOULD survive restarts for as long as they are kept. The
+ * default in-memory {@link SettlementCache} is lost on restart: until the
+ * transaction's window ends, a payment that already settled could be settled
+ * again and reported as a second success. Facilitators running several
+ * processes, or that restart while payments are in flight, SHOULD supply a
+ * shared, durable store.
  *
  * A claim held by a process that dies mid-settlement blocks that digest until
  * the store expires it, so a store's expiry bounds how long such a payment
@@ -121,9 +122,9 @@ export type FacilitatorSuiOptions = SuiClientOptions & {
 	 */
 	maxSponsoredGasBudget?: bigint;
 	/**
-	 * Settlement dedup store. Required, so the choice of store is explicit: see
-	 * {@link SettlementGuard} for what it must provide. {@link SettlementCache}
-	 * keeps claims in memory.
+	 * Settlement dedup store. Defaults to an in-memory {@link SettlementCache},
+	 * which is lost on restart and not shared across processes: see
+	 * {@link SettlementGuard}.
 	 */
-	settlementGuard: SettlementGuard;
+	settlementGuard?: SettlementGuard;
 };

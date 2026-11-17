@@ -1093,10 +1093,14 @@ describe('ExactSuiScheme facilitator', () => {
 			return { s, executeTransaction, requirements: testRequirements({ extra: { feePayer } }) };
 		}
 
-		it('requires a settlement guard', () => {
-			expect(
-				() => new ExactSuiScheme({ clients: { [SUI_TESTNET_CAIP2]: mock.client } } as never),
-			).toThrow('settlementGuard is required');
+		it('defaults to an in-memory settlement guard', async () => {
+			const s = new ExactSuiScheme({ clients: { [SUI_TESTNET_CAIP2]: mock.client } });
+			const payload = await payment();
+			settled(successRecord(exactBalanceChanges(), 'default-guard'));
+			expect((await s.settle(payload, testRequirements())).success).toBe(true);
+			expect((await s.settle(payload, testRequirements())).errorReason).toBe(
+				'duplicate_settlement',
+			);
 		});
 
 		it('requires an executor when a fee payer is set', () => {

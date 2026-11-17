@@ -87,7 +87,6 @@ import { ExactSuiScheme } from '@mysten-incubation/x402-sui/exact/facilitator';
 const facilitator = new x402Facilitator().register(
 	['sui:mainnet', 'sui:testnet', 'sui:devnet'],
 	new ExactSuiScheme({
-		settlementGuard, // see Settlement deduplication
 		clients: {
 			'sui:mainnet': new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://my-node:443' }),
 		},
@@ -103,7 +102,7 @@ No key is needed unless the facilitator sponsors gas. Options:
 - `executeTransaction`: submits facilitator-sponsored payments. Required when `feePayer` is set.
 - `maxSponsoredGasBudget`: the gas budget cap for sponsored payments, in MIST, advertised as
   `extra.maxGasBudget`. Defaults to `10_000_000n` (0.01 SUI).
-- `settlementGuard` (required): the settlement dedup store. See
+- `settlementGuard`: the settlement dedup store. Defaults to an in-memory store; see
   [Settlement deduplication](#settlement-deduplication).
 
 The facilitator rejects a transaction without a `ValidDuring` or `Validity` expiration, or one that
@@ -132,7 +131,7 @@ const sponsor = createSponsor({
 const executeTransaction: SuiExecutor = ({ transaction, signatures }) =>
 	sponsor.signAndExecuteTransaction({ transaction, userSignature: signatures });
 
-new ExactSuiScheme({ settlementGuard, feePayer: sponsor.address, executeTransaction });
+new ExactSuiScheme({ feePayer: sponsor.address, executeTransaction });
 ```
 
 The sponsor address SHOULD be dedicated to paying gas, with no roles or privileges in other
@@ -180,19 +179,13 @@ lose. If this facilitator verified the same payment against the same requirement
 `maxTimeoutSeconds` (capped at 10 minutes), settle reuses that result. Otherwise, for example in the
 `upfront` flow, it simulates at settle.
 
-`settlementGuard` is required. Claims must be shared by every process serving `/settle` and survive
-restarts. Otherwise a payment that already settled can be settled again after a restart, or on
-another process, and be reported as a second success. `SettlementCache` keeps claims in memory, so
-it only suits development, tests, or a single process that accepts that risk:
-
-```typescript
-import { SettlementCache } from '@mysten-incubation/x402-sui';
-
-new ExactSuiScheme({ settlementGuard: new SettlementCache() });
-```
-
-For production, use a shared, durable store. A claim held by a process that dies mid-settlement
-blocks that digest until the store expires it. For example, with Redis:
+By default the facilitator keeps claims in memory, as the SVM and EVM facilitators do. That suits a
+single process, but claims are lost on restart: until the transaction's window ends (up to two
+epochs), a payment that already settled could be settled again and reported as a second success.
+When several processes serve `/settle`, they must share one store with atomic claims, and a
+facilitator that may restart with payments in flight should use a durable one. A claim held by a
+process that dies mid-settlement blocks that digest until the store expires it. For example, with
+Redis:
 
 ```typescript
 import type { SettlementGuard } from '@mysten-incubation/x402-sui';
