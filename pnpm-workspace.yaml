@@ -12,6 +12,8 @@ auditConfig:
     - GHSA-gv7w-rqvm-qjhr
     # braces <=3.0.3 (no patched release yet); reached via fumadocs → fast-glob → micromatch in the docs site.
     - GHSA-vfj7-8cjw-p6xm
+    # picomatch <=4.0.7 ReDoS (no patched release yet); reached via fumadocs → fast-glob/tinyglobby → picomatch in the docs site.
+    - GHSA-fc5q-39xc-vjpf
 
 autoInstallPeers: false
 
@@ -29,7 +31,7 @@ catalog:
   '@mysten/deepbook-v3': ^1.5.0
   '@mysten/seal': ^1.4.19
   '@mysten/signers': ^1.1.33
-  '@mysten/sui': ^2.35.0
+  '@mysten/sui': ^2.38.0
   '@mysten/wallet-standard': ^0.21.33
   '@playwright/test': ^1.63.0
   '@pothos/core': ^4.15.1
