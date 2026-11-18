@@ -37,15 +37,26 @@ export class AutoApprovalManager {
 		let state: AutoApprovalState | null = null;
 
 		if (options.state) {
-			const parseResult = safeParse(AutoApprovalStateSchema, JSON.parse(options.state));
-			// TODO: how do we want to handle failures
-			if (parseResult.success) {
-				const providedPolicy = parse(AutoApprovalPolicySchema, JSON.parse(options.policy));
-				const currentPolicy = parseResult.output.policy;
+			// Parsed outside the try so an invalid provided policy still throws.
+			const providedPolicy = parse(AutoApprovalPolicySchema, JSON.parse(options.policy));
+			let savedState: AutoApprovalState | null = null;
 
-				if (JSON.stringify(currentPolicy) === JSON.stringify(providedPolicy)) {
-					state = parseResult.output;
+			try {
+				const parseResult = safeParse(AutoApprovalStateSchema, JSON.parse(options.state));
+				if (parseResult.success) {
+					savedState = parseResult.output;
+				} else {
+					console.warn(
+						'[auto-approvals] Ignoring saved state that does not match the state schema.',
+						parseResult.issues,
+					);
 				}
+			} catch (error) {
+				console.warn('[auto-approvals] Ignoring saved state that could not be decoded.', error);
+			}
+
+			if (savedState && JSON.stringify(savedState.policy) === JSON.stringify(providedPolicy)) {
+				state = savedState;
 			}
 		}
 
@@ -172,6 +183,10 @@ export class AutoApprovalManager {
 			return issues;
 		}
 
+		if (this.#state.pendingDigests.includes(analysis.result.digest)) {
+			issues.push({ message: `Transaction ${analysis.result.digest} is already pending` });
+		}
+
 		if (new Date() > new Date(this.#state.settings.expiration)) {
 			issues.push({ message: 'Auto-approval settings have expired' });
 		}
@@ -234,6 +249,10 @@ export class AutoApprovalManager {
 	// TODO: we should ensure that only 1 tx is pending at a time, and pending txs can't increase budgets
 	commitTransaction(analysis: AutoApprovalResult): void {
 		assertSuccessfulAnalysis(analysis);
+
+		if (this.#state.pendingDigests.includes(analysis.result.digest)) {
+			throw new Error(`Transaction ${analysis.result.digest} is already pending`);
+		}
 
 		if (!this.#state.settings) {
 			throw new Error('No auto-approval settings configured');

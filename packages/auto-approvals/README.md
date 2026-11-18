@@ -42,8 +42,12 @@ const check = manager.checkTransaction(autoApproval);
 
 if (check.canAutoApprove) {
 	manager.commitTransaction(autoApproval);
+	// Persist the reservation before executing so a crash can't restore the spent budget.
+	saveState(manager.export());
+	// Execute with `include: { balanceChanges: true }`. Aborted transactions still spend gas, so
+	// reconcile both result variants.
 	const result = await signAndExecute(transaction);
-	manager.applyTransactionEffects(autoApproval, result);
+	manager.applyTransactionEffects(autoApproval, result.Transaction ?? result.FailedTransaction);
 } else if (check.matchesPolicy) {
 	// Ask the user to approve the operation, then call manager.updateSettings(...)
 }
@@ -51,4 +55,12 @@ if (check.canAutoApprove) {
 saveState(manager.export());
 ```
 
-If execution fails, call `manager.revertTransaction(autoApproval)` to release the reserved budget.
+If the transaction is never executed (signing or submission fails), call
+`manager.revertTransaction(autoApproval)` to release the reserved budget.
+
+## Budgets
+
+Each coin type can have its own budget in `coinBudgets`, as a raw amount in the coin's smallest
+unit. Spending in coin types without one is charged to `sharedBudget`, which is a value in the same
+units `getCoinPrices` returns. A coin that `getCoinPrices` can't price can only be spent from its
+own coin budget.

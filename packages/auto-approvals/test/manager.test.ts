@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import { Transaction } from '@mysten/sui/transactions';
 import { analyze, analyzers } from '@mysten/wallet-sdk';
 import {
@@ -745,5 +745,68 @@ describe('AutoApprovalManager', () => {
 			} as unknown as Parameters<AutoApprovalManager['applyTransactionEffects']>[1]),
 		).toThrow('does not match analyzed digest');
 		expect(manager.getState().pendingDigests).toEqual(['test-digest']);
+	});
+
+	describe('pending transactions', () => {
+		const successfulAnalysis = (): AutoApprovalResult => ({
+			status: 'success',
+			result: autoApprovalAnalysis(),
+		});
+
+		test('rejects a digest that is already pending', () => {
+			const manager = managerWithSettings();
+			manager.updateSettings({ ...manager.getSettings()!, remainingTransactions: 2 });
+			manager.commitTransaction(successfulAnalysis());
+
+			expect(manager.checkTransaction(successfulAnalysis()).settingsIssues).toEqual([
+				{ message: 'Transaction test-digest is already pending' },
+			]);
+			expect(() => manager.commitTransaction(successfulAnalysis())).toThrow(
+				'Transaction test-digest is already pending',
+			);
+			expect(manager.getState().pendingDigests).toEqual(['test-digest']);
+		});
+	});
+
+	describe('saved state', () => {
+		test('round-trips through export', () => {
+			const manager = managerWithBalanceSettings();
+			manager.commitTransaction({
+				status: 'success',
+				result: autoApprovalAnalysis({
+					senderBalanceFlows: [{ coinType: SUI, amount: -4n }],
+				}),
+			});
+
+			const restored = new AutoApprovalManager({
+				policy: JSON.stringify(balancePolicy),
+				state: manager.export(),
+			});
+
+			expect(restored.getState()).toEqual(manager.getState());
+		});
+
+		test('ignores saved state that cannot be decoded', () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			const manager = new AutoApprovalManager({
+				policy: JSON.stringify(policy),
+				state: '{not json',
+			});
+
+			expect(manager.getSettings()).toBeNull();
+			expect(warn).toHaveBeenCalledOnce();
+			warn.mockRestore();
+		});
+
+		test('rejects coin budgets that are not raw integer amounts', () => {
+			const manager = managerWithSettings();
+
+			for (const budget of ['1.5', '1e9', '-1']) {
+				expect(() =>
+					manager.updateSettings({ ...manager.getSettings()!, coinBudgets: { [SUI]: budget } }),
+				).toThrow();
+			}
+		});
 	});
 });

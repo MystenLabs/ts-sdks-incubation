@@ -53,7 +53,6 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@mysten/bcs": "^2.1.4",
 		"valibot": "^1.4.2"
 	},
 	"devDependencies": {

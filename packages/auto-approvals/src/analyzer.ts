@@ -119,19 +119,11 @@ function aggregateBalanceFlowsForAddresses(
 }
 
 function getCoinValuesUnavailable(balanceFlows: CoinFlow[]): CoinValueAnalysis {
-	const outflows = balanceFlows
+	const outflowCoinTypes = balanceFlows
 		.filter((flow) => flow.amount < 0n)
-		.map((flow) => ({ coinType: flow.coinType, amount: -flow.amount }));
+		.map((flow) => flow.coinType);
 
-	if (outflows.length === 0) {
-		return { total: 0, coinTypesWithoutPrice: [], coinTypes: [] };
-	}
-
-	return {
-		total: 0,
-		coinTypesWithoutPrice: [...new Set(outflows.map((flow) => flow.coinType))],
-		coinTypes: [],
-	};
+	return { total: 0, coinTypesWithoutPrice: [...new Set(outflowCoinTypes)], coinTypes: [] };
 }
 
 async function getCoinValues(

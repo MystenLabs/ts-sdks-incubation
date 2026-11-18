@@ -56,7 +56,8 @@ export const AutoApprovalSettingsSchema = v.looseObject({
 	// TODO: figure out a better name
 	remainingTransactions: v.nullable(v.number()),
 	sharedBudget: v.nullable(v.number()),
-	coinBudgets: v.record(StructTagSchema, v.string()),
+	// Raw coin amounts. An empty string counts as zero.
+	coinBudgets: v.record(StructTagSchema, v.pipe(v.string(), v.regex(/^\d*$/))),
 });
 
 export const AutoApprovalPolicySchema = v.object({
