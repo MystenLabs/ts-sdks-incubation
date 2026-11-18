@@ -80,6 +80,8 @@ bumps).
   - **create-devstack-app/** - Scaffolder for new devstack-backed apps
   - **cctp-kit/** - Embeddable USDC bridge for Sui dapps on Circle CCTP v2 (Lit web component,
     headless core, React bindings)
+  - **auto-approvals/** - Policy-based transaction auto-approvals for Sui wallets, built on the
+    `@mysten/wallet-sdk` transaction analyzer
   - **docs/** - Documentation site (fumadocs + Next.js); content under `content/<package>/`
   - **tsconfig/** - Shared internal TypeScript configurations (not published)
 - **apps/** - First-party consumer apps (e.g. the hosted dev-wallet)
