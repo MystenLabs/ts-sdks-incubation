@@ -121,10 +121,34 @@ try {
 
 		if (changed) writeManifest(pkg.manifestPath, manifest);
 	}
+
+	for (const pkg of packages) {
+		syncBundleManifestVersion(pkg);
+	}
 } finally {
 	rmSync(temporaryDirectory, { recursive: true, force: true });
 }
 
 function writeManifest(path, manifest) {
 	writeFileSync(path, `${JSON.stringify(manifest, null, '\t')}\n`);
+}
+
+/**
+ * Copy the package version into an MCP bundle `manifest.json`, whose version
+ * `pack:check` requires to match. Edits the top-level `version` line in place
+ * to keep the file's formatting.
+ */
+function syncBundleManifestVersion(pkg) {
+	const bundleManifestPath = join(pkg.directory, 'manifest.json');
+	if (!existsSync(bundleManifestPath)) return;
+
+	const { version } = readManifest(pkg.manifestPath);
+	const source = readFileSync(bundleManifestPath, 'utf8');
+	if (JSON.parse(source).version === version) return;
+
+	const updated = source.replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${version}"`);
+	if (JSON.parse(updated).version !== version) {
+		throw new Error(`Could not update the version in ${bundleManifestPath}`);
+	}
+	writeFileSync(bundleManifestPath, updated);
 }
