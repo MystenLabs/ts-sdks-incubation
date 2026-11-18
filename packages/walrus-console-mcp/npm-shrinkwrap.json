@@ -1,12 +1,12 @@
 {
   "name": "@mysten-incubation/walrus-console-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@mysten-incubation/walrus-console-mcp",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@effect/platform": "0.97.2",
         "@modelcontextprotocol/sdk": "1.32.1",
@@ -213,12 +213,12 @@
       "os": ["win32"]
     },
     "node_modules/@mysten/bcs": {
-      "version": "2.1.2",
-      "resolved": "https://registry.npmjs.org/@mysten/bcs/-/bcs-2.1.2.tgz",
-      "integrity": "sha512-fv6lyuZMTHN0xRlu4GYiV/UXUrdJDOHbXm1KfZYEU0sy/t+22yTrTVtWnAQv1Km7eyB3qHhwIrAG2aem4JMocw==",
+      "version": "2.1.4",
+      "resolved": "https://registry.npmjs.org/@mysten/bcs/-/bcs-2.1.4.tgz",
+      "integrity": "sha512-ksfm0HGy82iDcuLaf4kAduaeTNqALH8D8WCdxxwU/L2Gpk4SnqoC7D8R4qMoMpCSkh56CFVG3Tme343Iz2P8PA==",
       "license": "Apache-2.0",
       "dependencies": {
-        "@mysten/utils": "^0.4.1",
+        "@mysten/utils": "^0.4.2",
         "@scure/base": "^2.3.0"
       }
     },
@@ -263,13 +263,10 @@
       }
     },
     "node_modules/@mysten/utils": {
-      "version": "0.4.1",
-      "resolved": "https://registry.npmjs.org/@mysten/utils/-/utils-0.4.1.tgz",
-      "integrity": "sha512-gffLJ84CbqG/CcOPuVlwXIRu37tFn0BtUx7CQtbLwJzWjUE7FU2Gq8BXWjzxImnvufcyLTaNWtCPG6wq22Zhog==",
-      "license": "Apache-2.0",
-      "dependencies": {
-        "@scure/base": "^2.3.0"
-      }
+      "version": "0.4.2",
+      "resolved": "https://registry.npmjs.org/@mysten/utils/-/utils-0.4.2.tgz",
+      "integrity": "sha512-K/5eBuYKxUFCrYcic1lvYvWE9OVSH581cjVjwsSJGUqPit91nZq2acUwes+B4lo98VE/CILIUeBcyEIvuNxMhA==",
+      "license": "Apache-2.0"
     },
     "node_modules/@noble/curves": {
       "version": "2.4.0",
