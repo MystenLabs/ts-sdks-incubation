@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/auto-approvals",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"description": "Policy-based transaction auto-approvals for Sui wallets, built on the @mysten/wallet-sdk transaction analyzer",
 	"license": "Apache-2.0",
 	"author": "Mysten Labs <build@mystenlabs.com>",
