@@ -1,0 +1,69 @@
+{
+	"name": "@mysten-incubation/auto-approvals",
+	"version": "0.0.0",
+	"description": "Policy-based transaction auto-approvals for Sui wallets, built on the @mysten/wallet-sdk transaction analyzer",
+	"license": "Apache-2.0",
+	"author": "Mysten Labs <build@mystenlabs.com>",
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"module": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs",
+			"default": "./dist/index.mjs"
+		}
+	},
+	"files": [
+		"CHANGELOG.md",
+		"LICENSE",
+		"README.md",
+		"dist",
+		"src"
+	],
+	"scripts": {
+		"clean": "rm -rf tsconfig.tsbuildinfo ./dist",
+		"build": "rm -rf dist && tsc --noEmit && tsdown",
+		"typecheck": "tsc --noEmit && tsc -p ./test --noEmit",
+		"prettier:check": "prettier -c --ignore-unknown .",
+		"prettier:fix": "prettier -w --ignore-unknown .",
+		"oxlint:check": "oxlint .",
+		"oxlint:fix": "oxlint --fix",
+		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
+		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
+		"test": "pnpm run typecheck && vitest run"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/auto-approvals"
+	},
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"keywords": [
+		"sui",
+		"wallet",
+		"auto-approval",
+		"transaction-analyzer"
+	],
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/auto-approvals#readme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"valibot": "^1.4.2"
+	},
+	"devDependencies": {
+		"@mysten/sui": "catalog:",
+		"@mysten/wallet-sdk": "^0.10.1",
+		"tsdown": "^0.23.0",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"peerDependencies": {
+		"@mysten/sui": "^2.38.0",
+		"@mysten/wallet-sdk": "^0.10.1 || ^0.11.0"
+	}
+}

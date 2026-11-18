@@ -1,0 +1,1060 @@
+// Copyright (c) Mysten Labs, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { describe, test, expect, vi } from 'vitest';
+import { coinWithBalance, Transaction, TransactionCommands } from '@mysten/sui/transactions';
+import { analyze, analyzers } from '@mysten/wallet-sdk';
+import {
+	AutoApprovalRejectedError,
+	autoApprovalAnalyzer,
+	OPERATION_INTENT,
+	operationType,
+	readOperationType,
+	AutoApprovalManager,
+	AutoApprovalPolicy,
+	type AutoApprovalSettings,
+	type AutoApprovalAnalysis,
+	type AutoApprovalResult,
+} from '../src/index.js';
+import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
+import { MockSuiClient } from './mocks/MockSuiClient.js';
+import { DEFAULT_SENDER, FRAMEWORK_MOVE_FUNCTIONS, TEST_COIN_1_ID } from './mocks/mockData.js';
+
+const RAW_SUI = '0x2::sui::SUI';
+const SUI = normalizeSuiAddress('0x2') + '::sui::SUI';
+
+const policy: AutoApprovalPolicy = {
+	schemaVersion: '1.0.0',
+	operations: [
+		{
+			id: 'test-operation',
+			description: 'Test operation',
+			permissions: {},
+		},
+	],
+	suggestedSettings: {},
+};
+
+const balancePolicy: AutoApprovalPolicy = {
+	schemaVersion: '1.0.0',
+	operations: [
+		{
+			id: 'test-operation',
+			description: 'Test operation',
+			permissions: {
+				balances: [
+					{
+						$kind: 'CoinBalance',
+						description: 'SUI',
+						coinType: SUI,
+					},
+				],
+			},
+		},
+	],
+	suggestedSettings: {},
+};
+
+function managerWithSettings() {
+	const manager = new AutoApprovalManager({
+		policy: JSON.stringify(policy),
+		state: null,
+	});
+	manager.updateSettings({
+		approvedOperations: ['test-operation'],
+		expiration: Date.now() + 1000 * 60 * 60,
+		remainingTransactions: 1,
+		sharedBudget: 10,
+		coinBudgets: {},
+	});
+	return manager;
+}
+
+function managerWithBalanceSettings() {
+	const manager = new AutoApprovalManager({
+		policy: JSON.stringify(balancePolicy),
+		state: null,
+	});
+	manager.updateSettings({
+		approvedOperations: ['test-operation'],
+		expiration: Date.now() + 1000 * 60 * 60,
+		remainingTransactions: 1,
+		sharedBudget: null,
+		coinBudgets: {
+			[SUI]: '10',
+		},
+	});
+	return manager;
+}
+
+function autoApprovalAnalysis(overrides: Partial<AutoApprovalAnalysis> = {}): AutoApprovalAnalysis {
+	const balanceFlows = overrides.balanceFlows ?? {
+		byAddress: {},
+		sender: [],
+		sponsor: null,
+	};
+	const senderAddresses = overrides.senderAddresses ?? [normalizeSuiAddress('0x1')];
+	const senderBalanceFlows =
+		overrides.senderBalanceFlows ??
+		senderAddresses.flatMap((address) => balanceFlows.byAddress[address] ?? []);
+
+	return {
+		operationType: 'test-operation',
+		senderAddresses,
+		bytes: new Uint8Array([1, 2, 3]),
+		balanceFlows,
+		senderBalanceFlows,
+		coinValues: { total: 0, coinTypesWithoutPrice: [], coinTypes: [] },
+		accessLevel: {},
+		ownedObjects: [],
+		digest: 'test-digest',
+		...overrides,
+	};
+}
+
+describe('AutoApprovalManager', () => {
+	test('analyzes bytes once with explicit operation type and shared balance flows', async () => {
+		const client = new MockSuiClient();
+		const tx = new Transaction();
+		tx.setSender(DEFAULT_SENDER);
+		tx.setGasBudget(10_000_000n);
+		tx.setGasPrice(1_000n);
+		const bytes = await tx.build({ client });
+
+		const results = await analyze(
+			{
+				balanceFlows: analyzers.balanceFlows,
+				autoApproval: autoApprovalAnalyzer,
+			},
+			{
+				transaction: bytes,
+				client,
+				operationType: 'increment-counter',
+			},
+		);
+
+		expect(results.autoApproval.status).toBe('success');
+		expect(results.autoApproval.result?.operationType).toBe('increment-counter');
+		expect(results.autoApproval.result?.balanceFlows).toBe(results.balanceFlows.result);
+		expect(results.autoApproval.result?.senderBalanceFlows).toEqual([
+			{ coinType: SUI, amount: -10_000_000n },
+		]);
+	});
+
+	test('rejects opaque self-funded allowance spending without an available token budget', async () => {
+		const client = new MockSuiClient();
+		const allowanceId = normalizeSuiAddress('0xa11');
+		client.addObject({
+			objectId: allowanceId,
+			objectType: `0x2::allowance::Allowance<0x2::balance::Balance<${SUI}>>`,
+			owner: { $kind: 'Shared', Shared: { initialSharedVersion: '1' } },
+		});
+		client.addObject({
+			objectId: '0x6',
+			objectType: '0x2::clock::Clock',
+			owner: { $kind: 'Shared', Shared: { initialSharedVersion: '1' } },
+		});
+		client.addMoveFunction({
+			...FRAMEWORK_MOVE_FUNCTIONS.find((fn) => fn.name === 'balance_spend')!,
+			packageId: '0xa',
+			moduleName: 'attacker',
+			name: 'steal',
+			returns: [],
+		});
+		const tx = new Transaction();
+		tx.setSender(DEFAULT_SENDER);
+		tx.setGasBudget(0);
+		tx.setGasPrice(1);
+		tx.setGasPayment([]);
+		const withdrawal = tx.withdrawal({
+			amount: 100n,
+			type: SUI,
+			from: 'allowance',
+			funder: DEFAULT_SENDER,
+			allowance: allowanceId,
+		});
+		tx.moveCall({
+			target: '0xa::attacker::steal',
+			typeArguments: [SUI],
+			arguments: [
+				tx.sharedObjectRef({ objectId: allowanceId, initialSharedVersion: '1', mutable: true }),
+				withdrawal,
+				tx.object.clock(),
+			],
+		});
+		const { approval } = await analyze(
+			{ approval: autoApprovalAnalyzer },
+			{ client, transaction: await tx.toJSON(), operationType: 'test-operation' },
+		);
+		for (const manager of [managerWithSettings(), managerWithBalanceSettings()]) {
+			expect(manager.checkTransaction(approval).canAutoApprove).toBe(false);
+		}
+		expect(approval.status).toBe('skipped');
+		expect(
+			approval.issues?.some((issue) => issue.message.includes('Cannot track redemption')),
+		).toBe(true);
+	});
+
+	test('uses configured sender addresses instead of the transaction sender', async () => {
+		const client = new MockSuiClient();
+		const tx = new Transaction();
+		tx.setSender(DEFAULT_SENDER);
+		tx.setGasBudget(10_000_000n);
+		tx.setGasPrice(1_000n);
+		const bytes = await tx.build({ client });
+
+		const extraSender = normalizeSuiAddress('0x456');
+		const results = await analyze(
+			{
+				autoApproval: autoApprovalAnalyzer,
+			},
+			{
+				transaction: bytes,
+				client,
+				operationType: 'increment-counter',
+				autoApproval: { senderAddresses: [extraSender] },
+				getCoinPrices: async () => [],
+			},
+		);
+
+		expect(results.autoApproval.result?.senderAddresses).toEqual([extraSender]);
+	});
+
+	test('matches unnormalized policy and budget coin types against analyzer balance flows', async () => {
+		const client = new MockSuiClient();
+		const tx = new Transaction();
+		tx.setSender(DEFAULT_SENDER);
+		tx.setGasBudget(10_000_000n);
+		tx.setGasPrice(1_000n);
+		const bytes = await tx.build({ client });
+
+		const results = await analyze(
+			{
+				autoApproval: autoApprovalAnalyzer,
+			},
+			{
+				transaction: bytes,
+				client,
+				operationType: 'test-operation',
+			},
+		);
+
+		expect(results.autoApproval.status).toBe('success');
+		expect(results.autoApproval.result?.senderBalanceFlows).toEqual([
+			{ coinType: SUI, amount: -10_000_000n },
+		]);
+
+		const manager = new AutoApprovalManager({
+			policy: JSON.stringify({
+				schemaVersion: '1.0.0',
+				operations: [
+					{
+						id: 'test-operation',
+						description: 'Test operation',
+						permissions: {
+							balances: [
+								{
+									$kind: 'CoinBalance',
+									description: 'SUI',
+									coinType: RAW_SUI,
+								},
+							],
+						},
+					},
+				],
+				suggestedSettings: {},
+			} satisfies AutoApprovalPolicy),
+			state: null,
+		});
+
+		manager.updateSettings({
+			approvedOperations: ['test-operation'],
+			expiration: Date.now() + 1000 * 60 * 60,
+			remainingTransactions: 1,
+			sharedBudget: null,
+			coinBudgets: {
+				[RAW_SUI]: '10000000',
+			},
+		});
+
+		expect(manager.getSettings()?.coinBudgets).toEqual({ [SUI]: '10000000' });
+		expect(manager.checkTransaction(results.autoApproval)).toEqual({
+			matchesPolicy: true,
+			canAutoApprove: true,
+			analysisIssues: [],
+			policyIssues: [],
+			settingsIssues: [],
+		});
+
+		manager.commitTransaction(results.autoApproval);
+
+		expect(manager.getSettings()?.coinBudgets).toEqual({ [SUI]: '0' });
+	});
+
+	test('checkTransaction reports partial analysis as analysis issues', () => {
+		const manager = managerWithSettings();
+		const analysis: AutoApprovalResult = {
+			status: 'partial',
+			result: autoApprovalAnalysis(),
+			issues: [{ message: 'coin values unavailable' }],
+			ownIssues: [{ message: 'coin values unavailable' }],
+		};
+
+		expect(manager.checkTransaction(analysis)).toEqual({
+			matchesPolicy: false,
+			canAutoApprove: false,
+			analysisIssues: [{ message: 'coin values unavailable' }],
+			policyIssues: [],
+			settingsIssues: [],
+		});
+	});
+
+	test('commitTransaction rejects partial analysis without mutating state', () => {
+		const manager = managerWithSettings();
+		const analysis: AutoApprovalResult = {
+			status: 'partial',
+			result: autoApprovalAnalysis(),
+			issues: [{ message: 'coin values unavailable' }],
+			ownIssues: [{ message: 'coin values unavailable' }],
+		};
+
+		expect(() => manager.commitTransaction(analysis)).toThrow('Transaction analysis failed');
+		expect(manager.getSettings()?.remainingTransactions).toBe(1);
+		expect(manager.getState().pendingDigests).toEqual([]);
+	});
+
+	test('uses signed sender balance outflows for policy and budget checks', () => {
+		const manager = managerWithBalanceSettings();
+		const sender = normalizeSuiAddress('0x1');
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis({
+				senderAddresses: [sender],
+				senderBalanceFlows: [{ coinType: SUI, amount: -4n }],
+				balanceFlows: {
+					byAddress: { [sender]: [{ coinType: SUI, amount: -4n }] },
+					sender: [{ coinType: SUI, amount: -4n }],
+					sponsor: null,
+				},
+			}),
+		};
+
+		expect(manager.checkTransaction(analysis)).toEqual({
+			matchesPolicy: true,
+			canAutoApprove: true,
+			analysisIssues: [],
+			policyIssues: [],
+			settingsIssues: [],
+		});
+
+		manager.commitTransaction(analysis);
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('6');
+
+		manager.revertTransaction(analysis);
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('10');
+		expect(manager.getState().pendingDigests).toEqual([]);
+	});
+
+	test('uses multiple sender addresses for policy and budget checks', () => {
+		const manager = managerWithBalanceSettings();
+		const sender = normalizeSuiAddress('0x1');
+		const extraSender = normalizeSuiAddress('0x2');
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis({
+				senderAddresses: [sender, extraSender],
+				senderBalanceFlows: [{ coinType: SUI, amount: -6n }],
+				balanceFlows: {
+					byAddress: {
+						[sender]: [{ coinType: SUI, amount: -4n }],
+						[extraSender]: [{ coinType: SUI, amount: -2n }],
+					},
+					sender: [{ coinType: SUI, amount: -4n }],
+					sponsor: null,
+				},
+			}),
+		};
+
+		manager.commitTransaction(analysis);
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('4');
+	});
+
+	test('gas-only SUI outflows are budgeted and reconciled from effects', () => {
+		const manager = managerWithBalanceSettings();
+		manager.updateSettings({
+			approvedOperations: ['test-operation'],
+			expiration: Date.now() + 1000 * 60 * 60,
+			remainingTransactions: 1,
+			sharedBudget: null,
+			coinBudgets: { [SUI]: '10000000' },
+		});
+		const sender = normalizeSuiAddress('0x1');
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis({
+				senderAddresses: [sender],
+				senderBalanceFlows: [{ coinType: SUI, amount: -10_000_000n }],
+				coinValues: { total: 0, coinTypesWithoutPrice: [], coinTypes: [] },
+				balanceFlows: {
+					byAddress: {
+						[sender]: [{ coinType: SUI, amount: -10_000_000n }],
+					},
+					sender: [{ coinType: SUI, amount: -10_000_000n }],
+					sponsor: null,
+				},
+			}),
+		};
+
+		expect(manager.checkTransaction(analysis)).toEqual({
+			matchesPolicy: true,
+			canAutoApprove: true,
+			analysisIssues: [],
+			policyIssues: [],
+			settingsIssues: [],
+		});
+
+		manager.commitTransaction(analysis);
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('0');
+
+		manager.applyTransactionEffects(analysis, {
+			digest: 'test-digest',
+			balanceChanges: [{ address: sender, coinType: SUI, amount: '-5000000' }],
+		} as unknown as Parameters<AutoApprovalManager['applyTransactionEffects']>[1]);
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('5000000');
+		expect(manager.getState().pendingDigests).toEqual([]);
+	});
+
+	test('does not spend budgets for positive sender balance flows', () => {
+		const manager = managerWithBalanceSettings();
+		const sender = normalizeSuiAddress('0x1');
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis({
+				senderAddresses: [sender],
+				senderBalanceFlows: [{ coinType: SUI, amount: 4n }],
+				balanceFlows: {
+					byAddress: { [sender]: [{ coinType: SUI, amount: 4n }] },
+					sender: [{ coinType: SUI, amount: 4n }],
+					sponsor: null,
+				},
+			}),
+		};
+
+		manager.commitTransaction(analysis);
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('10');
+	});
+
+	test('reconciles transaction effects with sender balance changes only', () => {
+		const manager = managerWithBalanceSettings();
+		const sender = normalizeSuiAddress('0x1');
+		const extraSender = normalizeSuiAddress('0x2');
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis({
+				senderAddresses: [sender, extraSender],
+				senderBalanceFlows: [{ coinType: SUI, amount: -6n }],
+				balanceFlows: {
+					byAddress: {
+						[sender]: [{ coinType: SUI, amount: -4n }],
+						[extraSender]: [{ coinType: SUI, amount: -2n }],
+					},
+					sender: [{ coinType: SUI, amount: -4n }],
+					sponsor: null,
+				},
+			}),
+		};
+
+		manager.commitTransaction(analysis);
+		manager.applyTransactionEffects(analysis, {
+			digest: 'test-digest',
+			balanceChanges: [
+				{ address: sender, coinType: SUI, amount: '-4' },
+				{ address: extraSender, coinType: SUI, amount: '-3' },
+				{ address: '0x3', coinType: SUI, amount: '7' },
+			],
+		} as unknown as Parameters<AutoApprovalManager['applyTransactionEffects']>[1]);
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('3');
+		expect(manager.getState().pendingDigests).toEqual([]);
+	});
+
+	test('applyTransactionEffects rejects partial analysis before mutating pending digests', () => {
+		const manager = managerWithSettings();
+		const analysis: AutoApprovalResult = {
+			status: 'partial',
+			result: autoApprovalAnalysis(),
+			issues: [{ message: 'coin values unavailable' }],
+			ownIssues: [{ message: 'coin values unavailable' }],
+		};
+
+		expect(() =>
+			manager.applyTransactionEffects(analysis, {
+				digest: 'test-digest',
+				balanceChanges: [],
+			} as unknown as Parameters<AutoApprovalManager['applyTransactionEffects']>[1]),
+		).toThrow('Transaction analysis failed');
+		expect(manager.getState().pendingDigests).toEqual([]);
+	});
+
+	describe('owned object access levels', () => {
+		const NFT_TYPE = normalizeStructTag('0xabc::nft::NFT');
+		const NFT_ID = normalizeSuiAddress('0xa11');
+		const levels = ['read', 'mutate', 'transfer'] as const;
+		type Level = (typeof levels)[number];
+
+		function managerWithObjectPermission(granted: Level) {
+			const manager = new AutoApprovalManager({
+				policy: JSON.stringify({
+					schemaVersion: '1.0.0',
+					operations: [
+						{
+							id: 'test-operation',
+							description: 'Test operation',
+							permissions: {
+								ownedObjects: [
+									{
+										$kind: 'ObjectType',
+										description: 'NFTs',
+										objectType: NFT_TYPE,
+										accessLevel: granted,
+									},
+								],
+							},
+						},
+					],
+					suggestedSettings: {},
+				} satisfies AutoApprovalPolicy),
+				state: null,
+			});
+			manager.updateSettings({
+				approvedOperations: ['test-operation'],
+				expiration: Date.now() + 1000 * 60 * 60,
+				remainingTransactions: 1,
+				sharedBudget: null,
+				coinBudgets: {},
+			});
+			return manager;
+		}
+
+		function analysisUsingObject(needed: Level | undefined): AutoApprovalResult {
+			return {
+				status: 'success',
+				result: autoApprovalAnalysis({
+					ownedObjects: [
+						{
+							objectId: NFT_ID,
+							type: NFT_TYPE,
+						} as unknown as AutoApprovalAnalysis['ownedObjects'][number],
+					],
+					accessLevel: needed ? { [NFT_ID]: needed } : {},
+				}),
+			};
+		}
+
+		for (const granted of levels) {
+			for (const needed of levels) {
+				const allowed = levels.indexOf(granted) >= levels.indexOf(needed);
+
+				test(`${granted} permission ${allowed ? 'allows' : 'rejects'} ${needed} access`, () => {
+					const result = managerWithObjectPermission(granted).checkTransaction(
+						analysisUsingObject(needed),
+					);
+
+					expect(result.matchesPolicy).toBe(allowed);
+					expect(result.canAutoApprove).toBe(allowed);
+					expect(result.policyIssues).toEqual(
+						allowed
+							? []
+							: [
+									{
+										message: `Insufficient access level for object ${NFT_ID}: required ${needed}, got ${granted}`,
+									},
+								],
+					);
+				});
+			}
+		}
+
+		test('rejects objects whose access level could not be determined', () => {
+			const result = managerWithObjectPermission('transfer').checkTransaction(
+				analysisUsingObject(undefined),
+			);
+
+			expect(result.canAutoApprove).toBe(false);
+			expect(result.policyIssues).toEqual([
+				{ message: `Access level could not be determined for object ${NFT_ID}` },
+			]);
+		});
+	});
+	describe('budgets', () => {
+		const COIN_A = normalizeStructTag('0xa::a::A');
+		const COIN_B = normalizeStructTag('0xb::b::B');
+		const sender = normalizeSuiAddress('0x1');
+
+		function managerWithBudgets(
+			settings: Pick<AutoApprovalSettings, 'sharedBudget' | 'coinBudgets'>,
+		) {
+			const manager = new AutoApprovalManager({
+				policy: JSON.stringify({
+					schemaVersion: '1.0.0',
+					operations: [
+						{
+							id: 'test-operation',
+							description: 'Test operation',
+							permissions: { anyBalance: { $kind: 'AnyBalance', description: 'Any coin' } },
+						},
+					],
+					suggestedSettings: {},
+				} satisfies AutoApprovalPolicy),
+				state: null,
+			});
+			manager.updateSettings({
+				approvedOperations: ['test-operation'],
+				expiration: Date.now() + 1000 * 60 * 60,
+				remainingTransactions: null,
+				...settings,
+			});
+			return manager;
+		}
+
+		function spending(outflows: { coinType: string; amount: bigint; value: number }[]) {
+			const flows = outflows.map(({ coinType, amount }) => ({ coinType, amount: -amount }));
+			return {
+				status: 'success',
+				result: autoApprovalAnalysis({
+					senderAddresses: [sender],
+					senderBalanceFlows: flows,
+					balanceFlows: { byAddress: { [sender]: flows }, sender: flows, sponsor: null },
+					coinValues: {
+						total: outflows.reduce((sum, { value }) => sum + value, 0),
+						coinTypesWithoutPrice: [],
+						coinTypes: outflows.map(({ coinType, amount, value }) => ({
+							coinType,
+							decimals: 0,
+							price: value / Number(amount),
+							amount,
+							convertedAmount: value,
+						})),
+					},
+				}),
+			} satisfies AutoApprovalResult;
+		}
+
+		test('shared budget covers the combined value of all coin types', () => {
+			const manager = managerWithBudgets({ sharedBudget: 10, coinBudgets: {} });
+
+			expect(
+				manager.checkTransaction(
+					spending([
+						{ coinType: COIN_A, amount: 4n, value: 4 },
+						{ coinType: COIN_B, amount: 4n, value: 4 },
+					]),
+				).canAutoApprove,
+			).toBe(true);
+
+			const overBudget = manager.checkTransaction(
+				spending([
+					{ coinType: COIN_A, amount: 8n, value: 8 },
+					{ coinType: COIN_B, amount: 8n, value: 8 },
+				]),
+			);
+			expect(overBudget.canAutoApprove).toBe(false);
+			expect(overBudget.settingsIssues).toEqual([{ message: 'Insufficient shared budget' }]);
+		});
+
+		test('rejects shared-budget spends when no shared budget is configured', () => {
+			const manager = managerWithBudgets({ sharedBudget: null, coinBudgets: {} });
+			const result = manager.checkTransaction(
+				spending([{ coinType: COIN_A, amount: 1n, value: 0 }]),
+			);
+
+			expect(result.canAutoApprove).toBe(false);
+			expect(result.settingsIssues).toEqual([{ message: 'No shared budget configured' }]);
+		});
+
+		test('treats an empty coin budget as zero', () => {
+			const manager = managerWithBudgets({ sharedBudget: null, coinBudgets: { [COIN_A]: '' } });
+			const result = manager.checkTransaction(
+				spending([{ coinType: COIN_A, amount: 1n, value: 1 }]),
+			);
+
+			expect(result.canAutoApprove).toBe(false);
+			expect(result.settingsIssues).toEqual([
+				{ message: `Insufficient budget for coin type ${COIN_A}` },
+			]);
+		});
+	});
+
+	test('matches owned objects against policy types written in short form', () => {
+		const objectId = normalizeSuiAddress('0xa11');
+		const manager = new AutoApprovalManager({
+			policy: JSON.stringify({
+				schemaVersion: '1.0.0',
+				operations: [
+					{
+						id: 'test-operation',
+						description: 'Test operation',
+						permissions: {
+							ownedObjects: [
+								{
+									$kind: 'ObjectType',
+									description: 'Kiosk caps',
+									objectType: '0x2::kiosk::KioskOwnerCap',
+									accessLevel: 'read',
+								},
+							],
+						},
+					},
+				],
+				suggestedSettings: {},
+			} satisfies AutoApprovalPolicy),
+			state: null,
+		});
+
+		const result = manager.checkTransaction({
+			status: 'success',
+			result: autoApprovalAnalysis({
+				ownedObjects: [
+					{
+						objectId,
+						type: normalizeStructTag('0x2::kiosk::KioskOwnerCap'),
+					} as unknown as AutoApprovalAnalysis['ownedObjects'][number],
+				],
+				accessLevel: { [objectId]: 'read' },
+			}),
+		});
+
+		expect(result.matchesPolicy).toBe(true);
+		expect(result.policyIssues).toEqual([]);
+	});
+
+	test('applyTransactionEffects rejects results for a different transaction', () => {
+		const manager = managerWithBalanceSettings();
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis(),
+		};
+
+		manager.commitTransaction(analysis);
+
+		expect(() =>
+			manager.applyTransactionEffects(analysis, {
+				digest: 'other-digest',
+				balanceChanges: [],
+			} as unknown as Parameters<AutoApprovalManager['applyTransactionEffects']>[1]),
+		).toThrow('does not match analyzed digest');
+		expect(manager.getState().pendingDigests).toEqual(['test-digest']);
+	});
+
+	describe('pending transactions', () => {
+		const successfulAnalysis = (): AutoApprovalResult => ({
+			status: 'success',
+			result: autoApprovalAnalysis(),
+		});
+
+		test('rejects a digest that is already pending', () => {
+			const manager = managerWithSettings();
+			manager.updateSettings({ ...manager.getSettings()!, remainingTransactions: 2 });
+			manager.commitTransaction(successfulAnalysis());
+
+			expect(manager.checkTransaction(successfulAnalysis()).settingsIssues).toEqual([
+				{ message: 'Transaction test-digest is already pending' },
+			]);
+			expect(() => manager.commitTransaction(successfulAnalysis())).toThrow(
+				'Transaction test-digest is already pending',
+			);
+			expect(manager.getState().pendingDigests).toEqual(['test-digest']);
+		});
+	});
+
+	describe('saved state', () => {
+		test('round-trips through export', () => {
+			const manager = managerWithBalanceSettings();
+			manager.commitTransaction({
+				status: 'success',
+				result: autoApprovalAnalysis({
+					senderBalanceFlows: [{ coinType: SUI, amount: -4n }],
+				}),
+			});
+
+			const restored = new AutoApprovalManager({
+				policy: JSON.stringify(balancePolicy),
+				state: manager.export(),
+			});
+
+			expect(restored.getState()).toEqual(manager.getState());
+		});
+
+		test('ignores saved state that cannot be decoded', () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			const manager = new AutoApprovalManager({
+				policy: JSON.stringify(policy),
+				state: '{not json',
+			});
+
+			expect(manager.getSettings()).toBeNull();
+			expect(warn).toHaveBeenCalledOnce();
+			warn.mockRestore();
+		});
+
+		test('rejects coin budgets that are not raw integer amounts', () => {
+			const manager = managerWithSettings();
+
+			for (const budget of ['1.5', '1e9', '-1']) {
+				expect(() =>
+					manager.updateSettings({ ...manager.getSettings()!, coinBudgets: { [SUI]: budget } }),
+				).toThrow();
+			}
+		});
+	});
+
+	describe('operation intent', () => {
+		test('pins the intent name', () => {
+			expect(OPERATION_INTENT).toBe('@mysten/wallet-kit/AutoApprovalOperation');
+		});
+
+		async function taggedTransaction() {
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+			tx.setGasBudget(10_000_000n);
+			tx.setGasPrice(1_000n);
+			tx.add(operationType('increment-counter'));
+			tx.transferObjects([coinWithBalance({ balance: 1n })], DEFAULT_SENDER);
+			return tx;
+		}
+
+		test.each(['transaction', 'json'] as const)(
+			'reads and removes the operation from a %s',
+			async (kind) => {
+				const tagged = await taggedTransaction();
+				const input =
+					kind === 'transaction'
+						? tagged
+						: await tagged.toJSON({ supportedIntents: [OPERATION_INTENT, 'CoinWithBalance'] });
+
+				const { transaction, operationType: type } = await readOperationType(input);
+				const intents = Transaction.from(transaction)
+					.getData()
+					.commands.flatMap((command) =>
+						command.$kind === '$Intent' ? [command.$Intent.name] : [],
+					);
+
+				expect(type).toBe('increment-counter');
+				expect(intents).toEqual(['CoinWithBalance']);
+
+				const results = await analyze(
+					{ autoApproval: autoApprovalAnalyzer },
+					{ transaction, client: new MockSuiClient(), operationType: type! },
+				);
+
+				expect(results.autoApproval.status).toBe('success');
+				expect(results.autoApproval.result?.operationType).toBe('increment-counter');
+			},
+		);
+
+		test('returns null for an untagged transaction', async () => {
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+
+			expect((await readOperationType(tx)).operationType).toBeNull();
+		});
+	});
+
+	test('updateSettings rejects changes while a transaction is pending', () => {
+		const manager = managerWithSettings();
+		const settings = manager.getSettings()!;
+		manager.commitTransaction({ status: 'success', result: autoApprovalAnalysis() });
+
+		expect(() => manager.updateSettings(settings)).toThrow(
+			'Settle or revert pending transactions before updating settings',
+		);
+	});
+
+	test('getSettings returns a copy', () => {
+		const manager = managerWithBalanceSettings();
+		manager.getSettings()!.coinBudgets[SUI] = '1000';
+
+		expect(manager.getSettings()!.coinBudgets[SUI]).toBe('10');
+	});
+
+	test('commitTransaction re-checks the budget', () => {
+		const manager = managerWithBalanceSettings();
+		manager.updateSettings({ ...manager.getSettings()!, remainingTransactions: 2 });
+		const spend = (digest: string): AutoApprovalResult => ({
+			status: 'success',
+			result: autoApprovalAnalysis({
+				digest,
+				senderBalanceFlows: [{ coinType: SUI, amount: -7n }],
+			}),
+		});
+
+		expect(manager.checkTransaction(spend('a')).canAutoApprove).toBe(true);
+		expect(manager.checkTransaction(spend('b')).canAutoApprove).toBe(true);
+
+		manager.commitTransaction(spend('a'));
+		let error: unknown;
+		try {
+			manager.commitTransaction(spend('b'));
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(AutoApprovalRejectedError);
+		expect((error as AutoApprovalRejectedError).digest).toBe('b');
+		expect((error as AutoApprovalRejectedError).check.settingsIssues).toEqual([
+			{ message: `Insufficient budget for coin type ${SUI}` },
+		]);
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('3');
+		expect(manager.getState().pendingDigests).toEqual(['a']);
+	});
+
+	describe('readOperationType with other intents', () => {
+		const CUSTOM_INTENT = 'test/CustomIntent';
+		const customResolver: Parameters<Transaction['addIntentResolver']>[1] = (
+			transactionData,
+			_options,
+			next,
+		) => {
+			for (let index = 0; index < transactionData.commands.length; index++) {
+				const command = transactionData.commands[index];
+				if (command.$kind === '$Intent' && command.$Intent.name === CUSTOM_INTENT) {
+					transactionData.replaceCommand(index, []);
+					index--;
+				}
+			}
+			return next();
+		};
+
+		async function taggedJson(extra: (tx: Transaction) => void) {
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+			tx.add(operationType('increment-counter'));
+			extra(tx);
+			return tx.toJSON({ supportedIntents: [OPERATION_INTENT, CUSTOM_INTENT] });
+		}
+
+		test('keeps custom intents the wallet passes resolvers for', async () => {
+			const json = await taggedJson((tx) => {
+				tx.addIntentResolver(CUSTOM_INTENT, customResolver);
+				tx.add(TransactionCommands.Intent({ name: CUSTOM_INTENT, inputs: {}, data: {} }));
+			});
+
+			const { transaction, operationType: type } = await readOperationType(json, {
+				intentResolvers: { [CUSTOM_INTENT]: customResolver },
+			});
+			const intents = Transaction.from(transaction, {
+				intentResolvers: { [CUSTOM_INTENT]: customResolver },
+			})
+				.getData()
+				.commands.flatMap((command) => (command.$kind === '$Intent' ? [command.$Intent.name] : []));
+
+			expect(type).toBe('increment-counter');
+			expect(intents).toEqual([CUSTOM_INTENT]);
+		});
+
+		test('rejects adjacent operation tags', async () => {
+			const data = JSON.parse(await taggedJson(() => {}));
+			data.commands.push(data.commands[0]);
+
+			await expect(readOperationType(JSON.stringify(data))).rejects.toThrow(
+				'Multiple operation type intents found in transaction',
+			);
+		});
+	});
+
+	describe('sponsored transactions', () => {
+		const sponsor = normalizeSuiAddress('0xbabe');
+
+		async function sponsoredTransfer() {
+			const client = new MockSuiClient();
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+			tx.setGasOwner(sponsor);
+			tx.setGasBudget(1_000_000n);
+			tx.setGasPrice(1_000n);
+			tx.setGasPayment([
+				{
+					objectId: normalizeSuiAddress('0xcafe'),
+					version: '100',
+					digest: '11111111111111111111111111111111',
+				},
+			]);
+			// The sender sends the sponsor more than the sponsor pays in gas.
+			tx.transferObjects([tx.object(TEST_COIN_1_ID)], sponsor);
+			return { client, bytes: await tx.build({ client }) };
+		}
+
+		test.each([
+			[
+				undefined,
+				'Sponsored transactions need autoApproval.senderAddresses to identify the wallet',
+			],
+			[[], 'autoApproval.senderAddresses must not be empty'],
+		])('fails analysis when senderAddresses is %j', async (senderAddresses, message) => {
+			const { client, bytes } = await sponsoredTransfer();
+			const results = await analyze(
+				{ autoApproval: autoApprovalAnalyzer },
+				{
+					transaction: bytes,
+					client,
+					operationType: 'test-operation',
+					...(senderAddresses ? { autoApproval: { senderAddresses } } : {}),
+				},
+			);
+
+			expect(results.autoApproval.status).toBe('failed');
+			expect(results.autoApproval.issues).toEqual([
+				{ message: `Unexpected error while analyzing transaction: ${message}` },
+			]);
+		});
+
+		test('charges a gas-paying wallet at least the gas budget despite inflows', async () => {
+			const { client, bytes } = await sponsoredTransfer();
+			const results = await analyze(
+				{ autoApproval: autoApprovalAnalyzer },
+				{
+					transaction: bytes,
+					client,
+					operationType: 'test-operation',
+					autoApproval: { senderAddresses: [sponsor] },
+				},
+			);
+
+			expect(results.autoApproval.result?.balanceFlows.byAddress[sponsor]).toEqual([
+				{ coinType: SUI, amount: 4_999_000_000n },
+			]);
+			expect(results.autoApproval.result?.senderBalanceFlows).toEqual([
+				{ coinType: SUI, amount: -1_000_000n },
+			]);
+		});
+	});
+
+	test('settlement never raises a budget above its value before the transaction', () => {
+		const manager = managerWithBalanceSettings();
+		manager.updateSettings({ ...manager.getSettings()!, remainingTransactions: null });
+		const sender = normalizeSuiAddress('0x1');
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis({
+				senderAddresses: [sender],
+				senderBalanceFlows: [{ coinType: SUI, amount: -5n }],
+			}),
+		};
+		const effects = {
+			digest: 'test-digest',
+			balanceChanges: [{ address: sender, coinType: SUI, amount: '4' }],
+		} as unknown as Parameters<AutoApprovalManager['applyTransactionEffects']>[1];
+
+		for (let i = 0; i < 3; i++) {
+			manager.commitTransaction(analysis);
+			manager.applyTransactionEffects(analysis, effects);
+		}
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('10');
+	});
+});
