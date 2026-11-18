@@ -1,5 +1,8 @@
 # @mysten-incubation/auto-approvals
 
+> [!WARNING] This package is experimental and not ready for production use. Its API may change in
+> any release.
+
 Policy-based transaction auto-approvals for Sui wallets. A dApp publishes a policy that describes
 its operations and the coins and objects each one may touch. The user approves operations and sets
 budgets, and the wallet can then sign matching transactions without prompting.
