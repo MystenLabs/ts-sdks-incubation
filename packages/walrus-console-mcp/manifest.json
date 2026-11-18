@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "walrus-console-mcp",
   "display_name": "Walrus Console",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for Walrus Console.",
   "long_description": "Walrus Console is the developer-first interface for the Walrus network: a hosted place to store, manage and serve data without running your own Walrus client or handling wallets and tokens directly. With this extension Claude can browse your spaces and buckets, create buckets, upload, download, rename and delete files, and issue API keys on your behalf.\n\nSetup takes one Console API key, created at console.walrus.xyz under Integrations.\n\nDocs: https://docs.wal.app/docs/console/overview",
   "author": {
