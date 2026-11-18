@@ -1,5 +1,11 @@
 # @mysten-incubation/dev-wallet
 
+## 0.6.2
+
+### Patch Changes
+
+- 712cc10: Update `@mysten/wallet-sdk` to `^0.10.1`.
+
 ## 0.6.1
 
 ### Patch Changes

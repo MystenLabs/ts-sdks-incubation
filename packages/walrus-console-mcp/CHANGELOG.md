@@ -1,5 +1,11 @@
 # @mysten-incubation/walrus-console-mcp
 
+## 0.1.3
+
+### Patch Changes
+
+- 712cc10: Refresh the shipped `npm-shrinkwrap.json` with `@mysten/bcs` 2.1.4 and `@mysten/utils` 0.4.2.
+
 ## 0.1.2
 
 ### Patch Changes
