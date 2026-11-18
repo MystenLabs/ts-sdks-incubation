@@ -34,11 +34,10 @@ export class AutoApprovalManager {
 	#state: AutoApprovalState;
 
 	constructor(options: AutoApprovalManagerOptions) {
+		const policy = parse(AutoApprovalPolicySchema, JSON.parse(options.policy));
 		let state: AutoApprovalState | null = null;
 
 		if (options.state) {
-			// Parsed outside the try so an invalid provided policy still throws.
-			const providedPolicy = parse(AutoApprovalPolicySchema, JSON.parse(options.policy));
 			let savedState: AutoApprovalState | null = null;
 
 			try {
@@ -55,7 +54,7 @@ export class AutoApprovalManager {
 				console.warn('[auto-approvals] Ignoring saved state that could not be decoded.', error);
 			}
 
-			if (savedState && JSON.stringify(savedState.policy) === JSON.stringify(providedPolicy)) {
+			if (savedState && JSON.stringify(savedState.policy) === JSON.stringify(policy)) {
 				state = savedState;
 			}
 		}
@@ -64,7 +63,7 @@ export class AutoApprovalManager {
 			state ??
 			parse(AutoApprovalStateSchema, {
 				schemaVersion: '1.0.0',
-				policy: parse(AutoApprovalPolicySchema, JSON.parse(options.policy)),
+				policy,
 				settings: null,
 				pendingDigests: [],
 			} satisfies AutoApprovalState);
@@ -246,12 +245,13 @@ export class AutoApprovalManager {
 		return issues;
 	}
 
-	// TODO: we should ensure that only 1 tx is pending at a time, and pending txs can't increase budgets
 	commitTransaction(analysis: AutoApprovalResult): void {
 		assertSuccessfulAnalysis(analysis);
 
-		if (this.#state.pendingDigests.includes(analysis.result.digest)) {
-			throw new Error(`Transaction ${analysis.result.digest} is already pending`);
+		const check = this.checkTransaction(analysis);
+		if (!check.canAutoApprove) {
+			const [issue] = [...check.policyIssues, ...check.settingsIssues];
+			throw new Error(`Transaction cannot be auto-approved: ${issue?.message}`);
 		}
 
 		if (!this.#state.settings) {
@@ -419,7 +419,7 @@ export class AutoApprovalManager {
 	}
 
 	getSettings(): AutoApprovalSettings | null {
-		return this.#state.settings;
+		return structuredClone(this.#state.settings);
 	}
 
 	updateSettings(settings: AutoApprovalSettings): void {

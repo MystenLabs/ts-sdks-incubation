@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, test, expect, vi } from 'vitest';
-import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
+import { coinWithBalance, Transaction, TransactionCommands } from '@mysten/sui/transactions';
 import { analyze, analyzers } from '@mysten/wallet-sdk';
 import {
 	autoApprovalAnalyzer,
@@ -194,7 +194,7 @@ describe('AutoApprovalManager', () => {
 		).toBe(true);
 	});
 
-	test('adds configured sender addresses to the transaction sender', async () => {
+	test('uses configured sender addresses instead of the transaction sender', async () => {
 		const client = new MockSuiClient();
 		const tx = new Transaction();
 		tx.setSender(DEFAULT_SENDER);
@@ -216,7 +216,7 @@ describe('AutoApprovalManager', () => {
 			},
 		);
 
-		expect(results.autoApproval.result?.senderAddresses).toEqual([DEFAULT_SENDER, extraSender]);
+		expect(results.autoApproval.result?.senderAddresses).toEqual([extraSender]);
 	});
 
 	test('matches unnormalized policy and budget coin types against analyzer balance flows', async () => {
@@ -873,5 +873,88 @@ describe('AutoApprovalManager', () => {
 		expect(() => manager.updateSettings(settings)).toThrow(
 			'Settle or revert pending transactions before updating settings',
 		);
+	});
+
+	test('getSettings returns a copy', () => {
+		const manager = managerWithBalanceSettings();
+		manager.getSettings()!.coinBudgets[SUI] = '1000';
+
+		expect(manager.getSettings()!.coinBudgets[SUI]).toBe('10');
+	});
+
+	test('commitTransaction re-checks the budget', () => {
+		const manager = managerWithBalanceSettings();
+		manager.updateSettings({ ...manager.getSettings()!, remainingTransactions: 2 });
+		const spend = (digest: string): AutoApprovalResult => ({
+			status: 'success',
+			result: autoApprovalAnalysis({
+				digest,
+				senderBalanceFlows: [{ coinType: SUI, amount: -7n }],
+			}),
+		});
+
+		expect(manager.checkTransaction(spend('a')).canAutoApprove).toBe(true);
+		expect(manager.checkTransaction(spend('b')).canAutoApprove).toBe(true);
+
+		manager.commitTransaction(spend('a'));
+		expect(() => manager.commitTransaction(spend('b'))).toThrow(
+			`Transaction cannot be auto-approved: Insufficient budget for coin type ${SUI}`,
+		);
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('3');
+		expect(manager.getState().pendingDigests).toEqual(['a']);
+	});
+
+	describe('readOperationType with other intents', () => {
+		const CUSTOM_INTENT = 'test/CustomIntent';
+		const customResolver: Parameters<Transaction['addIntentResolver']>[1] = (
+			transactionData,
+			_options,
+			next,
+		) => {
+			for (let index = 0; index < transactionData.commands.length; index++) {
+				const command = transactionData.commands[index];
+				if (command.$kind === '$Intent' && command.$Intent.name === CUSTOM_INTENT) {
+					transactionData.replaceCommand(index, []);
+					index--;
+				}
+			}
+			return next();
+		};
+
+		async function taggedJson(extra: (tx: Transaction) => void) {
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+			tx.add(operationType('increment-counter'));
+			extra(tx);
+			return tx.toJSON({ supportedIntents: [OPERATION_INTENT, CUSTOM_INTENT] });
+		}
+
+		test('keeps custom intents the wallet passes resolvers for', async () => {
+			const json = await taggedJson((tx) => {
+				tx.addIntentResolver(CUSTOM_INTENT, customResolver);
+				tx.add(TransactionCommands.Intent({ name: CUSTOM_INTENT, inputs: {}, data: {} }));
+			});
+
+			const { transaction, operationType: type } = await readOperationType(json, {
+				intentResolvers: { [CUSTOM_INTENT]: customResolver },
+			});
+			const intents = Transaction.from(transaction, {
+				intentResolvers: { [CUSTOM_INTENT]: customResolver },
+			})
+				.getData()
+				.commands.flatMap((command) => (command.$kind === '$Intent' ? [command.$Intent.name] : []));
+
+			expect(type).toBe('increment-counter');
+			expect(intents).toEqual([CUSTOM_INTENT]);
+		});
+
+		test('rejects adjacent operation tags', async () => {
+			const data = JSON.parse(await taggedJson(() => {}));
+			data.commands.push(data.commands[0]);
+
+			await expect(readOperationType(JSON.stringify(data))).rejects.toThrow(
+				'Multiple operation type intents found in transaction',
+			);
+		});
 	});
 });

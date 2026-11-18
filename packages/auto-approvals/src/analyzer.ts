@@ -12,6 +12,11 @@ import type {
 import { analyzers, createAnalyzer } from '@mysten/wallet-sdk';
 
 export interface AutoApprovalAnalyzerOptions {
+	/**
+	 * The wallet's own addresses, whose balance changes count against budgets. Defaults to the
+	 * transaction sender. When set, the sender isn't added, so a transaction the wallet only
+	 * sponsors can't offset the wallet's spending with the sender's inflows.
+	 */
 	senderAddresses?: string[];
 }
 
@@ -40,10 +45,9 @@ export const autoApprovalAnalyzer = createAnalyzer({
 		(options: AutoApprovalAnalyzeOptions, tx) =>
 		async ({ bytes, balanceFlows, accessLevel, ownedObjects, digest, operationType }) => {
 			const sender = tx.getData().sender;
-			const senderAddresses = uniqueNormalizedAddresses([
-				...(sender ? [sender] : []),
-				...(options.autoApproval?.senderAddresses ?? []),
-			]);
+			const senderAddresses = uniqueNormalizedAddresses(
+				options.autoApproval?.senderAddresses ?? (sender ? [sender] : []),
+			);
 			const senderBalanceFlows = aggregateBalanceFlowsForAddresses(
 				balanceFlows.byAddress,
 				senderAddresses,

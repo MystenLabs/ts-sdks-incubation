@@ -28,7 +28,12 @@ tx.add(operationType('increment-counter'));
 ## Wallet: check, commit, and reconcile
 
 The wallet must list `OPERATION_INTENT` in its `supportedIntents` so the operation reaches it.
-`readOperationType` reads the operation and removes the intent before analysis.
+`readOperationType` reads the operation and removes the intent before analysis. Pass resolvers for
+any other custom intents the wallet supports in its `intentResolvers` option.
+
+Budgets are charged for the net balance change of the transaction sender. If the wallet signs with
+other addresses, such as a gas sponsor, pass all of its own addresses in
+`autoApproval.senderAddresses` instead.
 
 ```ts
 import { analyze } from '@mysten/wallet-sdk';
@@ -52,9 +57,10 @@ if (check.canAutoApprove) {
 	manager.commitTransaction(autoApproval);
 	// Persist the reservation before executing so a crash can't restore the spent budget.
 	saveState(manager.export());
+	// Sign exactly the bytes that were analysed, so the executed digest matches the reservation.
 	// Execute with `include: { balanceChanges: true }`. Aborted transactions still spend gas, so
 	// reconcile both result variants.
-	const result = await signAndExecute(transaction);
+	const result = await signAndExecute(autoApproval.result.bytes);
 	manager.applyTransactionEffects(autoApproval, result.Transaction ?? result.FailedTransaction);
 } else if (check.matchesPolicy) {
 	// Ask the user to approve the operation, then call manager.updateSettings(...)
@@ -68,7 +74,8 @@ If the transaction is never executed (signing or submission fails), call
 
 `updateSettings` throws while a transaction is pending, so settle or revert it first. Pending
 transactions are stored by digest only, so after a restart a pending transaction can't be settled or
-reverted with its original budget accounting.
+reverted with its original budget accounting. `reset()` clears it, along with the settings and
+approvals.
 
 ## Budgets
 
