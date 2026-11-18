@@ -30,6 +30,18 @@ export interface AutoApprovalCheck {
 	analysisIssues: AutoApprovalIssue[];
 }
 
+/** Thrown by `commitTransaction` when the transaction no longer passes `checkTransaction`. */
+export class AutoApprovalRejectedError extends Error {
+	constructor(
+		readonly digest: string,
+		readonly check: AutoApprovalCheck,
+	) {
+		const [issue] = [...check.analysisIssues, ...check.policyIssues, ...check.settingsIssues];
+		super(`Transaction ${digest} cannot be auto-approved: ${issue?.message}`);
+		this.name = 'AutoApprovalRejectedError';
+	}
+}
+
 export class AutoApprovalManager {
 	#state: AutoApprovalState;
 
@@ -250,8 +262,7 @@ export class AutoApprovalManager {
 
 		const check = this.checkTransaction(analysis);
 		if (!check.canAutoApprove) {
-			const [issue] = [...check.policyIssues, ...check.settingsIssues];
-			throw new Error(`Transaction cannot be auto-approved: ${issue?.message}`);
+			throw new AutoApprovalRejectedError(analysis.result.digest, check);
 		}
 
 		if (!this.#state.settings) {
@@ -364,6 +375,11 @@ export class AutoApprovalManager {
 		// Revert provisional balance flows and use real sender balance changes instead.
 		this.#revertBalanceFlows(analysis);
 
+		// Settlement can return what was reserved, but never raises a budget above its value before
+		// this transaction, so a replayed or net-inflow transaction can't grow it.
+		const budgetCaps = { ...this.#state.settings.coinBudgets };
+		const sharedBudgetCap = this.#state.settings.sharedBudget;
+
 		const outflowCoinTypes = new Set(getSenderOutflows(analysis).map((flow) => flow.coinType));
 
 		for (const change of result.balanceChanges) {
@@ -398,6 +414,20 @@ export class AutoApprovalManager {
 
 				this.#state.settings.sharedBudget += convertedChange;
 			}
+		}
+
+		for (const [coinType, cap] of Object.entries(budgetCaps)) {
+			if (BigInt(this.#state.settings.coinBudgets[coinType]) > BigInt(cap)) {
+				this.#state.settings.coinBudgets[coinType] = cap;
+			}
+		}
+
+		if (
+			sharedBudgetCap !== null &&
+			this.#state.settings.sharedBudget !== null &&
+			this.#state.settings.sharedBudget > sharedBudgetCap
+		) {
+			this.#state.settings.sharedBudget = sharedBudgetCap;
 		}
 	}
 

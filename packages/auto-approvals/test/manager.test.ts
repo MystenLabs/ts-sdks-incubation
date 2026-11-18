@@ -5,6 +5,7 @@ import { describe, test, expect, vi } from 'vitest';
 import { coinWithBalance, Transaction, TransactionCommands } from '@mysten/sui/transactions';
 import { analyze, analyzers } from '@mysten/wallet-sdk';
 import {
+	AutoApprovalRejectedError,
 	autoApprovalAnalyzer,
 	OPERATION_INTENT,
 	operationType,
@@ -17,7 +18,7 @@ import {
 } from '../src/index.js';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import { MockSuiClient } from './mocks/MockSuiClient.js';
-import { DEFAULT_SENDER, FRAMEWORK_MOVE_FUNCTIONS } from './mocks/mockData.js';
+import { DEFAULT_SENDER, FRAMEWORK_MOVE_FUNCTIONS, TEST_COIN_1_ID } from './mocks/mockData.js';
 
 const RAW_SUI = '0x2::sui::SUI';
 const SUI = normalizeSuiAddress('0x2') + '::sui::SUI';
@@ -897,9 +898,17 @@ describe('AutoApprovalManager', () => {
 		expect(manager.checkTransaction(spend('b')).canAutoApprove).toBe(true);
 
 		manager.commitTransaction(spend('a'));
-		expect(() => manager.commitTransaction(spend('b'))).toThrow(
-			`Transaction cannot be auto-approved: Insufficient budget for coin type ${SUI}`,
-		);
+		let error: unknown;
+		try {
+			manager.commitTransaction(spend('b'));
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(AutoApprovalRejectedError);
+		expect((error as AutoApprovalRejectedError).digest).toBe('b');
+		expect((error as AutoApprovalRejectedError).check.settingsIssues).toEqual([
+			{ message: `Insufficient budget for coin type ${SUI}` },
+		]);
 		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('3');
 		expect(manager.getState().pendingDigests).toEqual(['a']);
 	});
@@ -956,5 +965,96 @@ describe('AutoApprovalManager', () => {
 				'Multiple operation type intents found in transaction',
 			);
 		});
+	});
+
+	describe('sponsored transactions', () => {
+		const sponsor = normalizeSuiAddress('0xbabe');
+
+		async function sponsoredTransfer() {
+			const client = new MockSuiClient();
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+			tx.setGasOwner(sponsor);
+			tx.setGasBudget(1_000_000n);
+			tx.setGasPrice(1_000n);
+			tx.setGasPayment([
+				{
+					objectId: normalizeSuiAddress('0xcafe'),
+					version: '100',
+					digest: '11111111111111111111111111111111',
+				},
+			]);
+			// The sender sends the sponsor more than the sponsor pays in gas.
+			tx.transferObjects([tx.object(TEST_COIN_1_ID)], sponsor);
+			return { client, bytes: await tx.build({ client }) };
+		}
+
+		test.each([
+			[
+				undefined,
+				'Sponsored transactions need autoApproval.senderAddresses to identify the wallet',
+			],
+			[[], 'autoApproval.senderAddresses must not be empty'],
+		])('fails analysis when senderAddresses is %j', async (senderAddresses, message) => {
+			const { client, bytes } = await sponsoredTransfer();
+			const results = await analyze(
+				{ autoApproval: autoApprovalAnalyzer },
+				{
+					transaction: bytes,
+					client,
+					operationType: 'test-operation',
+					...(senderAddresses ? { autoApproval: { senderAddresses } } : {}),
+				},
+			);
+
+			expect(results.autoApproval.status).toBe('failed');
+			expect(results.autoApproval.issues).toEqual([
+				{ message: `Unexpected error while analyzing transaction: ${message}` },
+			]);
+		});
+
+		test('charges a gas-paying wallet at least the gas budget despite inflows', async () => {
+			const { client, bytes } = await sponsoredTransfer();
+			const results = await analyze(
+				{ autoApproval: autoApprovalAnalyzer },
+				{
+					transaction: bytes,
+					client,
+					operationType: 'test-operation',
+					autoApproval: { senderAddresses: [sponsor] },
+				},
+			);
+
+			expect(results.autoApproval.result?.balanceFlows.byAddress[sponsor]).toEqual([
+				{ coinType: SUI, amount: 4_999_000_000n },
+			]);
+			expect(results.autoApproval.result?.senderBalanceFlows).toEqual([
+				{ coinType: SUI, amount: -1_000_000n },
+			]);
+		});
+	});
+
+	test('settlement never raises a budget above its value before the transaction', () => {
+		const manager = managerWithBalanceSettings();
+		manager.updateSettings({ ...manager.getSettings()!, remainingTransactions: null });
+		const sender = normalizeSuiAddress('0x1');
+		const analysis: AutoApprovalResult = {
+			status: 'success',
+			result: autoApprovalAnalysis({
+				senderAddresses: [sender],
+				senderBalanceFlows: [{ coinType: SUI, amount: -5n }],
+			}),
+		};
+		const effects = {
+			digest: 'test-digest',
+			balanceChanges: [{ address: sender, coinType: SUI, amount: '4' }],
+		} as unknown as Parameters<AutoApprovalManager['applyTransactionEffects']>[1];
+
+		for (let i = 0; i < 3; i++) {
+			manager.commitTransaction(analysis);
+			manager.applyTransactionEffects(analysis, effects);
+		}
+
+		expect(manager.getSettings()?.coinBudgets[SUI]).toBe('10');
 	});
 });

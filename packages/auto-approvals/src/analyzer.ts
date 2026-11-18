@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 import type {
 	Analyzer,
 	AnalyzerResult,
@@ -15,7 +15,8 @@ export interface AutoApprovalAnalyzerOptions {
 	/**
 	 * The wallet's own addresses, whose balance changes count against budgets. Defaults to the
 	 * transaction sender. When set, the sender isn't added, so a transaction the wallet only
-	 * sponsors can't offset the wallet's spending with the sender's inflows.
+	 * sponsors can't offset the wallet's spending with the sender's inflows. Required for sponsored
+	 * transactions.
 	 */
 	senderAddresses?: string[];
 }
@@ -44,14 +45,42 @@ export const autoApprovalAnalyzer = createAnalyzer({
 	analyze:
 		(options: AutoApprovalAnalyzeOptions, tx) =>
 		async ({ bytes, balanceFlows, accessLevel, ownedObjects, digest, operationType }) => {
-			const sender = tx.getData().sender;
+			const { sender, gasData } = tx.getData();
+			const configuredAddresses = options.autoApproval?.senderAddresses;
+			const gasOwner = gasData.owner ?? sender;
+
+			if (configuredAddresses?.length === 0) {
+				throw new Error('autoApproval.senderAddresses must not be empty');
+			}
+
+			if (
+				!configuredAddresses &&
+				gasOwner &&
+				sender &&
+				normalizeSuiAddress(gasOwner) !== normalizeSuiAddress(sender)
+			) {
+				throw new Error(
+					'Sponsored transactions need autoApproval.senderAddresses to identify the wallet',
+				);
+			}
+
 			const senderAddresses = uniqueNormalizedAddresses(
-				options.autoApproval?.senderAddresses ?? (sender ? [sender] : []),
+				configuredAddresses ?? (sender ? [sender] : []),
 			);
-			const senderBalanceFlows = aggregateBalanceFlowsForAddresses(
+			let senderBalanceFlows = aggregateBalanceFlowsForAddresses(
 				balanceFlows.byAddress,
 				senderAddresses,
 			);
+
+			// An aborted transaction rolls back every inflow but still spends gas, so a wallet paying
+			// gas is charged at least the gas budget. Settlement reconciles with the real effects.
+			if (
+				gasOwner &&
+				gasData.budget != null &&
+				senderAddresses.includes(normalizeSuiAddress(gasOwner))
+			) {
+				senderBalanceFlows = withMinimumSuiOutflow(senderBalanceFlows, BigInt(gasData.budget));
+			}
 
 			const coinValues = options.getCoinPrices
 				? await getCoinValues(senderBalanceFlows, options.getCoinPrices)
@@ -76,6 +105,15 @@ export const autoApprovalAnalyzer = createAnalyzer({
 export type AutoApprovalAnalysis =
 	typeof autoApprovalAnalyzer extends Analyzer<infer R, any, any> ? R : never;
 export type AutoApprovalResult = AnalyzerResult<AutoApprovalAnalysis>;
+
+const SUI_TYPE = normalizeStructTag('0x2::sui::SUI');
+
+function withMinimumSuiOutflow(flows: CoinFlow[], minimum: bigint): CoinFlow[] {
+	const sui = flows.find((flow) => flow.coinType === SUI_TYPE);
+	const amount = sui && sui.amount < -minimum ? sui.amount : -minimum;
+
+	return [...flows.filter((flow) => flow.coinType !== SUI_TYPE), { coinType: SUI_TYPE, amount }];
+}
 
 function uniqueNormalizedAddresses(addresses: string[]): string[] {
 	return [...new Set(addresses.map((address) => normalizeSuiAddress(address)))];

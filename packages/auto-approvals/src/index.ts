@@ -9,7 +9,7 @@ export type {
 	AutoApprovalAnalysis,
 } from './analyzer.js';
 
-export { AutoApprovalManager } from './manager.js';
+export { AutoApprovalManager, AutoApprovalRejectedError } from './manager.js';
 export type { AutoApprovalIssue, AutoApprovalCheck } from './manager.js';
 
 export * from './schemas/index.js';

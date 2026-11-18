@@ -28,12 +28,18 @@ tx.add(operationType('increment-counter'));
 ## Wallet: check, commit, and reconcile
 
 The wallet must list `OPERATION_INTENT` in its `supportedIntents` so the operation reaches it.
-`readOperationType` reads the operation and removes the intent before analysis. Pass resolvers for
-any other custom intents the wallet supports in its `intentResolvers` option.
+`readOperationType` reads the operation and removes the intent before analysis. If the transaction
+also carries other custom intents, pass their resolvers in `intentResolvers` and build the result
+before analysing it, since `analyze` can't copy unresolved custom intents:
+
+```ts
+const { transaction, operationType } = await readOperationType(json, { intentResolvers });
+const bytes = await Transaction.from(transaction, { intentResolvers }).build({ client });
+```
 
 Budgets are charged for the net balance change of the transaction sender. If the wallet signs with
 other addresses, such as a gas sponsor, pass all of its own addresses in
-`autoApproval.senderAddresses` instead.
+`autoApproval.senderAddresses` instead. Analysis fails for a sponsored transaction without them.
 
 ```ts
 import { analyze } from '@mysten/wallet-sdk';
@@ -83,3 +89,12 @@ Each coin type can have its own budget in `coinBudgets`, as a raw amount in the 
 unit. Spending in coin types without one is charged to `sharedBudget`, which is a value in the same
 units `getCoinPrices` returns. A coin that `getCoinPrices` can't price can only be spent from its
 own coin budget.
+
+A transaction is charged for the net balance change of the wallet's addresses. When the wallet pays
+gas, it's charged at least the gas budget in SUI even if it expects an inflow, because an aborted
+transaction rolls back the inflow but still spends gas. `applyTransactionEffects` then replaces the
+reservation with the real balance changes, but never leaves a budget higher than it was before the
+transaction.
+
+`commitTransaction` re-checks the transaction and throws `AutoApprovalRejectedError`, with the
+digest and the check result, if it no longer passes.
