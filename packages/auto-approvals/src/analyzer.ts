@@ -10,7 +10,6 @@ import type {
 	CoinValueAnalyzerOptions,
 } from '@mysten/wallet-sdk';
 import { analyzers, createAnalyzer } from '@mysten/wallet-sdk';
-import { extractOperationType, OPERATION_INTENT } from './intent.js';
 
 export interface AutoApprovalAnalyzerOptions {
 	senderAddresses?: string[];
@@ -23,27 +22,9 @@ interface AutoApprovalAnalyzeOptions {
 }
 
 const operationType = createAnalyzer({
-	dependencies: {
-		bytes: analyzers.bytes,
-	},
-	analyze: (options: Pick<AutoApprovalAnalyzeOptions, 'operationType'>, tx) => {
-		let operationType = options.operationType ?? null;
-
-		if (!operationType) {
-			tx.addIntentResolver(
-				OPERATION_INTENT,
-				extractOperationType((type) => {
-					operationType = type;
-				}),
-			);
-		}
-
-		return async () => {
-			return {
-				result: operationType,
-			};
-		};
-	},
+	analyze: (options: Pick<AutoApprovalAnalyzeOptions, 'operationType'>) => () => ({
+		result: options.operationType ?? null,
+	}),
 });
 
 export const autoApprovalAnalyzer = createAnalyzer({

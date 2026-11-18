@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-export { operationType, extractOperationType, OPERATION_INTENT } from './intent.js';
+export { operationType, readOperationType, OPERATION_INTENT } from './intent.js';
 export { autoApprovalAnalyzer } from './analyzer.js';
 export type {
 	AutoApprovalAnalyzerOptions,

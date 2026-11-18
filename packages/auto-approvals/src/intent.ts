@@ -1,9 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Transaction, TransactionResult } from '@mysten/sui/transactions';
-import type { TransactionDataBuilder } from '@mysten/sui/transactions';
-import { TransactionCommands } from '@mysten/sui/transactions';
+import type { TransactionDataBuilder, TransactionResult } from '@mysten/sui/transactions';
+import { Transaction, TransactionCommands } from '@mysten/sui/transactions';
 
 export const OPERATION_INTENT = '@mysten/wallet-kit/AutoApprovalOperation';
 
@@ -26,15 +25,37 @@ export function operationType(operationType: string) {
 	};
 }
 
-export function extractOperationType(cb: (operationType: string) => void) {
-	return (
-		transactionData: TransactionDataBuilder,
-		_options: unknown,
-		next: () => Promise<void>,
-	) => {
-		replaceOperationTypeIntent(transactionData, cb);
-		return next();
-	};
+/**
+ * Reads the operation type a dApp tagged with {@link operationType} and returns a copy of the
+ * transaction (as JSON) with that intent removed, ready to pass to `analyze` with `operationType`.
+ * Other intents are left for the wallet to resolve.
+ */
+export async function readOperationType(
+	transaction: Parameters<typeof Transaction.from>[0],
+): Promise<{ transaction: string; operationType: string | null }> {
+	let operationType: string | null = null;
+
+	const tx = Transaction.from(transaction, {
+		intentResolvers: {
+			[OPERATION_INTENT]: (transactionData, _options, next) => {
+				replaceOperationTypeIntent(transactionData, (type) => {
+					operationType = type;
+				});
+				return next();
+			},
+		},
+	});
+
+	const otherIntents = tx
+		.getData()
+		.commands.flatMap((command) =>
+			command.$kind === '$Intent' && command.$Intent.name !== OPERATION_INTENT
+				? [command.$Intent.name]
+				: [],
+		);
+	const json = await tx.toJSON({ supportedIntents: otherIntents });
+
+	return { transaction: json, operationType };
 }
 
 function replaceOperationTypeIntent(

@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, test, expect, vi } from 'vitest';
-import { Transaction } from '@mysten/sui/transactions';
+import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
 import { analyze, analyzers } from '@mysten/wallet-sdk';
 import {
 	autoApprovalAnalyzer,
+	OPERATION_INTENT,
+	operationType,
+	readOperationType,
 	AutoApprovalManager,
 	AutoApprovalPolicy,
 	type AutoApprovalSettings,
@@ -808,5 +811,67 @@ describe('AutoApprovalManager', () => {
 				).toThrow();
 			}
 		});
+	});
+
+	describe('operation intent', () => {
+		test('pins the intent name', () => {
+			expect(OPERATION_INTENT).toBe('@mysten/wallet-kit/AutoApprovalOperation');
+		});
+
+		async function taggedTransaction() {
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+			tx.setGasBudget(10_000_000n);
+			tx.setGasPrice(1_000n);
+			tx.add(operationType('increment-counter'));
+			tx.transferObjects([coinWithBalance({ balance: 1n })], DEFAULT_SENDER);
+			return tx;
+		}
+
+		test.each(['transaction', 'json'] as const)(
+			'reads and removes the operation from a %s',
+			async (kind) => {
+				const tagged = await taggedTransaction();
+				const input =
+					kind === 'transaction'
+						? tagged
+						: await tagged.toJSON({ supportedIntents: [OPERATION_INTENT, 'CoinWithBalance'] });
+
+				const { transaction, operationType: type } = await readOperationType(input);
+				const intents = Transaction.from(transaction)
+					.getData()
+					.commands.flatMap((command) =>
+						command.$kind === '$Intent' ? [command.$Intent.name] : [],
+					);
+
+				expect(type).toBe('increment-counter');
+				expect(intents).toEqual(['CoinWithBalance']);
+
+				const results = await analyze(
+					{ autoApproval: autoApprovalAnalyzer },
+					{ transaction, client: new MockSuiClient(), operationType: type! },
+				);
+
+				expect(results.autoApproval.status).toBe('success');
+				expect(results.autoApproval.result?.operationType).toBe('increment-counter');
+			},
+		);
+
+		test('returns null for an untagged transaction', async () => {
+			const tx = new Transaction();
+			tx.setSender(DEFAULT_SENDER);
+
+			expect((await readOperationType(tx)).operationType).toBeNull();
+		});
+	});
+
+	test('updateSettings rejects changes while a transaction is pending', () => {
+		const manager = managerWithSettings();
+		const settings = manager.getSettings()!;
+		manager.commitTransaction({ status: 'success', result: autoApprovalAnalysis() });
+
+		expect(() => manager.updateSettings(settings)).toThrow(
+			'Settle or revert pending transactions before updating settings',
+		);
 	});
 });

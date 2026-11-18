@@ -27,15 +27,23 @@ tx.add(operationType('increment-counter'));
 
 ## Wallet: check, commit, and reconcile
 
+The wallet must list `OPERATION_INTENT` in its `supportedIntents` so the operation reaches it.
+`readOperationType` reads the operation and removes the intent before analysis.
+
 ```ts
 import { analyze } from '@mysten/wallet-sdk';
-import { AutoApprovalManager, autoApprovalAnalyzer } from '@mysten-incubation/auto-approvals';
+import {
+	AutoApprovalManager,
+	autoApprovalAnalyzer,
+	readOperationType,
+} from '@mysten-incubation/auto-approvals';
 
 const manager = new AutoApprovalManager({ policy, state: savedState });
 
+const { transaction, operationType } = await readOperationType(transactionJson);
 const { autoApproval } = await analyze(
 	{ autoApproval: autoApprovalAnalyzer },
-	{ transaction, client, getCoinPrices },
+	{ transaction, client, operationType: operationType ?? undefined, getCoinPrices },
 );
 
 const check = manager.checkTransaction(autoApproval);
@@ -57,6 +65,10 @@ saveState(manager.export());
 
 If the transaction is never executed (signing or submission fails), call
 `manager.revertTransaction(autoApproval)` to release the reserved budget.
+
+`updateSettings` throws while a transaction is pending, so settle or revert it first. Pending
+transactions are stored by digest only, so after a restart a pending transaction can't be settled or
+reverted with its original budget accounting.
 
 ## Budgets
 

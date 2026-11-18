@@ -423,6 +423,10 @@ export class AutoApprovalManager {
 	}
 
 	updateSettings(settings: AutoApprovalSettings): void {
+		if (this.#state.pendingDigests.length > 0) {
+			throw new Error('Settle or revert pending transactions before updating settings');
+		}
+
 		const validatedSettings = parse(AutoApprovalSettingsSchema, settings);
 		this.#state.settings = validatedSettings;
 	}
