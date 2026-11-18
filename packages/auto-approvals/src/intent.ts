@@ -31,9 +31,10 @@ export function operationType(operationType: string) {
 
 /**
  * Reads the operation type a dApp tagged with {@link operationType} and returns a copy of the
- * transaction (as JSON) with that intent removed, ready to pass to `analyze` with `operationType`.
+ * transaction (as JSON) with that intent removed, to pass to `analyze` with `operationType`.
  * Other intents are left for the wallet to resolve; pass resolvers for any custom ones the wallet
- * supports in `intentResolvers`.
+ * supports in `intentResolvers`. `analyze` can't copy unresolved custom intents, so in that case
+ * build the result with the same resolvers and analyse the bytes instead.
  */
 export async function readOperationType(
 	transaction: Parameters<typeof Transaction.from>[0],
