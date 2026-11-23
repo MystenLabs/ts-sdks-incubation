@@ -2,6 +2,11 @@ name: Changesets
 on:
   ## Allow triggering this workflow manually via GitHub CLI/web
   workflow_dispatch:
+    inputs:
+      trust_check:
+        description: 'Validate npm trusted publishing with dry-run publishes instead of releasing'
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -17,6 +22,7 @@ permissions:
 
 jobs:
   version:
+    if: ${{ !inputs.trust_check }}
     environment: npm-release
     runs-on: ubuntu-latest
     steps:
@@ -42,3 +48,23 @@ jobs:
           NPM_CONFIG_PROVENANCE: true
           NPM_TOKEN: '' # https://github.com/changesets/changesets/issues/1152#issuecomment-3190884868
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Trusted-publishing configs are tied to this workflow file and environment, so the check runs here.
+  trust-check:
+    if: ${{ inputs.trust_check }}
+    environment: npm-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout code repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # Pin v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Nodejs
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate trusted publishing
+        run: node scripts/check-trusted-publishing.mjs
