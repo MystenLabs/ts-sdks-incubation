@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ScopedRegistryHost } from '@lit-labs/scoped-registry-mixin';
-import { html, LitElement, nothing } from 'lit';
+import { html, LitElement, nothing, svg } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
+import { encode as encodeQr } from 'uqr';
 import type { ChainDefinition, ChainKey } from '../chains/types.js';
 import type { CctpKit } from '../core/index.js';
 import type { TransferRecord, TransferStatus } from '../core/types.js';
+import type { DepositState } from '../deposit/watcher.js';
+import { netAmountOf } from '../sponsor/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { formatDuration, formatElapsed, waitProgress } from '../utils/duration.js';
 import { describeError } from '../utils/errors.js';
@@ -115,6 +118,37 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	@state()
 	private _importError: string | null = null;
 
+	/** Which form shows: the wallet one, or a deposit address to send USDC to from anywhere. */
+	@state()
+	private _mode: 'wallet' | 'address' = 'wallet';
+
+	@state()
+	private _depositFrom: ChainKey | null = null;
+
+	/** A Sui recipient typed for the deposit address; empty means the connected Sui wallet. */
+	@state()
+	private _depositRecipient = '';
+
+	/**
+	 * The recovery address form is open: to add one, or to change the one saved for this Sui
+	 * address. Saved, it closes; the deposit address only ever uses the saved one.
+	 */
+	@state()
+	private _recoveryEditing = false;
+
+	@state()
+	private _recoveryDraft = '';
+
+	@state()
+	private _recoveryError: string | null = null;
+
+	@state()
+	private _copied = false;
+
+	/** What the deposit watcher was started for, so it restarts only when that changes. */
+	#depositKey = '';
+	#stopDeposit: (() => void) | undefined;
+
 	/** A finished transfer the tracker just found. It has no card, so the tracker shows it. */
 	@state()
 	private _importFound: TransferRecord | null = null;
@@ -125,16 +159,38 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		super.connectedCallback();
 		this.#clock = setInterval(() => {
 			const transfers = this.instance?.stores.$transfers.get() ?? [];
-			if (transfers.some((t) => t.status === 'attesting')) this._now = Date.now();
+			const run = this.instance?.stores.$deposit.get()?.latest;
+			const depositRecord = run?.burnTx
+				? transfers.find((t) => t.sourceTxHash === run.burnTx)
+				: undefined;
+			const depositActive =
+				!!run &&
+				(!depositRecord ||
+					depositRecord.status !== 'complete' ||
+					Date.now() - (depositRecord.completedAt ?? 0) < DEPOSIT_SUCCESS_MS + 1_000);
+			if (transfers.some((t) => t.status === 'attesting') || depositActive) this._now = Date.now();
 		}, 1000);
 	}
 
 	override disconnectedCallback() {
 		super.disconnectedCallback();
 		if (this.#clock) clearInterval(this.#clock);
+		this.#stopDeposit?.();
+		this.#stopDeposit = undefined;
+		this.#depositKey = '';
 	}
 
+	#modeChosen = false;
+
 	override willUpdate() {
+		// The host may open on the deposit address; after that the mode is the user's.
+		if (!this.#modeChosen && this.instance) {
+			this.#modeChosen = true;
+			const deposit = this.instance.config.deposit;
+			if ((deposit?.defaultOpen || deposit?.only) && this.instance.depositChains().length > 0) {
+				this._mode = 'address';
+			}
+		}
 		// Remember the card's height before every render so any content change can be eased.
 		if (this.hasUpdated && this._views) {
 			this.#viewsStartHeight = this._views.getBoundingClientRect().height;
@@ -143,6 +199,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 	override updated(changed: Map<PropertyKey, unknown>) {
 		this.#animateViewsHeight();
+		this.#syncDepositWatch();
 		if (changed.has('_importOpen') && this._importOpen) {
 			this.shadowRoot?.querySelector<HTMLInputElement>('.import input')?.focus();
 		}
@@ -218,6 +275,9 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	private renderBridgeView(kit: CctpKit) {
+		if (this.#depositMode(kit)) {
+			return this.renderDepositView(kit);
+		}
 		const canFlip = (kit.config.direction ?? 'both') === 'both';
 		const problem = kit.validate();
 		const title = kit.config.ui?.title ?? 'Bridge USDC';
@@ -231,6 +291,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 						</div>`
 					: nothing
 			}
+			${this.renderModeToggle(kit)}
 
 			<div class="panels">
 				${this.renderPanel(kit, 'from')}
@@ -267,6 +328,505 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 				${this._importOpen ? nothing : this.renderImportToggle()} ${this.renderHistoryToggle(kit)}
 			</div>
 		`;
+	}
+
+	/** Whether the deposit view shows: chosen on the tab, or the only view the host allows. */
+	#depositMode(kit: CctpKit) {
+		return (
+			(this._mode === 'address' || !!kit.config.deposit?.only) && kit.depositChains().length > 0
+		);
+	}
+
+	private renderModeToggle(kit: CctpKit) {
+		if (kit.depositChains().length === 0 || kit.config.deposit?.only) return nothing;
+		const mode = (value: 'wallet' | 'address', label: string) =>
+			html`<button
+				type="button"
+				role="tab"
+				aria-selected=${this._mode === value}
+				class=${classMap({ active: this._mode === value })}
+				@click=${() => (this._mode = value)}
+			>
+				${label}
+			</button>`;
+		return html`<div class="segmented mode" role="tablist" part="mode">
+			${mode('wallet', 'Connect a wallet')} ${mode('address', 'Send to an address')}
+		</div>`;
+	}
+
+	/** The deposit form's inputs as they stand, and the address they make, or why there is none. */
+	private depositInputsFor(kit: CctpKit) {
+		const chains = kit.depositChains();
+		const from = chains.find((c) => c.key === this._depositFrom) ?? chains[0]!;
+		const sui = kit.stores.$wallets.get().sui;
+		// A typed recipient, once asked for, is the only one: never the wallet behind it.
+		const custom = this._depositRecipient !== '';
+		const recipient = (custom ? this._depositRecipient.trim() : (sui?.address ?? '')).toLowerCase();
+		const recovery = kit.config.deposit?.recovery ?? 'none';
+		const owner =
+			recovery === 'none' || !recipient ? null : kit.savedRecovery({ from: from.key, recipient });
+		let address: ReturnType<CctpKit['depositAddress']> | null = null;
+		let problem: string | null = null;
+		if (!recipient) problem = 'Connect your Sui wallet, or enter the Sui address to receive on';
+		else {
+			try {
+				address = kit.depositAddress({ from: from.key, recipient, owner });
+			} catch (error) {
+				problem = error instanceof Error ? error.message : String(error);
+			}
+		}
+		return { chains, from, recipient, owner, recovery, address, problem };
+	}
+
+	#syncDepositWatch() {
+		const kit = this.instance;
+		const inputs = kit && this.#depositMode(kit) ? this.depositInputsFor(kit) : null;
+		const key =
+			inputs?.address && kit
+				? `${inputs.from.key}:${inputs.recipient}:${inputs.address.owner ?? ''}`
+				: '';
+		if (key === this.#depositKey) return;
+		this.#stopDeposit?.();
+		this.#stopDeposit = undefined;
+		this.#depositKey = key;
+		if (key && kit && inputs) {
+			this.#stopDeposit = kit.watchDeposit({
+				from: inputs.from.key,
+				recipient: inputs.recipient,
+				owner: inputs.owner,
+			});
+		}
+	}
+
+	private renderDepositView(kit: CctpKit) {
+		const title = kit.config.ui?.title ?? 'Bridge USDC';
+		const inputs = this.depositInputsFor(kit);
+		const { from } = inputs;
+		const sui = kit.stores.$wallets.get().sui;
+		const state = kit.stores.$deposit.get();
+		const watched =
+			state && inputs.address && state.address === inputs.address.address ? state : null;
+		const suiName =
+			kit.stores.$destinationChain.get().ecosystem === 'sui'
+				? kit.stores.$destinationChain.get().name
+				: 'Sui';
+
+		return html`
+			${title ? html`<div class="header"><h2 class="title">${title}</h2></div>` : nothing}
+			${this.renderModeToggle(kit)}
+
+			<div class="panels">
+				<div class="panel" part="from">
+					<div class="row">
+						<span class="label">Send USDC on</span>
+						<internal-chain-select
+							.options=${inputs.chains}
+							.value=${from.key}
+							@chain-change=${(e: CustomEvent<{ key: ChainKey }>) => (this._depositFrom = e.detail.key)}
+						></internal-chain-select>
+					</div>
+					${this.renderRecovery(kit, inputs)}
+				</div>
+				<span class="flip" aria-hidden="true">${downIcon}</span>
+				<div class="panel" part="to">
+					<div class="row">
+						<span class="label">Receive on</span>
+						<span class="chain-static" part="sui-chain">
+							${renderChainIcon(kit.chains.find((c) => c.ecosystem === 'sui')!)}
+							<span>${suiName}</span>
+						</span>
+					</div>
+					<div class="row">
+						${
+							this._depositRecipient || !sui
+								? html`<span class="muted">Sui address to receive on</span>`
+								: html`<button
+										type="button"
+										class="text-button"
+										@click=${() => (this._depositRecipient = ' ')}
+									>
+										Send to a different address
+									</button>`
+						}
+						${
+							sui
+								? this._depositRecipient
+									? html`<button
+											type="button"
+											class="text-button"
+											@click=${() => (this._depositRecipient = '')}
+										>
+											Use connected wallet
+										</button>`
+									: html`<span class="pill" title=${sui.address}>${shorten(sui.address)}</span>`
+								: nothing
+						}
+					</div>
+					${
+						this._depositRecipient || !sui
+							? html`<input
+									class="field"
+									type="text"
+									placeholder="0x… (64 hex)"
+									.value=${this._depositRecipient.trim()}
+									@input=${(e: Event) =>
+										(this._depositRecipient = (e.target as HTMLInputElement).value || ' ')}
+								/>`
+							: nothing
+					}
+				</div>
+			</div>
+
+			${
+				inputs.address
+					? this.renderDepositAddress(kit, from, inputs.address, watched)
+					: html`<p class="notice" part="notice">${inputs.problem}</p>`
+			}
+			${this.renderTransfers(kit)}
+			<div class="footer-links">${this.renderHistoryToggle(kit)}</div>
+		`;
+	}
+
+	/**
+	 * The recovery address for this Sui address on this source chain. Once saved, it is one line
+	 * with Change; the form only shows to add one, or to replace or remove it.
+	 */
+	private renderRecovery(kit: CctpKit, inputs: ReturnType<CctpBridge['depositInputsFor']>) {
+		const { from, recipient, recovery, owner } = inputs;
+		if (recovery === 'none') return nothing;
+		const edit = (draft: string) => {
+			this._recoveryDraft = draft;
+			this._recoveryError = null;
+			this._recoveryEditing = true;
+		};
+		if (owner && !this._recoveryEditing) {
+			return html`<div class="row" part="recovery">
+				<span class="muted">Recovery address</span>
+				<span class="recovery-saved">
+					<span class="pill" title=${owner}>${shorten(owner)}</span>
+					<button type="button" class="text-button" @click=${() => edit(owner)}>Change</button>
+				</span>
+			</div>`;
+		}
+		if (!owner && !this._recoveryEditing && recovery === 'optional') {
+			return html`<div class="row" part="recovery">
+				<button type="button" class="text-button" aria-expanded="false" @click=${() => edit('')}>
+					Recovery address (optional)
+				</button>
+			</div>`;
+		}
+		return this.renderRecoveryForm(kit, from, recipient, recovery, owner);
+	}
+
+	private renderRecoveryForm(
+		kit: CctpKit,
+		from: ChainDefinition,
+		recipient: string,
+		recovery: 'optional' | 'required',
+		saved: string | null,
+	) {
+		const sourceAccount = kit.stores.$wallets.get()[from.ecosystem as 'evm' | 'solana'];
+		const canConnect = from.ecosystem === 'evm' || from.ecosystem === 'solana';
+		const save = (value: string | null) => {
+			if (!recipient) {
+				this._recoveryError = 'Enter the Sui address to receive on first';
+				return;
+			}
+			try {
+				kit.saveRecovery({ from: from.key, recipient, owner: value });
+				this._recoveryEditing = false;
+				this._recoveryError = null;
+				this.requestUpdate();
+			} catch (error) {
+				this._recoveryError = error instanceof Error ? error.message : String(error);
+			}
+		};
+		const close = () => {
+			this._recoveryEditing = false;
+			this._recoveryError = null;
+		};
+		return html`<div class="row" part="recovery">
+				<span class="muted">Recovery address${recovery === 'optional' ? ' (optional)' : ''}</span>
+				${
+					sourceAccount && sourceAccount.address !== saved
+						? html`<button
+								type="button"
+								class="text-button"
+								@click=${() => save(sourceAccount.address)}
+							>
+								Use connected wallet
+							</button>`
+						: canConnect && !sourceAccount
+							? html`<internal-button
+									variant="secondary"
+									small
+									@click=${() => this.connect(kit, from)}
+								>
+									Connect wallet
+								</internal-button>`
+							: nothing
+				}
+			</div>
+			<div class="recovery-input">
+				<input
+					class="field"
+					type="text"
+					placeholder="Your address on ${from.name}"
+					.value=${this._recoveryDraft}
+					@input=${(e: Event) => {
+						this._recoveryDraft = (e.target as HTMLInputElement).value;
+						this._recoveryError = null;
+					}}
+					@keydown=${(e: KeyboardEvent) => {
+						if (e.key === 'Enter') save(this._recoveryDraft);
+					}}
+				/>
+				<internal-button
+					variant="secondary"
+					small
+					?disabled=${!this._recoveryDraft.trim()}
+					@click=${() => save(this._recoveryDraft)}
+				>
+					Save
+				</internal-button>
+			</div>
+			${this._recoveryError ? html`<span class="error hint">${this._recoveryError}</span>` : nothing}
+			<span class="muted hint"
+				>Only this address can take back, on ${from.name}, funds that were not bridged yet: the
+				wrong token, or too little to bridge. It is saved for this Sui address.</span
+			>
+			${
+				saved || recovery === 'optional'
+					? html`<div class="recovery-actions">
+							<button type="button" class="text-button" @click=${close}>Cancel</button>
+							${
+								saved && recovery === 'optional'
+									? html`<button type="button" class="text-button" @click=${() => save(null)}>
+											Remove
+										</button>`
+									: nothing
+							}
+						</div>`
+					: nothing
+			}`;
+	}
+
+	private renderDepositAddress(
+		kit: CctpKit,
+		from: ChainDefinition,
+		address: ReturnType<CctpKit['depositAddress']>,
+		state: DepositState | null,
+	) {
+		const qr = encodeQr(address.address, { border: 2, ecc: 'M' });
+		const cells = [];
+		for (let y = 0; y < qr.size; y++) {
+			for (let x = 0; x < qr.size; x++) {
+				if (qr.data[y]![x]) cells.push(`M${x} ${y}h1v1h-1z`);
+			}
+		}
+		const minimum = state?.minimum;
+		const copy = async () => {
+			try {
+				await navigator.clipboard.writeText(address.address);
+				this._copied = true;
+				setTimeout(() => (this._copied = false), 1500);
+			} catch {
+				// The address stays on screen to copy by hand.
+			}
+		};
+		return html`
+			<div class="deposit" part="deposit">
+				<div class="qr" part="qr" aria-label="QR code of the deposit address">
+					${svg`<svg viewBox="0 0 ${qr.size} ${qr.size}" shape-rendering="crispEdges" role="img">
+						<rect width=${qr.size} height=${qr.size} fill="#fff"></rect>
+						<path d=${cells.join('')} fill="#000"></path>
+					</svg>`}
+				</div>
+				<div class="deposit-body">
+					<span class="label">Deposit address on ${from.name}</span>
+					<code class="deposit-address" part="deposit-address">${address.address}</code>
+					<div class="row">
+						<internal-button variant="secondary" small @click=${copy}>
+							${this._copied ? 'Copied' : 'Copy address'}
+						</internal-button>
+						${
+							address.owner
+								? html`<span
+										class="trusted"
+										title="Your recovery address can take back what is not bridged"
+										>${smallCheckIcon}Recoverable</span
+									>`
+								: html`<span
+										class="warning"
+										title="Nobody can take back what is sent here and not bridged"
+										>Non-recoverable</span
+									>`
+						}
+					</div>
+				</div>
+			</div>
+			<div class="quote deposit-terms" part="deposit-terms">
+				<div class="row"><span>Send</span><span>USDC on ${from.name} only</span></div>
+				${
+					minimum !== undefined
+						? html`<div class="row">
+									<span>Minimum</span><span>${formatUsdc(roundUpToCent(minimum))} USDC</span>
+								</div>
+								<div class="row">
+									<span>Fee</span><span>${formatUsdc(state!.keeperFee)} USDC + Circle's fee</span>
+								</div>`
+						: nothing
+				}
+				${
+					address.owner
+						? nothing
+						: html`<div class="row" title="Anything that can't be bridged stays at this address">
+								<span>Recovery</span><span>None</span>
+							</div>`
+				}
+			</div>
+			${this.renderDepositActivity(kit, from, state)}
+		`;
+	}
+
+	/**
+	 * What the deposit address is doing now. A deposit can cross in seconds, so it gets a moment of
+	 * its own: a tracker while it moves, a success panel when it lands, then back to waiting with
+	 * the last deposit still on screen. All of it stays inside the widget.
+	 */
+	private renderDepositActivity(kit: CctpKit, from: ChainDefinition, state: DepositState | null) {
+		if (!state) return nothing;
+		if (state.phase === 'mismatch') {
+			return html`<p class="error" role="alert">
+				Do not send to this address: the service derived a different one. ${state.error}
+			</p>`;
+		}
+		const sui = kit.chains.find((c) => c.ecosystem === 'sui')!;
+		const run = state.latest;
+		const record = run?.burnTx
+			? kit.stores.$transfers.get().find((t) => t.sourceTxHash === run.burnTx)
+			: undefined;
+		const startedAt = run ? (run.incoming?.at ?? run.seenAt) : 0;
+
+		// In flight: funds seen, or a burn the kit is still taking to Sui.
+		if (
+			run &&
+			(state.phase === 'received' ||
+				(run.burnTx && (!record || (record.status !== 'complete' && record.status !== 'failed'))))
+		) {
+			const sentThroughCircle =
+				!!record && ['readyToMint', 'minting', 'complete'].includes(record.status);
+			const step = !run.burnTx ? 1 : sentThroughCircle ? 3 : 2;
+			const sent = run.sent ?? (record ? BigInt(record.amount) + state.keeperFee : null);
+			return this.renderDepositTracker(
+				[
+					html`Received ${sent !== null ? `${formatUsdc(sent)} USDC` : 'USDC'} on
+					${from.name}${
+						run.incoming ? html` ${this.renderTxLink(from, run.incoming.txHash)}` : nothing
+					}`,
+					html`Sent through
+					Circle${run.burnTx ? html` ${this.renderTxLink(from, run.burnTx)}` : nothing}`,
+					html`Arriving on ${sui.name}`,
+				],
+				step,
+				this._now - startedAt,
+			);
+		}
+
+		const waiting = html`<p class="muted deposit-status" part="deposit-status" aria-live="polite">
+			${this.renderDepositWaiting(from, state)}
+		</p>`;
+		if (!run || !record || record.status !== 'complete') return waiting;
+
+		const received = netAmountOf(record.message) ?? BigInt(record.amount);
+		const sent = run.sent ?? BigInt(record.amount) + state.keeperFee;
+		const took = record.completedAt && !run.recovered ? record.completedAt - startedAt : null;
+		const tookText = took !== null && took > 0 ? formatTook(took) : null;
+		const link = record.destinationTxHash
+			? html`<a
+					class="link"
+					href=${txUrl(sui, record.destinationTxHash)}
+					target="_blank"
+					rel="noreferrer"
+					>View on ${sui.name}</a
+				>`
+			: nothing;
+
+		// Just landed: a moment of its own, then back to waiting.
+		if (
+			!run.recovered &&
+			record.completedAt &&
+			this._now - record.completedAt < DEPOSIT_SUCCESS_MS
+		) {
+			return html`<div class="deposit-success" part="deposit-success" role="status">
+				${checkIcon}
+				<div class="deposit-success-body">
+					<strong>${formatUsdc(received)} USDC arrived on ${sui.name}</strong>
+					<span class="muted"
+						>Sent ${formatUsdc(sent)} USDC · ${formatUsdc(sent > received ? sent - received : 0n)}
+						USDC in fees${tookText ? html` · ${tookText}` : nothing}</span
+					>
+					${link}
+				</div>
+			</div>`;
+		}
+
+		return html`${waiting}
+			<p class="deposit-last" part="deposit-last">
+				${smallCheckIcon}
+				<span
+					>Last deposit: ${formatUsdc(received)} USDC arrived on
+					${sui.name}${tookText ? html` in ${tookText}` : nothing}.</span
+				>
+				${
+					record.destinationTxHash
+						? html`<a
+								class="link"
+								href=${txUrl(sui, record.destinationTxHash)}
+								target="_blank"
+								rel="noreferrer"
+								>View</a
+							>`
+						: nothing
+				}
+			</p>`;
+	}
+
+	private renderDepositTracker(steps: unknown[], current: number, elapsedMs: number) {
+		return html`<div class="deposit-progress" part="deposit-progress" aria-live="polite">
+			<ol>
+				${steps.map(
+					(label, i) =>
+						html`<li class=${classMap({ done: i + 1 < current, active: i + 1 === current })}>
+							<span class="step-mark" aria-hidden="true"></span><span>${label}</span>
+						</li>`,
+				)}
+			</ol>
+			<span class="muted elapsed">${elapsedMs > 0 ? formatTook(elapsedMs) : ''}</span>
+		</div>`;
+	}
+
+	private renderTxLink(chain: ChainDefinition, hash: string) {
+		return html`<a class="link" href=${txUrl(chain, hash)} target="_blank" rel="noreferrer"
+			>${shorten(hash)}</a
+		>`;
+	}
+
+	private renderDepositWaiting(from: ChainDefinition, state: DepositState) {
+		const incoming = state.incoming
+			? html` in ${this.renderTxLink(from, state.incoming.txHash)}`
+			: nothing;
+		const balance = state.balance !== null ? formatUsdc(state.balance) : '';
+		switch (state.phase) {
+			case 'belowMinimum':
+				return html`Received ${balance} USDC${incoming}. That is below the minimum of
+				${formatUsdc(roundUpToCent(state.minimum))} USDC: send more and it adds up.`;
+			case 'unavailable':
+				return html`Received ${balance} USDC${incoming}. The service cannot send it on right now
+				(${state.error ?? 'unavailable'}). It will try again shortly.`;
+			default:
+				return html`<span class="pulse" aria-hidden="true"></span> Waiting for USDC on ${from.name}…`;
+		}
 	}
 
 	private renderPanel(kit: CctpKit, side: 'from' | 'to') {
@@ -1078,6 +1638,34 @@ const downIcon = html`<svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
 function estimateRange(chain: ChainDefinition, speed: 'fast' | 'standard'): [number, number] {
 	const range = (speed === 'fast' && chain.finality.fast) || chain.finality.standard;
 	return [range[0], range[1]];
+}
+
+/** How long a deposit that just landed keeps the success panel before the view goes back to waiting. */
+const DEPOSIT_SUCCESS_MS = 8_000;
+
+/** "8 s", "1 min 5 s": how long a deposit took, to the second. */
+function formatTook(ms: number): string {
+	const s = Math.max(1, Math.round(ms / 1000));
+	return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`;
+}
+
+const checkIcon = html`<svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+	<circle class="check-ring" cx="12" cy="12" r="11"></circle>
+	<path class="check-tick" d="M7 12.5l3.2 3.2L17 9"></path>
+</svg>`;
+
+const smallCheckIcon = html`<svg
+	class="small-check"
+	viewBox="0 0 16 16"
+	fill="none"
+	aria-hidden="true"
+>
+	<path d="M3.5 8.5l2.8 2.8L12.5 5"></path>
+</svg>`;
+
+/** Minimums read better in cents, and rounding up keeps them minimums. */
+function roundUpToCent(amount: bigint): bigint {
+	return ((amount + 9_999n) / 10_000n) * 10_000n;
 }
 
 function shorten(address: string): string {

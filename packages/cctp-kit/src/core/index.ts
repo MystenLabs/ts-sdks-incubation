@@ -41,6 +41,12 @@ import {
 	getSuiTransactionTime,
 	getSuiUsdcBalance,
 } from '../engine/sui.js';
+import { deriveDepositAddress, normalizeRecoveryAddress } from '../deposit/address.js';
+import type { DepositAddress } from '../deposit/address.js';
+import { depositBalance, findIncomingDeposit } from '../deposit/chain.js';
+import { DEPOSIT_CONTRACTS, minimumDeposit } from '../deposit/contracts.js';
+import { requestDepositProcess, watchDepositAddress } from '../deposit/watcher.js';
+import type { DepositState } from '../deposit/watcher.js';
 import { IrisClient, IrisError } from '../iris/client.js';
 import type { IrisMessage } from '../iris/client.js';
 import {
@@ -132,6 +138,30 @@ export interface CctpKit {
 	 * up to Claim like any other.
 	 */
 	importTransfer(input: { txHash: string; sourceChain?: ChainKey }): Promise<TransferRecord>;
+	/** Source chains a deposit address can be made on, for this kit's network and routes. Empty when deposits are off. */
+	depositChains(): ChainDefinition[];
+	/**
+	 * Derive the deposit address for a Sui recipient on one source chain, with or without a
+	 * recovery address there. Throws on an address that is not valid, or a chain without deposits.
+	 */
+	depositAddress(input: {
+		from: ChainKey;
+		recipient: string;
+		owner?: string | null;
+	}): DepositAddress;
+	/**
+	 * Watch a deposit address in `stores.$deposit`: when USDC arrives, have the service process it,
+	 * and track the burn like any other transfer. One address is watched at a time; watching
+	 * another, or calling the returned function, stops it.
+	 */
+	watchDeposit(input: { from: ChainKey; recipient: string; owner?: string | null }): () => void;
+	/**
+	 * The recovery address saved for this Sui recipient on this source chain's ecosystem (one for
+	 * every EVM chain, one for Solana), or null. Saved in the kit's `storage`.
+	 */
+	savedRecovery(input: { from: ChainKey; recipient: string }): string | null;
+	/** Save, replace or (with `owner: null`) forget it. Throws on an address that is not valid there. */
+	saveRecovery(input: { from: ChainKey; recipient: string; owner: string | null }): void;
 	/** Whether a transfer is currently being driven (by this kit or another one sharing its storage). */
 	isRunning(id: string): boolean;
 	/** Archive a transfer: hidden from the pending list, kept in storage and history, still driven if in flight. */
@@ -204,6 +234,16 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	const routes = resolveRoutes(chains, direction, config.chains);
 	if (routes.from.length === 0 || routes.to.length === 0) {
 		throw new Error('CCTP kit configuration leaves no valid routes');
+	}
+	const depositBaseUrl = config.deposit?.baseUrl ?? config.sponsor?.baseUrl;
+	// Before anything subscribes or polls: a deposit-only widget with nothing to deposit from is
+	// a configuration error, not an empty card.
+	if (config.deposit?.only && depositChainsFor(network, routes, depositBaseUrl).length === 0) {
+		throw new Error(
+			depositBaseUrl
+				? `deposit.only is set, but no source chain has deposit contracts on ${network} with this chain filter`
+				: 'deposit.only is set, but there is no deposit.baseUrl (or sponsor.baseUrl)',
+		);
 	}
 	const allowedSpeeds = config.transferSpeed?.allow ?? ['fast', 'standard'];
 	if (allowedSpeeds.length === 0) throw new Error('transferSpeed.allow must not be empty');
@@ -1202,6 +1242,125 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		for (const cleanup of cleanups.splice(0)) cleanup();
 	}
 
+	// --- Deposit addresses.
+	function depositChains(): ChainDefinition[] {
+		return depositChainsFor(network, routes, depositBaseUrl);
+	}
+	function depositSource(from: ChainKey) {
+		const chain = depositChains().find((c) => c.key === from);
+		const contract = DEPOSIT_CONTRACTS[network][from];
+		if (!chain || !contract)
+			throw new CctpKitError(`Deposit addresses are not available on ${from}`);
+		return { chain, contract };
+	}
+	function depositAddress(input: { from: ChainKey; recipient: string; owner?: string | null }) {
+		const { chain, contract } = depositSource(input.from);
+		const recovery = config.deposit?.recovery ?? 'none';
+		const owner = recovery === 'none' ? null : input.owner?.trim() || null;
+		if (recovery === 'required' && !owner) {
+			throw new CctpKitError(`Enter a ${chain.name} recovery address`);
+		}
+		return deriveDepositAddress({ chain, contract, recipient: input.recipient, owner });
+	}
+
+	// Recovery addresses, per Sui recipient and source ecosystem, next to the transfer list.
+	const recoveryKey = `${storageKey}:recovery`;
+	let recoveriesInMemory: Record<string, string> = {};
+	// Without storage, or once a write to it fails, the saved addresses live in memory.
+	let recoveriesInStorage = !!storage;
+	function readRecoveries(): Record<string, string> {
+		if (!storage || !recoveriesInStorage) return recoveriesInMemory;
+		try {
+			const parsed = JSON.parse(storage.getItem(recoveryKey) ?? '{}');
+			return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+		} catch {
+			return {};
+		}
+	}
+	function recoverySlot(input: { from: ChainKey; recipient: string }) {
+		const { chain } = depositSource(input.from);
+		const recipient = input.recipient.trim().toLowerCase();
+		if (!/^0x[0-9a-f]{64}$/.test(recipient)) {
+			throw new CctpKitError('Enter a full Sui address (0x and 64 hex)');
+		}
+		return { chain, key: `${recipient}:${chain.ecosystem}` };
+	}
+	function savedRecovery(input: { from: ChainKey; recipient: string }): string | null {
+		try {
+			return readRecoveries()[recoverySlot(input).key] ?? null;
+		} catch {
+			return null;
+		}
+	}
+	function saveRecovery(input: { from: ChainKey; recipient: string; owner: string | null }) {
+		const { chain, key } = recoverySlot(input);
+		const next = { ...readRecoveries() };
+		if (input.owner === null) delete next[key];
+		else next[key] = normalizeRecoveryAddress(chain, input.owner);
+		recoveriesInMemory = next;
+		if (storage && recoveriesInStorage) {
+			try {
+				storage.setItem(recoveryKey, JSON.stringify(next));
+			} catch {
+				recoveriesInStorage = false;
+			}
+		}
+	}
+
+	let stopDepositWatch: (() => void) | undefined;
+	function watchDeposit(input: { from: ChainKey; recipient: string; owner?: string | null }) {
+		stopDepositWatch?.();
+		const { chain, contract } = depositSource(input.from);
+		const derived = depositAddress(input);
+		const controller = new AbortController();
+		const initial: DepositState = {
+			...derived,
+			from: chain.key,
+			recipient: input.recipient.toLowerCase(),
+			phase: 'waiting',
+			balance: null,
+			minimum: minimumDeposit(contract),
+			keeperFee: contract.keeperFee,
+			incoming: null,
+			burns: [],
+		};
+		stores.$deposit.set(initial);
+		void watchDepositAddress(
+			initial,
+			{
+				readBalance: () => depositBalance(chain, derived),
+				findIncoming: () => findIncomingDeposit(chain, derived),
+				process: (incoming) =>
+					requestDepositProcess({
+						baseUrl: depositBaseUrl!,
+						fetch: config.deposit?.fetch,
+						chain: chain.key,
+						recipient: initial.recipient,
+						owner: derived.owner,
+						txHash: incoming?.txHash,
+					}),
+				// Circle, or the chain's node, may not have a fresh burn yet: the watcher asks again.
+				track: async (burnTx) => {
+					const record = await importTransfer({ txHash: burnTx, sourceChain: chain.key });
+					stores.$activeTransferId.set(record.id);
+				},
+				update: (state) => {
+					if (stores.$deposit.get()?.address === state.address) stores.$deposit.set(state);
+				},
+				sleep: (ms, signal) => sleep(ms, signal),
+			},
+			controller.signal,
+		).catch(() => undefined);
+		const stop = () => {
+			controller.abort();
+			if (stopDepositWatch === stop) stopDepositWatch = undefined;
+			if (stores.$deposit.get()?.address === derived.address) stores.$deposit.set(null);
+		};
+		stopDepositWatch = stop;
+		return stop;
+	}
+	cleanups.push(() => stopDepositWatch?.());
+
 	/** An attested transfer that only needs claiming, and that the sponsor may yet claim. */
 	function awaitsSponsor(record: TransferRecord): boolean {
 		if (!sponsor || !record.message || !record.attestation || record.destinationTxHash)
@@ -1404,6 +1563,11 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		resume,
 		claim,
 		importTransfer,
+		depositChains,
+		depositAddress,
+		watchDeposit,
+		savedRecovery,
+		saveRecovery,
 		isRunning,
 		dismiss,
 		restore,
@@ -1411,6 +1575,22 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		removeUnburned,
 		destroy,
 	};
+}
+
+/** Source chains with deposit contracts that can reach Sui on these routes; none without a service. */
+function depositChainsFor(
+	network: Network,
+	routes: ResolvedRoutes,
+	baseUrl: string | undefined,
+): ChainDefinition[] {
+	if (!baseUrl) return [];
+	const contracts = DEPOSIT_CONTRACTS[network];
+	return routes.from.filter(
+		(c) =>
+			!!contracts[c.key] &&
+			contracts[c.key]!.ecosystem === c.ecosystem &&
+			destinationsFor(routes, c.key).some((d) => d.ecosystem === 'sui'),
+	);
 }
 
 /** Attestation wait for a source chain and speed, from Circle's published finality table. */

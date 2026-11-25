@@ -64,6 +64,26 @@ export interface CctpKitSuiConfig {
 	executeTransaction?: SuiTransactionExecutor;
 }
 
+export interface CctpKitDepositConfig {
+	/** The claimer deployment that processes deposits. Defaults to `sponsor.baseUrl`. */
+	baseUrl?: string;
+	/**
+	 * A recovery address lets its owner take back, on the source chain, anything sent to the deposit
+	 * address that was not bridged yet. `none` (default): Sui-only addresses, which nobody can
+	 * recover from. `optional`: the user may add one. `required`: the user must.
+	 */
+	recovery?: 'none' | 'optional' | 'required';
+	/** Show the deposit address first, instead of the wallet form. Defaults to false. */
+	defaultOpen?: boolean;
+	/**
+	 * Deposit addresses only: no wallet form and no tab to switch to it. No EVM or Solana wallet is
+	 * needed. `createCctpKit` throws when no source chain has deposit contracts for the kit's
+	 * network and chain filter, rather than show an empty widget. Defaults to false.
+	 */
+	only?: boolean;
+	fetch?: typeof fetch;
+}
+
 export interface CctpKitConfig {
 	/** The host app's dapp-kit instance; the widget never mounts its own Sui wallet connection. */
 	dAppKit: AnyDAppKit;
@@ -97,6 +117,13 @@ export interface CctpKitConfig {
 	 * serves one Sui network, so pass the one for the kit's network.
 	 */
 	sponsor?: SponsorConfig;
+	/**
+	 * Deposit addresses: the user sends USDC to an address on the source chain, from any wallet or
+	 * exchange, and it arrives on Sui. The widget derives the address itself and watches it; the
+	 * claimer service processes the deposit, and the transfer then runs like any other. Off unless
+	 * a `baseUrl` is set here or for `sponsor`, and only on chains with deposit contracts.
+	 */
+	deposit?: CctpKitDepositConfig;
 	defaults?: {
 		from?: ChainKey;
 		to?: ChainKey;

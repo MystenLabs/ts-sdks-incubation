@@ -136,6 +136,97 @@ function page(visibilityState: 'visible' | 'hidden' = 'visible') {
 }
 
 describe('createCctpKit', () => {
+	it('saves a recovery address per Sui address and source ecosystem', () => {
+		const storage = createInMemoryStorage();
+		const make = () =>
+			createCctpKit({
+				dAppKit: mockDAppKit('testnet').dAppKit,
+				network: 'testnet',
+				storage,
+				iris: { fetch: irisFetch() },
+				wallets: { evm: fakeEvmAdapter(), solana: fakeSolanaAdapter() },
+				deposit: { baseUrl: 'https://claimer.example', recovery: 'optional' },
+			});
+		const kit = make();
+		const sui = `0x${'ab'.repeat(32)}`;
+		const other = `0x${'cd'.repeat(32)}`;
+		expect(kit.savedRecovery({ from: 'base', recipient: sui })).toBeNull();
+		kit.saveRecovery({
+			from: 'base',
+			recipient: sui.toUpperCase().replace('0X', '0x'),
+			owner: '0x548f4b24dfd84d29d54c1028be1f0801052dfd68',
+		});
+		// Checksummed, found whatever the Sui address's case, and only for EVM and this recipient.
+		expect(kit.savedRecovery({ from: 'base', recipient: sui })).toBe(
+			'0x548f4B24dFd84D29D54C1028Be1f0801052DfD68',
+		);
+		expect(kit.savedRecovery({ from: 'solana', recipient: sui })).toBeNull();
+		expect(kit.savedRecovery({ from: 'base', recipient: other })).toBeNull();
+		// What is saved is what the address derives from.
+		const saved = kit.savedRecovery({ from: 'base', recipient: sui });
+		expect(kit.depositAddress({ from: 'base', recipient: sui, owner: saved }).owner).toBe(saved);
+		// Not an address there, or nobody's: refused, and nothing changes.
+		expect(() => kit.saveRecovery({ from: 'base', recipient: sui, owner: 'nope' })).toThrow();
+		expect(() =>
+			kit.saveRecovery({
+				from: 'solana',
+				recipient: sui,
+				owner: '11111111111111111111111111111111',
+			}),
+		).toThrow(/cannot be zero/);
+		// Another kit on the same storage sees it, and removing forgets it.
+		const again = make();
+		expect(again.savedRecovery({ from: 'base', recipient: sui })).toBe(saved);
+		again.saveRecovery({ from: 'base', recipient: sui, owner: null });
+		expect(kit.savedRecovery({ from: 'base', recipient: sui })).toBeNull();
+		kit.destroy();
+		again.destroy();
+	});
+
+	it('deposit.only needs a chain with deposit contracts, and says so at setup', () => {
+		const base = {
+			storage: null,
+			iris: { fetch: irisFetch() },
+			wallets: { evm: fakeEvmAdapter(), solana: fakeSolanaAdapter() },
+		};
+		// Nothing is deployed on mainnet yet.
+		expect(() =>
+			createCctpKit({
+				...base,
+				dAppKit: mockDAppKit('mainnet').dAppKit,
+				network: 'mainnet',
+				deposit: { baseUrl: 'https://claimer.example', only: true },
+			}),
+		).toThrow(/no source chain has deposit contracts on mainnet/);
+		// No service to process deposits.
+		expect(() =>
+			createCctpKit({
+				...base,
+				dAppKit: mockDAppKit('testnet').dAppKit,
+				network: 'testnet',
+				deposit: { only: true },
+			}),
+		).toThrow(/no deposit\.baseUrl/);
+		// A chain filter that leaves no deposit chain.
+		expect(() =>
+			createCctpKit({
+				...base,
+				dAppKit: mockDAppKit('testnet').dAppKit,
+				network: 'testnet',
+				chains: { from: { allow: ['arbitrum'] } },
+				deposit: { baseUrl: 'https://claimer.example', only: true },
+			}),
+		).toThrow(/no source chain has deposit contracts/);
+		const kit = createCctpKit({
+			...base,
+			dAppKit: mockDAppKit('testnet').dAppKit,
+			network: 'testnet',
+			deposit: { baseUrl: 'https://claimer.example', only: true },
+		});
+		expect(kit.depositChains().map((c) => c.key)).toEqual(['solana', 'base']);
+		kit.destroy();
+	});
+
 	it('blocks the form until the quote matches the typed amount (stale quotes never burn)', async () => {
 		const { dAppKit } = mockDAppKit();
 		const kit = createCctpKit({

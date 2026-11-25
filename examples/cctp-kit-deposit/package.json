@@ -1,0 +1,21 @@
+{
+	"name": "@mysten-incubation/cctp-kit-deposit-example",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc --noEmit && vite build",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@mysten-incubation/cctp-kit": "workspace:*",
+		"@mysten/dapp-kit-core": "catalog:",
+		"@mysten/sui": "catalog:",
+		"@wagmi/core": "^3.6.0"
+	},
+	"devDependencies": {
+		"typescript": "catalog:",
+		"vite": "catalog:"
+	}
+}
