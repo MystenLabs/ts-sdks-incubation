@@ -276,6 +276,22 @@ export const styles = [
 			gap: 12px;
 		}
 
+		/* The theme's positive color, darkened toward the text color so it reads as small text. */
+		.trusted {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			color: color-mix(in oklab, var(--cctp-kit-positive) 50%, var(--cctp-kit-foreground));
+			font-size: 0.8125rem;
+			font-weight: var(--cctp-kit-font-weight-medium);
+		}
+
+		.trusted .small-check {
+			width: 14px;
+			height: 14px;
+			stroke: currentColor;
+		}
+
 		.warning {
 			color: var(--cctp-kit-warning);
 			font-size: 0.8125rem;

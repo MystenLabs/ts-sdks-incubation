@@ -651,7 +651,11 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 						</internal-button>
 						${
 							address.owner
-								? html`<span class="muted">Recoverable</span>`
+								? html`<span
+										class="trusted"
+										title="Your recovery address can take back what is not bridged"
+										>${smallCheckIcon}Recoverable</span
+									>`
 								: html`<span
 										class="warning"
 										title="Nobody can take back what is sent here and not bridged"
