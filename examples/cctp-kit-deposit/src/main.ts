@@ -6,7 +6,8 @@
 // claims it on Sui; run it locally with `SUI_NETWORK=testnet pnpm serve`.
 //
 //   VITE_CLAIMER_URL   the claimer's origin (default http://localhost:8787)
-//   ?recovery=optional|required   ask for a recovery address (default: Sui-only addresses)
+//   ?recovery=none|optional|required   the recovery address field (default: optional, so the
+//                                      page shows both kinds of address)
 //   ?only                         deposit addresses only, with no wallet tab
 import { createDAppKit } from '@mysten/dapp-kit-core';
 import '@mysten/dapp-kit-core/web';
@@ -33,7 +34,7 @@ const kit = createCctpKit({
 	sponsor: { baseUrl: claimer },
 	deposit: {
 		baseUrl: claimer,
-		recovery: recovery === 'optional' || recovery === 'required' ? recovery : 'none',
+		recovery: recovery === 'none' || recovery === 'required' ? recovery : 'optional',
 		defaultOpen: true,
 		only: new URLSearchParams(location.search).has('only'),
 	},
