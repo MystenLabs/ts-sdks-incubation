@@ -254,6 +254,28 @@ export const styles = [
 			flex: 1;
 		}
 
+		.recovery-saved {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.recovery-input {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.recovery-input .field {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.recovery-actions {
+			display: flex;
+			gap: 12px;
+		}
+
 		.hint {
 			font-size: 0.75rem;
 		}

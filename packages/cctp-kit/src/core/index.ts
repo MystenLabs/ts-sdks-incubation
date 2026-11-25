@@ -41,7 +41,7 @@ import {
 	getSuiTransactionTime,
 	getSuiUsdcBalance,
 } from '../engine/sui.js';
-import { deriveDepositAddress } from '../deposit/address.js';
+import { deriveDepositAddress, normalizeRecoveryAddress } from '../deposit/address.js';
 import type { DepositAddress } from '../deposit/address.js';
 import { depositBalance, findIncomingDeposit } from '../deposit/chain.js';
 import { DEPOSIT_CONTRACTS, minimumDeposit } from '../deposit/contracts.js';
@@ -155,6 +155,13 @@ export interface CctpKit {
 	 * another, or calling the returned function, stops it.
 	 */
 	watchDeposit(input: { from: ChainKey; recipient: string; owner?: string | null }): () => void;
+	/**
+	 * The recovery address saved for this Sui recipient on this source chain's ecosystem (one for
+	 * every EVM chain, one for Solana), or null. Saved in the kit's `storage`.
+	 */
+	savedRecovery(input: { from: ChainKey; recipient: string }): string | null;
+	/** Save, replace or (with `owner: null`) forget it. Throws on an address that is not valid there. */
+	saveRecovery(input: { from: ChainKey; recipient: string; owner: string | null }): void;
 	/** Whether a transfer is currently being driven (by this kit or another one sharing its storage). */
 	isRunning(id: string): boolean;
 	/** Archive a transfer: hidden from the pending list, kept in storage and history, still driven if in flight. */
@@ -1256,6 +1263,50 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		return deriveDepositAddress({ chain, contract, recipient: input.recipient, owner });
 	}
 
+	// Recovery addresses, per Sui recipient and source ecosystem, next to the transfer list.
+	const recoveryKey = `${storageKey}:recovery`;
+	let recoveriesInMemory: Record<string, string> = {};
+	// Without storage, or once a write to it fails, the saved addresses live in memory.
+	let recoveriesInStorage = !!storage;
+	function readRecoveries(): Record<string, string> {
+		if (!storage || !recoveriesInStorage) return recoveriesInMemory;
+		try {
+			const parsed = JSON.parse(storage.getItem(recoveryKey) ?? '{}');
+			return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+		} catch {
+			return {};
+		}
+	}
+	function recoverySlot(input: { from: ChainKey; recipient: string }) {
+		const { chain } = depositSource(input.from);
+		const recipient = input.recipient.trim().toLowerCase();
+		if (!/^0x[0-9a-f]{64}$/.test(recipient)) {
+			throw new CctpKitError('Enter a full Sui address (0x and 64 hex)');
+		}
+		return { chain, key: `${recipient}:${chain.ecosystem}` };
+	}
+	function savedRecovery(input: { from: ChainKey; recipient: string }): string | null {
+		try {
+			return readRecoveries()[recoverySlot(input).key] ?? null;
+		} catch {
+			return null;
+		}
+	}
+	function saveRecovery(input: { from: ChainKey; recipient: string; owner: string | null }) {
+		const { chain, key } = recoverySlot(input);
+		const next = { ...readRecoveries() };
+		if (input.owner === null) delete next[key];
+		else next[key] = normalizeRecoveryAddress(chain, input.owner);
+		recoveriesInMemory = next;
+		if (storage && recoveriesInStorage) {
+			try {
+				storage.setItem(recoveryKey, JSON.stringify(next));
+			} catch {
+				recoveriesInStorage = false;
+			}
+		}
+	}
+
 	let stopDepositWatch: (() => void) | undefined;
 	function watchDeposit(input: { from: ChainKey; recipient: string; owner?: string | null }) {
 		stopDepositWatch?.();
@@ -1515,6 +1566,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		depositChains,
 		depositAddress,
 		watchDeposit,
+		savedRecovery,
+		saveRecovery,
 		isRunning,
 		dismiss,
 		restore,

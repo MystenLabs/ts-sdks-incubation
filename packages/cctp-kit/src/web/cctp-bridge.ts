@@ -129,12 +129,18 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	@state()
 	private _depositRecipient = '';
 
+	/**
+	 * The recovery address form is open: to add one, or to change the one saved for this Sui
+	 * address. Saved, it closes; the deposit address only ever uses the saved one.
+	 */
 	@state()
-	private _depositOwner = '';
+	private _recoveryEditing = false;
 
-	/** An optional recovery address stays out of the way until asked for. */
 	@state()
-	private _recoveryOpen = false;
+	private _recoveryDraft = '';
+
+	@state()
+	private _recoveryError: string | null = null;
 
 	@state()
 	private _copied = false;
@@ -349,7 +355,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	/** The deposit form's inputs as they stand, and the address they make, or why there is none. */
-	#depositInputs(kit: CctpKit) {
+	private depositInputsFor(kit: CctpKit) {
 		const chains = kit.depositChains();
 		const from = chains.find((c) => c.key === this._depositFrom) ?? chains[0]!;
 		const sui = kit.stores.$wallets.get().sui;
@@ -357,7 +363,8 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		const custom = this._depositRecipient !== '';
 		const recipient = (custom ? this._depositRecipient.trim() : (sui?.address ?? '')).toLowerCase();
 		const recovery = kit.config.deposit?.recovery ?? 'none';
-		const owner = recovery === 'none' ? null : this._depositOwner.trim() || null;
+		const owner =
+			recovery === 'none' || !recipient ? null : kit.savedRecovery({ from: from.key, recipient });
 		let address: ReturnType<CctpKit['depositAddress']> | null = null;
 		let problem: string | null = null;
 		if (!recipient) problem = 'Connect your Sui wallet, or enter the Sui address to receive on';
@@ -373,7 +380,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 	#syncDepositWatch() {
 		const kit = this.instance;
-		const inputs = kit && this.#depositMode(kit) ? this.#depositInputs(kit) : null;
+		const inputs = kit && this.#depositMode(kit) ? this.depositInputsFor(kit) : null;
 		const key =
 			inputs?.address && kit
 				? `${inputs.from.key}:${inputs.recipient}:${inputs.address.owner ?? ''}`
@@ -393,8 +400,8 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 	private renderDepositView(kit: CctpKit) {
 		const title = kit.config.ui?.title ?? 'Bridge USDC';
-		const inputs = this.#depositInputs(kit);
-		const { from, recovery } = inputs;
+		const inputs = this.depositInputsFor(kit);
+		const { from } = inputs;
 		const sui = kit.stores.$wallets.get().sui;
 		const state = kit.stores.$deposit.get();
 		const watched =
@@ -418,22 +425,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 							@chain-change=${(e: CustomEvent<{ key: ChainKey }>) => (this._depositFrom = e.detail.key)}
 						></internal-chain-select>
 					</div>
-					${
-						recovery === 'none'
-							? nothing
-							: recovery === 'optional' && !this._recoveryOpen
-								? html`<div class="row">
-										<button
-											type="button"
-											class="text-button"
-											aria-expanded="false"
-											@click=${() => (this._recoveryOpen = true)}
-										>
-											Recovery address (optional)
-										</button>
-									</div>`
-								: this.renderRecoveryField(kit, from, recovery)
-					}
+					${this.renderRecovery(kit, inputs)}
 				</div>
 				<span class="flip" aria-hidden="true">${downIcon}</span>
 				<div class="panel" part="to">
@@ -495,37 +487,72 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		`;
 	}
 
-	private renderRecoveryField(
+	/**
+	 * The recovery address for this Sui address on this source chain. Once saved, it is one line
+	 * with Change; the form only shows to add one, or to replace or remove it.
+	 */
+	private renderRecovery(kit: CctpKit, inputs: ReturnType<CctpBridge['depositInputsFor']>) {
+		const { from, recipient, recovery, owner } = inputs;
+		if (recovery === 'none') return nothing;
+		const edit = (draft: string) => {
+			this._recoveryDraft = draft;
+			this._recoveryError = null;
+			this._recoveryEditing = true;
+		};
+		if (owner && !this._recoveryEditing) {
+			return html`<div class="row" part="recovery">
+				<span class="muted">Recovery address</span>
+				<span class="recovery-saved">
+					<span class="pill" title=${owner}>${shorten(owner)}</span>
+					<button type="button" class="text-button" @click=${() => edit(owner)}>Change</button>
+				</span>
+			</div>`;
+		}
+		if (!owner && !this._recoveryEditing && recovery === 'optional') {
+			return html`<div class="row" part="recovery">
+				<button type="button" class="text-button" aria-expanded="false" @click=${() => edit('')}>
+					Recovery address (optional)
+				</button>
+			</div>`;
+		}
+		return this.renderRecoveryForm(kit, from, recipient, recovery, owner);
+	}
+
+	private renderRecoveryForm(
 		kit: CctpKit,
 		from: ChainDefinition,
+		recipient: string,
 		recovery: 'optional' | 'required',
+		saved: string | null,
 	) {
 		const sourceAccount = kit.stores.$wallets.get()[from.ecosystem as 'evm' | 'solana'];
 		const canConnect = from.ecosystem === 'evm' || from.ecosystem === 'solana';
-		return html`<div class="row">
+		const save = (value: string | null) => {
+			if (!recipient) {
+				this._recoveryError = 'Enter the Sui address to receive on first';
+				return;
+			}
+			try {
+				kit.saveRecovery({ from: from.key, recipient, owner: value });
+				this._recoveryEditing = false;
+				this._recoveryError = null;
+				this.requestUpdate();
+			} catch (error) {
+				this._recoveryError = error instanceof Error ? error.message : String(error);
+			}
+		};
+		const close = () => {
+			this._recoveryEditing = false;
+			this._recoveryError = null;
+		};
+		return html`<div class="row" part="recovery">
+				<span class="muted">Recovery address${recovery === 'optional' ? ' (optional)' : ''}</span>
 				${
-					recovery === 'optional'
+					sourceAccount && sourceAccount.address !== saved
 						? html`<button
 								type="button"
 								class="text-button"
-								aria-expanded="true"
-								title="Remove the recovery address"
-								@click=${() => {
-									// Closed means none: a hidden field must not change the address.
-									this._recoveryOpen = false;
-									this._depositOwner = '';
-								}}
-							>
-								Recovery address (optional)
-							</button>`
-						: html`<span class="muted">Recovery address</span>`
-				}
-				${
-					sourceAccount && this._depositOwner !== sourceAccount.address
-						? html`<button
-								type="button"
-								class="text-button"
-								@click=${() => (this._depositOwner = sourceAccount.address)}
+								@click=${() => save(sourceAccount.address)}
 							>
 								Use connected wallet
 							</button>`
@@ -540,18 +567,48 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 							: nothing
 				}
 			</div>
-			<input
-				class="field"
-				type="text"
-				placeholder="Your address on ${from.name}"
-				.value=${this._depositOwner}
-				@input=${(e: Event) => (this._depositOwner = (e.target as HTMLInputElement).value)}
-			/>
+			<div class="recovery-input">
+				<input
+					class="field"
+					type="text"
+					placeholder="Your address on ${from.name}"
+					.value=${this._recoveryDraft}
+					@input=${(e: Event) => {
+						this._recoveryDraft = (e.target as HTMLInputElement).value;
+						this._recoveryError = null;
+					}}
+					@keydown=${(e: KeyboardEvent) => {
+						if (e.key === 'Enter') save(this._recoveryDraft);
+					}}
+				/>
+				<internal-button
+					variant="secondary"
+					small
+					?disabled=${!this._recoveryDraft.trim()}
+					@click=${() => save(this._recoveryDraft)}
+				>
+					Save
+				</internal-button>
+			</div>
+			${this._recoveryError ? html`<span class="error hint">${this._recoveryError}</span>` : nothing}
 			<span class="muted hint"
 				>Only this address can take back, on ${from.name}, funds that were not bridged yet: the
-				wrong token, or too little to
-				bridge.${recovery === 'optional' ? ' Close this to send without one.' : ''}</span
-			>`;
+				wrong token, or too little to bridge. It is saved for this Sui address.</span
+			>
+			${
+				saved || recovery === 'optional'
+					? html`<div class="recovery-actions">
+							<button type="button" class="text-button" @click=${close}>Cancel</button>
+							${
+								saved && recovery === 'optional'
+									? html`<button type="button" class="text-button" @click=${() => save(null)}>
+											Remove
+										</button>`
+									: nothing
+							}
+						</div>`
+					: nothing
+			}`;
 	}
 
 	private renderDepositAddress(

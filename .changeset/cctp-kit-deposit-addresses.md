@@ -6,4 +6,4 @@ Add deposit addresses: a "Send to an address" tab where the user gets an address
 
 `deposit.only` makes it a deposit-only widget, with no wallet form.
 
-New: `CctpKitConfig.deposit`, `kit.depositChains()`, `kit.depositAddress()`, `kit.watchDeposit()`, `stores.$deposit`, and the exports `deriveDepositAddress`, `DEPOSIT_CONTRACTS`, `minimumDeposit`, `watchDepositAddress` and `requestDepositProcess`. Adds the `uqr` dependency for the QR code.
+New: `CctpKitConfig.deposit`, `kit.depositChains()`, `kit.depositAddress()`, `kit.watchDeposit()`, `kit.savedRecovery()`, `kit.saveRecovery()`, `stores.$deposit`, and the exports `deriveDepositAddress`, `DEPOSIT_CONTRACTS`, `minimumDeposit`, `watchDepositAddress` and `requestDepositProcess`. Adds the `uqr` dependency for the QR code.

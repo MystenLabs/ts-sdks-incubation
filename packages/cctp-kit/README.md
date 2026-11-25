@@ -182,6 +182,12 @@ starts on this one.
 | `optional`       | A field for a recovery address on the source chain, pasted or taken from a connected wallet                 |
 | `required`       | The same field, and no address until it is filled in                                                        |
 
+An optional recovery address stays closed behind a "Recovery address (optional)" link. Once the user
+saves one, it's kept for that Sui address and source ecosystem (one for every EVM chain, one for
+Solana) in the kit's `storage`, and the form gives way to one line with Change. Change can replace
+it, or remove it to go back to a Sui-only address. The deposit address only ever uses the saved one.
+Hosts can read and write it with `kit.savedRecovery()` and `kit.saveRecovery()`.
+
 Only the recovery address can take back, on the source chain, what was not bridged yet: the wrong
 token, or less than the minimum. Deposit contracts are on testnet only (Base Sepolia and Solana
 devnet, in `DEPOSIT_CONTRACTS`), so the tab shows only there. `examples/cctp-kit-deposit` runs the

@@ -30,6 +30,30 @@ export interface DepositAddress {
 
 const SUI_ADDRESS = /^0x[0-9a-fA-F]{64}$/;
 
+/** A recovery address in its canonical form for this chain (checksummed, or base58), or a throw. */
+export function normalizeRecoveryAddress(chain: ChainDefinition, value: string): string {
+	const owner = value.trim();
+	if (chain.ecosystem === 'evm') {
+		if (!isAddress(owner, { strict: false })) {
+			throw new Error(`The recovery address is not a ${chain.name} address`);
+		}
+		if (owner.toLowerCase() === EVM_NO_RECOVERY)
+			throw new Error('The recovery address cannot be zero');
+		return getAddress(owner);
+	}
+	if (chain.ecosystem === 'solana') {
+		let key: PublicKey;
+		try {
+			key = new PublicKey(owner);
+		} catch {
+			throw new Error('The recovery address is not a Solana address');
+		}
+		if (key.equals(PublicKey.default)) throw new Error('The recovery address cannot be zero');
+		return key.toBase58();
+	}
+	throw new Error(`${chain.name} has no recovery addresses`);
+}
+
 /**
  * Derive the deposit address for (recovery address, Sui recipient) on one source chain, the same
  * way the contracts do. Nothing is asked of the network or the service: a client that derives the
