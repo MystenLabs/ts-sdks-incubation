@@ -276,6 +276,12 @@ export const styles = [
 			gap: 12px;
 		}
 
+		.warning {
+			color: var(--cctp-kit-warning);
+			font-size: 0.8125rem;
+			font-weight: var(--cctp-kit-font-weight-medium);
+		}
+
 		.hint {
 			font-size: 0.75rem;
 		}

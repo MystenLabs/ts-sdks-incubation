@@ -27,6 +27,7 @@ export const themeStyles = css`
 		--cctp-kit-popover-foreground: var(--popover-foreground, oklch(0.145 0 0));
 		--cctp-kit-destructive: var(--destructive, oklch(0.577 0.245 27.325));
 		--cctp-kit-positive: var(--positive, oklch(0.862 0.127 146.2));
+		--cctp-kit-warning: var(--warning, oklch(0.555 0.163 48.998));
 		--cctp-kit-ring: var(--ring, oklch(0.708 0 0));
 		--cctp-kit-input: var(--input, oklch(0.922 0 0));
 		--cctp-kit-radius: var(--radius, 12px);

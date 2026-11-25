@@ -197,10 +197,10 @@ whole flow against a local claimer.
 
 The widget reads the same shadcn-style custom properties as dapp-kit (`--background`,
 `--foreground`, `--primary`, `--primary-foreground`, `--secondary`, `--border`, `--accent`,
-`--muted`, `--muted-foreground`, `--popover`, `--destructive`, `--positive`, `--ring`, `--input`,
-`--radius`, `--font-sans`). Set them on `:root` or on `mysten-cctp-bridge`; a host that has themed
-dapp-kit gets the widget themed for free. Three optional extras cover button typography for brands
-with a distinct button face: `--font-button`, `--button-text-transform` and
+`--muted`, `--muted-foreground`, `--popover`, `--destructive`, `--positive`, `--warning`, `--ring`,
+`--input`, `--radius`, `--font-sans`). Set them on `:root` or on `mysten-cctp-bridge`; a host that
+has themed dapp-kit gets the widget themed for free. Three optional extras cover button typography
+for brands with a distinct button face: `--font-button`, `--button-text-transform` and
 `--button-letter-spacing`. See `examples/react/src/themes.ts` for complete presets (light, dark, a
 deposit-only plugin, DeepBook, Sui, sunset).
 

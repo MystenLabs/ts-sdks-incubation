@@ -649,7 +649,15 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 						<internal-button variant="secondary" small @click=${copy}>
 							${this._copied ? 'Copied' : 'Copy address'}
 						</internal-button>
-						<span class="muted">${address.owner ? 'Recoverable' : 'Sui-only'}</span>
+						${
+							address.owner
+								? html`<span class="muted">Recoverable</span>`
+								: html`<span
+										class="warning"
+										title="Nobody can take back what is sent here and not bridged"
+										>Non-recoverable</span
+									>`
+						}
 					</div>
 				</div>
 			</div>
