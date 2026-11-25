@@ -77,24 +77,31 @@ describe('deposit addresses', () => {
 });
 
 const DEPOSIT = '0x47482f8c8C5ea531a3E8FDFb19202CE847c9180f';
+const EMPTY: DepositProcessAnswer = { status: 'empty', depositAddress: DEPOSIT };
 
-function harness(balances: bigint[], answers: DepositProcessAnswer[]) {
+function harness(
+	balances: bigint[],
+	answers: DepositProcessAnswer[],
+	options: { trackFailures?: number } = {},
+) {
 	const controller = new AbortController();
 	const states: DepositState[] = [];
 	const tracked: string[] = [];
-	const processed = vi.fn(async () => answers.shift() ?? { status: 'empty' as const });
+	let trackFailures = options.trackFailures ?? 0;
+	const processed = vi.fn(async (_incoming: unknown) => answers.shift() ?? EMPTY);
 	const deps: DepositWatcherDeps = {
 		readBalance: async () => {
 			const next = balances.shift();
 			if (next === undefined) {
 				controller.abort();
-				return 0n;
+				throw new Error('done');
 			}
 			return next;
 		},
 		findIncoming: async () => ({ txHash: '0xfund' }),
 		process: processed,
 		track: async (burn) => {
+			if (trackFailures-- > 0) throw new Error('Circle has not decoded this transfer yet');
 			tracked.push(burn);
 		},
 		update: (state) => states.push(state),
@@ -119,56 +126,78 @@ function harness(balances: bigint[], answers: DepositProcessAnswer[]) {
 		states,
 		tracked,
 		processed,
+		last: () => states.at(-1)!,
 	};
 }
 
 describe('watchDepositAddress', () => {
-	it('processes a deposit once it can be bridged, and tracks the burn', async () => {
+	it('checks the service once at the start, then processes a deposit and tracks the burn', async () => {
 		const h = harness(
-			[0n, 1_000_000n],
-			[{ status: 'processed', depositAddress: DEPOSIT, burnTx: '0xburn' }],
+			[0n, 0n, 1_000_000n],
+			[EMPTY, { status: 'processed', depositAddress: DEPOSIT, burnTx: '0xburn' }],
 		);
 		await h.run();
-		expect(h.processed).toHaveBeenCalledWith({ txHash: '0xfund' });
+		expect(h.processed.mock.calls).toEqual([[null], [{ txHash: '0xfund' }]]);
 		expect(h.tracked).toEqual(['0xburn']);
-		expect(h.states.map((s) => s.phase)).toEqual(['waiting', 'received', 'received', 'waiting']);
-		expect(h.states.at(-1)!.burns).toEqual(['0xburn']);
+		expect(h.last().burns).toEqual(['0xburn']);
+		expect(h.last().phase).toBe('waiting');
 	});
 
-	it('waits for more below the minimum, without asking the service', async () => {
-		const h = harness([150_000n], []);
-		await h.run();
-		expect(h.processed).not.toHaveBeenCalled();
-		expect(h.states[0]!.phase).toBe('belowMinimum');
-	});
-
-	it('finishes a burn an earlier call sent, once', async () => {
+	it('stops before any funds arrive when the service derives another address', async () => {
 		const h = harness(
-			[1_000_000n, 1_000_000n],
-			[
-				{ status: 'empty', depositAddress: DEPOSIT, lastBurnTx: '0xburn' },
-				{ status: 'empty', depositAddress: DEPOSIT, lastBurnTx: '0xburn' },
-			],
+			[0n, 0n],
+			[{ status: 'empty', depositAddress: '0x0000000000000000000000000000000000000001' }],
 		);
 		await h.run();
-		expect(h.tracked).toEqual(['0xburn']);
-	});
-
-	it('stops for good when the service derives another address', async () => {
-		const h = harness(
-			[1_000_000n, 1_000_000n],
-			[
-				{
-					status: 'processed',
-					depositAddress: '0x0000000000000000000000000000000000000001',
-					burnTx: '0xburn',
-				},
-			],
-		);
-		await h.run();
-		expect(h.tracked).toEqual([]);
-		expect(h.states.at(-1)!.phase).toBe('mismatch');
+		expect(h.last().phase).toBe('mismatch');
 		expect(h.processed).toHaveBeenCalledTimes(1);
+	});
+
+	it('waits for more below the minimum', async () => {
+		const h = harness(
+			[150_000n, 150_000n],
+			[{ status: 'ineligible', reason: 'below_minimum', depositAddress: DEPOSIT }],
+		);
+		await h.run();
+		expect(h.processed).toHaveBeenCalledTimes(1);
+		expect(h.last().phase).toBe('belowMinimum');
+	});
+
+	it('finds a burn whose answer was lost: blocked, then the deposit reads empty', async () => {
+		const h = harness(
+			[1_000_000n, 0n, 0n],
+			[
+				{ status: 'blocked', reason: 'timeout', depositAddress: DEPOSIT },
+				{ status: 'empty', depositAddress: DEPOSIT, lastBurnTx: '0xburn' },
+			],
+		);
+		await h.run();
+		expect(h.states.some((s) => s.phase === 'unavailable')).toBe(true);
+		expect(h.tracked).toEqual(['0xburn']);
+		expect(h.processed).toHaveBeenCalledTimes(2);
+	});
+
+	it('tracks a burn the same once, however often the service names it', async () => {
+		const h = harness(
+			[1_000_000n, 1_000_000n],
+			[
+				{ status: 'empty', depositAddress: DEPOSIT, lastBurnTx: '0xburn' },
+				{ status: 'empty', depositAddress: DEPOSIT, lastBurnTx: '0xburn' },
+			],
+		);
+		await h.run();
+		expect(h.tracked).toEqual(['0xburn']);
+	});
+
+	it('hands a burn to the kit again until it takes it', async () => {
+		const h = harness(
+			[1_000_000n, 0n, 0n, 0n],
+			[{ status: 'processed', depositAddress: DEPOSIT, burnTx: '0xburn' }],
+			{ trackFailures: 2 },
+		);
+		await h.run();
+		expect(h.tracked).toEqual(['0xburn']);
+		expect(h.last().burns).toEqual(['0xburn']);
 	});
 
 	it('says the service is unavailable, and asks again', async () => {

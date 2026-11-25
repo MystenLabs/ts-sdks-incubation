@@ -1286,18 +1286,10 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 						owner: derived.owner,
 						txHash: incoming?.txHash,
 					}),
+				// Circle, or the chain's node, may not have a fresh burn yet: the watcher asks again.
 				track: async (burnTx) => {
-					// Circle, or the chain's own node, may not have the burn for a few seconds.
-					for (let attempt = 0; ; attempt++) {
-						try {
-							const record = await importTransfer({ txHash: burnTx, sourceChain: chain.key });
-							stores.$activeTransferId.set(record.id);
-							return;
-						} catch (error) {
-							if (attempt >= 5 || controller.signal.aborted) throw error;
-							await sleep(3_000, controller.signal);
-						}
-					}
+					const record = await importTransfer({ txHash: burnTx, sourceChain: chain.key });
+					stores.$activeTransferId.set(record.id);
 				},
 				update: (state) => {
 					if (stores.$deposit.get()?.address === state.address) stores.$deposit.set(state);

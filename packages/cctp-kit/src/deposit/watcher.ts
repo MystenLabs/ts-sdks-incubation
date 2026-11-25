@@ -61,10 +61,17 @@ export interface DepositWatcherDeps {
 	retryMs?: number;
 }
 
+/** How many times a burn the service named is handed to the kit before it is dropped. */
+const TRACK_ATTEMPTS = 10;
+
 /**
  * Watch one deposit address until `signal` aborts: read its balance, and when it can be bridged ask
  * the service to process it, then hand the burn to the kit. Nothing here is trusted blindly: the
  * service must name the address this client derived, and the kit checks the burn with Circle.
+ *
+ * The service is also asked once at the start, and again after any answer that settled nothing.
+ * That checks its address before anyone sends, and finds a burn whose answer was lost (a timeout,
+ * a reload): the deposit then reads empty, and only the service's `lastBurnTx` still points at it.
  */
 export async function watchDepositAddress(
 	initial: DepositState,
@@ -74,14 +81,60 @@ export async function watchDepositAddress(
 	const pollMs = deps.pollMs ?? 4_000;
 	const retryMs = deps.retryMs ?? 20_000;
 	let state = initial;
+	/** Burns the service named that the kit has not taken yet, with the attempts left. */
+	const pending = new Map<string, number>();
+	let askService = true;
 	const set = (patch: Partial<DepositState>) => {
 		state = { ...state, ...patch };
 		if (!signal.aborted) deps.update(state);
 	};
-	const track = async (burnTx: string) => {
-		if (state.burns.includes(burnTx)) return;
-		set({ burns: [...state.burns, burnTx] });
-		await deps.track(burnTx);
+	const follow = (burnTx: string | undefined) => {
+		if (burnTx && !state.burns.includes(burnTx) && !pending.has(burnTx)) {
+			pending.set(burnTx, TRACK_ATTEMPTS);
+		}
+	};
+	const trackPending = async () => {
+		for (const [burnTx, left] of pending) {
+			try {
+				await deps.track(burnTx);
+				pending.delete(burnTx);
+				set({ burns: [...state.burns, burnTx] });
+			} catch (error) {
+				if (signal.aborted) return;
+				if (left <= 1) pending.delete(burnTx);
+				else pending.set(burnTx, left - 1);
+				set({ error: error instanceof Error ? error.message : String(error) });
+			}
+		}
+	};
+	/** Ask the service, and act on what it says. False when it settled nothing. */
+	const process = async (incoming: IncomingDeposit | null): Promise<boolean> => {
+		const answer = await deps.process(incoming);
+		if (answer.depositAddress && !sameAddress(answer.depositAddress, state.address)) {
+			set({
+				phase: 'mismatch',
+				error: `The service derived ${answer.depositAddress}, not ${state.address}`,
+			});
+			throw MISMATCH;
+		}
+		if (answer.status === 'processed' && answer.burnTx) {
+			follow(answer.burnTx);
+			set({ phase: 'waiting', balance: 0n, error: undefined });
+			return true;
+		}
+		if (answer.status === 'empty') {
+			// Someone processed it first, or an earlier call timed out after sending.
+			follow(answer.lastBurnTx);
+			set({ phase: 'waiting', balance: 0n });
+			return true;
+		}
+		if (answer.status === 'ineligible' && answer.reason === 'below_minimum') {
+			set({ phase: 'belowMinimum' });
+			return true;
+		}
+		if (answer.status === 'would_process') return true;
+		set({ error: answer.reason ?? answer.status });
+		return false;
 	};
 
 	while (!signal.aborted) {
@@ -89,7 +142,8 @@ export async function watchDepositAddress(
 		try {
 			const balance = await deps.readBalance();
 			if (balance === 0n) {
-				set({ balance, phase: 'waiting', error: undefined });
+				set({ balance, phase: 'waiting' });
+				if (askService) askService = !(await process(null));
 			} else {
 				const incoming =
 					state.incoming && state.balance === balance
@@ -97,36 +151,20 @@ export async function watchDepositAddress(
 						: await deps.findIncoming().catch(() => null);
 				if (balance < state.minimum) {
 					set({ balance, incoming, phase: 'belowMinimum', error: undefined });
+					if (askService) askService = !(await process(incoming));
 				} else {
 					set({ balance, incoming, phase: 'received', error: undefined });
-					const answer = await deps.process(incoming);
-					if (answer.depositAddress && !sameAddress(answer.depositAddress, state.address)) {
-						set({
-							phase: 'mismatch',
-							error: `The service derived ${answer.depositAddress}, not ${state.address}`,
-						});
-						return;
-					}
-					if (answer.status === 'processed' && answer.burnTx) {
-						await track(answer.burnTx);
-						set({ phase: 'waiting', balance: 0n });
-					} else if (answer.status === 'empty') {
-						// Someone processed it first, or an earlier call timed out after sending.
-						if (answer.lastBurnTx) await track(answer.lastBurnTx);
-						set({ phase: 'waiting', balance: 0n });
-					} else if (answer.status === 'ineligible' && answer.reason === 'below_minimum') {
-						set({ phase: 'belowMinimum' });
-					} else {
-						set({
-							phase: 'unavailable',
-							error: answer.reason ?? answer.status,
-						});
+					askService = !(await process(incoming));
+					if (askService) {
+						set({ phase: 'unavailable' });
 						wait = retryMs;
 					}
 				}
 			}
+			await trackPending();
 		} catch (error) {
-			if (signal.aborted) return;
+			if (error === MISMATCH || signal.aborted) return;
+			askService = true;
 			set({
 				phase: state.phase === 'received' ? 'unavailable' : state.phase,
 				error: error instanceof Error ? error.message : String(error),
@@ -140,6 +178,8 @@ export async function watchDepositAddress(
 		}
 	}
 }
+
+const MISMATCH = new Error('deposit address mismatch');
 
 /** Ask the service to process a deposit. A network failure is a `blocked` answer: try again later. */
 export async function requestDepositProcess(args: {
