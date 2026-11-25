@@ -12,8 +12,9 @@ import type { IncomingDeposit } from './watcher.js';
 const TRANSFER = parseAbiItem(
 	'event Transfer(address indexed from, address indexed to, uint256 value)',
 );
-// About an hour of blocks on a 2-second chain, within what public endpoints serve to getLogs.
+// About an hour of blocks on a 2-second chain, read in the 200-block ranges public endpoints allow.
 const LOOKBACK_BLOCKS = 1_800n;
+const LOGS_CHUNK = 200n;
 
 /** USDC at the deposit address, read from the source chain. */
 export async function depositBalance(
@@ -39,15 +40,21 @@ export async function findIncomingDeposit(
 	if (chain.ecosystem === 'evm') {
 		const client = getEvmPublicClient(chain);
 		const latest = await client.getBlockNumber();
-		const logs = await client.getLogs({
-			address: chain.usdcAddress,
-			event: TRANSFER,
-			args: { to: deposit.address as `0x${string}` },
-			fromBlock: latest > LOOKBACK_BLOCKS ? latest - LOOKBACK_BLOCKS : 0n,
-			toBlock: latest,
-		});
-		const last = logs.at(-1);
-		return last?.transactionHash ? { txHash: last.transactionHash, amount: last.args.value } : null;
+		const floor = latest > LOOKBACK_BLOCKS ? latest - LOOKBACK_BLOCKS : 0n;
+		for (let to = latest; to >= floor; to -= LOGS_CHUNK) {
+			const from = to - LOGS_CHUNK + 1n > floor ? to - LOGS_CHUNK + 1n : floor;
+			const logs = await client.getLogs({
+				address: chain.usdcAddress,
+				event: TRANSFER,
+				args: { to: deposit.address as `0x${string}` },
+				fromBlock: from,
+				toBlock: to,
+			});
+			const last = logs.at(-1);
+			if (last?.transactionHash) return { txHash: last.transactionHash, amount: last.args.value };
+			if (from === floor) break;
+		}
+		return null;
 	}
 	if (chain.ecosystem === 'solana' && deposit.tokenAccount) {
 		const [latest] = await withSolanaConnection(chain, (connection) =>

@@ -10,6 +10,7 @@ import type { ChainDefinition, ChainKey } from '../chains/types.js';
 import type { CctpKit } from '../core/index.js';
 import type { TransferRecord, TransferStatus } from '../core/types.js';
 import type { DepositState } from '../deposit/watcher.js';
+import { netAmountOf } from '../sponsor/client.js';
 import { formatUsdc } from '../utils/amount.js';
 import { formatDuration, formatElapsed, waitProgress } from '../utils/duration.js';
 import { describeError } from '../utils/errors.js';
@@ -494,7 +495,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 			${
 				inputs.address
-					? this.renderDepositAddress(from, inputs.address, watched)
+					? this.renderDepositAddress(kit, from, inputs.address, watched)
 					: html`<p class="notice" part="notice">${inputs.problem}</p>`
 			}
 			${this.renderTransfers(kit)}
@@ -503,6 +504,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	private renderDepositAddress(
+		kit: CctpKit,
 		from: ChainDefinition,
 		address: ReturnType<CctpKit['depositAddress']>,
 		state: DepositState | null,
@@ -559,8 +561,40 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 							there.`
 				}
 			</p>
-			${this.renderDepositStatus(from, state)}
+			${this.renderDepositStatus(from, state)} ${this.renderDepositResult(kit, state)}
 		`;
+	}
+
+	/**
+	 * The latest burn from this address, as the kit tracks it. A deposit can cross in seconds,
+	 * so without this line the user would see "Waiting for USDC" again and nothing else.
+	 */
+	private renderDepositResult(kit: CctpKit, state: DepositState | null) {
+		const burn = state?.burns.at(-1);
+		const record = burn && kit.stores.$transfers.get().find((t) => t.sourceTxHash === burn);
+		if (!record) return nothing;
+		const sui = kit.chains.find((c) => c.ecosystem === 'sui')!;
+		const received = netAmountOf(record.message) ?? BigInt(record.amount);
+		if (record.status === 'complete') {
+			return html`<p class="notice deposit-result" part="deposit-result" aria-live="polite">
+				${formatUsdc(received)} USDC arrived on
+				${sui.name}${
+					record.destinationTxHash
+						? html` in
+								<a
+									class="link"
+									href=${txUrl(sui, record.destinationTxHash)}
+									target="_blank"
+									rel="noreferrer"
+									>${shorten(record.destinationTxHash)}</a
+								>`
+						: nothing
+				}.
+			</p>`;
+		}
+		return html`<p class="muted deposit-status" part="deposit-result" aria-live="polite">
+			Bridging ${formatUsdc(BigInt(record.amount))} USDC to ${sui.name}: ${STEP_TEXT[record.status]}
+		</p>`;
 	}
 
 	private renderDepositStatus(from: ChainDefinition, state: DepositState | null) {
@@ -1412,6 +1446,18 @@ function estimateRange(chain: ChainDefinition, speed: 'fast' | 'standard'): [num
 	const range = (speed === 'fast' && chain.finality.fast) || chain.finality.standard;
 	return [range[0], range[1]];
 }
+
+/** Where a deposit's transfer stands, in the deposit view's own words. */
+const STEP_TEXT: Record<TransferStatus, string> = {
+	pending: 'starting…',
+	approving: 'starting…',
+	burning: 'burning on the source chain…',
+	attesting: 'waiting for Circle…',
+	readyToMint: 'ready to claim.',
+	minting: 'claiming on Sui…',
+	complete: 'done.',
+	failed: 'stopped. See the transfer below.',
+};
 
 /** Minimums read better in cents, and rounding up keeps them minimums. */
 function roundUpToCent(amount: bigint): bigint {
