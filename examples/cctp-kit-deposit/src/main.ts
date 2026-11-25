@@ -7,6 +7,7 @@
 //
 //   VITE_CLAIMER_URL   the claimer's origin (default http://localhost:8787)
 //   ?recovery=optional|required   ask for a recovery address (default: Sui-only addresses)
+//   ?only                         deposit addresses only, with no wallet tab
 import { createDAppKit } from '@mysten/dapp-kit-core';
 import '@mysten/dapp-kit-core/web';
 import { createCctpKit } from '@mysten-incubation/cctp-kit';
@@ -34,6 +35,7 @@ const kit = createCctpKit({
 		baseUrl: claimer,
 		recovery: recovery === 'optional' || recovery === 'required' ? recovery : 'none',
 		defaultOpen: true,
+		only: new URLSearchParams(location.search).has('only'),
 	},
 	ui: { title: 'Deposit USDC to Sui' },
 });

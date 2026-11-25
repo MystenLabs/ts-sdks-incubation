@@ -72,7 +72,7 @@ Every hook accepts an optional `{ kit }` to bypass context, mirroring dapp-kit's
 | `sui.executeTransaction` | Signs and executes the kit's Sui burns and claims in place of dapp-kit's wallet. See [Executing Sui transactions yourself](#executing-sui-transactions-yourself).                                   |
 | `claim`                  | `'auto'` (default) claims as soon as Circle attests; `'manual'` stops at `readyToMint` until `kit.claim(id)`.                                                                                       |
 | `sponsor`                | `{ baseUrl, fetch? }`: a service that claims transfers into Sui and pays the gas. Off unless `baseUrl` is set, and with `claim: 'manual'`. See [Sponsored claims on Sui](#sponsored-claims-on-sui). |
-| `deposit`                | `{ baseUrl?, recovery?, defaultOpen?, fetch? }`: deposit addresses. Off unless `baseUrl` (or `sponsor.baseUrl`) is set. See [Deposit addresses](#deposit-addresses).                                |
+| `deposit`                | `{ baseUrl?, recovery?, defaultOpen?, only?, fetch? }`: deposit addresses. Off unless `baseUrl` (or `sponsor.baseUrl`) is set. See [Deposit addresses](#deposit-addresses).                         |
 | `recipient.editable`     | `false` removes the user's choice of recipient. See [Form behaviour](#form-behaviour).                                                                                                              |
 | `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                                                                |
 | `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                                                               |
@@ -167,6 +167,12 @@ any wallet or exchange arrives on Sui. Nothing has to be connected on the source
   stops and tells the user not to send there.
 - **The burn is then an ordinary transfer**: the widget tracks it, Circle attests it, and the
   sponsor claims it on Sui, with the usual card and wallet fallback.
+
+`only: true` makes the widget a deposit widget: no wallet form and no tab to switch to it, and no
+EVM or Solana wallet to configure (a Sui wallet is optional, since the recipient can be typed).
+`createCctpKit` throws when no source chain has deposit contracts for the kit's network and chain
+filter, mainnet today, rather than show an empty card. `defaultOpen: true` keeps both tabs and only
+starts on this one.
 
 `recovery` decides whose address goes with the deposit:
 

@@ -75,6 +75,12 @@ export interface CctpKitDepositConfig {
 	recovery?: 'none' | 'optional' | 'required';
 	/** Show the deposit address first, instead of the wallet form. Defaults to false. */
 	defaultOpen?: boolean;
+	/**
+	 * Deposit addresses only: no wallet form and no tab to switch to it. No EVM or Solana wallet is
+	 * needed. `createCctpKit` throws when no source chain has deposit contracts for the kit's
+	 * network and chain filter, rather than show an empty widget. Defaults to false.
+	 */
+	only?: boolean;
 	fetch?: typeof fetch;
 }
 

@@ -176,7 +176,8 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		// The host may open on the deposit address; after that the mode is the user's.
 		if (!this.#modeChosen && this.instance) {
 			this.#modeChosen = true;
-			if (this.instance.config.deposit?.defaultOpen && this.instance.depositChains().length > 0) {
+			const deposit = this.instance.config.deposit;
+			if ((deposit?.defaultOpen || deposit?.only) && this.instance.depositChains().length > 0) {
 				this._mode = 'address';
 			}
 		}
@@ -264,7 +265,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	}
 
 	private renderBridgeView(kit: CctpKit) {
-		if (this._mode === 'address' && kit.depositChains().length > 0) {
+		if (this.#depositMode(kit)) {
 			return this.renderDepositView(kit);
 		}
 		const canFlip = (kit.config.direction ?? 'both') === 'both';
@@ -319,8 +320,15 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		`;
 	}
 
+	/** Whether the deposit view shows: chosen on the tab, or the only view the host allows. */
+	#depositMode(kit: CctpKit) {
+		return (
+			(this._mode === 'address' || !!kit.config.deposit?.only) && kit.depositChains().length > 0
+		);
+	}
+
 	private renderModeToggle(kit: CctpKit) {
-		if (kit.depositChains().length === 0) return nothing;
+		if (kit.depositChains().length === 0 || kit.config.deposit?.only) return nothing;
 		const mode = (value: 'wallet' | 'address', label: string) =>
 			html`<button
 				type="button"
@@ -361,10 +369,7 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 
 	#syncDepositWatch() {
 		const kit = this.instance;
-		const inputs =
-			kit && this._mode === 'address' && kit.depositChains().length > 0
-				? this.#depositInputs(kit)
-				: null;
+		const inputs = kit && this.#depositMode(kit) ? this.#depositInputs(kit) : null;
 		const key =
 			inputs?.address && kit
 				? `${inputs.from.key}:${inputs.recipient}:${inputs.address.owner ?? ''}`

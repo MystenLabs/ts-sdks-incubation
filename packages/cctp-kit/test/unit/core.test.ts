@@ -136,6 +136,50 @@ function page(visibilityState: 'visible' | 'hidden' = 'visible') {
 }
 
 describe('createCctpKit', () => {
+	it('deposit.only needs a chain with deposit contracts, and says so at setup', () => {
+		const base = {
+			storage: null,
+			iris: { fetch: irisFetch() },
+			wallets: { evm: fakeEvmAdapter(), solana: fakeSolanaAdapter() },
+		};
+		// Nothing is deployed on mainnet yet.
+		expect(() =>
+			createCctpKit({
+				...base,
+				dAppKit: mockDAppKit('mainnet').dAppKit,
+				network: 'mainnet',
+				deposit: { baseUrl: 'https://claimer.example', only: true },
+			}),
+		).toThrow(/no source chain has deposit contracts on mainnet/);
+		// No service to process deposits.
+		expect(() =>
+			createCctpKit({
+				...base,
+				dAppKit: mockDAppKit('testnet').dAppKit,
+				network: 'testnet',
+				deposit: { only: true },
+			}),
+		).toThrow(/no deposit\.baseUrl/);
+		// A chain filter that leaves no deposit chain.
+		expect(() =>
+			createCctpKit({
+				...base,
+				dAppKit: mockDAppKit('testnet').dAppKit,
+				network: 'testnet',
+				chains: { from: { allow: ['arbitrum'] } },
+				deposit: { baseUrl: 'https://claimer.example', only: true },
+			}),
+		).toThrow(/no source chain has deposit contracts/);
+		const kit = createCctpKit({
+			...base,
+			dAppKit: mockDAppKit('testnet').dAppKit,
+			network: 'testnet',
+			deposit: { baseUrl: 'https://claimer.example', only: true },
+		});
+		expect(kit.depositChains().map((c) => c.key)).toEqual(['solana', 'base']);
+		kit.destroy();
+	});
+
 	it('blocks the form until the quote matches the typed amount (stale quotes never burn)', async () => {
 		const { dAppKit } = mockDAppKit();
 		const kit = createCctpKit({

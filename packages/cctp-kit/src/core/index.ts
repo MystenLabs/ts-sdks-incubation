@@ -228,6 +228,16 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	if (routes.from.length === 0 || routes.to.length === 0) {
 		throw new Error('CCTP kit configuration leaves no valid routes');
 	}
+	const depositBaseUrl = config.deposit?.baseUrl ?? config.sponsor?.baseUrl;
+	// Before anything subscribes or polls: a deposit-only widget with nothing to deposit from is
+	// a configuration error, not an empty card.
+	if (config.deposit?.only && depositChainsFor(network, routes, depositBaseUrl).length === 0) {
+		throw new Error(
+			depositBaseUrl
+				? `deposit.only is set, but no source chain has deposit contracts on ${network} with this chain filter`
+				: 'deposit.only is set, but there is no deposit.baseUrl (or sponsor.baseUrl)',
+		);
+	}
 	const allowedSpeeds = config.transferSpeed?.allow ?? ['fast', 'standard'];
 	if (allowedSpeeds.length === 0) throw new Error('transferSpeed.allow must not be empty');
 	const claimsByItself = (config.claim ?? 'auto') === 'auto';
@@ -1226,16 +1236,8 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 	}
 
 	// --- Deposit addresses.
-	const depositBaseUrl = config.deposit?.baseUrl ?? config.sponsor?.baseUrl;
 	function depositChains(): ChainDefinition[] {
-		if (!depositBaseUrl) return [];
-		const contracts = DEPOSIT_CONTRACTS[network];
-		return routes.from.filter(
-			(c) =>
-				!!contracts[c.key] &&
-				contracts[c.key]!.ecosystem === c.ecosystem &&
-				destinationsFor(routes, c.key).some((d) => d.ecosystem === 'sui'),
-		);
+		return depositChainsFor(network, routes, depositBaseUrl);
 	}
 	function depositSource(from: ChainKey) {
 		const chain = depositChains().find((c) => c.key === from);
@@ -1520,6 +1522,22 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		removeUnburned,
 		destroy,
 	};
+}
+
+/** Source chains with deposit contracts that can reach Sui on these routes; none without a service. */
+function depositChainsFor(
+	network: Network,
+	routes: ResolvedRoutes,
+	baseUrl: string | undefined,
+): ChainDefinition[] {
+	if (!baseUrl) return [];
+	const contracts = DEPOSIT_CONTRACTS[network];
+	return routes.from.filter(
+		(c) =>
+			!!contracts[c.key] &&
+			contracts[c.key]!.ecosystem === c.ecosystem &&
+			destinationsFor(routes, c.key).some((d) => d.ecosystem === 'sui'),
+	);
 }
 
 /** Attestation wait for a source chain and speed, from Circle's published finality table. */
