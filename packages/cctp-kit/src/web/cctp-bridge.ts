@@ -596,22 +596,26 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					</div>
 				</div>
 			</div>
-			<p class="notice" part="notice">
-				Send only USDC on ${from.name}, from any wallet or exchange.
+			<div class="quote deposit-terms" part="deposit-terms">
+				<div class="row"><span>Send</span><span>USDC on ${from.name} only</span></div>
 				${
 					minimum !== undefined
-						? html`At least ${formatUsdc(roundUpToCent(minimum))} USDC. A
-							${formatUsdc(state!.keeperFee)} USDC fee pays for the transfer, and Circle's fee comes
-							off on arrival.`
+						? html`<div class="row">
+									<span>Minimum</span><span>${formatUsdc(roundUpToCent(minimum))} USDC</span>
+								</div>
+								<div class="row">
+									<span>Fee</span><span>${formatUsdc(state!.keeperFee)} USDC + Circle's fee</span>
+								</div>`
 						: nothing
 				}
 				${
 					address.owner
 						? nothing
-						: html`This address has no recovery address: anything that cannot be bridged stays
-							there.`
+						: html`<div class="row" title="Anything that can't be bridged stays at this address">
+								<span>Recovery</span><span>None</span>
+							</div>`
 				}
-			</p>
+			</div>
 			${this.renderDepositActivity(kit, from, state)}
 		`;
 	}
