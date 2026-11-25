@@ -17,7 +17,11 @@
 				font-family: system-ui, sans-serif;
 				background: #f6f7f9;
 			}
+			/* dapp-kit's account menu is positioned with no z-index, and the widget's own positioned
+			   layers come later on the page, so they would paint over the open menu. Lift the header. */
 			header {
+				position: relative;
+				z-index: 10;
 				width: 100%;
 				max-width: 480px;
 				display: flex;

@@ -337,6 +337,11 @@ put `import '@webcomponents/scoped-custom-element-registry'` at the very top of 
 prepend it to the bundler's entry. Importing it "first" inside a component is not enough when routes
 are split into separate chunks.
 
+Menus that open over the widget need a stacking layer of their own. The widget has positioned layers
+(its sliding panes, the chain menu), and positioned content later on the page paints over an earlier
+menu that sets no `z-index`. dapp-kit's account menu sets none, so a connect button placed above the
+widget needs its container lifted, e.g. `position: relative; z-index: 10`.
+
 ### Solana notes
 
 - The mint recipient on Solana is the wallet's USDC associated token account. The widget derives it
