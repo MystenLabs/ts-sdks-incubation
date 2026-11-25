@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Deposit to Sui</title>
+		<style>
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 16px;
+				padding: 32px 16px;
+				box-sizing: border-box;
+				font-family: system-ui, sans-serif;
+				background: #f6f7f9;
+			}
+			header {
+				width: 100%;
+				max-width: 480px;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+			}
+			mysten-cctp-bridge {
+				width: 100%;
+				max-width: 480px;
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<strong>USDC to Sui, testnet</strong>
+			<mysten-dapp-kit-connect-button></mysten-dapp-kit-connect-button>
+		</header>
+		<mysten-cctp-bridge></mysten-cctp-bridge>
+		<script type="module" src="/src/main.ts"></script>
+	</body>
+</html>

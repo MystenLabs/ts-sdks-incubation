@@ -7,6 +7,7 @@ export type { CctpKitStores, WalletState, BalanceState } from './core/store.js';
 export type {
 	AnyDAppKit,
 	CctpKitConfig,
+	CctpKitDepositConfig,
 	CctpKitEvent,
 	CctpKitSuiConfig,
 	CctpKitWalletConfig,
@@ -32,6 +33,17 @@ export type { TransferContext } from './core/transfer.js';
 export * from './chains/index.js';
 
 export { IrisClient, IrisError, IRIS_BASE_URL, isAttested } from './iris/client.js';
+export { deriveDepositAddress, EVM_NO_RECOVERY, SOLANA_NO_RECOVERY } from './deposit/address.js';
+export type { DepositAddress } from './deposit/address.js';
+export { DEPOSIT_CONTRACTS, MIN_NET_TO_SUI, minimumDeposit } from './deposit/contracts.js';
+export type { DepositContract } from './deposit/contracts.js';
+export { requestDepositProcess, watchDepositAddress } from './deposit/watcher.js';
+export type {
+	DepositPhase,
+	DepositProcessAnswer,
+	DepositState,
+	IncomingDeposit,
+} from './deposit/watcher.js';
 export {
 	classifySponsorResponse,
 	MIN_SPONSORED_AMOUNT,

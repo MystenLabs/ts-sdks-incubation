@@ -72,6 +72,7 @@ Every hook accepts an optional `{ kit }` to bypass context, mirroring dapp-kit's
 | `sui.executeTransaction` | Signs and executes the kit's Sui burns and claims in place of dapp-kit's wallet. See [Executing Sui transactions yourself](#executing-sui-transactions-yourself).                                   |
 | `claim`                  | `'auto'` (default) claims as soon as Circle attests; `'manual'` stops at `readyToMint` until `kit.claim(id)`.                                                                                       |
 | `sponsor`                | `{ baseUrl, fetch? }`: a service that claims transfers into Sui and pays the gas. Off unless `baseUrl` is set, and with `claim: 'manual'`. See [Sponsored claims on Sui](#sponsored-claims-on-sui). |
+| `deposit`                | `{ baseUrl?, recovery?, defaultOpen?, fetch? }`: deposit addresses. Off unless `baseUrl` (or `sponsor.baseUrl`) is set. See [Deposit addresses](#deposit-addresses).                                |
 | `recipient.editable`     | `false` removes the user's choice of recipient. See [Form behaviour](#form-behaviour).                                                                                                              |
 | `storage` / `storageKey` | Where in-flight transfers are persisted (`localStorage` by default).                                                                                                                                |
 | `onEvent`                | Transfer and wallet lifecycle events.                                                                                                                                                               |
@@ -150,6 +151,35 @@ user. A transfer that waits at **Claim** is still sent to the service again.
 With `claim: 'manual'` the host decides when claims happen, so the kit never sends a claim to the
 service by itself, and does not read its status. `warnings()`, the quote and the card are as if no
 `sponsor` were set. `kit.claim(id)` goes to the wallet, or the executor, as it always does.
+
+### Deposit addresses
+
+With `deposit` set, the widget gets a second tab, "Send to an address". The user picks a source
+chain and a Sui recipient, and gets an address (with a QR code) on that chain. USDC sent there from
+any wallet or exchange arrives on Sui. Nothing has to be connected on the source chain.
+
+- **The widget derives the address itself** from the Sui recipient and, if there is one, a recovery
+  address, the same way the contracts do (`deriveDepositAddress`). It asks no one, so a compromised
+  service cannot hand out an address of its own.
+- **It watches the address.** When the balance reaches the minimum (the keeper fee plus enough that
+  0.1 USDC lands on Sui), it asks the claimer's `POST /api/deposit/process` to burn it through CCTP
+  V2 Fast. The service answers with the address it derived; if that is not the widget's, the widget
+  stops and tells the user not to send there.
+- **The burn is then an ordinary transfer**: the widget tracks it, Circle attests it, and the
+  sponsor claims it on Sui, with the usual card and wallet fallback.
+
+`recovery` decides whose address goes with the deposit:
+
+| `recovery`       | What the user sees                                                                                          |
+| ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| `none` (default) | A Sui-only address. Nobody can take back what is sent there, so anything that cannot be bridged stays there |
+| `optional`       | A field for a recovery address on the source chain, pasted or taken from a connected wallet                 |
+| `required`       | The same field, and no address until it is filled in                                                        |
+
+Only the recovery address can take back, on the source chain, what was not bridged yet: the wrong
+token, or less than the minimum. Deposit contracts are on testnet only (Base Sepolia and Solana
+devnet, in `DEPOSIT_CONTRACTS`), so the tab shows only there. `examples/cctp-kit-deposit` runs the
+whole flow against a local claimer.
 
 ### Theming
 

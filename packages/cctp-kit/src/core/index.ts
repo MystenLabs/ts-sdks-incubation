@@ -41,6 +41,12 @@ import {
 	getSuiTransactionTime,
 	getSuiUsdcBalance,
 } from '../engine/sui.js';
+import { deriveDepositAddress } from '../deposit/address.js';
+import type { DepositAddress } from '../deposit/address.js';
+import { depositBalance, findIncomingDeposit } from '../deposit/chain.js';
+import { DEPOSIT_CONTRACTS, minimumDeposit } from '../deposit/contracts.js';
+import { requestDepositProcess, watchDepositAddress } from '../deposit/watcher.js';
+import type { DepositState } from '../deposit/watcher.js';
 import { IrisClient, IrisError } from '../iris/client.js';
 import type { IrisMessage } from '../iris/client.js';
 import {
@@ -132,6 +138,23 @@ export interface CctpKit {
 	 * up to Claim like any other.
 	 */
 	importTransfer(input: { txHash: string; sourceChain?: ChainKey }): Promise<TransferRecord>;
+	/** Source chains a deposit address can be made on, for this kit's network and routes. Empty when deposits are off. */
+	depositChains(): ChainDefinition[];
+	/**
+	 * Derive the deposit address for a Sui recipient on one source chain, with or without a
+	 * recovery address there. Throws on an address that is not valid, or a chain without deposits.
+	 */
+	depositAddress(input: {
+		from: ChainKey;
+		recipient: string;
+		owner?: string | null;
+	}): DepositAddress;
+	/**
+	 * Watch a deposit address in `stores.$deposit`: when USDC arrives, have the service process it,
+	 * and track the burn like any other transfer. One address is watched at a time; watching
+	 * another, or calling the returned function, stops it.
+	 */
+	watchDeposit(input: { from: ChainKey; recipient: string; owner?: string | null }): () => void;
 	/** Whether a transfer is currently being driven (by this kit or another one sharing its storage). */
 	isRunning(id: string): boolean;
 	/** Archive a transfer: hidden from the pending list, kept in storage and history, still driven if in flight. */
@@ -1202,6 +1225,97 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		for (const cleanup of cleanups.splice(0)) cleanup();
 	}
 
+	// --- Deposit addresses.
+	const depositBaseUrl = config.deposit?.baseUrl ?? config.sponsor?.baseUrl;
+	function depositChains(): ChainDefinition[] {
+		if (!depositBaseUrl) return [];
+		const contracts = DEPOSIT_CONTRACTS[network];
+		return routes.from.filter(
+			(c) =>
+				!!contracts[c.key] &&
+				contracts[c.key]!.ecosystem === c.ecosystem &&
+				destinationsFor(routes, c.key).some((d) => d.ecosystem === 'sui'),
+		);
+	}
+	function depositSource(from: ChainKey) {
+		const chain = depositChains().find((c) => c.key === from);
+		const contract = DEPOSIT_CONTRACTS[network][from];
+		if (!chain || !contract)
+			throw new CctpKitError(`Deposit addresses are not available on ${from}`);
+		return { chain, contract };
+	}
+	function depositAddress(input: { from: ChainKey; recipient: string; owner?: string | null }) {
+		const { chain, contract } = depositSource(input.from);
+		const recovery = config.deposit?.recovery ?? 'none';
+		const owner = recovery === 'none' ? null : input.owner?.trim() || null;
+		if (recovery === 'required' && !owner) {
+			throw new CctpKitError(`Enter a ${chain.name} recovery address`);
+		}
+		return deriveDepositAddress({ chain, contract, recipient: input.recipient, owner });
+	}
+
+	let stopDepositWatch: (() => void) | undefined;
+	function watchDeposit(input: { from: ChainKey; recipient: string; owner?: string | null }) {
+		stopDepositWatch?.();
+		const { chain, contract } = depositSource(input.from);
+		const derived = depositAddress(input);
+		const controller = new AbortController();
+		const initial: DepositState = {
+			...derived,
+			from: chain.key,
+			recipient: input.recipient.toLowerCase(),
+			phase: 'waiting',
+			balance: null,
+			minimum: minimumDeposit(contract),
+			keeperFee: contract.keeperFee,
+			incoming: null,
+			burns: [],
+		};
+		stores.$deposit.set(initial);
+		void watchDepositAddress(
+			initial,
+			{
+				readBalance: () => depositBalance(chain, derived),
+				findIncoming: () => findIncomingDeposit(chain, derived),
+				process: (incoming) =>
+					requestDepositProcess({
+						baseUrl: depositBaseUrl!,
+						fetch: config.deposit?.fetch,
+						chain: chain.key,
+						recipient: initial.recipient,
+						owner: derived.owner,
+						txHash: incoming?.txHash,
+					}),
+				track: async (burnTx) => {
+					// Circle, or the chain's own node, may not have the burn for a few seconds.
+					for (let attempt = 0; ; attempt++) {
+						try {
+							const record = await importTransfer({ txHash: burnTx, sourceChain: chain.key });
+							stores.$activeTransferId.set(record.id);
+							return;
+						} catch (error) {
+							if (attempt >= 5 || controller.signal.aborted) throw error;
+							await sleep(3_000, controller.signal);
+						}
+					}
+				},
+				update: (state) => {
+					if (stores.$deposit.get()?.address === state.address) stores.$deposit.set(state);
+				},
+				sleep: (ms, signal) => sleep(ms, signal),
+			},
+			controller.signal,
+		).catch(() => undefined);
+		const stop = () => {
+			controller.abort();
+			if (stopDepositWatch === stop) stopDepositWatch = undefined;
+			if (stores.$deposit.get()?.address === derived.address) stores.$deposit.set(null);
+		};
+		stopDepositWatch = stop;
+		return stop;
+	}
+	cleanups.push(() => stopDepositWatch?.());
+
 	/** An attested transfer that only needs claiming, and that the sponsor may yet claim. */
 	function awaitsSponsor(record: TransferRecord): boolean {
 		if (!sponsor || !record.message || !record.attestation || record.destinationTxHash)
@@ -1404,6 +1518,9 @@ export function createCctpKit(config: CctpKitConfig): CctpKit {
 		resume,
 		claim,
 		importTransfer,
+		depositChains,
+		depositAddress,
+		watchDeposit,
 		isRunning,
 		dismiss,
 		restore,

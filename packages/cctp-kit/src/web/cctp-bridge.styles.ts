@@ -245,6 +245,97 @@ export const styles = [
 			background-color: var(--cctp-kit-muted);
 		}
 
+		.segmented.mode {
+			display: flex;
+			margin-left: 0;
+		}
+
+		.segmented.mode button {
+			flex: 1;
+		}
+
+		.hint {
+			font-size: 0.75rem;
+		}
+
+		.deposit {
+			display: flex;
+			gap: 14px;
+			align-items: center;
+			padding: 14px;
+			border: 1px solid var(--cctp-kit-border);
+			border-radius: var(--cctp-kit-radius-lg);
+		}
+
+		.qr {
+			flex: none;
+			width: 128px;
+			height: 128px;
+			border-radius: var(--cctp-kit-radius-md);
+			overflow: hidden;
+		}
+
+		.qr svg {
+			display: block;
+			width: 100%;
+			height: 100%;
+		}
+
+		.deposit-body {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			min-width: 0;
+		}
+
+		.deposit-address {
+			font-family: var(--cctp-kit-font-mono, ui-monospace, monospace);
+			font-size: 0.8125rem;
+			overflow-wrap: anywhere;
+			user-select: all;
+		}
+
+		.deposit-status {
+			margin: 0;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			flex-wrap: wrap;
+		}
+
+		.pulse {
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+			background: var(--cctp-kit-positive);
+			animation: cctp-kit-pulse 1.6s ease-in-out infinite;
+		}
+
+		@keyframes cctp-kit-pulse {
+			50% {
+				opacity: 0.3;
+			}
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			.pulse {
+				animation: none;
+			}
+		}
+
+		@media (max-width: 420px) {
+			.deposit {
+				flex-direction: column;
+				align-items: stretch;
+			}
+
+			.qr {
+				align-self: center;
+				width: 168px;
+				height: 168px;
+			}
+		}
+
 		.text-button {
 			font-family: inherit;
 			font-size: 0.8125rem;
