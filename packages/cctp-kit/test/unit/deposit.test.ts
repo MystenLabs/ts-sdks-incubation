@@ -143,6 +143,19 @@ describe('watchDepositAddress', () => {
 		expect(h.last().phase).toBe('waiting');
 	});
 
+	it('keeps the latest deposit: what was sent, the funding transfer, and its burn', async () => {
+		const h = harness(
+			[1_000_000n],
+			[{ status: 'processed', depositAddress: DEPOSIT, burnTx: '0xburn' }],
+		);
+		await h.run();
+		expect(h.last().latest).toMatchObject({
+			sent: 1_000_000n,
+			incoming: { txHash: '0xfund' },
+			burnTx: '0xburn',
+		});
+	});
+
 	it('stops before any funds arrive when the service derives another address', async () => {
 		const h = harness(
 			[0n, 0n],

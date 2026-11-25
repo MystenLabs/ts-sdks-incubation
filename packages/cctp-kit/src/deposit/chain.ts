@@ -51,7 +51,14 @@ export async function findIncomingDeposit(
 				toBlock: to,
 			});
 			const last = logs.at(-1);
-			if (last?.transactionHash) return { txHash: last.transactionHash, amount: last.args.value };
+			if (last?.transactionHash) {
+				const block = await client.getBlock({ blockNumber: last.blockNumber }).catch(() => null);
+				return {
+					txHash: last.transactionHash,
+					amount: last.args.value,
+					at: block ? Number(block.timestamp) * 1000 : undefined,
+				};
+			}
 			if (from === floor) break;
 		}
 		return null;
@@ -60,7 +67,9 @@ export async function findIncomingDeposit(
 		const [latest] = await withSolanaConnection(chain, (connection) =>
 			connection.getSignaturesForAddress(new PublicKey(deposit.tokenAccount!), { limit: 1 }),
 		);
-		return latest && !latest.err ? { txHash: latest.signature } : null;
+		return latest && !latest.err
+			? { txHash: latest.signature, at: latest.blockTime ? latest.blockTime * 1000 : undefined }
+			: null;
 	}
 	return null;
 }

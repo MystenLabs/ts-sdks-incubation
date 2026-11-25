@@ -303,6 +303,160 @@ export const styles = [
 			flex-wrap: wrap;
 		}
 
+		.deposit-progress {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: 12px;
+			padding: 12px 14px;
+			border: 1px solid var(--cctp-kit-border);
+			border-radius: var(--cctp-kit-radius-lg);
+			font-size: 0.8125rem;
+		}
+
+		.deposit-progress ol {
+			list-style: none;
+			margin: 0;
+			padding: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.deposit-progress li {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			color: var(--cctp-kit-muted-foreground);
+		}
+
+		.deposit-progress li.done,
+		.deposit-progress li.active {
+			color: var(--cctp-kit-foreground);
+		}
+
+		.step-mark {
+			flex: none;
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			border: 2px solid var(--cctp-kit-border);
+			box-sizing: border-box;
+			transition:
+				background-color 0.25s ease,
+				border-color 0.25s ease;
+		}
+
+		li.done .step-mark {
+			background: var(--cctp-kit-positive);
+			border-color: var(--cctp-kit-positive);
+		}
+
+		li.active .step-mark {
+			border-color: var(--cctp-kit-positive);
+			border-top-color: transparent;
+			animation: cctp-kit-spin 0.9s linear infinite;
+		}
+
+		.elapsed {
+			font-variant-numeric: tabular-nums;
+			white-space: nowrap;
+		}
+
+		.deposit-success {
+			display: flex;
+			gap: 12px;
+			align-items: center;
+			padding: 14px;
+			border-radius: var(--cctp-kit-radius-lg);
+			border: 1px solid color-mix(in oklab, var(--cctp-kit-positive) 55%, transparent);
+			background: color-mix(in oklab, var(--cctp-kit-positive) 14%, var(--cctp-kit-background));
+			animation: cctp-kit-rise 0.3s ease-out;
+		}
+
+		.deposit-success-body {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+			min-width: 0;
+			font-size: 0.8125rem;
+		}
+
+		.deposit-success-body strong {
+			font-size: 0.9375rem;
+			font-weight: var(--cctp-kit-font-weight-semibold);
+		}
+
+		.check {
+			flex: none;
+			width: 36px;
+			height: 36px;
+		}
+
+		.check-ring {
+			fill: var(--cctp-kit-positive);
+		}
+
+		.check-tick {
+			stroke: var(--cctp-kit-background);
+			stroke-width: 2.4;
+			stroke-linecap: round;
+			stroke-linejoin: round;
+			stroke-dasharray: 16;
+			stroke-dashoffset: 16;
+			animation: cctp-kit-draw 0.4s 0.15s ease-out forwards;
+		}
+
+		.deposit-last {
+			margin: 0;
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			flex-wrap: wrap;
+			font-size: 0.8125rem;
+		}
+
+		.small-check {
+			flex: none;
+			width: 16px;
+			height: 16px;
+			stroke: var(--cctp-kit-positive);
+			stroke-width: 2.2;
+			stroke-linecap: round;
+			stroke-linejoin: round;
+		}
+
+		@keyframes cctp-kit-spin {
+			to {
+				transform: rotate(360deg);
+			}
+		}
+
+		@keyframes cctp-kit-draw {
+			to {
+				stroke-dashoffset: 0;
+			}
+		}
+
+		@keyframes cctp-kit-rise {
+			from {
+				opacity: 0;
+				transform: translateY(4px);
+			}
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			li.active .step-mark,
+			.deposit-success {
+				animation: none;
+			}
+
+			.check-tick {
+				animation: none;
+				stroke-dashoffset: 0;
+			}
+		}
+
 		.pulse {
 			width: 8px;
 			height: 8px;

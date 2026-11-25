@@ -17,6 +17,25 @@ export interface DepositProcessAnswer {
 export interface IncomingDeposit {
 	txHash: string;
 	amount?: bigint;
+	/** When its block was produced, in ms. */
+	at?: number;
+}
+
+/** One deposit this widget saw through, newest in `DepositState.latest`. */
+export interface DepositRun {
+	/** USDC at the address when it was processed: what the user sent, keeper fee included. */
+	sent: bigint | null;
+	/** The transfer that funded it, when the chain showed one. */
+	incoming: IncomingDeposit | null;
+	/** When the widget first saw the funds, in ms: the start of the clock when `incoming.at` is unknown. */
+	seenAt: number;
+	/** The burn, once the service has sent it. */
+	burnTx?: string;
+	/**
+	 * Found through the service's `lastBurnTx`, not seen arriving: after a reload, say. When it
+	 * happened is not known here, so it gets no clock and no moment of its own.
+	 */
+	recovered?: boolean;
 }
 
 /**
@@ -42,6 +61,8 @@ export interface DepositState extends DepositAddress {
 	incoming: IncomingDeposit | null;
 	/** Burns this address has sent on to Sui while watched, newest last. */
 	burns: string[];
+	/** The deposit seen through most recently, from the moment its funds were seen. */
+	latest?: DepositRun;
 	/** What went wrong last, for the user. */
 	error?: string;
 }
@@ -55,6 +76,7 @@ export interface DepositWatcherDeps {
 	track(burnTx: string): Promise<void>;
 	update(state: DepositState): void;
 	sleep(ms: number, signal: AbortSignal): Promise<void>;
+	now?: () => number;
 	/** Between balance reads. */
 	pollMs?: number;
 	/** After the service could not process. */
@@ -84,6 +106,13 @@ export async function watchDepositAddress(
 	/** Burns the service named that the kit has not taken yet, with the attempts left. */
 	const pending = new Map<string, number>();
 	let askService = true;
+	const now = deps.now ?? Date.now;
+	/** A run for funds just seen: what is there now is what will be sent. */
+	const fresh = (incoming: IncomingDeposit | null): DepositRun => ({
+		sent: state.balance,
+		incoming,
+		seenAt: now(),
+	});
 	const set = (patch: Partial<DepositState>) => {
 		state = { ...state, ...patch };
 		if (!signal.aborted) deps.update(state);
@@ -119,13 +148,32 @@ export async function watchDepositAddress(
 		}
 		if (answer.status === 'processed' && answer.burnTx) {
 			follow(answer.burnTx);
-			set({ phase: 'waiting', balance: 0n, error: undefined });
+			set({
+				phase: 'waiting',
+				balance: 0n,
+				error: undefined,
+				latest: { ...(state.latest ?? fresh(incoming)), burnTx: answer.burnTx },
+			});
 			return true;
 		}
 		if (answer.status === 'empty') {
 			// Someone processed it first, or an earlier call timed out after sending.
 			follow(answer.lastBurnTx);
-			set({ phase: 'waiting', balance: 0n });
+			const known = state.burns.includes(answer.lastBurnTx ?? '');
+			set({
+				phase: 'waiting',
+				balance: 0n,
+				...(answer.lastBurnTx && !known && state.latest?.burnTx !== answer.lastBurnTx
+					? {
+							latest: {
+								...(state.latest && !state.latest.burnTx
+									? state.latest
+									: { sent: null, incoming: null, seenAt: now(), recovered: true }),
+								burnTx: answer.lastBurnTx,
+							},
+						}
+					: {}),
+			});
 			return true;
 		}
 		if (answer.status === 'ineligible' && answer.reason === 'below_minimum') {
@@ -153,7 +201,16 @@ export async function watchDepositAddress(
 					set({ balance, incoming, phase: 'belowMinimum', error: undefined });
 					if (askService) askService = !(await process(incoming));
 				} else {
-					set({ balance, incoming, phase: 'received', error: undefined });
+					set({
+						balance,
+						incoming,
+						phase: 'received',
+						error: undefined,
+						latest:
+							state.latest && !state.latest.burnTx
+								? { ...state.latest, sent: balance, incoming }
+								: { sent: balance, incoming, seenAt: now() },
+					});
 					askService = !(await process(incoming));
 					if (askService) {
 						set({ phase: 'unavailable' });

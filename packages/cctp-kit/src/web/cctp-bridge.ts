@@ -149,7 +149,16 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		super.connectedCallback();
 		this.#clock = setInterval(() => {
 			const transfers = this.instance?.stores.$transfers.get() ?? [];
-			if (transfers.some((t) => t.status === 'attesting')) this._now = Date.now();
+			const run = this.instance?.stores.$deposit.get()?.latest;
+			const depositRecord = run?.burnTx
+				? transfers.find((t) => t.sourceTxHash === run.burnTx)
+				: undefined;
+			const depositActive =
+				!!run &&
+				(!depositRecord ||
+					depositRecord.status !== 'complete' ||
+					Date.now() - (depositRecord.completedAt ?? 0) < DEPOSIT_SUCCESS_MS + 1_000);
+			if (transfers.some((t) => t.status === 'attesting') || depositActive) this._now = Date.now();
 		}, 1000);
 	}
 
@@ -561,79 +570,148 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 							there.`
 				}
 			</p>
-			${this.renderDepositStatus(from, state)} ${this.renderDepositResult(kit, state)}
+			${this.renderDepositActivity(kit, from, state)}
 		`;
 	}
 
 	/**
-	 * The latest burn from this address, as the kit tracks it. A deposit can cross in seconds,
-	 * so without this line the user would see "Waiting for USDC" again and nothing else.
+	 * What the deposit address is doing now. A deposit can cross in seconds, so it gets a moment of
+	 * its own: a tracker while it moves, a success panel when it lands, then back to waiting with
+	 * the last deposit still on screen. All of it stays inside the widget.
 	 */
-	private renderDepositResult(kit: CctpKit, state: DepositState | null) {
-		const burn = state?.burns.at(-1);
-		const record = burn && kit.stores.$transfers.get().find((t) => t.sourceTxHash === burn);
-		if (!record) return nothing;
-		const sui = kit.chains.find((c) => c.ecosystem === 'sui')!;
-		const received = netAmountOf(record.message) ?? BigInt(record.amount);
-		if (record.status === 'complete') {
-			return html`<p class="notice deposit-result" part="deposit-result" aria-live="polite">
-				${formatUsdc(received)} USDC arrived on
-				${sui.name}${
-					record.destinationTxHash
-						? html` in
-								<a
-									class="link"
-									href=${txUrl(sui, record.destinationTxHash)}
-									target="_blank"
-									rel="noreferrer"
-									>${shorten(record.destinationTxHash)}</a
-								>`
-						: nothing
-				}.
+	private renderDepositActivity(kit: CctpKit, from: ChainDefinition, state: DepositState | null) {
+		if (!state) return nothing;
+		if (state.phase === 'mismatch') {
+			return html`<p class="error" role="alert">
+				Do not send to this address: the service derived a different one. ${state.error}
 			</p>`;
 		}
-		return html`<p class="muted deposit-status" part="deposit-result" aria-live="polite">
-			Bridging ${formatUsdc(BigInt(record.amount))} USDC to ${sui.name}: ${STEP_TEXT[record.status]}
+		const sui = kit.chains.find((c) => c.ecosystem === 'sui')!;
+		const run = state.latest;
+		const record = run?.burnTx
+			? kit.stores.$transfers.get().find((t) => t.sourceTxHash === run.burnTx)
+			: undefined;
+		const startedAt = run ? (run.incoming?.at ?? run.seenAt) : 0;
+
+		// In flight: funds seen, or a burn the kit is still taking to Sui.
+		if (
+			run &&
+			(state.phase === 'received' ||
+				(run.burnTx && (!record || (record.status !== 'complete' && record.status !== 'failed'))))
+		) {
+			const sentThroughCircle =
+				!!record && ['readyToMint', 'minting', 'complete'].includes(record.status);
+			const step = !run.burnTx ? 1 : sentThroughCircle ? 3 : 2;
+			const sent = run.sent ?? (record ? BigInt(record.amount) + state.keeperFee : null);
+			return this.renderDepositTracker(
+				[
+					html`Received ${sent !== null ? `${formatUsdc(sent)} USDC` : 'USDC'} on
+					${from.name}${
+						run.incoming ? html` ${this.renderTxLink(from, run.incoming.txHash)}` : nothing
+					}`,
+					html`Sent through
+					Circle${run.burnTx ? html` ${this.renderTxLink(from, run.burnTx)}` : nothing}`,
+					html`Arriving on ${sui.name}`,
+				],
+				step,
+				this._now - startedAt,
+			);
+		}
+
+		const waiting = html`<p class="muted deposit-status" part="deposit-status" aria-live="polite">
+			${this.renderDepositWaiting(from, state)}
 		</p>`;
+		if (!run || !record || record.status !== 'complete') return waiting;
+
+		const received = netAmountOf(record.message) ?? BigInt(record.amount);
+		const sent = run.sent ?? BigInt(record.amount) + state.keeperFee;
+		const took = record.completedAt && !run.recovered ? record.completedAt - startedAt : null;
+		const tookText = took !== null && took > 0 ? formatTook(took) : null;
+		const link = record.destinationTxHash
+			? html`<a
+					class="link"
+					href=${txUrl(sui, record.destinationTxHash)}
+					target="_blank"
+					rel="noreferrer"
+					>View on ${sui.name}</a
+				>`
+			: nothing;
+
+		// Just landed: a moment of its own, then back to waiting.
+		if (
+			!run.recovered &&
+			record.completedAt &&
+			this._now - record.completedAt < DEPOSIT_SUCCESS_MS
+		) {
+			return html`<div class="deposit-success" part="deposit-success" role="status">
+				${checkIcon}
+				<div class="deposit-success-body">
+					<strong>${formatUsdc(received)} USDC arrived on ${sui.name}</strong>
+					<span class="muted"
+						>Sent ${formatUsdc(sent)} USDC · ${formatUsdc(sent > received ? sent - received : 0n)}
+						USDC in fees${tookText ? html` · ${tookText}` : nothing}</span
+					>
+					${link}
+				</div>
+			</div>`;
+		}
+
+		return html`${waiting}
+			<p class="deposit-last" part="deposit-last">
+				${smallCheckIcon}
+				<span
+					>Last deposit: ${formatUsdc(received)} USDC arrived on
+					${sui.name}${tookText ? html` in ${tookText}` : nothing}.</span
+				>
+				${
+					record.destinationTxHash
+						? html`<a
+								class="link"
+								href=${txUrl(sui, record.destinationTxHash)}
+								target="_blank"
+								rel="noreferrer"
+								>View</a
+							>`
+						: nothing
+				}
+			</p>`;
 	}
 
-	private renderDepositStatus(from: ChainDefinition, state: DepositState | null) {
-		if (!state) return nothing;
+	private renderDepositTracker(steps: unknown[], current: number, elapsedMs: number) {
+		return html`<div class="deposit-progress" part="deposit-progress" aria-live="polite">
+			<ol>
+				${steps.map(
+					(label, i) =>
+						html`<li class=${classMap({ done: i + 1 < current, active: i + 1 === current })}>
+							<span class="step-mark" aria-hidden="true"></span><span>${label}</span>
+						</li>`,
+				)}
+			</ol>
+			<span class="muted elapsed">${elapsedMs > 0 ? formatTook(elapsedMs) : ''}</span>
+		</div>`;
+	}
+
+	private renderTxLink(chain: ChainDefinition, hash: string) {
+		return html`<a class="link" href=${txUrl(chain, hash)} target="_blank" rel="noreferrer"
+			>${shorten(hash)}</a
+		>`;
+	}
+
+	private renderDepositWaiting(from: ChainDefinition, state: DepositState) {
 		const incoming = state.incoming
-			? html` in
-					<a
-						class="link"
-						href=${txUrl(from, state.incoming.txHash)}
-						target="_blank"
-						rel="noreferrer"
-						>${shorten(state.incoming.txHash)}</a
-					>`
+			? html` in ${this.renderTxLink(from, state.incoming.txHash)}`
 			: nothing;
-		const balance = state.balance !== null ? formatUsdc(state.balance) : null;
-		let text;
+		const balance = state.balance !== null ? formatUsdc(state.balance) : '';
 		switch (state.phase) {
-			case 'waiting':
-				text = html`<span class="pulse" aria-hidden="true"></span> Waiting for USDC on ${from.name}…`;
-				break;
-			case 'received':
-				text = html`Received ${balance} USDC${incoming}. Sending it to Sui…`;
-				break;
 			case 'belowMinimum':
-				text = html`Received ${balance} USDC${incoming}. That is below the minimum of
+				return html`Received ${balance} USDC${incoming}. That is below the minimum of
 				${formatUsdc(roundUpToCent(state.minimum))} USDC: send more and it adds up.`;
-				break;
 			case 'unavailable':
-				text = html`Received ${balance ?? ''} USDC${incoming}. The service cannot send it on right
-				now (${state.error ?? 'unavailable'}). It will try again shortly.`;
-				break;
-			case 'mismatch':
-				return html`<p class="error" role="alert">
-					Do not send to this address: the service derived a different one. ${state.error}
-				</p>`;
+				return html`Received ${balance} USDC${incoming}. The service cannot send it on right now
+				(${state.error ?? 'unavailable'}). It will try again shortly.`;
+			default:
+				return html`<span class="pulse" aria-hidden="true"></span> Waiting for USDC on ${from.name}…`;
 		}
-		return html`<p class="muted deposit-status" part="deposit-status" aria-live="polite">
-			${text}
-		</p>`;
 	}
 
 	private renderPanel(kit: CctpKit, side: 'from' | 'to') {
@@ -1447,17 +1525,28 @@ function estimateRange(chain: ChainDefinition, speed: 'fast' | 'standard'): [num
 	return [range[0], range[1]];
 }
 
-/** Where a deposit's transfer stands, in the deposit view's own words. */
-const STEP_TEXT: Record<TransferStatus, string> = {
-	pending: 'starting…',
-	approving: 'starting…',
-	burning: 'burning on the source chain…',
-	attesting: 'waiting for Circle…',
-	readyToMint: 'ready to claim.',
-	minting: 'claiming on Sui…',
-	complete: 'done.',
-	failed: 'stopped. See the transfer below.',
-};
+/** How long a deposit that just landed keeps the success panel before the view goes back to waiting. */
+const DEPOSIT_SUCCESS_MS = 8_000;
+
+/** "8 s", "1 min 5 s": how long a deposit took, to the second. */
+function formatTook(ms: number): string {
+	const s = Math.max(1, Math.round(ms / 1000));
+	return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`;
+}
+
+const checkIcon = html`<svg class="check" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+	<circle class="check-ring" cx="12" cy="12" r="11"></circle>
+	<path class="check-tick" d="M7 12.5l3.2 3.2L17 9"></path>
+</svg>`;
+
+const smallCheckIcon = html`<svg
+	class="small-check"
+	viewBox="0 0 16 16"
+	fill="none"
+	aria-hidden="true"
+>
+	<path d="M3.5 8.5l2.8 2.8L12.5 5"></path>
+</svg>`;
 
 /** Minimums read better in cents, and rounding up keeps them minimums. */
 function roundUpToCent(amount: bigint): bigint {
