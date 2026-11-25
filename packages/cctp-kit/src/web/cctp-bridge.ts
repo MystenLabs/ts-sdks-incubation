@@ -132,6 +132,10 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 	@state()
 	private _depositOwner = '';
 
+	/** An optional recovery address stays out of the way until asked for. */
+	@state()
+	private _recoveryOpen = false;
+
 	@state()
 	private _copied = false;
 
@@ -392,7 +396,6 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 		const inputs = this.#depositInputs(kit);
 		const { from, recovery } = inputs;
 		const sui = kit.stores.$wallets.get().sui;
-		const sourceAccount = kit.stores.$wallets.get()[from.ecosystem as 'evm' | 'solana'];
 		const state = kit.stores.$deposit.get();
 		const watched =
 			state && inputs.address && state.address === inputs.address.address ? state : null;
@@ -418,43 +421,18 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 					${
 						recovery === 'none'
 							? nothing
-							: html`<div class="row">
-										<span class="muted"
-											>Recovery address${recovery === 'optional' ? ' (optional)' : ''}</span
+							: recovery === 'optional' && !this._recoveryOpen
+								? html`<div class="row">
+										<button
+											type="button"
+											class="text-button"
+											aria-expanded="false"
+											@click=${() => (this._recoveryOpen = true)}
 										>
-										${
-											sourceAccount && this._depositOwner !== sourceAccount.address
-												? html`<button
-														type="button"
-														class="text-button"
-														@click=${() => (this._depositOwner = sourceAccount.address)}
-													>
-														Use connected wallet
-													</button>`
-												: from.ecosystem === 'evm' || from.ecosystem === 'solana'
-													? sourceAccount
-														? nothing
-														: html`<internal-button
-																variant="secondary"
-																small
-																@click=${() => this.connect(kit, from)}
-															>
-																Connect wallet
-															</internal-button>`
-													: nothing
-										}
-									</div>
-									<input
-										class="field"
-										type="text"
-										placeholder="Your address on ${from.name}"
-										.value=${this._depositOwner}
-										@input=${(e: Event) => (this._depositOwner = (e.target as HTMLInputElement).value)}
-									/>
-									<span class="muted hint"
-										>Only this address can take back, on ${from.name}, funds that were not bridged
-										yet: the wrong token, or too little to bridge.</span
-									>`
+											Recovery address (optional)
+										</button>
+									</div>`
+								: this.renderRecoveryField(kit, from, recovery)
 					}
 				</div>
 				<span class="flip" aria-hidden="true">${downIcon}</span>
@@ -515,6 +493,65 @@ export class CctpBridge extends ScopedRegistryHost(LitElement) {
 			${this.renderTransfers(kit)}
 			<div class="footer-links">${this.renderHistoryToggle(kit)}</div>
 		`;
+	}
+
+	private renderRecoveryField(
+		kit: CctpKit,
+		from: ChainDefinition,
+		recovery: 'optional' | 'required',
+	) {
+		const sourceAccount = kit.stores.$wallets.get()[from.ecosystem as 'evm' | 'solana'];
+		const canConnect = from.ecosystem === 'evm' || from.ecosystem === 'solana';
+		return html`<div class="row">
+				${
+					recovery === 'optional'
+						? html`<button
+								type="button"
+								class="text-button"
+								aria-expanded="true"
+								title="Remove the recovery address"
+								@click=${() => {
+									// Closed means none: a hidden field must not change the address.
+									this._recoveryOpen = false;
+									this._depositOwner = '';
+								}}
+							>
+								Recovery address (optional)
+							</button>`
+						: html`<span class="muted">Recovery address</span>`
+				}
+				${
+					sourceAccount && this._depositOwner !== sourceAccount.address
+						? html`<button
+								type="button"
+								class="text-button"
+								@click=${() => (this._depositOwner = sourceAccount.address)}
+							>
+								Use connected wallet
+							</button>`
+						: canConnect && !sourceAccount
+							? html`<internal-button
+									variant="secondary"
+									small
+									@click=${() => this.connect(kit, from)}
+								>
+									Connect wallet
+								</internal-button>`
+							: nothing
+				}
+			</div>
+			<input
+				class="field"
+				type="text"
+				placeholder="Your address on ${from.name}"
+				.value=${this._depositOwner}
+				@input=${(e: Event) => (this._depositOwner = (e.target as HTMLInputElement).value)}
+			/>
+			<span class="muted hint"
+				>Only this address can take back, on ${from.name}, funds that were not bridged yet: the
+				wrong token, or too little to
+				bridge.${recovery === 'optional' ? ' Close this to send without one.' : ''}</span
+			>`;
 	}
 
 	private renderDepositAddress(
