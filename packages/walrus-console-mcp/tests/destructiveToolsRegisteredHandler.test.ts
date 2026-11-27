@@ -10,7 +10,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { STARTUP_CHECK_IN, dropStartupCheckIn } from "./helpers/startupCheckIn";
 
-// COMG-1200. `delete_bucket`, `delete_file` and `download_file` with `overwrite: true` ask a human
+// `delete_bucket`, `delete_file` and `download_file` with `overwrite: true` ask a human
 // through the client's own UI, the way `generate_api_key` does, on top of the `confirm: true` a
 // model can compose itself. Drives the REAL registered handlers over real stdio (bin/console-mcp.ts
 // cannot be imported: it starts the server as a side effect), against a loopback Console stand-in
@@ -118,6 +118,36 @@ const acceptUnticked = async (): Promise<ElicitAnswer> => ({
   action: "accept",
   content: { confirm: false },
 });
+const unconfirmed: ReadonlyArray<{
+  label: string;
+  onElicit: NonNullable<ProbeOptions["onElicit"]>;
+  reason: string;
+}> = [
+  {
+    label: "cancelled prompt",
+    onElicit: async () => ({ action: "cancel" }),
+    reason: 'answered "cancel"',
+  },
+  {
+    label: "timed-out prompt",
+    onElicit: async () => {
+      throw new Error("Request timed out");
+    },
+    reason: "before it timed out",
+  },
+  {
+    label: "failed prompt",
+    onElicit: async () => {
+      throw new Error("The client could not show the confirmation");
+    },
+    reason: "confirmation prompt did not complete",
+  },
+  {
+    label: "unchecked confirmation",
+    onElicit: acceptUnticked,
+    reason: "without checking its confirmation box",
+  },
+];
 
 const BUCKET_ID = "11111111-1111-4111-8111-111111111111";
 const FILE_ID = "22222222-2222-4222-8222-222222222222";
@@ -155,17 +185,25 @@ describe.each([
     expect(textOf(result)).toContain("Nothing was deleted.");
   }, 20_000);
 
-  it("an accept that leaves the box unticked is not a confirmation", async () => {
-    const { requests, result } = await probe({
-      tool,
-      args,
-      capabilities: ELICIT,
-      onElicit: acceptUnticked,
-    });
+  it.each(unconfirmed)(
+    "refuses deletion after a $label",
+    async ({ onElicit, reason }) => {
+      const { requests, result } = await probe({
+        tool,
+        args,
+        capabilities: ELICIT,
+        onElicit,
+      });
 
-    expect(requests).toEqual([]);
-    expect(JSON.parse(textOf(result))).toMatchObject({ ok: false, stage: "declined" });
-  }, 20_000);
+      expect(requests).toEqual([]);
+      expect(JSON.parse(textOf(result))).toMatchObject({
+        ok: false,
+        stage: "declined",
+        reason: expect.stringContaining(reason),
+      });
+    },
+    20_000,
+  );
 
   it("a confirmed accept reaches Console", async () => {
     const { requests, prompts } = await probe({
@@ -251,6 +289,26 @@ describe("download_file with overwrite: true", { timeout: 30_000 }, () => {
     expect(JSON.parse(textOf(result))).toMatchObject({ ok: false, stage: "declined" });
     expect(textOf(result)).toContain("Nothing was overwritten.");
   }, 20_000);
+
+  it.each(unconfirmed)(
+    "refuses overwrite after a $label",
+    async ({ onElicit, reason }) => {
+      const { requests, result } = await probe({
+        tool: "download_file",
+        args: args({ overwrite: true, confirm: true }),
+        capabilities: ELICIT,
+        onElicit,
+      });
+
+      expect(requests).toEqual([]);
+      expect(JSON.parse(textOf(result))).toMatchObject({
+        ok: false,
+        stage: "declined",
+        reason: expect.stringContaining(reason),
+      });
+    },
+    20_000,
+  );
 
   it("a confirmed accept reaches Console", async () => {
     const { requests, prompts } = await probe({

@@ -169,6 +169,22 @@ describe("allowedDirsFromConfig", () => {
   it("drops blank entries", () => {
     expect(allowedDirsFromConfig({ allowedDirs: ["  ", ""] })).toEqual([]);
   });
+
+  it("keeps shared folder grants independent of the server working directory", () => {
+    const absolute = join(homedir(), "example folder ");
+    expect(
+      allowedDirsFromConfig({
+        allowedDirs: ["relative-folder", absolute],
+        allowedDirsScope: "shared",
+      }),
+    ).toEqual([absolute]);
+  });
+
+  it("drops a Windows shared path without an explicit drive or share", () => {
+    expect(
+      allowedDirsFromConfig({ allowedDirs: ["\\work"], allowedDirsScope: "shared" }, "win32"),
+    ).toEqual([]);
+  });
 });
 
 describe("allowedDirsFromEnv", () => {
@@ -204,8 +220,14 @@ async function rejectionMessageOf(promise: Promise<unknown>): Promise<string> {
   }
 }
 
-describe("resolvePathWithinRoots (synthetic roots)", () => {
-  const workspace = join("/home", "me", "project");
+describe("resolvePathWithinRoots (workspace roots)", () => {
+  let workspace: string;
+
+  beforeAll(async () => {
+    workspace = await toRealPathAsync(mkdtempSync(join(tmpdir(), "walrus-mcp-workspace-")));
+  });
+
+  afterAll(() => rmSync(workspace, { recursive: true, force: true }));
 
   it("anchors a relative path to the workspace root, not the server cwd", async () => {
     const out = await resolvePathWithinRoots(

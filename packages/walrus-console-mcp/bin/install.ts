@@ -20,12 +20,14 @@ import {
   type AllowedDirsScope,
   loadConfigFileOrEmpty,
   mergeConfigFile,
+  mergeConfigFileIf,
 } from "../src/configFile.js";
 import {
   HOME_DIR_WARNING,
   SHARED_DIRS_NOTICE,
   FALLBACK_DIRS_NOTICE,
   isBroadHomeFolder,
+  isHomeDirectory,
   validateAllowedDirectory,
 } from "../src/pathSandbox.js";
 import {
@@ -37,7 +39,7 @@ import {
   validateSilent,
   type PinSeeds,
 } from "../src/credentials.js";
-import { registerSecret } from "../src/redaction.js";
+import { quoteForDisplay, registerSecret } from "../src/redaction.js";
 import { INSTALL_USAGE, wantsHelp } from "../src/usage.js";
 import {
   clampVisible,
@@ -756,7 +758,7 @@ const isAffirmative = (answer: string): boolean => {
 export { HOME_DIR_WARNING };
 
 export interface AllowedDirChoice {
-  id: "cwd" | "documents" | "downloads" | "home" | "custom" | "skip" | "review";
+  id: "cwd" | "documents" | "downloads" | "custom" | "skip" | "review";
   label: string;
   hint: string;
   path?: string;
@@ -765,7 +767,9 @@ export interface AllowedDirChoice {
 /** Preset radio rows for the File access step. `path` is omitted for custom/skip. */
 export function allowedDirChoices(cwd: string, home: string): AllowedDirChoice[] {
   return [
-    { id: "cwd", path: cwd, label: "This folder", hint: cwd },
+    ...(isHomeDirectory(cwd, home)
+      ? []
+      : [{ id: "cwd" as const, path: cwd, label: "This folder", hint: cwd }]),
     {
       id: "documents",
       path: join(home, "Documents"),
@@ -778,7 +782,6 @@ export function allowedDirChoices(cwd: string, home: string): AllowedDirChoice[]
       label: "Downloads",
       hint: join(home, "Downloads"),
     },
-    { id: "home", path: home, label: "Home", hint: "your whole home directory — broad" },
     { id: "custom", label: "Custom path…", hint: "type a folder this server may read and write" },
     {
       id: "skip",
@@ -796,6 +799,7 @@ export interface StepAllowedDirsDeps {
   home?: string;
   step?: string;
   merge?: typeof mergeConfigFile;
+  mergeIf?: typeof mergeConfigFileIf;
   /**
    * `--allowed-dirs` values from the command line. A dirs-only argv goes silent
    * (see `ParsedArgs.silent`), so this is the case where the flag arrived beside
@@ -909,7 +913,7 @@ function applySeededAllowedDirs(
   rail.line(info("Folders from --allowed-dirs:"));
   // `show`, not `line`: a long path must be confirmed in full rather than
   // clamped to a prefix (see showRow).
-  for (const dir of dirs) rail.show(ok(dir));
+  for (const dir of dirs) rail.show(ok(quoteForDisplay(dir)));
   rail.line(
     styleText(
       "dim",
@@ -1023,8 +1027,8 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     });
 
   const dirs: string[] = [];
-  const accept = (raw: string): boolean => {
-    const result = validateAllowedDirectory(raw);
+  const accept = (raw: string, literal = false): boolean => {
+    const result = validateAllowedDirectory(raw, process.platform, literal);
     if ("error" in result) {
       line(fail(result.error));
       return false;
@@ -1032,14 +1036,14 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     if (!dirs.includes(result.dir)) {
       dirs.push(result.dir);
       if (isBroadHomeFolder(result.dir, home)) line(warn(HOME_DIR_WARNING));
-      line(ok(result.dir));
+      line(ok(quoteForDisplay(result.dir)));
     }
     return true;
   };
 
   if (picked.id === "review") {
     for (const dir of existing.allowedDirs ?? []) {
-      if (!accept(dir))
+      if (!accept(dir, true))
         return leave("Nothing saved — repair the saved folder or choose a new list.");
     }
   } else if (picked.id === "custom") {
@@ -1057,7 +1061,7 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
       if (accept(typed)) break;
     }
   } else if (picked.path) {
-    if (!accept(picked.path)) {
+    if (!accept(picked.path, true)) {
       line(info("Nothing saved — pick an existing folder with --allowed-dirs, or re-run."));
       gap();
       return { updates: {}, clear: [] };
@@ -1088,11 +1092,11 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
   }
 
   line(info("Complete saved folder list:"));
-  for (const dir of dirs) line(info(dir));
+  for (const dir of dirs) line(info(quoteForDisplay(dir)));
   line(info(SHARED_DIRS_NOTICE));
   line(
     info(
-      "Fallback access uses these folders only when no workspace or environment folders are provided.",
+      "Fallback access uses these folders only when no usable workspace or environment folders are available.",
     ),
   );
   let scope = deps.scope;
@@ -1112,10 +1116,32 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
   // route the notice through it anyway for consistent indentation/styling
   // rather than a bare stderr write.
   let migratedLegacyAdmin = false;
-  merge({ allowedDirs: dirs, allowedDirsScope: scope }, [], (msg) => {
+  const updates = { allowedDirs: dirs, allowedDirsScope: scope };
+  const notice = (msg: string) => {
     migratedLegacyAdmin = true;
     line(info(msg));
-  });
+  };
+  if (picked.id === "review") {
+    const result = (deps.mergeIf ?? mergeConfigFileIf)(
+      (current) =>
+        JSON.stringify(current.allowedDirs) === JSON.stringify(existing.allowedDirs) &&
+        (current.allowedDirsScope ?? "fallback") === (existing.allowedDirsScope ?? "fallback"),
+      updates,
+      [],
+      notice,
+    );
+    if (!result.written) {
+      line(
+        warn(
+          "Nothing saved because the folder configuration changed during review. Open it again to review the current list.",
+        ),
+      );
+      gap();
+      return { updates: {}, clear: [], ...(deps.back ? { backRequested: true } : {}) };
+    }
+  } else {
+    merge(updates, [], notice);
+  }
   line(
     styleText(
       "dim",
@@ -1125,7 +1151,7 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     ),
   );
   gap();
-  return { updates: { allowedDirs: dirs, allowedDirsScope: scope }, clear: [] };
+  return { updates, clear: [] };
 }
 
 /**
@@ -1493,7 +1519,7 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
     if (code !== 0)
       print(
         fail(
-          "Partial install: credentials saved; launcher installation or agent registration incomplete. See the failed step above.",
+          "Partial install: configuration saved. Launcher installation or agent registration is incomplete. See the failed step above.",
         ),
       );
     if (code === 0 && (selected?.length ?? 0) === 0)
@@ -1521,6 +1547,20 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
       process.exitCode = 1;
       return;
     }
+  }
+
+  if (
+    selected === undefined &&
+    deps.register === undefined &&
+    (!process.stdin.isTTY || !process.stdout.isTTY)
+  ) {
+    print(
+      fail(
+        "The agent checklist requires a terminal. Use --register <agents>, --register none, or --no-register. Nothing was saved or installed.",
+      ),
+    );
+    process.exitCode = 1;
+    return;
   }
 
   // util.styleText strips ANSI unless it detects a color-capable stream; some
@@ -1670,7 +1710,7 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
           ),
           // The server checks in with Console when the agent starts it,
           // so the restart alone shows up in Console. ping_console is the fallback.
-          "Console shows the agent as connected once it starts.",
+          "With a working API key, Console shows the agent as connected once it starts.",
           `Not showing? Ask the agent to run ${accent("ping_console")}.`,
         ]),
   ]);

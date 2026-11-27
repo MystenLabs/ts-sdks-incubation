@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { dropStartupCheckIn } from "./helpers/startupCheckIn";
 
 /**
- * COMG-1120. The harness's `clientInfo.name` reaches Console as `X-Console-Client-Name`
+ * The harness's `clientInfo.name` reaches Console as `X-Console-Client-Name`
  * only if the server's initialize hook records it. The unit tests cover the header
  * function, not this wiring, so this drives the real server over stdio.
  */
@@ -39,8 +39,8 @@ describe("X-Console-Client-Name from the initialize handshake", () => {
     cleanup.push(() => new Promise<void>((resolve) => stub.close(() => resolve())));
     const { port } = stub.address() as { port: number };
 
-    const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "comg1120-name-config-"));
-    const allowed = fs.mkdtempSync(path.join(os.tmpdir(), "comg1120-name-allowed-"));
+    const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "client-name-config-"));
+    const allowed = fs.mkdtempSync(path.join(os.tmpdir(), "client-name-allowed-"));
     cleanup.push(() => {
       fs.rmSync(configHome, { recursive: true, force: true });
       fs.rmSync(allowed, { recursive: true, force: true });

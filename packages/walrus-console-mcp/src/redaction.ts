@@ -46,6 +46,14 @@ export const SECRET_ENV_VARS = [
   "CONSOLE_CREDENTIAL_BUNDLE",
 ] as const;
 
+/** Show identifiers and paths as a single quoted string with directional controls visible. */
+export function quoteForDisplay(value: string): string {
+  return JSON.stringify(value).replace(
+    /[\p{Bidi_Control}\p{Cc}\p{Zl}\p{Zp}]/gu,
+    (control) => `\\u${control.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 /**
  * Values whose trimmed length is below this are ignored when registering. A short
  * or empty "secret" (e.g. an unset var defaulting to "") would otherwise match

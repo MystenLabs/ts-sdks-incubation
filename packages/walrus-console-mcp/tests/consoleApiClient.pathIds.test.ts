@@ -6,9 +6,10 @@ import { ConsoleApiClient, parseConsoleErrorBody } from "../src/console/ConsoleA
 import { pathSegment } from "../src/console/pathSegment";
 import { ConsoleApiError } from "../src/console/errors";
 import type { BucketId, FileId, SpaceId } from "../src/console/types";
+import { clearSecrets, REDACTION_PLACEHOLDER, registerSecret } from "../src/redaction";
 
 /**
- * Every method that puts an id into a URL path. Each one is run twice: with `..`,
+ * Each of these methods is run twice: with `..`,
  * which must be refused before any request leaves, and with `a/b?c#d`, whose
  * encoded form must reach the wire. A new call site that interpolates an id raw
  * fails the second check, and one that forgets the guard fails the first.
@@ -83,6 +84,7 @@ const run = (call: (api: Api, id: string) => Effect.Effect<unknown, unknown>, id
 
 afterEach(() => {
   seen.length = 0;
+  clearSecrets();
   vi.unstubAllGlobals();
 });
 
@@ -128,6 +130,28 @@ describe("every id-taking method", () => {
   });
 });
 
+it.each([
+  [
+    "createBucket",
+    (api: Api, id: string) => api.createBucket(id as SpaceId, "notes", "0x1", []),
+    "/spaces/project%2Barchive/buckets",
+  ],
+  [
+    "uploadBucketFile",
+    (api: Api, id: string) =>
+      api.uploadBucketFile(id as BucketId, new Uint8Array([1]), "notes.txt"),
+    "/buckets/project%2Barchive/files",
+  ],
+] as const)("%s encodes a plus sign in the path identifier", async (_name, call, expectedPath) => {
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("{}", { status: 500 }));
+  vi.stubGlobal("fetch", fetch);
+
+  await run(call, "project+archive");
+
+  const urls = [...seen, ...fetch.mock.calls.map(([url]) => String(url))];
+  expect(urls).toEqual([expect.stringContaining(expectedPath)]);
+});
+
 describe("server error messages", () => {
   it("clamps a JSON message to 500 characters", () => {
     const parsed = parseConsoleErrorBody({ message: "x".repeat(58_000) });
@@ -136,5 +160,26 @@ describe("server error messages", () => {
 
   it("leaves a short message alone", () => {
     expect(parseConsoleErrorBody({ message: "not found" }).message).toBe("not found");
+  });
+
+  it("ignores non-string fields while preserving valid error fields", () => {
+    expect(parseConsoleErrorBody({ message: 42, code: "not_found" })).toEqual({
+      message: undefined,
+      code: "not_found",
+    });
+    expect(parseConsoleErrorBody({ error: { message: "conflict", code: 17 } })).toEqual({
+      message: "conflict",
+      code: undefined,
+    });
+    expect(parseConsoleErrorBody({ code: "x".repeat(512) }).code).toBeUndefined();
+  });
+
+  it("redacts before clamping the message", () => {
+    const fakeSecret = "test-only-secret-at-the-cutoff";
+    registerSecret(fakeSecret);
+    const prefix = " ".repeat(490);
+    expect(parseConsoleErrorBody({ message: prefix + fakeSecret }).message).toBe(
+      prefix + REDACTION_PLACEHOLDER,
+    );
   });
 });

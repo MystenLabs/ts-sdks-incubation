@@ -18,7 +18,9 @@ describe("SENSITIVE_DOWNLOAD_BASENAMES", () => {
       "authorized_keys",
       "id_dsa",
       "id_ecdsa",
+      "id_ecdsa_sk",
       "id_ed25519",
+      "id_ed25519_sk",
       "id_rsa",
       "known_hosts",
     ]);
@@ -48,6 +50,8 @@ describe("checkSensitiveDownloadPath", () => {
     ["id_rsa"],
     ["ID_RSA"],
     ["id_ed25519"],
+    ["id_ed25519_sk"],
+    ["id_ecdsa_sk"],
     ["authorized_keys"],
     ["known_hosts"],
     ["_netrc"],
@@ -69,7 +73,7 @@ describe("checkSensitiveDownloadPath", () => {
     expect(checkSensitiveDownloadPath([], "linux")).toBeNull();
   });
 
-  it.each([[".env."], [".env "], [".env::$DATA"], ["id_rsa."], ["ID_RSA::$DATA"]])(
+  it.each([["..."], [".env."], [".env "], [".env::$DATA"], ["id_rsa."], ["ID_RSA::$DATA"]])(
     "sees through the Windows spelling %s",
     (name) => {
       expect(checkSensitiveDownloadPath([name], "win32")).not.toBeNull();

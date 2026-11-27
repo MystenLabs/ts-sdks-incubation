@@ -165,7 +165,7 @@ describe("install-target label in the registered entries", () => {
   });
 
   it("the Cursor config file carries the label in its server entry", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "comg1120-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-client-label-"));
     const file = path.join(dir, "mcp.json");
     try {
       const client = jsonFileClient({

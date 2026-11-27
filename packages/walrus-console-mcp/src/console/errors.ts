@@ -23,16 +23,11 @@ export class ConsoleApiError extends Data.TaggedError("ConsoleApiError")<{
  * may exist even though the call failed, and losing the id is what made agents
  * retry into duplicate folders.
  *
- * - `not_created` — Console answered 502: nothing was created and the folder's
- *   slot was released. Calling create_bucket again is safe.
- * - `may_complete` — Console kept answering 503 after this client's retries,
- *   or the call failed with no answer. The transaction may still land; the
- *   folder then finishes on its own and `list_buckets` shows it with
- *   `provisioning_state: pending_policy` until it does. Do not create it again
- *   under the same name yet. One that stays pending with `chain_landed: false`
- *   never landed, and `delete_bucket` discards it.
- * - `pending` — any other refusal. The folder stays pending; `list_buckets`
- *   shows it, and `delete_bucket` discards it unless `chain_landed` is true.
+ * - `not_created` — Console confirmed the execute failure and released the slot.
+ * - `may_complete` — the failure does not establish whether the transaction landed.
+ *   Check the reserved ID with `list_buckets` and wait for the folder to become active.
+ * - `pending` — Console refused the first finalize attempt. The folder remains
+ *   reserved. Use `list_buckets` to inspect its provisioning and on-chain status.
  */
 export class BucketFinalizeError extends Data.TaggedError("BucketFinalizeError")<{
   readonly message: string;

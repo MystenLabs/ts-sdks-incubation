@@ -8,8 +8,9 @@ import {
   readlinkSync,
   realpathSync,
   statSync,
+  type BigIntStats,
 } from "node:fs";
-import { lstat, open as openFileAsync, readlink, realpath } from "node:fs/promises";
+import { access, lstat, open as openFileAsync, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
@@ -21,15 +22,19 @@ import {
   resolve,
   sep,
   toNamespacedPath,
+  win32,
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type ConfigFileData,
   type AllowedDirsScope,
+  getAdminConfigFilePath,
   getConfigDir,
+  getConfigFilePath,
   loadConfigFileOrEmpty,
 } from "./configFile.js";
 import { checkWindowsReservedName } from "./reservedFileNames.js";
+import { quoteForDisplay } from "./redaction.js";
 import { checkSensitiveDownloadPath } from "./sensitiveFileNames.js";
 import { MAX_TRANSFER_BYTES_ENV } from "./transferLimits.js";
 
@@ -42,7 +47,7 @@ import { MAX_TRANSFER_BYTES_ENV } from "./transferLimits.js";
  * confine those paths to the allowed roots.
  *
  * Policy: **fail closed.** Workspace, environment and explicitly shared folders combine,
- * in that order. Saved Home or an ancestor stays fallback-only. The MCP config
+ * in that order. Home is refused and saved ancestors of Home stay fallback-only. The MCP config
  * directory is excluded on every call. If no source yields a usable directory,
  * the path is rejected rather than allowed — an unsandboxed absolute path chosen by the
  * model (e.g. via prompt injection) must never reach `fs`.
@@ -80,7 +85,7 @@ export const ALLOWED_DIRS_ENV = "CONSOLE_MCP_ALLOWED_DIRS";
 // so a future wording change (or CLI rename) happens once instead of drifting
 // between the two throw sites the way the surrounding prose already did once.
 const CONFIG_CMD = "walrus-console-mcp config";
-const CONFIG_ALLOWED_DIRS_HINT = `${CONFIG_CMD} --allowed-dirs <dir> --allowed-dirs-scope shared`;
+const CONFIG_ALLOWED_DIRS_HINT = `${CONFIG_CMD} --allowed-dirs <dir>`;
 const HAND_RUN_ENV_HINT = `Running the server by hand? ${ALLOWED_DIRS_ENV} adds folders as a "${delimiter}"-separated list.`;
 
 /**
@@ -96,15 +101,16 @@ export const shellQuote = (value: string): string => `'${value.replaceAll("'", "
 export type AllowedDirsSource = "clientRoots" | "env" | "file";
 
 export const HOME_DIR_WARNING =
-  "Home is broad — this server may read files throughout your home directory. Saved Home (or an ancestor) applies only when no workspace or environment folders are available. Downloads to hidden paths through saved folders are refused; the MCP config directory is always protected.";
+  "An ancestor of Home is broad. This server may read files throughout your home directory. Saved ancestors apply only when no workspace or environment folders are declared. Downloads through saved folders refuse hidden destinations. The MCP config directory is always protected.";
 
 export const SHARED_DIRS_NOTICE =
-  "Every agent session using this configuration can upload files from and download files into these folders, including sessions opened in unrelated projects. Home/ancestors remain fallback-only; config and hidden-download protections still apply.";
+  "Every agent session using this configuration can upload files from and download files into these folders, including sessions opened in unrelated projects. Home is refused. Saved ancestors of Home apply only when no workspace or environment folders are declared. Config and hidden-download protections still apply.";
 export const FALLBACK_DIRS_NOTICE =
-  "Saved folders have fallback scope: they apply only when no workspace or environment folders are provided. Review the complete saved list in walrus-console-mcp config to select shared access.";
+  "Saved folders have fallback scope: they apply only when no usable workspace or environment folders are available. Saved ancestors of Home require a session with no workspace or environment folders declared. Review saved folders in walrus-console-mcp config to select shared access.";
 
-export function isBroadHomeFolder(dir: string, home: string = homedir()): boolean {
-  return isWithinRoots(toRealPath(home), [dir]);
+export function isBroadHomeFolder(dir: string, home?: string): boolean {
+  const canonicalHome = realHomeSync(home);
+  return canonicalHome !== undefined && isWithinRoots(canonicalHome, [dir]);
 }
 
 export interface AllowedFolder {
@@ -121,22 +127,18 @@ export interface AllowedFolders {
   savedDirs: string[];
   savedDirsScope: AllowedDirsScope;
   savedDirsUnavailable: boolean;
-  configDir: string;
+  savedDirsCanBeCopied: boolean;
+  rejectedFolders: boolean;
+  protectedPaths: { paths: string[]; identities: Set<string> };
   /** Roots dropped because they are the home directory; see {@link homeRootRefusal}. */
   refusedRoots?: string[];
 }
 
-/** Only saved entries belong in the replacement command; session roots must not become permanent. */
+/** Only effective saved entries are visible to this session. */
 function describeAllowedDirsRemedy(allowed: AllowedFolders): string {
   if (allowed.savedDirsUnavailable) {
     return `Saved folders are temporarily unavailable because Home cannot be resolved. Restore access to Home and retry, or ask the user to grant the folder explicitly through their MCP client or ${ALLOWED_DIRS_ENV}.`;
   }
-  const roundTrip = [
-    CONFIG_CMD,
-    ...allowed.savedDirs.map((dir) => `--allowed-dirs ${shellQuote(dir)}`),
-    "--allowed-dirs <dir>",
-    "--allowed-dirs-scope shared",
-  ].join(" ");
   const session = allowed.folders.some((folder) => folder.source === "clientRoots")
     ? "Ask the user to open (or add) the target folder in their MCP client's workspace for this session (reconnect if needed), or "
     : "Ask the user to ";
@@ -144,7 +146,20 @@ function describeAllowedDirsRemedy(allowed: AllowedFolders): string {
     allowed.savedDirsScope === "fallback" && allowed.savedDirs.length > 0
       ? `${FALLBACK_DIRS_NOTICE} `
       : "";
-  return `${scopeNotice}${session}review and share the complete list across all sessions, including unrelated projects, without dropping the others already saved: \`${roundTrip}\`. (${HAND_RUN_ENV_HINT})`;
+  const allSavedAreEffective =
+    allowed.savedDirsCanBeCopied &&
+    allowed.savedDirs.every((dir) =>
+      allowed.folders.some((folder) => folder.source === "file" && folder.declared === dir),
+    );
+  const instructions = allSavedAreEffective
+    ? `without dropping the others already saved: \`${[
+        CONFIG_CMD,
+        ...allowed.savedDirs.map((dir) => `--allowed-dirs ${shellQuote(dir)}`),
+        "--allowed-dirs <dir>",
+        "--allowed-dirs-scope shared",
+      ].join(" ")}\``
+    : `using the interactive \`${CONFIG_CMD}\` command`;
+  return `${scopeNotice}${session}review and share the complete list across all sessions, including unrelated projects, ${instructions}. (${HAND_RUN_ENV_HINT})`;
 }
 
 interface Root {
@@ -195,6 +210,37 @@ export function isWithinRoots(candidate: string, rootDirs: readonly string[]): b
       return true;
   }
   return false;
+}
+
+function fileIdentity(stat: BigIntStats): string | undefined {
+  return stat.ino === 0n ? undefined : `${stat.dev}:${stat.ino}`;
+}
+
+async function pathIdentity(path: string): Promise<string | undefined> {
+  try {
+    return fileIdentity(await lstat(toNamespacedPath(path), { bigint: true }));
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    throw error;
+  }
+}
+
+/** Existing ancestors keep their identity even through case or spelling aliases. */
+async function ancestorIdentities(path: string): Promise<Set<string>> {
+  const paths = [path];
+  for (let parent = dirname(path); parent !== path; path = parent, parent = dirname(path)) {
+    paths.push(parent);
+  }
+  return new Set((await Promise.all(paths.map(pathIdentity))).filter((id) => id !== undefined));
+}
+
+async function isProtectedPath(
+  candidate: string,
+  protectedPaths: AllowedFolders["protectedPaths"],
+): Promise<boolean> {
+  if (isWithinRoots(candidate, protectedPaths.paths)) return true;
+  if (protectedPaths.identities.size === 0) return false;
+  return [...(await ancestorIdentities(candidate))].some((id) => protectedPaths.identities.has(id));
 }
 
 /**
@@ -304,24 +350,30 @@ export function isHomeDirectory(
 /** The refusal for a sandbox root that is the home directory. */
 export function homeRootRefusal(dir: string): string {
   return (
-    `Sandbox root "${dir}" is your home directory, which would make the sandbox your whole ` +
+    `Sandbox root ${quoteForDisplay(dir)} is your home directory, which would make the sandbox your whole ` +
     `account. Choose a subfolder instead, such as "~/Documents".`
   );
 }
 
-function realHomeSync(): string {
+function realHomeSync(home?: string): string | undefined {
   try {
-    return toRealPath(homedir());
+    home ??= homedir();
   } catch {
-    return resolve(homedir());
+    return;
+  }
+  try {
+    return toRealPath(home);
+  } catch {
+    return resolve(home);
   }
 }
 
-async function realHomeAsync(): Promise<string> {
+function isSameDirectory(realHome: string, directory: BigIntStats): boolean {
   try {
-    return await toRealPathAsync(homedir());
+    const id = fileIdentity(directory);
+    return id !== undefined && id === fileIdentity(statSync(realHome, { bigint: true }));
   } catch {
-    return resolve(homedir());
+    return false;
   }
 }
 
@@ -353,16 +405,17 @@ export function splitAllowedDirList(raw: string, delim: string = delimiter): str
 export function validateAllowedDirectory(
   input: string,
   platform: NodeJS.Platform = process.platform,
+  literal = false,
 ): { dir: string } | { error: string } {
-  const trimmed = input.trim();
-  if (!trimmed) return { error: "Directory path is empty." };
+  const path = literal ? input : input.trim();
+  if (!path.trim()) return { error: "Directory path is empty." };
   // A saved/typed root gets the identical `\\?\` treatment a download/upload
   // CANDIDATE gets in `resolveCandidateWithinRoots` — see `stripWin32LongPathPrefix`'s
   // docstring, and the comment on `allowedDirsFromEnv`/`allowedDirsFromConfig`
   // below for what goes wrong if a root keeps the prefix a candidate loses.
   let unprefixed: string;
   try {
-    unprefixed = platform === "win32" ? stripWin32LongPathPrefix(trimmed) : trimmed;
+    unprefixed = platform === "win32" ? stripWin32LongPathPrefix(path) : path;
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -374,15 +427,23 @@ export function validateAllowedDirectory(
     const message = error instanceof Error ? error.message : String(error);
     return { error: message };
   }
+  let info: BigIntStats;
   try {
-    if (!statSync(real).isDirectory()) {
-      return { error: `"${trimmed}" is not a directory.` };
+    info = statSync(real, { bigint: true });
+    if (!info.isDirectory()) {
+      return { error: `${quoteForDisplay(path)} is not a directory.` };
     }
   } catch {
-    return { error: `"${trimmed}" does not exist — create the folder first, then re-run.` };
+    return {
+      error: `${quoteForDisplay(path)} does not exist — create the folder first, then re-run.`,
+    };
   }
-  if (isHomeDirectory(real, realHomeSync(), platform)) {
-    return { error: homeRootRefusal(trimmed) };
+  const home = realHomeSync();
+  if (
+    home !== undefined &&
+    (isHomeDirectory(real, home, platform) || isSameDirectory(home, info))
+  ) {
+    return { error: homeRootRefusal(path) };
   }
   return { dir: real };
 }
@@ -446,11 +507,18 @@ export function allowedDirsFromConfig(
   const raw = file.allowedDirs;
   if (!raw) return [];
   return raw
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0)
+    .filter((p) => p.trim().length > 0)
     .map((p) => stripRootPrefix(p, platform))
     .filter((p): p is string => p !== null)
-    .map((p) => resolve(expandTilde(p)));
+    .map(expandTilde)
+    .filter((p) => {
+      if (file.allowedDirsScope !== "shared") return true;
+      if (platform !== "win32") return isAbsolute(p);
+      // A leading separator alone takes its drive from the server's working directory.
+      const root = win32.parse(p).root;
+      return win32.isAbsolute(p) && root.length > 1;
+    })
+    .map((p) => resolve(p));
 }
 
 /**
@@ -606,17 +674,20 @@ export async function toRealPathAsync(p: string): Promise<string> {
   }
 }
 
-/** Fetch the client's roots as absolute dirs, or [] if unsupported/empty/errored. */
-async function listRootDirs(server: RootsCapableServer, label: string): Promise<string[]> {
+/** Preserve the distinction between a successful empty list and an unknown list. */
+async function listRootDirs(
+  server: RootsCapableServer,
+  label: string,
+): Promise<{ dirs: string[]; declared: boolean } | undefined> {
   try {
     const { roots } = await server.listRoots(undefined, { timeout: 1500 });
-    return rootsToDirs(roots);
+    return { dirs: rootsToDirs(roots), declared: roots.length > 0 };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(
       `[console-mcp] Failed to list MCP roots (${message}) — using environment and saved folders for ${label}`,
     );
-    return [];
+    return undefined;
   }
 }
 
@@ -739,11 +810,12 @@ export async function readFileWithinRootAsync(
 
 /**
  * Effective canonical folders shared by transfers and ping_console. No successful or failed roots probe is cached.
- * Empty `rootDirs` (with `source: "file"`) means nothing is configured: fail closed.
+ * Empty `rootDirs` (with `source: "file"`) means no usable folders were granted.
  *
  * Shared by `resolveCandidateWithinRoots` and `ping_console` so the two cannot
  * drift. A `listRoots()` failure falls through to the next source rather than
- * throwing (see `listRootDirs`). Folders are absolute, not yet canonicalized.
+ * throwing (see `listRootDirs`). Ordinary saved folders fall back when no usable session folder
+ * remains. Saved ancestors of Home require a session known to have no declared folders.
  *
  * A root that is the home directory is not returned: it would make the sandbox the whole account.
  * It is named in `refusedRoots` (present only when there is one) and on stderr, so a client that
@@ -759,7 +831,15 @@ export async function selectAllowedDirs(
   platform: NodeJS.Platform = process.platform,
 ): Promise<AllowedFolders> {
   const caps = server.getClientCapabilities();
-  const clientRoots = caps?.roots ? await listRootDirs(server, label) : [];
+  const clientRoots = caps?.roots
+    ? await listRootDirs(server, label)
+    : { dirs: [], declared: false };
+  let homeDir: string;
+  try {
+    homeDir = homedir();
+  } catch {
+    throw new Error("Home cannot be identified. Restore Home access before granting folders.");
+  }
   const envDirs = allowedDirsFromEnv(env, platform);
   const fileConfig = fileAllowedDirs === undefined ? loadConfigFileOrEmpty() : {};
   const savedDirsScope = fileConfig.allowedDirsScope ?? "fallback";
@@ -768,56 +848,101 @@ export async function selectAllowedDirs(
       ? [...fileAllowedDirs]
       : allowedDirsFromConfig(fileConfig, platform);
   // This deny boundary is canonicalized on every call and fails closed on I/O errors.
-  let configDir: string;
+  let protectedPaths: AllowedFolders["protectedPaths"];
   try {
-    configDir = await toRealPathAsync(getConfigDir());
+    const paths = await Promise.all(
+      [getConfigDir(), getConfigFilePath(), getAdminConfigFilePath()].map(toRealPathAsync),
+    );
+    const identities = (await Promise.all(paths.map(pathIdentity))).filter(
+      (id) => id !== undefined,
+    );
+    protectedPaths = { paths, identities: new Set(identities) };
   } catch (error) {
     throw new Error(
-      `The MCP config directory cannot be resolved safely. Restore its permissions or repair its path before retrying: ${error instanceof Error ? error.message : String(error)}`,
+      `The MCP config directory or credential files cannot be resolved safely. Restore access to the configuration before retrying: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const hasSessionFolders = clientRoots.length > 0 || envDirs.length > 0;
+  const broadSavedRootsAllowed =
+    clientRoots?.declared === false &&
+    splitAllowedDirList(env[ALLOWED_DIRS_ENV] ?? "").length === 0;
   let home: string | undefined;
-  let savedDirsUnavailable = false;
-  if (savedDirsScope === "shared" && hasSessionFolders && fileDirs.length > 0) {
-    try {
-      home = await toRealPathAsync(homedir());
-    } catch {
-      // Never silently skip the broad-Home rule, but do not disable explicit grants.
-      savedDirsUnavailable = true;
-      console.error(
-        "[console-mcp] Home cannot be resolved; withholding saved folders until Home access is restored",
-      );
+  let homeId: string | undefined;
+  let homeAncestors: Set<string> | undefined;
+  try {
+    const canonicalHome = await realpath(homeDir);
+    const homeInfo = await lstat(toNamespacedPath(canonicalHome), { bigint: true });
+    if (!homeInfo.isDirectory()) throw new Error("Home is not a directory.");
+    homeId = fileIdentity(homeInfo);
+    if (!broadSavedRootsAllowed && fileDirs.length > 0) {
+      homeAncestors = await ancestorIdentities(canonicalHome);
     }
+    home = canonicalHome;
+  } catch {
+    // Retain the lexical Home spelling for explicit session grants. Saved grants
+    // require a canonical Home so a saved alias cannot grant the whole account.
   }
-  const realHome = await realHomeAsync();
+  const homeForRefusal = home ?? homeDir;
   const folders: AllowedFolder[] = [];
   const refusedRoots: string[] = [];
+  let savedDirsUnavailable = false;
+  let rejectedFolders = false;
   for (const [source, dirs] of [
-    ["clientRoots", clientRoots],
+    ["clientRoots", clientRoots?.dirs ?? []],
     ["env", envDirs],
-    ["file", savedDirsScope === "fallback" && hasSessionFolders ? [] : fileDirs],
+    ["file", fileDirs],
   ] as const) {
+    if (source === "file") {
+      if (savedDirsScope === "fallback" && folders.length > 0) continue;
+      if (dirs.length > 0 && home === undefined) {
+        savedDirsUnavailable = true;
+        console.error(
+          "[console-mcp] Home cannot be resolved; withholding saved folders until Home access is restored",
+        );
+        continue;
+      }
+    }
     for (const dir of dirs) {
       try {
-        const path = await toRealPathAsync(dir);
-        if (isWithinRoots(path, [configDir])) continue;
-        if (isHomeDirectory(path, realHome, platform)) {
+        const path = await realpath(dir);
+        const fsPath = toNamespacedPath(path);
+        const info = await lstat(fsPath, { bigint: true });
+        if (!info.isDirectory()) {
+          rejectedFolders = true;
+          console.error(
+            `[console-mcp] Ignoring sandbox root ${quoteForDisplay(dir)}: expected a directory`,
+          );
+          continue;
+        }
+        if (platform !== "win32") await access(fsPath, constants.X_OK);
+        if (await isProtectedPath(path, protectedPaths)) {
+          rejectedFolders = true;
+          console.error(`[console-mcp] Ignoring protected sandbox root ${quoteForDisplay(dir)}`);
+          continue;
+        }
+        const id = fileIdentity(info);
+        if (
+          (id !== undefined && id === homeId) ||
+          (homeForRefusal !== undefined && isHomeDirectory(path, homeForRefusal, platform))
+        ) {
           refusedRoots.push(dir);
           continue;
         }
-        // Preserve the former fallback behavior for Home without silently widening it on upgrade.
+        // Preserve the restriction on broad saved grants even when a declared session root is unusable.
         if (
           source === "file" &&
-          hasSessionFolders &&
-          (savedDirsUnavailable || (home !== undefined && isWithinRoots(home, [path])))
+          !broadSavedRootsAllowed &&
+          home !== undefined &&
+          (isWithinRoots(home, [path]) || (id !== undefined && homeAncestors?.has(id)))
         ) {
           continue;
         }
         if (!folders.some((folder) => folder.path === path))
           folders.push({ path, declared: dir, source });
-      } catch {
-        console.error(`[console-mcp] Ignoring unresolvable sandbox root "${dir}"`);
+      } catch (error) {
+        rejectedFolders = true;
+        console.error(
+          `[console-mcp] Ignoring unavailable sandbox root ${quoteForDisplay(dir)}: ${quoteForDisplay(error instanceof Error ? error.message : String(error))}`,
+        );
       }
     }
   }
@@ -831,7 +956,11 @@ export async function selectAllowedDirs(
     savedDirs: fileDirs,
     savedDirsScope,
     savedDirsUnavailable,
-    configDir,
+    savedDirsCanBeCopied:
+      fileDirs.length === (fileConfig.allowedDirs?.length ?? fileDirs.length) &&
+      fileDirs.every((dir) => dir === dir.trim()),
+    rejectedFolders,
+    protectedPaths,
     ...(refusedRoots.length > 0 ? { refusedRoots } : {}),
   };
 }
@@ -860,6 +989,7 @@ async function resolveCandidateWithinRoots(
 ): Promise<{
   realCandidate: string;
   absPath: string;
+  lexicalPath: string;
   rootDirs: string[];
   declaredRoots: string[];
 }> {
@@ -886,6 +1016,11 @@ async function resolveCandidateWithinRoots(
         `${label} path "${candidatePath}" cannot be used: ${describeAllowedDirsRemedy(allowed)}`,
       );
     }
+    if (allowed.rejectedFolders || allowed.savedDirs.length > 0) {
+      throw new Error(
+        `${label} path "${candidatePath}" cannot be used: none of the configured folders are available in this session. Check the MCP log for skipped folders and use \`${CONFIG_CMD}\` to review or replace saved folders. (${HAND_RUN_ENV_HINT})`,
+      );
+    }
     // COMG-847: lead with the command a Console user actually has — installed
     // via `npx ... install`, they never set an env var and have no way to act
     // on being told to. `${ALLOWED_DIRS_ENV}` stays present (a hand-run server
@@ -905,11 +1040,8 @@ async function resolveCandidateWithinRoots(
   // Anchor relative paths to the first allowed root, not the server's cwd.
   const resolved = isAbsolute(expanded) ? resolve(expanded) : resolve(firstRoot, expanded);
 
-  // The candidate is held to a stricter standard than the roots. If it cannot be
-  // canonicalized the whole call fails — it is the thing being vetted, so there
-  // is nothing to fall back to. A ROOT that cannot be canonicalized is merely
-  // dropped: `isWithinRoots` is an OR across roots, so a shorter list can only
-  // ever accept fewer paths, and an empty list rejects everything.
+  // Selection drops unusable roots and may select saved folders. If the
+  // candidate itself cannot be canonicalized, this request fails.
   let realCandidate: string;
   try {
     realCandidate = await toRealPathAsync(resolved);
@@ -917,9 +1049,9 @@ async function resolveCandidateWithinRoots(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${label} path "${candidatePath}" cannot be used: ${message}`);
   }
-  if (isWithinRoots(realCandidate, [allowed.configDir])) {
+  if (await isProtectedPath(realCandidate, allowed.protectedPaths)) {
     throw new Error(
-      `${label} path "${candidatePath}" cannot be used: the MCP config directory is protected from upload and download.`,
+      `${label} path "${candidatePath}" cannot be used: the MCP config directory and credential files are protected from upload and download.`,
     );
   }
   if (!isWithinRoots(realCandidate, rootDirs)) {
@@ -954,6 +1086,9 @@ async function resolveCandidateWithinRoots(
   return {
     realCandidate,
     absPath: resolved,
+    lexicalPath: isAbsolute(expanded)
+      ? resolved
+      : resolve(allowed.folders[0]?.declared ?? firstRoot, expanded),
     rootDirs,
     declaredRoots: allowed.folders.map((folder) => folder.declared),
   };
@@ -1025,15 +1160,16 @@ export async function resolveDownloadDestWithinRoots(
   fileAllowedDirs?: readonly string[],
   platform: NodeJS.Platform = process.platform,
 ): Promise<string> {
-  const { realCandidate, absPath, rootDirs, declaredRoots } = await resolveCandidateWithinRoots(
-    server,
-    candidatePath,
-    label,
-    env,
-    fileAllowedDirs,
-    platform,
-    true,
-  );
+  const { realCandidate, absPath, lexicalPath, rootDirs, declaredRoots } =
+    await resolveCandidateWithinRoots(
+      server,
+      candidatePath,
+      label,
+      env,
+      fileAllowedDirs,
+      platform,
+      true,
+    );
 
   // Checked before any lstat, and on every platform, not only win32. Windows
   // reserves these as device names for the whole segment before the first dot,
@@ -1078,7 +1214,10 @@ export async function resolveDownloadDestWithinRoots(
     return root === undefined ? [] : relative(root, candidate).split(sep).filter(Boolean);
   };
   const sensitive = checkSensitiveDownloadPath(
-    [...below(absPath, declaredRoots), ...below(realCandidate, rootDirs)],
+    [
+      ...below(lexicalPath, isWithinRoots(lexicalPath, declaredRoots) ? declaredRoots : rootDirs),
+      ...below(realCandidate, rootDirs),
+    ],
     platform,
   );
   if (sensitive) {

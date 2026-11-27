@@ -597,31 +597,57 @@ describe("allowedDirChoices", () => {
     const cwd = path.join(tmpDir, "project");
     const home = path.join(tmpDir, "home");
     const choices = allowedDirChoices(cwd, home);
-    expect(choices.map((c) => c.id)).toEqual([
-      "cwd",
-      "documents",
-      "downloads",
-      "home",
-      "custom",
-      "skip",
-    ]);
+    expect(choices.map((c) => c.id)).toEqual(["cwd", "documents", "downloads", "custom", "skip"]);
     expect(choices[0]?.path).toBe(cwd);
     expect(choices[1]?.path).toBe(path.join(home, "Documents"));
     expect(choices[2]?.path).toBe(path.join(home, "Downloads"));
-    expect(choices[3]?.path).toBe(home);
+    expect(choices[3]?.path).toBeUndefined();
     expect(choices[4]?.path).toBeUndefined();
-    expect(choices[5]?.path).toBeUndefined();
+  });
+
+  it("hides the current-folder preset at Home", () => {
+    expect(allowedDirChoices(tmpDir, tmpDir).map(({ id }) => id)).not.toContain("cwd");
   });
 });
 
 describe("stepAllowedDirs", () => {
+  it("requires a fresh review if the saved folder list changes while the scope prompt is open", async () => {
+    const first = fs.mkdtempSync(path.join(tmpDir, "first-"));
+    const second = fs.mkdtempSync(path.join(tmpDir, "second-"));
+    saveConfigFile({ allowedDirs: [first], allowedDirsScope: "fallback" });
+    const capture = captureStdout();
+    try {
+      const write = await stepAllowedDirs({
+        cwd: tmpDir,
+        home: tmpDir,
+        back: true,
+        select: async (choices) =>
+          choices.findIndex(({ label }) => label === "Review saved folders"),
+        ask: async (question) => {
+          if (!question.startsWith("Scope")) return "n";
+          saveConfigFile({ allowedDirs: [second], allowedDirsScope: "fallback" });
+          return "shared";
+        },
+      });
+      expect(write.updates).toEqual({});
+      expect(write.backRequested).toBe(true);
+      expect(loadConfigFile()).toMatchObject({
+        allowedDirs: [second],
+        allowedDirsScope: "fallback",
+      });
+      expect(capture.text()).toContain("folder configuration changed during review");
+    } finally {
+      capture.restore();
+    }
+  });
+
   it("persists the cwd preset and does not ask for a custom path", async () => {
     const merged: unknown[] = [];
     const write = await stepAllowedDirs({
       scope: "fallback",
       cwd: tmpDir,
-      home: tmpDir,
-      select: async () => 0,
+      home: path.join(tmpDir, "home"),
+      select: async (choices) => choices.findIndex(({ label }) => label === "This folder"),
       ask: async () => "",
       merge: (updates) => {
         merged.push(updates);
@@ -638,7 +664,7 @@ describe("stepAllowedDirs", () => {
       scope: "fallback",
       cwd: tmpDir,
       home: tmpDir,
-      select: async () => 5,
+      select: async (choices) => choices.findIndex(({ label }) => label === "Skip"),
       merge: () => {
         merged = true;
         return {};
@@ -669,7 +695,7 @@ describe("stepAllowedDirs", () => {
         scope: "fallback",
         cwd: tmpDir,
         home: tmpDir,
-        select: async () => 4, // custom
+        select: async (choices) => choices.findIndex(({ label }) => label === "Custom path…"),
         ask: async () => answers.shift() ?? "",
         merge: (updates) => updates,
       });
@@ -708,7 +734,7 @@ describe("stepAllowedDirs", () => {
           scope: "fallback",
           cwd: tmpDir,
           home: tmpDir,
-          select: async () => 4, // custom
+          select: async (choices) => choices.findIndex(({ label }) => label === "Custom path…"),
           ask: async () => target,
         });
         expect(capture.text()).toContain("config.json + admin.json");
@@ -1292,7 +1318,7 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
       // The operator must be able to see what was saved, and that the flag is
       // why the picker never appeared.
       const out = capture.text();
-      expect(out).toContain("Saved Home (or an ancestor) applies only when no workspace");
+      expect(out).toContain("Saved ancestors apply only when no workspace");
       expect(out).toContain(toRealPath(extra));
       expect(out).toContain("--allowed-dirs");
     } finally {
@@ -1385,9 +1411,9 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
         cwd: tmpDir,
         home: tmpDir,
         seed: [],
-        select: async () => {
+        select: async (choices) => {
           selectCalls++;
-          return 5; // skip
+          return choices.findIndex(({ label }) => label === "Skip");
         },
         merge: () => ({}),
       });

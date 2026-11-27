@@ -7,10 +7,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { isApiKeySet } from "../src/config";
 import { STARTUP_CHECK_IN, dropStartupCheckIn } from "./helpers/startupCheckIn";
 
-// COMG-1095: `ping_console` must prove the key with one authenticated Console
+// `ping_console` must prove the key with one authenticated Console
 // call, not just report that CONSOLE_API_KEY is set. `ok` is true only when
 // Console accepts the key; a refusal names the code the real call would return.
 //
@@ -119,7 +118,7 @@ async function pingWith(options: {
   );
   await client.connect(transport);
   // Only a key ping_console would check makes the server check in at startup.
-  if (options.requests !== undefined && isApiKeySet(options.apiKey ?? "")) {
+  if (options.requests !== undefined && Boolean(options.apiKey?.trim())) {
     await dropStartupCheckIn(options.requests, (request) => request === STARTUP_CHECK_IN);
   }
 
@@ -132,7 +131,7 @@ async function pingWith(options: {
 }
 
 describe(
-  "ping_console makes one authenticated Console call (COMG-1095)",
+  "ping_console verifies the API key with exactly one authenticated Console call",
   { timeout: 30_000 },
   () => {
     it("reports ok: false with api_error for a Console 500 on the check", async () => {
@@ -297,11 +296,7 @@ describe(
 
       expect(body["ok"]).toBe(true);
       expect(body["has_service_key"]).toBe(false);
-      expect(body["operations_needing_service_key"]).toEqual([
-        "create_bucket",
-        "upload_file",
-        "download_file",
-      ]);
+      expect(body["operations_needing_service_key"]).toEqual(["create_bucket", "download_file"]);
       expect(String(body["service_key_warning"])).toContain("upload_file");
     });
 

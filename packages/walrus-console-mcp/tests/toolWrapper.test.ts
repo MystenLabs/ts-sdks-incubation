@@ -112,6 +112,21 @@ describe("safeTool failure results", () => {
     expect(textOf(result)).toContain("something broke");
     expect(textOf(result)).not.toContain("at ");
   });
+
+  it("includes a redacted JS stack trace when debug mode is enabled", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubEnv("CONSOLE_MCP_DEBUG", "1");
+    registerSecret("hbr_debug_test_secret");
+    const tool = safeTool("demo", async function debugProbe() {
+      throw new Error("debug probe failed for hbr_debug_test_secret");
+    });
+
+    const result = await tool({}, noExtra);
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/at .*debugProbe/);
+    expect(textOf(result)).not.toContain("hbr_debug_test_secret");
+  });
 });
 
 describe("cancellation (F10)", () => {

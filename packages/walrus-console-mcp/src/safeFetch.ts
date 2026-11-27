@@ -178,9 +178,25 @@ function nextHopInit(
  * also be installed as `@effect/platform`'s `FetchHttpClient.Fetch`
  * override — see `runtime.ts`.
  */
-export async function fetchWithRedirectGuard(
+export function fetchWithRedirectGuard(
   input: string | URL | Request,
   init?: RequestInit,
+): Promise<Response> {
+  return fetchGuarded(input, init, false);
+}
+
+/** Console JSON API responses must come from an origin that received the bearer. */
+export function fetchConsoleWithRedirectGuard(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<Response> {
+  return fetchGuarded(input, init, true);
+}
+
+async function fetchGuarded(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+  sameOriginOnly: boolean,
 ): Promise<Response> {
   let currentUrl = urlOf(input);
   let currentInit = requestInitOf(input, init);
@@ -213,7 +229,10 @@ export async function fetchWithRedirectGuard(
       // a TypeError and the callers' UnapprovedRedirectError checks miss it.
       throw new UnapprovedRedirectError(location);
     }
-    if (!isAllowedRedirectTarget(currentUrl, nextUrl)) {
+    if (
+      !isAllowedRedirectTarget(currentUrl, nextUrl) ||
+      (sameOriginOnly && new URL(currentUrl).origin !== new URL(nextUrl).origin)
+    ) {
       throw new UnapprovedRedirectError(nextUrl);
     }
     currentInit = nextHopInit(currentInit, currentUrl, nextUrl, response.status);

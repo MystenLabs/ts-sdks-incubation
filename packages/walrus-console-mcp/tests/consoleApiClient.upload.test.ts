@@ -239,6 +239,16 @@ describe("uploadBucketFile never forwards a raw response body", () => {
 });
 
 describe("uploadBucketFile — a 202 whose body cannot be read (F8)", () => {
+  it.each([null, {}, { data: { id: 42 } }, { data: { id: "." } }])(
+    "handles an accepted response without a usable file ID in %j",
+    async (body) => {
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce(jsonResponse(202, body));
+      const error = (await runUpload("report.pdf")) as { _tag: string; message: string };
+      expect(error._tag).toBe("ConsoleApiError");
+      expect(error.message).toMatch(/accepted.*list_files/i);
+    },
+  );
+
   it("reports the upload as ACCEPTED and points to list_files/get_file_status, not a re-upload", async () => {
     // 202 = accepted; an unreadable body is not an upload failure. The message
     // must not read like one, or an agent re-uploads and duplicates the file.

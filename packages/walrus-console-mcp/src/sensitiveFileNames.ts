@@ -7,7 +7,9 @@ export const SENSITIVE_DOWNLOAD_BASENAMES: ReadonlySet<string> = new Set([
   "id_rsa",
   "id_dsa",
   "id_ecdsa",
+  "id_ecdsa_sk",
   "id_ed25519",
+  "id_ed25519_sk",
   "authorized_keys",
   "known_hosts",
   "_netrc",
@@ -39,9 +41,11 @@ export function checkSensitiveDownloadPath(
   platform: NodeJS.Platform = process.platform,
 ): SensitiveDownloadPath | null {
   for (const segment of segmentsBelowRoot) {
+    if (segment.startsWith(".") && segment !== "." && segment !== "..") {
+      return { segment, reason: "dotfile" };
+    }
     const canonical = canonicalSegment(segment, platform);
     if (canonical === "" || canonical === "." || canonical === "..") continue;
-    if (canonical.startsWith(".")) return { segment, reason: "dotfile" };
     if (SENSITIVE_DOWNLOAD_BASENAMES.has(canonical.toLowerCase())) {
       return { segment, reason: "sensitive_name" };
     }

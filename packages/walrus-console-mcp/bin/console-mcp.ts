@@ -89,11 +89,10 @@ import {
 } from "../src/config";
 import { loadConfigFileOrEmpty } from "../src/configFile";
 import { enableRuntimeAttribution, setReportedClientName } from "../src/consoleClientHeader";
-import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
+import { ConsoleApiClient, LIST_SPACES_ENDPOINT } from "../src/console/ConsoleApiClient";
 import { ConsoleStorageService } from "../src/console/ConsoleStorageService";
 import {
   AdminCredentialMissingError,
-  CONSOLE_AUTH_ERROR_CODES,
   ConsoleApiError,
   ConsoleAuthError,
 } from "../src/console/errors";
@@ -132,7 +131,7 @@ import {
   registerSecretsFromEnv,
 } from "../src/redaction";
 import { AppRuntime, HttpLayer, runPromise } from "../src/runtime";
-import { checkInWithConsole } from "../src/startupCheckIn";
+import { CHECK_IN_TIMEOUT_MS, checkInWithConsole } from "../src/startupCheckIn";
 import { confirmDestructive, deleteBucketContents } from "../src/toolSchemas";
 import { safeTool } from "../src/toolWrapper";
 import { ROOT_USAGE, isHelpFlag } from "../src/usage";
@@ -209,12 +208,30 @@ server.server.oninitialized = () => {
 
 // Operations that sign or decrypt with the working service key. Without
 // CONSOLE_SERVICE_PRIVATE_KEY these fail, so ping_console names them.
-const SERVICE_KEY_OPERATIONS = ["create_bucket", "upload_file", "download_file"] as const;
+const SERVICE_KEY_OPERATIONS = ["create_bucket", "download_file"] as const;
+const KEY_CHECK_ENDPOINT = `GET ${LIST_SPACES_ENDPOINT}`;
 
-// Codes that mean Console judged the key itself. Any other failure in the check
-// (a 500, a timeout, a dropped connection, a malformed answer) never reached a
-// verdict on the key, so the hint must not say the key was refused.
-const KEY_REFUSAL_CODES: ReadonlySet<string> = new Set<string>(CONSOLE_AUTH_ERROR_CODES);
+function pingHint(
+  check:
+    | { ok: true }
+    | { ok: false; is_auth_error: boolean; error_code: string; error_message: string }
+    | undefined,
+): string {
+  if (check === undefined) {
+    return "Set CONSOLE_API_KEY in the environment or run `walrus-console-mcp config`, then restart the MCP server.";
+  }
+  if (check.ok) return "Ready for Console API calls";
+  if (!check.is_auth_error) {
+    return `Console did not answer or returned an unexpected response (${check.error_code}); the key was not checked. Retry shortly.`;
+  }
+  if (check.error_code === "insufficient_scope" || check.error_code === "read_only_api_key") {
+    return `Console refused permission to list spaces (${check.error_code}). ${check.error_message}`;
+  }
+  return (
+    `Console did not accept the API key (${check.error_code}). ${check.error_message} ` +
+    "Enter a working key in the active credential source (CONSOLE_API_KEY or `walrus-console-mcp config`), then restart the MCP server."
+  );
+}
 
 // Simple diagnostic tool (works even with partial config). With an API key it
 // makes one authenticated Console call, the same runtime client every other tool
@@ -240,14 +257,10 @@ server.registerTool(
         const hasKeyAdminAddress = cfg.keyAdminAddress !== "";
         // The sandbox's own selection (see selectAllowedDirs), so this can't
         // drift from what upload_file / download_file enforce.
-        const {
-          source: allowedDirsSource,
-          rootDirs: allowedDirs,
-          refusedRoots,
-        } = yield* Effect.tryPromise({
+        const folderCheck = yield* Effect.tryPromise({
           try: () => selectAllowedDirs(server.server, "ping_console"),
           catch: (e) => (e instanceof Error ? e : new Error(String(e))),
-        });
+        }).pipe(Effect.either);
         // Listing spaces is an authenticated read that works for a key with no
         // visible resources (covered by the fake-Console tests): an empty list is
         // still a success. The failure keeps the code the real call returns. A
@@ -257,23 +270,24 @@ server.registerTool(
               const api = yield* ConsoleApiClient;
               return yield* api.listSpaces().pipe(
                 Effect.timeoutFail({
-                  duration: "10 seconds",
+                  duration: CHECK_IN_TIMEOUT_MS,
                   onTimeout: () =>
                     new ConsoleApiError({
-                      message: "Console did not answer within 10 seconds.",
+                      message: `Console did not answer within ${CHECK_IN_TIMEOUT_MS / 1000} seconds.`,
                       code: "timeout",
                     }),
                 }),
                 Effect.map((spaces) => ({
                   ok: true as const,
-                  endpoint: "GET /api/v1/spaces",
+                  endpoint: KEY_CHECK_ENDPOINT,
                   spaces_visible: spaces.length,
                   space_ids: spaces.map((space) => space.id),
                 })),
                 Effect.catchAll((error) =>
                   Effect.succeed({
                     ok: false as const,
-                    endpoint: "GET /api/v1/spaces",
+                    endpoint: KEY_CHECK_ENDPOINT,
+                    is_auth_error: error instanceof ConsoleAuthError,
                     error_code:
                       error instanceof ConsoleAuthError || error instanceof ConsoleApiError
                         ? (error.code ?? "api_error")
@@ -297,9 +311,15 @@ server.registerTool(
           has_web_account_address: hasWebAccountAddress,
           has_key_admin_address: hasKeyAdminAddress,
           // Not secret — local paths: the folders the sandbox uses right now.
-          allowed_dirs: allowedDirs,
-          allowed_dirs_source: allowedDirsSource,
-          ...(refusedRoots ? { refused_roots: refusedRoots } : {}),
+          allowed_dirs: folderCheck._tag === "Right" ? folderCheck.right.rootDirs : [],
+          ...(folderCheck._tag === "Right"
+            ? {
+                allowed_dirs_source: folderCheck.right.source,
+                ...(folderCheck.right.refusedRoots
+                  ? { refused_roots: folderCheck.right.refusedRoots }
+                  : {}),
+              }
+            : { allowed_dirs_error: folderCheck.left.message }),
           base_url: cfg.baseUrl,
           // A missing service key does not make the check fail; it is a warning
           // about the operations that will fail without it.
@@ -307,16 +327,11 @@ server.registerTool(
             ? {}
             : {
                 operations_needing_service_key: SERVICE_KEY_OPERATIONS,
-                service_key_warning: `CONSOLE_SERVICE_PRIVATE_KEY is not set: ${SERVICE_KEY_OPERATIONS.join(", ")} will fail until it is.`,
+                service_key_warning:
+                  `CONSOLE_SERVICE_PRIVATE_KEY is not set: ${SERVICE_KEY_OPERATIONS.join(", ")} require it. ` +
+                  "upload_file may need it to verify the bucket policy.",
               }),
-          hint:
-            check === undefined
-              ? "Set CONSOLE_API_KEY (and optionally CONSOLE_SERVICE_PRIVATE_KEY) in your environment or ~/.config/walrus-console-mcp/config.json"
-              : check.ok
-                ? "Ready for Console API calls"
-                : KEY_REFUSAL_CODES.has(check.error_code)
-                  ? `Console did not accept the API key (${check.error_code}). ${check.error_message} Enter a working key with \`walrus-console-mcp config\`.`
-                  : `Console did not answer or returned an unexpected response (${check.error_code}); the key was not checked. Retry shortly.`,
+          hint: pingHint(check),
         };
       }),
       extra.signal,
@@ -483,10 +498,10 @@ server.registerTool(
       "RosterUnavailableError means a read failed before anything was reserved: no bucket, no " +
       "gas, retry is safe. A BucketFinalizeError always carries the reserved `bucketId`; read " +
       "its `outcome` before retrying: `not_created` means nothing was created and create_bucket " +
-      "is safe to call again, `may_complete` means the bucket may still appear (check " +
-      "list_buckets, do NOT create it again under the same name), and `pending` means it is " +
-      "reserved but unfinished (delete_bucket discards it). A bucket_name_conflict that names a " +
-      "bucket id usually points at such an earlier, unfinished create.",
+      "is safe to call again, `may_complete` means to track this ID with list_buckets and wait " +
+      "rather than creating it again, and `pending` means it is reserved but unfinished. " +
+      "Use list_buckets to inspect the reservation and its chain_landed status. " +
+      "A bucket_name_conflict can name the bucket currently holding that name.",
     inputSchema: {
       spaceId: z.string().describe("The space's id, from list_spaces, to create the bucket in."),
       name: z.string().min(1).max(100).describe("The bucket's name, shown in Console."),
@@ -673,7 +688,8 @@ server.registerTool(
       "not necessarily mean the upload failed — check list_files before retrying. " +
       "A name already taken in the folder is not an error: the file is stored with a " +
       "` (n)` suffix (a second report.txt becomes report (1).txt), the returned name is " +
-      "the stored one, and renamedFrom holds the name you asked for (null when unchanged). " +
+      "the stored one, and renamedFrom holds the name you asked for when it differs. " +
+      "If Console omits the stored name, name and renamedFrom are null. Look up the returned fileId. " +
       "Optionally attaches a description and tags. list_files' q matches the file name " +
       "only, not these. " +
       "sealPolicyId is optional: the policy is derived from the bucket and verified locally. " +
@@ -866,7 +882,7 @@ server.registerTool(
           // After the sandbox check, so a refused destination never costs the human a prompt.
           if (overwrite === true) {
             const elicited = yield* confirmWithClient(
-              overwriteConfirmationMessage({ destPath: resolvedPath }),
+              overwriteConfirmationMessage({ destPath: resolvedPath, bucketId, fileId }),
             );
             const declined = declinedOutcome(elicited, "overwrite", "overwritten");
             if (declined) return declined;
@@ -877,6 +893,18 @@ server.registerTool(
             FileId.make(fileId),
             resolvedPath,
             overwrite ?? false,
+            async () => {
+              const currentPath = await resolveDownloadDestWithinRoots(
+                server.server,
+                destPath,
+                "Destination",
+              );
+              if (currentPath !== resolvedPath) {
+                throw new Error(
+                  "The approved destination changed during the request. No file was written.",
+                );
+              }
+            },
           );
         }),
         extra.signal,
@@ -1171,7 +1199,7 @@ server.registerTool(
         .optional()
         .describe(`${fileTagsSchema.description} Pass null to clear them.`),
     },
-    annotations: { readOnlyHint: false, destructiveHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true },
   },
   safeTool(
     "update_file",

@@ -427,12 +427,27 @@ export function jsonFileClient(opts: {
       }
       // Apps may drop empty args or add disabled:false. Nonempty launch args
       // must survive exactly; Cursor's --stdio prevents legacy space splitting.
-      const { command: actual, args } = (entry ?? {}) as { command?: unknown; args?: unknown };
+      const {
+        command: actual,
+        args,
+        env,
+      } = (entry ?? {}) as {
+        command?: unknown;
+        args?: unknown;
+        env?: unknown;
+      };
       const expectedArgs = opts.args ?? [];
       const matchingArgs =
         (args === undefined && expectedArgs.length === 0) ||
         (Array.isArray(args) && JSON.stringify(args) === JSON.stringify(expectedArgs));
-      return actual === command && matchingArgs
+      const matchingEnv = Object.entries(opts.env ?? {}).every(
+        ([name, expected]) =>
+          typeof env === "object" &&
+          env !== null &&
+          Object.hasOwn(env, name) &&
+          (env as Record<string, unknown>)[name] === expected,
+      );
+      return actual === command && matchingArgs && matchingEnv
         ? undefined
         : `the "${SERVER_NAME}" entry in ${configPath} is no longer there, or no longer ` +
             `points at ${command} — ${opts.label} may have saved older settings over it`;

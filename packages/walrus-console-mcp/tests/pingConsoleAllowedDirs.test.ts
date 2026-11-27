@@ -147,13 +147,21 @@ const scratchDir = (name: string): string => {
 
 describe("ping_console with a single credential environment override", () => {
   it.each([
-    ["CONSOLE_API_KEY", "hbr_environment_key"],
-    ["CONSOLE_SERVICE_PRIVATE_KEY", "suiprivkey1_environment_signer"],
-    ["CONSOLE_ADMIN_KEY", "hbradm_environment_key"],
-    ["CONSOLE_ADMIN_SERVICE_PRIVATE_KEY", "suiprivkey1_environment_admin_signer"],
+    ["CONSOLE_API_KEY", "hbr_environment_key", { has_service_key: false }],
+    [
+      "CONSOLE_SERVICE_PRIVATE_KEY",
+      "suiprivkey1_environment_signer",
+      { has_api_key: false, ok: false },
+    ],
+    ["CONSOLE_ADMIN_KEY", "hbradm_environment_key", { has_admin_signer: false }],
+    [
+      "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY",
+      "suiprivkey1_environment_admin_signer",
+      { has_admin_key: false },
+    ],
   ])(
-    "retains saved credentials and folder grants with %s",
-    async (envName, value) => {
+    "uses same-source credential pairs and retains folder grants with %s",
+    async (envName, value, withheld) => {
       const saved = scratchDir("credential-saved");
       const fromEnv = scratchDir("credential-env");
       const workspace = scratchDir("credential-workspace");
@@ -184,6 +192,7 @@ describe("ping_console with a single credential environment override", () => {
         base_url: baseUrl,
         allowed_dirs: [workspace, fromEnv, saved],
         allowed_dirs_source: "union",
+        ...withheld,
       });
     },
     20_000,
@@ -502,7 +511,9 @@ describe("ping_console reports the folders the sandbox actually uses", () => {
               },
             })) as CallToolResult;
             expect(deniedConfig.isError).toBe(true);
-            expect(textOf(deniedConfig)).toContain("MCP config directory is protected");
+            expect(textOf(deniedConfig)).toContain(
+              "MCP config directory and credential files are protected",
+            );
           },
         );
         // If the client's sole root is also inaccessible, an empty result must still explain
@@ -534,7 +545,7 @@ describe("ping_console reports the folders the sandbox actually uses", () => {
   );
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-    "retains saved-only fallback without needing to resolve an inaccessible Home",
+    "withholds saved-only access when Home identity cannot be resolved",
     async () => {
       const root = scratchDir("fallback-home");
       const denied = path.join(root, "denied");
@@ -548,7 +559,7 @@ describe("ping_console reports the folders the sandbox actually uses", () => {
           env: { HOME: home },
           configJson: { allowedDirsScope: "shared", allowedDirs: [saved] },
         });
-        expect(body["allowed_dirs"]).toEqual([saved]);
+        expect(body["allowed_dirs"]).toEqual([]);
         expect(body["allowed_dirs_source"]).toBe("file");
       } finally {
         fs.chmodSync(denied, 0o700);
@@ -676,7 +687,7 @@ describe("ping_console reports the folders the sandbox actually uses", () => {
       ]) {
         const result = (await client.callTool(call)) as CallToolResult;
         expect(result.isError).toBe(true);
-        expect(textOf(result)).toContain("MCP config directory is protected");
+        expect(textOf(result)).toContain("MCP config directory and credential files are protected");
       }
     });
   }, 20_000);

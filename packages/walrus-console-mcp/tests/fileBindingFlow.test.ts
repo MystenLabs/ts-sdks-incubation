@@ -51,7 +51,7 @@ interface UploadCall {
   declaredType: string | undefined;
 }
 
-function uploadHarness(opts: { storedName?: (sent: string) => string } = {}) {
+function uploadHarness(opts: { storedName?: (sent: string) => string | undefined } = {}) {
   const encrypts: EncryptCall[] = [];
   const uploads: UploadCall[] = [];
   const api = {
@@ -66,12 +66,16 @@ function uploadHarness(opts: { storedName?: (sent: string) => string } = {}) {
     ) =>
       Effect.sync(() => {
         uploads.push({ fileName, contentSize, declaredType });
+        const name =
+          opts.storedName === undefined
+            ? fileName.trim().normalize("NFC")
+            : opts.storedName(fileName);
         // Echo the bound columns the real Console 202 body carries, so the
         // post-upload check passes for an honest store.
         return {
           data: {
             id: FileId.make("file-1"),
-            name: opts.storedName?.(fileName) ?? fileName.trim().normalize("NFC"),
+            ...(name === undefined ? {} : { name }),
             original_name: fileName.trim().normalize("NFC"),
             declared_mime_type: declaredType ?? null,
             content_size: contentSize ?? null,
@@ -132,6 +136,23 @@ describe("upload_file reports the name the file was stored under", () => {
 
     expect(result).toMatchObject({ name: "fresh.txt", renamedFrom: null });
     expect(result.note).not.toContain("already exists");
+  });
+
+  it("reports the accepted file ID even when its stored name is unknown", async () => {
+    const local = path.join(tmpDir, "accepted.txt");
+    await fs.writeFile(local, "x");
+    const { upload, uploads } = uploadHarness({ storedName: () => undefined });
+
+    const result = await upload(local);
+
+    expect(result).toMatchObject({
+      fileId: "file-1",
+      name: null,
+      renamedFrom: null,
+      pending: true,
+    });
+    expect(result.note).toContain("Look up this fileId in list_files.");
+    expect(uploads).toHaveLength(1);
   });
 
   // The server stores NFC, so a decomposed name comes back composed. That is

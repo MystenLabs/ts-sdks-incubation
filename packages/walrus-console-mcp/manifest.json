@@ -95,7 +95,7 @@
   "tools": [
     {
       "name": "ping_console",
-      "description": "Check whether required Console credentials are present."
+      "description": "Check configuration and verify the configured API key against Console."
     },
     {
       "name": "list_spaces",

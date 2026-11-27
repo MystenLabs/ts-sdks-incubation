@@ -1,6 +1,6 @@
 /**
  * One authenticated Console call when a harness starts this server, so
- * Console records the key as used (COMG-1121) without the user typing a prompt.
+ * Console records the key as used without the user typing a prompt.
  * Connect MCP's last step lights its tick from that record.
  *
  * Called from the server's initialize hook, after the handshake, so the harness's
@@ -18,6 +18,8 @@
  * JSON-RPC channel), and every failure ends as one line on stderr. A machine that
  * is offline at launch starts normally; `ping_console` still works afterwards.
  */
+
+import { redactString } from "./redaction.js";
 
 /** Same bound as `ping_console`'s check, so a silent Console cannot hold a fiber. */
 export const CHECK_IN_TIMEOUT_MS = 10_000;
@@ -38,6 +40,11 @@ export interface CheckInDeps {
 }
 
 let started = false;
+
+function checkInErrorMessage(error: unknown): string {
+  const message = redactString(error instanceof Error ? error.message : String(error));
+  return message.replace(/[\p{Bidi_Control}\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").slice(0, 500);
+}
 
 /** Starts the check-in at most once per process. Returns without waiting for it. */
 export function checkInWithConsole(deps: CheckInDeps): void {
@@ -64,9 +71,7 @@ async function runCheckIn(deps: CheckInDeps): Promise<void> {
     if (deps.closed.aborted) return;
     const reason = controller.signal.aborted
       ? `no answer within ${CHECK_IN_TIMEOUT_MS / 1000} seconds`
-      : error instanceof Error
-        ? error.message
-        : String(error);
+      : checkInErrorMessage(error);
     try {
       deps.log(
         `console-mcp: startup check-in with Console failed (${reason}). Run ping_console to retry.`,

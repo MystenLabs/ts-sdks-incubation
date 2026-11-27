@@ -83,6 +83,15 @@ describe("validateAllowedDirectory — the installer's write path", () => {
     expect(validateAllowedDirectory(link)).toEqual({ error: homeRootRefusal(link) });
   });
 
+  it("refuses the real Home directory when Home is configured as a symlink", () => {
+    const link = join(scratch, "home-alias");
+    symlinkSync(home, link, "dir");
+    vi.stubEnv("HOME", link);
+    vi.stubEnv("USERPROFILE", link);
+
+    expect(validateAllowedDirectory(home)).toEqual({ error: homeRootRefusal(home) });
+  });
+
   it("accepts a subdirectory of the home directory", () => {
     expect(validateAllowedDirectory("~/Documents")).toEqual({ dir: toRealPath(documents) });
   });
@@ -123,6 +132,28 @@ describe("selectAllowedDirs — the runtime selection", () => {
       rootDirs: [toRealPath(documents)],
       refusedRoots: [home],
     });
+  });
+
+  it("drops real Home and uses a saved subfolder when Home is configured as a symlink", async () => {
+    const link = join(scratch, "home-alias");
+    symlinkSync(home, link, "dir");
+    vi.stubEnv("HOME", link);
+    vi.stubEnv("USERPROFILE", link);
+
+    const selected = await selectAllowedDirs(fakeServer([home]), "Dest", NO_ENV, [documents]);
+
+    expect(summary(selected)).toEqual({
+      source: "file",
+      rootDirs: [toRealPath(documents)],
+      refusedRoots: [home],
+    });
+  });
+
+  it("keeps a broad saved ancestor out of a session that declared an unusable root", async () => {
+    const missing = join(scratch, "missing-workspace");
+    const selected = await selectAllowedDirs(fakeServer([missing]), "Dest", NO_ENV, [scratch]);
+
+    expect(selected.rootDirs).toEqual([]);
   });
 
   it("reports no refused roots when none is home", async () => {

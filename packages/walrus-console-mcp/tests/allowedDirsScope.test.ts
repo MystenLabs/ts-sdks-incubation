@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -77,6 +77,90 @@ describe("saved folder scopes", () => {
   it("keeps legacy saved folders available without workspace or environment grants", async () => {
     configure();
     expect((await selectAllowedDirs(noRoots, "Source", {})).rootDirs).toEqual([saved]);
+  });
+
+  it("restores a saved fallback folder when the workspace directory disappears", async () => {
+    configure("fallback");
+    expect((await selectAllowedDirs(server, "Source", {})).rootDirs).toEqual([workspace]);
+    rmSync(workspace, { recursive: true });
+
+    expect(await selectAllowedDirs(server, "Source", {})).toMatchObject({
+      source: "file",
+      rootDirs: [saved],
+    });
+    await expect(
+      resolveDownloadDestWithinRoots(server, "new.txt", "Destination", {}),
+    ).resolves.toBe(join(saved, "new.txt"));
+  });
+
+  it("uses saved fallback folders when the environment entry is a regular file", async () => {
+    configure();
+    const envPath = join(workspace, "not-a-folder.txt");
+    writeFileSync(envPath, "fixture");
+
+    expect(
+      await selectAllowedDirs(noRoots, "Source", { [ALLOWED_DIRS_ENV]: envPath }),
+    ).toMatchObject({ source: "file", rootDirs: [saved] });
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "uses saved fallback folders when the workspace cannot be traversed",
+    async () => {
+      configure();
+      chmodSync(workspace, 0o600);
+      try {
+        expect(await selectAllowedDirs(server, "Source", {})).toMatchObject({
+          source: "file",
+          rootDirs: [saved],
+        });
+      } finally {
+        chmodSync(workspace, 0o700);
+      }
+    },
+  );
+
+  it("uses ordinary saved fallback folders when workspace lookup is unavailable", async () => {
+    const home = join(workspace, "home");
+    mkdirSync(home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    const unreachable: RootsCapableServer = {
+      getClientCapabilities: () => ({ roots: {} }),
+      listRoots: async () => {
+        throw new Error("MCP roots request timed out");
+      },
+    };
+    expect(await selectAllowedDirs(unreachable, "Source", {}, [workspace, saved])).toMatchObject({
+      source: "file",
+      rootDirs: [saved],
+    });
+  });
+
+  it("keeps broad saved folders inactive when a declared environment path cannot be parsed", async () => {
+    const home = join(workspace, "home");
+    mkdirSync(home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    const env = { [ALLOWED_DIRS_ENV]: "\\\\?\\unsupported\\folder" };
+
+    expect(
+      await selectAllowedDirs(noRoots, "Source", env, [workspace, saved], "win32"),
+    ).toMatchObject({
+      source: "file",
+      rootDirs: [saved],
+    });
+  });
+
+  it("reports unavailable folders when a configured directory has become a file", async () => {
+    configure();
+    rmSync(saved, { recursive: true });
+    writeFileSync(saved, "fixture");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      resolveDownloadDestWithinRoots(noRoots, "new.txt", "Destination", {}),
+    ).rejects.toThrow(/none of the configured folders are available/);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`"${saved}": expected a directory`));
   });
 
   it("suppresses fallback folders when an environment grant exists", async () => {

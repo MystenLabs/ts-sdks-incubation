@@ -228,7 +228,7 @@ describe("fetchWithRedirectGuard", () => {
     expect(headers.get("x-keep")).toBe("1");
   });
 
-  // COMG-1120. The three attribution headers follow the same rule as X-Console-Client.
+  // The three attribution headers follow the same rule as X-Console-Client.
   it("drops the runtime attribution headers on a hop that crosses origins", async () => {
     vi.mocked(globalThis.fetch)
       .mockResolvedValueOnce(redirectTo("https://cdn.walrus.xyz/final"))

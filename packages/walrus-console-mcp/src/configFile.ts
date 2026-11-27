@@ -192,14 +192,13 @@ function parseConfigFields(parsed: Record<string, unknown>): ConfigFileData {
   const keyAdminAddress = parsed["keyAdminAddress"];
   if (typeof keyAdminAddress === "string" && isValidSuiAddress(keyAdminAddress))
     config.keyAdminAddress = keyAdminAddress;
-  // Keep only non-empty strings. A tampered file that puts a number or a nested
-  // object here must not become a sandbox root, and an empty array is "unset".
+  // Drop blank or malformed entries without altering valid filesystem names.
+  // A trailing space can distinguish two different directories on POSIX.
   const allowedDirs = parsed["allowedDirs"];
   if (Array.isArray(allowedDirs)) {
-    const dirs = allowedDirs
-      .filter((p): p is string => typeof p === "string")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0);
+    const dirs = allowedDirs.filter(
+      (p): p is string => typeof p === "string" && p.trim().length > 0,
+    );
     if (dirs.length > 0) config.allowedDirs = dirs;
   }
   const scope = parsed["allowedDirsScope"];

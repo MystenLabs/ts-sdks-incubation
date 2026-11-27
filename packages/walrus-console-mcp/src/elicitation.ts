@@ -1,4 +1,5 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { quoteForDisplay } from "./redaction.js";
 
 /** Ten minutes gives a human enough time to read a billing/revocation prompt. */
 export const ELICITATION_TIMEOUT_MS = 10 * 60_000;
@@ -128,15 +129,21 @@ export function declinedOutcome(
 ): ConfirmationDeclined | undefined {
   if (!outcome.gated || outcome.confirmed) return undefined;
   const nothing = `Nothing was ${done}.`;
-  const reason =
-    outcome.action === "timeout"
-      ? `The user did not answer the ${subject} confirmation prompt before it timed out. ${nothing}`
-      : outcome.action === "unavailable"
-        ? `The ${subject} confirmation prompt did not complete. ${nothing}`
-        : outcome.action === "accept"
-          ? `The user accepted the prompt without checking its confirmation box. ${nothing}`
-          : `The user did not confirm the ${subject} through the client's elicitation UI (answered "${outcome.action}"). ${nothing}`;
-  return { ok: false, stage: "declined", reason };
+  let reason: string;
+  switch (outcome.action) {
+    case "timeout":
+      reason = `The user did not answer the ${subject} confirmation prompt before it timed out.`;
+      break;
+    case "unavailable":
+      reason = `The ${subject} confirmation prompt did not complete.`;
+      break;
+    case "accept":
+      reason = "The user accepted the prompt without checking its confirmation box.";
+      break;
+    default:
+      reason = `The user did not confirm the ${subject} through the client's elicitation UI (answered "${outcome.action}").`;
+  }
+  return { ok: false, stage: "declined", reason: `${reason} ${nothing}` };
 }
 
 /** The prompt for delete_bucket. Model-controlled values are rendered as JSON strings. */
@@ -145,7 +152,7 @@ export function deleteBucketConfirmationMessage(args: {
   readonly deleteContents: boolean;
 }): string {
   return (
-    `Permanently delete bucket ${JSON.stringify(args.bucketId)}` +
+    `Permanently delete bucket ${quoteForDisplay(args.bucketId)}` +
     (args.deleteContents ? " and every file in it" : "") +
     "? Console has no undelete."
   );
@@ -157,15 +164,20 @@ export function deleteFileConfirmationMessage(args: {
   readonly fileId: string;
 }): string {
   return (
-    `Permanently delete file ${JSON.stringify(args.fileId)} from bucket ` +
-    `${JSON.stringify(args.bucketId)}? Console has no undelete.`
+    `Permanently delete file ${quoteForDisplay(args.fileId)} from bucket ` +
+    `${quoteForDisplay(args.bucketId)}? Console has no undelete.`
   );
 }
 
 /** The prompt for download_file with overwrite: true. `destPath` is the resolved path. */
-export function overwriteConfirmationMessage(args: { readonly destPath: string }): string {
+export function overwriteConfirmationMessage(args: {
+  readonly destPath: string;
+  readonly bucketId: string;
+  readonly fileId: string;
+}): string {
   return (
-    `Replace ${JSON.stringify(args.destPath)} with a downloaded file? If a file is already ` +
+    `Replace ${quoteForDisplay(args.destPath)} with file ${quoteForDisplay(args.fileId)} ` +
+    `from bucket ${quoteForDisplay(args.bucketId)}? If a file is already ` +
     "there, its contents are lost."
   );
 }

@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join, parse } from "node:path";
+import { tmpdir } from "node:os";
+import { join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -15,7 +15,7 @@ const noRoots: RootsCapableServer = {
 };
 let root: string;
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), "comg1055-security-")));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "walrus-config-exclusion-")));
   vi.stubEnv("XDG_CONFIG_HOME", join(root, "config-home"));
   vi.stubEnv("APPDATA", join(root, "config-home"));
   mkdirSync(join(root, "config-home", "walrus-console-mcp"), { recursive: true });
@@ -26,7 +26,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe("COMG-1055 config-directory exclusion", () => {
+describe("config-directory exclusion", () => {
   it("refuses reading its own config even when an allowed ancestor contains it", async () => {
     await expect(
       resolvePathWithinRoots(
@@ -87,19 +87,25 @@ describe("COMG-1055 config-directory exclusion", () => {
     ).rejects.toThrow(/hidden files/);
   });
   it("keeps saved Home out of a workspace session and refuses it outright when nothing else is allowed", async () => {
+    const home = join(root, "home");
+    const project = join(root, "workspace");
+    mkdirSync(home);
+    mkdirSync(project);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
     const workspace: RootsCapableServer = {
       getClientCapabilities: () => ({ roots: {} }),
-      listRoots: async () => ({ roots: [{ uri: pathToFileURL(root).href }] }),
+      listRoots: async () => ({ roots: [{ uri: pathToFileURL(project).href }] }),
     };
-    const candidate = join(homedir(), "comg1055-not-created.txt");
+    const candidate = join(home, "not-created.txt");
     await expect(
-      resolvePathWithinRoots(workspace, candidate, "Source", {}, [homedir()]),
+      resolvePathWithinRoots(workspace, candidate, "Source", {}, [home]),
     ).rejects.toThrow(/outside the/);
+    await expect(resolvePathWithinRoots(noRoots, candidate, "Source", {}, [home])).rejects.toThrow(
+      /is your home directory/,
+    );
     await expect(
-      resolvePathWithinRoots(noRoots, candidate, "Source", {}, [homedir()]),
-    ).rejects.toThrow(/is your home directory/);
-    await expect(
-      resolvePathWithinRoots(workspace, candidate, "Source", {}, [dirname(homedir())]),
+      resolvePathWithinRoots(workspace, candidate, "Source", {}, [root]),
     ).rejects.toThrow(/outside the/);
   });
 

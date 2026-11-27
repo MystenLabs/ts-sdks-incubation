@@ -1,9 +1,16 @@
-import { HttpBody, HttpClient, HttpClientRequest, type HttpClientResponse } from "@effect/platform";
+import {
+  HttpBody,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  type HttpClientResponse,
+} from "@effect/platform";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { Effect, Stream } from "effect";
 import { z } from "zod";
 import { isAllowedUgcRedirectUrl } from "../baseUrl";
 import { ConsoleConfigTag, getRawAdminKey, getRawApiKey } from "../config";
+import { redactString } from "../redaction";
 import { fetchWithRedirectGuard, UnapprovedRedirectError } from "../safeFetch";
 import { MAX_TRANSFER_BYTES_ENV, maxTransferBytes } from "../transferLimits";
 import { resolveSuiNetwork } from "./packageConfig";
@@ -26,6 +33,8 @@ import type {
 } from "./types";
 import type { RosterMember } from "./txValidation";
 import { pathSegment } from "./pathSegment";
+
+export const LIST_SPACES_ENDPOINT = "/api/v1/spaces";
 
 // Defined in a leaf module so the CLI can read the pair without importing this
 // one; re-exported here because this is where every lane already looks for it.
@@ -58,7 +67,7 @@ export const fetchWithClientHeader =
     );
     headers.set(CLIENT_HEADER, CLIENT_HEADER_VALUE);
     // The `fetch_key` requests go through Console's `/api/*` auth, so they are runtime use
-    // like any other authenticated call (COMG-1120).
+    // like any other authenticated call.
     for (const [name, value] of Object.entries(runtimeClientHeaders())) headers.set(name, value);
     // `globalThis.fetch` is read per call, not captured as a default parameter: the
     // wrapper is built once when the Seal client is constructed, and binding the
@@ -132,7 +141,7 @@ export interface FinalizeBucketResponse {
   readonly bucket_id: BucketId;
   readonly seal_policy_id: string | null;
   /** See `CreateBucketReserveResponse` — the wire name is `provisioning_state`. */
-  readonly provisioning_state: string;
+  readonly provisioning_state: "active";
 }
 export interface FileUploadResponse {
   readonly data: {
@@ -422,20 +431,23 @@ const apiKeyStatusResponseSchema = z.object({
 export type ApiKeyStatusResponse = z.infer<typeof apiKeyStatusResponseSchema>;
 
 /** Console error bodies arrive as `{ error: "msg" }` or `{ error: { code, message } }`. */
-interface ConsoleErrorBody {
-  readonly code?: string;
-  readonly message?: string;
-  readonly error?: string | { readonly code?: string; readonly message?: string };
-  /** A create's name conflict names the folder holding the name. */
-  readonly bucket_id?: unknown;
-}
+const consoleErrorFields = z.object({
+  code: z.string().min(1).max(128).optional().catch(undefined),
+  message: z.string().optional().catch(undefined),
+});
+const consoleErrorBody = consoleErrorFields.extend({
+  error: z.union([z.string(), consoleErrorFields]).optional().catch(undefined),
+});
+const errorBucketId = z.object({ bucket_id: z.string().min(1).max(128) });
 
 /** Longest server message that reaches a tool result. */
 const MAX_ERROR_MESSAGE_CHARS = 500;
 
 function clampErrorMessage(message: string | undefined): string | undefined {
-  if (message === undefined || message.length <= MAX_ERROR_MESSAGE_CHARS) return message;
-  return `${message.slice(0, MAX_ERROR_MESSAGE_CHARS)}…`;
+  if (message === undefined) return undefined;
+  const redacted = redactString(message);
+  if (redacted.length <= MAX_ERROR_MESSAGE_CHARS) return redacted;
+  return `${redacted.slice(0, MAX_ERROR_MESSAGE_CHARS)}…`;
 }
 
 /**
@@ -454,15 +466,16 @@ function clampErrorMessage(message: string | undefined): string | undefined {
  * route emits it today, but a gateway could, and without it `String(message)`
  * on an object would yield "[object Object]" while the code vanished.
  *
- * Pure and exported so the raw-`fetch` paths (multipart upload / download) can
+ * Exported so the raw-`fetch` paths (multipart upload / download) can
  * reuse the exact parsing the HttpClient paths get, and so it is unit-testable.
  */
 export function parseConsoleErrorBody(body: unknown): {
   code: string | undefined;
   message: string | undefined;
 } {
-  if (typeof body !== "object" || body === null) return { code: undefined, message: undefined };
-  const { code, message, error } = body as ConsoleErrorBody;
+  const parsed = consoleErrorBody.safeParse(body);
+  if (!parsed.success) return { code: undefined, message: undefined };
+  const { code, message, error } = parsed.data;
   return {
     code: code ?? (error && typeof error === "object" ? error.code : undefined),
     message: clampErrorMessage((typeof error === "string" ? error : error?.message) ?? message),
@@ -831,12 +844,11 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
           ),
           Effect.catchAll(() => Effect.succeed("")),
         );
-        let body: ConsoleErrorBody = {};
+        let body: unknown;
         try {
-          body = JSON.parse(rawText) as ConsoleErrorBody;
+          body = JSON.parse(rawText);
         } catch {
-          // Non-JSON or truncated body — leave {} so `message` falls back to the
-          // status line below, exactly as the old `res.json` catch did.
+          // Non-JSON or truncated body. Fall back to the HTTP status line.
         }
         const parsed = parseConsoleErrorBody(body);
         const code = parsed.code;
@@ -876,13 +888,13 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
             }),
           );
         }
-        const bucketId = typeof body.bucket_id === "string" ? body.bucket_id : undefined;
+        const bucket = errorBucketId.safeParse(body);
         return yield* Effect.fail(
           new ConsoleApiError({
             message: String(message),
             ...(code !== undefined ? { code } : {}),
             status: res.status,
-            ...(bucketId !== undefined ? { bucketId } : {}),
+            ...(bucket.success ? { bucketId: bucket.data.bucket_id } : {}),
           }),
         );
       });
@@ -951,14 +963,19 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     const listSpaces = Effect.fn("ConsoleApiClient.listSpaces")(function* (filter?: {
       type?: "personal" | "team" | undefined;
     }) {
-      const url = filter?.type ? `/api/v1/spaces?type=${filter.type}` : "/api/v1/spaces";
+      const url = filter?.type
+        ? `${LIST_SPACES_ENDPOINT}?type=${filter.type}`
+        : LIST_SPACES_ENDPOINT;
       const res = yield* authed.get(url);
       if (res.status !== 200) return yield* handleError(res);
-      const json = (yield* res.json) as DataEnvelope<readonly SpaceListItem[]>;
-      if (!Array.isArray(json.data)) {
+      const json = (yield* res.json) as DataEnvelope<readonly SpaceListItem[]> | null;
+      if (
+        !Array.isArray(json?.data) ||
+        !json.data.every((space) => typeof space?.id === "string" && space.id.length > 0)
+      ) {
         return yield* Effect.fail(
           new ConsoleApiError({
-            message: "listSpaces received a 200 response without a data array.",
+            message: "listSpaces received a 200 response without a valid space list.",
             code: "invalid_response_shape",
             status: res.status,
           }),
@@ -1050,7 +1067,25 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         body: HttpBody.text(JSON.stringify({ signature }), "application/json"),
       });
       if (res.status !== 200) return yield* handleError(res);
-      return (yield* res.json) as FinalizeBucketResponse;
+      const body: unknown = yield* res.json;
+      if (
+        typeof body !== "object" ||
+        body === null ||
+        !("bucket_id" in body) ||
+        typeof body.bucket_id !== "string" ||
+        body.bucket_id.length === 0 ||
+        !("provisioning_state" in body) ||
+        body.provisioning_state !== "active"
+      ) {
+        return yield* new HttpClientError.ResponseError({
+          request: res.request,
+          response: res,
+          reason: "Decode",
+          description:
+            "Expected a bucket ID and active provisioning state in the bucket finalize response",
+        });
+      }
+      return body as FinalizeBucketResponse;
     });
 
     const getBucketById = Effect.fn("ConsoleApiClient.getBucketById")(function* (
@@ -1191,23 +1226,31 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         return yield* handleUploadError(response, fileName, fileBytes.byteLength);
       }
 
-      const json = yield* Effect.tryPromise({
+      // A 202 already accepted the bytes. Retrying because its receipt is unreadable
+      // could duplicate the file, so retain that distinction for every invalid shape.
+      const missingUploadReceipt = () =>
+        new ConsoleApiError({
+          message:
+            "The upload was ACCEPTED (HTTP 202), but its response did not identify the file. " +
+            "Do not upload again. Check list_files for a new entry, including a possible renamed file, " +
+            "and track it with get_file_status once you have identified it.",
+          status: response.status,
+        });
+      const json: unknown = yield* Effect.tryPromise({
         try: () => response.json(),
-        catch: () =>
-          new ConsoleApiError({
-            // A 202 means the upload was ACCEPTED — the bytes are stored and the
-            // server has an id for them — so an unreadable body here is NOT an
-            // upload failure. Say so, and steer away from the one response that
-            // makes it worse: re-uploading duplicates a file the server already
-            // has. The file is findable by the name it was uploaded under.
-            message:
-              `The upload was ACCEPTED (HTTP 202) but its response body could not be read, so ` +
-              `the server's file id is not available here. Do NOT upload again — that would ` +
-              `duplicate a file the server already has. Find it with list_files (search by the ` +
-              `name you uploaded), then track its processing with get_file_status.`,
-            status: response.status,
-          }),
+        catch: missingUploadReceipt,
       });
+      const data = typeof json === "object" && json !== null && "data" in json ? json.data : null;
+      if (
+        !data ||
+        typeof data !== "object" ||
+        !("id" in data) ||
+        typeof data.id !== "string" ||
+        !data.id
+      ) {
+        return yield* missingUploadReceipt();
+      }
+      if (yield* pathSegment(data.id).pipe(Effect.isFailure)) return yield* missingUploadReceipt();
       return json as FileUploadResponse;
     });
 

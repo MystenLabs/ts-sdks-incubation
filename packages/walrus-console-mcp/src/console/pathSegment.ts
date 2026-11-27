@@ -13,5 +13,8 @@ export function pathSegment(id: string): Effect.Effect<string, ConsoleApiError> 
   if (id === "" || id === "." || id === "..") {
     return Effect.fail(new ConsoleApiError({ message: `"${id}" is not a valid Console id.` }));
   }
-  return Effect.succeed(encodeURIComponent(id));
+  return Effect.try({
+    try: () => encodeURIComponent(id),
+    catch: () => new ConsoleApiError({ message: "The Console id is not well-formed Unicode." }),
+  });
 }

@@ -13,7 +13,7 @@ export function installProfile() {
   fs.mkdirSync(bin);
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (/^(CONSOLE_|WALRUS_)/.test(key)) delete env[key];
+    if (/^(CONSOLE_|WALRUS_)/i.test(key)) delete env[key];
   }
   Object.assign(env, {
     HOME: root,

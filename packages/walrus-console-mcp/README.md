@@ -85,8 +85,8 @@ This interactive CLI will:
 2. Validate your credentials against the Console API, show you the addresses it is about to
    pin, and save nothing until you confirm them
 3. Ask which folders `upload_file` / `download_file` may use, then choose their scope.
-   Shared folders add to workspace and environment folders across sessions; fallback folders
-   apply only when neither source provides folders. An ancestor of Home stays fallback-only, and Home itself is refused.
+   Shared folders add to workspace and environment folders across sessions. Fallback folders
+   apply only when neither source provides a usable directory. Home itself is refused.
 4. Install the server into its own directory and register it with the agents you tick
    (Claude Code, Cursor, Codex, Gemini CLI, Antigravity). Claude Desktop is not on this list — see
    [Claude Desktop](#claude-desktop).
@@ -149,7 +149,7 @@ use the same config-file registration as the interactive installer.
 Use `--allowed-dirs-scope shared` with the complete explicit folder list to make
 those folders available alongside workspaces in every session using the same
 config. This grants access from unrelated projects. Without the scope flag, a
-replacement list uses `fallback` and applies only without workspace/environment
+replacement list uses `fallback` and applies only without usable workspace or environment
 folders. Environment-imported lists also use fallback scope.
 
 Under explicit `--silent`, the credential environment variables are
@@ -305,18 +305,15 @@ Scripted / CI equivalents:
 CONSOLE_ADMIN_KEY=… CONSOLE_ADMIN_SERVICE_PRIVATE_KEY=… "${XDG_DATA_HOME:-$HOME/.local/share}/walrus-console-mcp/node_modules/.bin/walrus-console-mcp" config --silent
 ```
 
-Nonblank environment variables override the saved configuration **per value**.
-`CONSOLE_API_KEY`, `CONSOLE_SERVICE_PRIVATE_KEY`, `CONSOLE_ADMIN_KEY`, and
-`CONSOLE_ADMIN_SERVICE_PRIVATE_KEY` each replace only their matching saved field. Unset, empty,
-and whitespace-only variables fall back to the saved value. For example, an environment service
-key keeps the saved API key, and an environment API key keeps the saved service key.
-`CONSOLE_API_BASE_URL`, `CONSOLE_WEB_ACCOUNT_ADDRESS`, and `CONSOLE_KEY_ADMIN_ADDRESS` also
-resolve independently with their existing validation. Import `CONSOLE_CREDENTIAL_BUNDLE` through
-`config --silent` or `install --silent` before starting the server.
-
-When rotating to a different credential identity, override both the bearer and its matching signer.
-The server does not verify that resolved credentials belong together at startup. A mismatched
-admin pair can mint a child key before a later bucket grant fails.
+A nonblank environment credential takes precedence over the saved credential. Set the bearer and
+its matching signer together when overriding the working pair (`CONSOLE_API_KEY` and
+`CONSOLE_SERVICE_PRIVATE_KEY`) or management pair (`CONSOLE_ADMIN_KEY` and
+`CONSOLE_ADMIN_SERVICE_PRIVATE_KEY`). If only one half is set in the environment, the server uses
+that half and suppresses the saved matching field. Unset, empty, and whitespace-only variables
+leave the saved pair in effect when neither half is overridden.
+`CONSOLE_API_BASE_URL`, `CONSOLE_WEB_ACCOUNT_ADDRESS`, and `CONSOLE_KEY_ADMIN_ADDRESS` resolve
+independently. Import `CONSOLE_CREDENTIAL_BUNDLE` through `config --silent` or `install --silent`
+before starting the server.
 
 Call `ping_console` to confirm which values are present. It reports `has_api_key`,
 `has_service_key`, `has_admin_key`, and `has_admin_signer` as booleans and never echoes secrets.
@@ -327,8 +324,8 @@ when Console accepts the key; then `api_key_check` lists the spaces the key can 
 refuses the key, `ok` is `false` and `api_key_check.error_code` carries the same code the failing
 call would return (for example `invalid_api_key`). A key with no visible resources still
 passes. If `CONSOLE_SERVICE_PRIVATE_KEY` is not set, `operations_needing_service_key` names the
-operations that will fail (`create_bucket`, `upload_file`, `download_file`) and `service_key_warning`
-says why. A missing service key does not make `ok` false.
+operations that always require it (`create_bucket` and `download_file`). Uploads may require
+the service key to verify the bucket policy. A missing service key does not make `ok` false.
 
 ### Confirming the mint
 
@@ -764,6 +761,12 @@ fixes them:
 `chain_verified` is the only reason that means a membership was actually read; it is never
 reported for a create that read nothing.
 
+If finalize cannot confirm the bucket, use the reserved `bucketId` from `BucketFinalizeError`
+to check `list_buckets`. A pending bucket can still become active after Console indexes the
+transaction. When Console returns HTTP 503, the tool retries with the same signature. That can
+take over 60 seconds. If your MCP client cancels before the tool responds, find the reservation
+in `list_buckets` by its name before considering another create.
+
 ## Adding to an agent (npm)
 
 The installer's Register step does all of this for you, and is the recommended
@@ -910,7 +913,7 @@ Saved folders have one scope for the complete list:
 
 | Scope      | When saved folders grant access                                                                                        |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `fallback` | Only when neither workspace nor environment folders are provided.                                                      |
+| `fallback` | Only when neither the client nor the environment provides a usable directory.                                          |
 | `shared`   | Alongside workspace and environment folders, across every session using this config, subject to the protections below. |
 
 **Existing installations keep fallback scope.** Missing or invalid
@@ -957,7 +960,7 @@ tool call without reconnecting. They do not stop an already-running transfer.
 
 Each connection uses its client's reported workspace roots and its server
 process's environment folders. Shared saved folders add to those grants;
-fallback folders contribute only when neither source provides folders.
+fallback folders contribute only when neither source provides a usable directory.
 Connections never share or persist one another's workspace roots. A client
 reporting no roots receives no workspace permission from the terminal's working
 directory. Removing a saved folder or changing its scope does not revoke an
@@ -975,13 +978,12 @@ environment → saved order. `allowed_dirs_source` reports:
 | `file`        | Saved config only; also the existing empty-list fallback |
 | `union`       | Multiple contributing sources                            |
 
-If Home cannot be resolved while workspace/environment folders are present,
-shared saved grants are temporarily withheld because they cannot be classified safely.
+If Home cannot be resolved, saved grants that would otherwise apply are temporarily withheld.
 Explicit workspace/environment grants remain usable; config-subtree protection
 still fails closed. Restore Home access before retrying a saved-only path.
 
-An empty allowed list denies transfers. A saved ancestor of Home remains fallback-only
-when workspace/environment folders are present, and Home itself is refused. The canonical MCP config subtree
+An empty allowed list denies transfers. A saved ancestor of Home applies only
+when neither the client nor the environment declares folders. Home itself is refused. The canonical MCP config subtree
 is always protected, and saved-only downloads reject hidden components below the
 saved folder. Explicit workspace/environment grants retain their existing
 behavior, subject to config protection. These are limited safeguards, not project
@@ -1118,7 +1120,7 @@ the file change.
 
 ### Install target and runtime attribution
 
-Console's key list can show which harness a key is connected to and whether a running server has used it. Two facts travel as separate headers, and only the running server sends either:
+Console's key list can show which harness a key is connected to and whether a running server has used it. The running server sends three attribution headers:
 
 | Header                     | Sent when                                                                 | Value                                                                                         |
 | -------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -1154,7 +1156,7 @@ When a harness starts the server, the server makes one authenticated `GET /api/v
   real file path. The sandbox decides where a download may land; this decides what happens when
   something is already there, so a prompt-injected agent cannot overwrite a dotfile or a
   credential file with content it chose.
-- Path sandboxing **fails closed**. `upload_file` (localPath) and `download_file` (destPath) are confined to the allowed roots — the union of your MCP client’s workspace folders, `CONSOLE_MCP_ALLOWED_DIRS`, and `allowedDirs` explicitly saved with `allowedDirsScope: "shared"`, in that order. Saved lists with fallback or missing scope contribute only when no workspace/environment folders are provided. A saved ancestor of Home stays fallback-only when workspace or environment folders are available; Home itself is refused. The MCP config directory is always protected, including through symlinks. Downloads authorized only by saved folders refuse hidden path components below those folders. If none of those is available the path is **rejected**, so a model-chosen path (e.g. from prompt injection) can't reach an arbitrary file. Relative paths (and a leading `~`) are resolved against the first allowed root rather than the MCP server directory.
+- Path sandboxing **fails closed**. `upload_file` (localPath) and `download_file` (destPath) are confined to the allowed roots — the union of your MCP client’s workspace folders, `CONSOLE_MCP_ALLOWED_DIRS`, and `allowedDirs` explicitly saved with `allowedDirsScope: "shared"`, in that order. Saved lists with fallback or missing scope contribute only when no usable workspace or environment folder exists. A saved ancestor of Home applies only when neither source declares folders. Home itself is refused. The MCP config directory is always protected, including through symlinks. Downloads authorized only by saved folders refuse hidden path components below those folders. An empty allowed list rejects the path. Relative paths (and a leading `~`) are resolved against the first allowed root.
 - **Destructive tools ask the human, not only the model.** `delete_bucket`, `delete_file` and
   `download_file` with `overwrite: true` need `confirm: true`, which a calling model can compose
   itself. Where the client supports MCP elicitation, the server also shows a prompt in the client's

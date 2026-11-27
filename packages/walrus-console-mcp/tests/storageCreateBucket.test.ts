@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { HttpClient, HttpClientResponse } from "@effect/platform";
+import { HttpClient, HttpClientError, HttpClientResponse } from "@effect/platform";
 import { bcs } from "@mysten/sui/bcs";
 import type { Transaction } from "@mysten/sui/transactions";
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
-import { Duration, Effect, Fiber, Layer, Redacted, TestClock, TestContext } from "effect";
+import { Deferred, Duration, Effect, Fiber, Layer, Redacted, TestClock, TestContext } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic } from "../src/atomicWrite";
 import { type ConsoleConfig, ConsoleConfigTag } from "../src/config";
@@ -1508,9 +1508,8 @@ describe("createBucket — the result never reports a bare success", () => {
   });
 });
 
-// A 502 from finalize means nothing was created, a 503 that the bucket may
-// still complete. Losing the reserved id on either is what sent agents into
-// duplicate creates, so every finalize failure names it.
+// Every finalize failure names the reservation, including failures where the
+// client cannot tell whether the transaction was submitted.
 describe("createBucket — a finalize that fails names the bucket and its outcome", () => {
   const consoleError = (status: number, code: string) =>
     new ConsoleApiError({ message: `HTTP ${status}`, status, code });
@@ -1557,9 +1556,8 @@ describe("createBucket — a finalize that fails names the bucket and its outcom
     expect(error.bucketId).toBe(BUCKET_UUID);
     expect(error.code).toBe("bucket_provision_pending");
     expect(error.message).toMatch(/do not create it\s+again/i);
-    // A transaction that never landed stays pending; the agent must be able to discard it.
-    expect(error.message).toMatch(/chain_landed false[\s\S]*delete_bucket/);
-    // One attempt plus five retries, past Console's 60s "may still be indexing" window.
+    expect(error.message).toMatch(/chain_landed false[\s\S]*waiting/);
+    expect(error.message).not.toContain("delete_bucket");
     expect(h.finalized).toHaveLength(6);
     expect(readAnchors(SPACE)).toEqual([]);
   });
@@ -1581,12 +1579,21 @@ describe("createBucket — a finalize that fails names the bucket and its outcom
 
   it.each([
     [502, "enoki_execute_failed", "not_created", /safe/i],
+    [502, undefined, "may_complete", /Check this bucket/],
+    [502, "unknown_code", "may_complete", /Check this bucket/],
+    [504, undefined, "may_complete", /Check this bucket/],
+    [408, undefined, "may_complete", /Check this bucket/],
     [409, "bucket_group_claimed_elsewhere", "pending", /delete_bucket/],
     [410, "digest_expired", "pending", /delete_bucket/],
   ] as const)(
     "does not retry a %i, and reports it as %s",
     async (status, code, outcome, guidance) => {
-      const h = makeHarness({ finalizeErrors: [consoleError(status, code)] });
+      const err = new ConsoleApiError({
+        message: `HTTP ${status}`,
+        status,
+        ...(code !== undefined ? { code } : {}),
+      });
+      const h = makeHarness({ finalizeErrors: [err] });
 
       const error = (await Effect.runPromise(
         create(h.layer).pipe(Effect.flip),
@@ -1603,7 +1610,7 @@ describe("createBucket — a finalize that fails names the bucket and its outcom
 });
 
 describe("createBucket — a name conflict points at the folder holding the name", () => {
-  it("names the holder and says how to finish or discard it", async () => {
+  it("names the holder without suggesting discarding someone else's reservation", async () => {
     const h = makeHarness({
       reserveError: new ConsoleApiError({
         message: 'Bucket name "notes" already exists in this space.',
@@ -1619,7 +1626,8 @@ describe("createBucket — a name conflict points at the folder holding the name
     expect(error.code).toBe("bucket_name_conflict");
     expect(error.bucketId).toBe("bucket-held");
     expect(error.message).toMatch(/bucket bucket-held/);
-    expect(error.message).toMatch(/delete_bucket/);
+    expect(error.message).toContain("list_buckets");
+    expect(error.message).not.toContain("delete_bucket");
   });
 
   it("passes a conflict that names no folder through unchanged", async () => {
@@ -1642,11 +1650,156 @@ describe("createBucket — a name conflict points at the folder holding the name
 // once makes a retry re-run the same failure without calling it again. Only the
 // real client shows that each retry sends a new finalize request.
 describe("createBucket — finalize retries through the real ConsoleApiClient", () => {
-  it("sends a new finalize request per retry, with one signature and one reserve", async () => {
+  it.each([
+    ["transport failure", [null], "may_complete", undefined, /do not create it\s+again/i],
+    ["unreadable response", [[200, "not JSON"]], "may_complete", undefined, /do not create/i],
+    ["JSON null", [[200, "null"]], "may_complete", undefined, /do not create/i],
+    ["JSON primitive", [[200, "true"]], "may_complete", undefined, /do not create/i],
+    [
+      "missing provisioning state",
+      [[200, JSON.stringify({ bucket_id: BUCKET_UUID })]],
+      "may_complete",
+      undefined,
+      /do not create/i,
+    ],
+    [
+      "reserve still pending",
+      [[200, JSON.stringify({ bucket_id: BUCKET_UUID, provisioning_state: "pending_policy" })]],
+      "may_complete",
+      undefined,
+      /do not create/i,
+    ],
+    [
+      "malformed error fields",
+      [[502, '{"message":42,"code":17}']],
+      "may_complete",
+      undefined,
+      /HTTP 502/,
+    ],
+    [
+      "auth rejection on the first attempt",
+      [[403, '{"code":"insufficient_scope","error":"Scope required"}']],
+      "pending",
+      "insufficient_scope",
+      /reserved but not finished/,
+    ],
+    [
+      "auth rejection after a retry",
+      [
+        [503, "{}"],
+        [403, '{"code":"insufficient_scope","error":"Scope required"}'],
+      ],
+      "may_complete",
+      "insufficient_scope",
+      /do not create/i,
+    ],
+  ] as const)(
+    "reports the reserved id when finalize ends with %s",
+    async (_failure, finalizeReplies, outcome, expectedCode, guidance) => {
+      const finalizeRequests: string[] = [];
+      const http = HttpClient.make((request) => {
+        if (request.url.endsWith("/finalize")) {
+          const reply = finalizeReplies[finalizeRequests.length];
+          finalizeRequests.push(request.url);
+          if (reply == null) {
+            return Effect.fail(new HttpClientError.RequestError({ request, reason: "Transport" }));
+          }
+          const [status, body] = reply;
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response(body, { status })),
+          );
+        }
+
+        const [status, body]: [number, unknown] =
+          request.method === "POST" && request.url.endsWith("/buckets")
+            ? [
+                201,
+                {
+                  bucket_id: BUCKET_UUID,
+                  bytes: "AAAA",
+                  digest: "0xdigest",
+                  provisioning_state: "pending_policy",
+                },
+              ]
+            : [200, { signers: [] }];
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(request, new Response(JSON.stringify(body), { status })),
+        );
+      });
+
+      const { layer } = makeHarness({ http });
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.fork(create(layer).pipe(Effect.flip));
+          yield* TestClock.adjust(Duration.minutes(5));
+          return yield* Fiber.join(fiber);
+        }).pipe(Effect.provide(TestContext.TestContext)),
+      );
+
+      if (!(error instanceof BucketFinalizeError)) throw error;
+      expect(error).toMatchObject({ bucketId: BUCKET_UUID, outcome });
+      expect(error.message).toMatch(guidance);
+      expect(error.code).toBe(expectedCode);
+      if (expectedCode !== undefined) {
+        expect(error).toMatchObject({ code: expectedCode });
+        expect(error.message).toContain("Scope required");
+      }
+      expect(finalizeRequests).toHaveLength(finalizeReplies.length);
+      expect(new Set(finalizeRequests)).toEqual(
+        new Set([`${BASE_CONFIG.baseUrl}/api/v1/buckets/${BUCKET_UUID}/finalize`]),
+      );
+    },
+  );
+
+  it("returns the reserved ID before the MCP deadline when finalize never answers", async () => {
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const finalizeStarted = yield* Deferred.make<void>();
+        const http = HttpClient.make((request) => {
+          if (request.url.endsWith("/finalize")) {
+            return Deferred.succeed(finalizeStarted, undefined).pipe(Effect.zipRight(Effect.never));
+          }
+
+          const [status, body]: [number, unknown] =
+            request.method === "POST" && request.url.endsWith("/buckets")
+              ? [
+                  201,
+                  {
+                    bucket_id: BUCKET_UUID,
+                    bytes: "AAAA",
+                    digest: "0xdigest",
+                    provisioning_state: "pending_policy",
+                  },
+                ]
+              : [200, { signers: [] }];
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response(JSON.stringify(body), { status })),
+          );
+        });
+        const { layer } = makeHarness({ http });
+        const fiber = yield* Effect.fork(create(layer).pipe(Effect.flip));
+        yield* Deferred.await(finalizeStarted);
+        yield* TestClock.adjust(Duration.seconds(45));
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestContext.TestContext)),
+    );
+
+    expect(error).toMatchObject({
+      _tag: "BucketFinalizeError",
+      outcome: "may_complete",
+      bucketId: BUCKET_UUID,
+      code: "finalize_timeout",
+    });
+  });
+
+  it("retries after Console's indexing window with the same signature and reserve", async () => {
     const requests: { method: string; url: string; body: unknown }[] = [];
     const finalizeAnswers: [number, unknown][] = [
       [503, { error: "An unexpected error occurred.", code: "enoki_execute_unconfirmed" }],
       [503, { error: "An unexpected error occurred.", code: "chain_probe_unavailable" }],
+      [503, { error: "Still indexing" }],
+      [503, { error: "Still indexing" }],
+      [503, { error: "Still indexing" }],
       [
         200,
         {
@@ -1691,14 +1844,16 @@ describe("createBucket — finalize retries through the real ConsoleApiClient", 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* Effect.fork(Effect.either(create(h.layer)));
-        yield* TestClock.adjust(Duration.minutes(5));
+        yield* TestClock.adjust(Duration.seconds(61));
+        expect(finalizeAnswers).toHaveLength(1);
+        yield* TestClock.adjust(Duration.seconds(1));
         return yield* Fiber.join(fiber);
       }).pipe(Effect.provide(TestContext.TestContext)),
     );
 
     expect(result._tag).toBe("Right");
     const finalizes = requests.filter((r) => r.url.endsWith(`/buckets/${BUCKET_UUID}/finalize`));
-    expect(finalizes).toHaveLength(3);
+    expect(finalizes).toHaveLength(6);
     expect(new Set(finalizes.map((r) => JSON.stringify(r.body))).size).toBe(1);
     expect(requests.filter((r) => r.method === "POST" && r.url.endsWith("/buckets"))).toHaveLength(
       1,
