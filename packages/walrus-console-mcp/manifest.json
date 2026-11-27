@@ -119,7 +119,7 @@
     },
     {
       "name": "upload_file",
-      "description": "Read a local file, encrypt it with Seal, and upload it."
+      "description": "Read a local file, encrypt it with Seal, and upload it, optionally into a subfolder of the bucket."
     },
     {
       "name": "download_file",
@@ -127,7 +127,7 @@
     },
     {
       "name": "list_files",
-      "description": "List files inside a specific bucket, one page at a time. Page by passing pagination.next_cursor back as cursor while pagination.has_more is true."
+      "description": "List files inside a specific bucket, one page at a time. Page by passing pagination.next_cursor back as cursor while pagination.has_more is true. With no folderId it covers the whole bucket; folderId and recursive narrow it to one subfolder."
     },
     {
       "name": "get_file_status",
@@ -148,6 +148,26 @@
     {
       "name": "delete_file",
       "description": "Permanently delete a single file from a bucket."
+    },
+    {
+      "name": "list_folders",
+      "description": "List the subfolders directly inside a folder of a bucket, the root when folderId is omitted."
+    },
+    {
+      "name": "create_folder",
+      "description": "Create a subfolder in a bucket, at its root or under another subfolder."
+    },
+    {
+      "name": "update_folder",
+      "description": "Rename a subfolder, move it under another folder of the same bucket, or edit its description."
+    },
+    {
+      "name": "delete_folder",
+      "description": "Permanently delete a subfolder. One that still holds files or subfolders is refused with the counts unless deleteContents is also set."
+    },
+    {
+      "name": "move_file",
+      "description": "Move a file to another folder of its own bucket. A destination in another bucket is refused with reencrypt_required."
     },
     {
       "name": "update_file",

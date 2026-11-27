@@ -9,7 +9,7 @@ import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/Consol
 import { encodeFileAad } from "../src/console/fileAad";
 import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
-import { BucketId, FileId } from "../src/console/types";
+import { BucketId, FileId, FolderId } from "../src/console/types";
 import { boundFile, derivedPolicy, FIXTURE_OWNER, verifiedBucket } from "./verifiedBucket";
 
 /**
@@ -49,6 +49,7 @@ interface UploadCall {
   fileName: string;
   contentSize: number | undefined;
   declaredType: string | undefined;
+  folderId?: string | undefined;
 }
 
 function uploadHarness(opts: { storedName?: (sent: string) => string | undefined } = {}) {
@@ -63,9 +64,10 @@ function uploadHarness(opts: { storedName?: (sent: string) => string | undefined
       _metadata: unknown,
       contentSize?: number,
       declaredType?: string,
+      folderId?: string,
     ) =>
       Effect.sync(() => {
-        uploads.push({ fileName, contentSize, declaredType });
+        uploads.push({ fileName, contentSize, declaredType, folderId });
         const name =
           opts.storedName === undefined
             ? fileName.trim().normalize("NFC")
@@ -101,11 +103,18 @@ function uploadHarness(opts: { storedName?: (sent: string) => string | undefined
       ),
     ),
   );
-  const upload = (localPath: string, targetName?: string) =>
+  const upload = (localPath: string, targetName?: string, folderId?: string) =>
     Effect.runPromise(
       ConsoleStorageService.pipe(
         Effect.flatMap((s) =>
-          s.uploadFileToBucket(BucketId.make(BUCKET), undefined, localPath, targetName),
+          s.uploadFileToBucket(
+            BucketId.make(BUCKET),
+            undefined,
+            localPath,
+            targetName,
+            undefined,
+            folderId !== undefined ? FolderId.make(folderId) : undefined,
+          ),
         ),
         Effect.provide(layer),
       ),
@@ -193,6 +202,28 @@ describe("upload_file binds the record the file will live under", () => {
       contentSize: 7,
       declaredType: "application/pdf",
     });
+  });
+
+  // A subfolder has no Seal policy of its own and a file can move between the
+  // bucket's subfolders without being re-encrypted, so the binding must name
+  // the bucket. Binding the folder would make every moved file refuse to open.
+  it("binds the bucket id, not the subfolder, for an upload into a subfolder", async () => {
+    const folder = "f01de700-0000-4000-8000-0000000000f1";
+    const local = path.join(tmpDir, "into-subfolder.pdf");
+    await fs.writeFile(local, "nested!");
+    const { encrypts, uploads, upload } = uploadHarness();
+
+    await upload(local, "into-subfolder.pdf", folder);
+
+    const expected = {
+      originalName: "into-subfolder.pdf",
+      declaredType: "application/pdf",
+      contentSize: 7,
+    };
+    expect(encrypts[0]?.aad).toEqual(encodeFileAad({ bucketId: BUCKET, ...expected }));
+    expect(encrypts[0]?.aad).not.toEqual(encodeFileAad({ bucketId: folder, ...expected }));
+    // The folder still reaches Console, as the upload's destination.
+    expect(uploads[0]?.folderId).toBe(folder);
   });
 
   // The server stores the NFC form (`toNfcName`), so a client binding the form it

@@ -12,3 +12,8 @@ server checks in on startup. Bearer and signer credentials are paired from the
 same source, and tool errors hide stack traces by default. Bucket creation preserves the
 reserved bucket ID when finalize cannot confirm the result, and uploads report
 the stored filename.
+
+List, create, rename, move, and delete subfolders in Console buckets. Upload and
+list files in a specific folder, or move files between folders in the same
+bucket without re-encrypting them. Recursive folder deletion requires explicit
+confirmation.

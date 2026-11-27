@@ -27,6 +27,8 @@ import type {
   BucketMetadata,
   FileId,
   FileSummary,
+  Folder,
+  FolderId,
   SpaceId,
   SpaceListItem,
   StorageUsage,
@@ -439,6 +441,13 @@ const consoleErrorBody = consoleErrorFields.extend({
   error: z.union([z.string(), consoleErrorFields]).optional().catch(undefined),
 });
 const errorBucketId = z.object({ bucket_id: z.string().min(1).max(128) });
+const optionalCount = z.number().int().optional().catch(undefined);
+const folderErrorCounts = z.object({
+  file_count: optionalCount,
+  folder_count: optionalCount,
+  fileCount: optionalCount,
+  folderCount: optionalCount,
+});
 
 /** Longest server message that reaches a tool result. */
 const MAX_ERROR_MESSAGE_CHARS = 500;
@@ -857,7 +866,12 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         // its grant on a just-created bucket has not propagated yet. Keep it a
         // ConsoleApiError with its code — the same shape the multipart upload
         // produces — so callers can retry it instead of reporting an invalid key.
-        if (res.status === 403 && code === "mirror_missing_grant") {
+        // Likewise `feature_not_enabled`: the key is fine, the account has not
+        // been given the feature (nested folders, while that gate is off).
+        if (
+          res.status === 403 &&
+          (code === "mirror_missing_grant" || code === "feature_not_enabled")
+        ) {
           return yield* Effect.fail(
             new ConsoleApiError({ message: String(message), code, status: res.status }),
           );
@@ -885,16 +899,22 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
                   : code === "insufficient_scope"
                     ? "insufficient_scope"
                     : "invalid_api_key",
+              status: res.status,
             }),
           );
         }
         const bucket = errorBucketId.safeParse(body);
+        const counts = folderErrorCounts.safeParse(body).data;
+        const fileCount = counts?.file_count ?? counts?.fileCount;
+        const folderCount = counts?.folder_count ?? counts?.folderCount;
         return yield* Effect.fail(
           new ConsoleApiError({
             message: String(message),
             ...(code !== undefined ? { code } : {}),
             status: res.status,
             ...(bucket.success ? { bucketId: bucket.data.bucket_id } : {}),
+            ...(fileCount !== undefined ? { fileCount } : {}),
+            ...(folderCount !== undefined ? { folderCount } : {}),
           }),
         );
       });
@@ -1173,6 +1193,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       metadata?: Record<string, unknown>,
       contentSize?: number,
       declaredType?: string,
+      folderId?: FolderId,
     ) {
       // Pragmatic multipart using native fetch (reliable for MCP use case)
       const form = new FormData();
@@ -1198,6 +1219,11 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       // is no backfill (COMG-264).
       if (contentSize !== undefined) {
         form.append("contentSize", String(contentSize));
+      }
+      // Absent means the bucket's root. Only sent when named: Console refuses the
+      // field, not the upload, while nested folders are off for the account.
+      if (folderId !== undefined) {
+        form.append("folderId", folderId);
       }
 
       const url = `${config.baseUrl}/api/v1/buckets/${yield* pathSegment(bucketId)}/files`;
@@ -1393,7 +1419,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         body: HttpBody.text(JSON.stringify(patch), "application/json"),
       });
       if (res.status !== 200) return yield* handleError(res);
-      return (yield* res.json) as { data: FileSummary };
+      return (yield* res.json) as {
+        data: FileSummary & { readonly renamed_from?: string | null };
+      };
     });
 
     /** GET /api/v1/buckets/:id/metadata — folder description + tags (COMG-489). */
@@ -1422,22 +1450,128 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       return (yield* res.json) as { data: BucketMetadata };
     });
 
+    /**
+     * `folderId` and `recursive` are sent only when given: Console reads an absent
+     * `folderId` as the root and an absent `recursive` as true, so a bare call is
+     * the whole bucket, as it was before folders existed.
+     */
     const listBucketFiles = Effect.fn("ConsoleApiClient.listBucketFiles")(function* (
       bucketId: BucketId,
       limit?: number,
       cursor?: string,
       q?: string,
+      folder?: {
+        readonly folderId?: string | undefined;
+        readonly recursive?: boolean | undefined;
+      },
     ) {
       const params = new URLSearchParams();
       if (limit !== undefined) params.set("limit", String(limit));
       if (cursor) params.set("cursor", cursor);
       if (q) params.set("q", q);
+      if (folder?.folderId !== undefined) params.set("folderId", folder.folderId);
+      if (folder?.recursive !== undefined) params.set("recursive", String(folder.recursive));
 
       const res = yield* authed.get(
         `/api/v1/buckets/${yield* pathSegment(bucketId)}/files?${params.toString()}`,
       );
       if (res.status !== 200) return yield* handleError(res);
       return (yield* res.json) as FileListResponse;
+    });
+
+    // === Subfolders: /api/v1/buckets/:id/folders, behind the nested-folders gate ===
+
+    const folderPath = (bucketId: BucketId, folderId?: FolderId) =>
+      Effect.gen(function* () {
+        const base = `/api/v1/buckets/${yield* pathSegment(bucketId)}/folders`;
+        return folderId === undefined ? base : `${base}/${yield* pathSegment(folderId)}`;
+      });
+
+    // A typed failure rather than a TypeError defect; same guard as getBucketById.
+    const folderRecord = Effect.fn("ConsoleApiClient.folderRecord")(function* (
+      res: HttpClientResponse.HttpClientResponse,
+      endpoint: string,
+    ) {
+      const body = (yield* res.json) as Partial<DataEnvelope<Folder>> | null;
+      if (!body || typeof body.data !== "object" || body.data === null) {
+        return yield* new ConsoleApiError({
+          message: "Console returned a folder record with no `data` object.",
+          status: res.status,
+          endpoint,
+        });
+      }
+      return body.data;
+    });
+
+    const createFolder = Effect.fn("ConsoleApiClient.createFolder")(function* (
+      bucketId: BucketId,
+      body: { parentFolderId: FolderId; name: string; description?: string | undefined },
+    ) {
+      const endpoint = yield* folderPath(bucketId);
+      const res = yield* authed.post(endpoint, {
+        body: HttpBody.text(JSON.stringify(body), "application/json"),
+      });
+      if (res.status !== 201) return yield* handleError(res);
+      return yield* folderRecord(res, endpoint);
+    });
+
+    /** Subfolders directly inside `folderId`. Its files come from the file list. */
+    const listChildFolders = Effect.fn("ConsoleApiClient.listChildFolders")(function* (
+      bucketId: BucketId,
+      folderId: FolderId,
+      limit?: number,
+      cursor?: string,
+    ) {
+      const params = new URLSearchParams();
+      if (limit !== undefined) params.set("limit", String(limit));
+      if (cursor) params.set("cursor", cursor);
+      const res = yield* authed.get(
+        `${yield* folderPath(bucketId, folderId)}/children?${params.toString()}`,
+      );
+      if (res.status !== 200) return yield* handleError(res);
+      return (yield* res.json) as {
+        readonly folders: readonly Folder[];
+        readonly next_cursor: string | null;
+      };
+    });
+
+    /** A field left out is untouched; `description: null` clears it. */
+    const updateFolder = Effect.fn("ConsoleApiClient.updateFolder")(function* (
+      bucketId: BucketId,
+      folderId: FolderId,
+      patch: {
+        name?: string | undefined;
+        parentFolderId?: FolderId | undefined;
+        description?: string | null | undefined;
+      },
+    ) {
+      const endpoint = yield* folderPath(bucketId, folderId);
+      const res = yield* authed.patch(endpoint, {
+        body: HttpBody.text(JSON.stringify(patch), "application/json"),
+      });
+      if (res.status !== 200) return yield* handleError(res);
+      return yield* folderRecord(res, endpoint);
+    });
+
+    /**
+     * Both answers are the caller's, as for `deleteBucket`. Without
+     * `deleteContents` a folder that holds anything answers 409
+     * `folder_not_empty` with the file and subfolder counts below it.
+     */
+    const deleteFolder = Effect.fn("ConsoleApiClient.deleteFolder")(function* (
+      bucketId: BucketId,
+      folderId: FolderId,
+      opts: { confirm: true; deleteContents: boolean },
+    ) {
+      const query = new URLSearchParams({ confirm: String(opts.confirm) });
+      if (opts.deleteContents) {
+        query.set("deleteContents", "true");
+      }
+      const res = yield* authed.del(`${yield* folderPath(bucketId, folderId)}?${query}`);
+      if (res.status !== 200 && res.status !== 204) {
+        return yield* handleError(res);
+      }
+      return { id: folderId, deleted: true };
     });
 
     /**
@@ -1581,6 +1715,10 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       updateBucket,
       renameBucket,
       deleteBucket,
+      createFolder,
+      listChildFolders,
+      updateFolder,
+      deleteFolder,
       listSpaceSigners,
     } as const;
   }),

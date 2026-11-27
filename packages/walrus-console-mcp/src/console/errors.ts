@@ -15,6 +15,13 @@ export class ConsoleApiError extends Data.TaggedError("ConsoleApiError")<{
    * `bucket_name_conflict` carries the folder that holds the name.
    */
   readonly bucketId?: string;
+  /**
+   * A `folder_not_empty` refusal's counts: files and subfolders anywhere below
+   * the folder, which the agent puts to the user before asking for
+   * `deleteContents`.
+   */
+  readonly fileCount?: number;
+  readonly folderCount?: number;
 }> {}
 
 /**
@@ -61,6 +68,11 @@ export type ConsoleAuthErrorCode = (typeof CONSOLE_AUTH_ERROR_CODES)[number];
 export class ConsoleAuthError extends Data.TaggedError("ConsoleAuthError")<{
   readonly message: string;
   readonly code: ConsoleAuthErrorCode;
+  /**
+   * The HTTP status behind it. Console answers a bad key with 401; a 403 means the
+   * key is valid but may not reach the resource, which some callers report apart.
+   */
+  readonly status?: 401 | 403;
 }> {}
 
 export class SealCryptoError extends Data.TaggedError("SealCryptoError")<{

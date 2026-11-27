@@ -158,6 +158,20 @@ export function deleteBucketConfirmationMessage(args: {
   );
 }
 
+/** The prompt for delete_folder. */
+export function deleteFolderConfirmationMessage(args: {
+  readonly bucketId: string;
+  readonly folderId: string;
+  readonly deleteContents: boolean;
+}): string {
+  return (
+    `Permanently delete subfolder ${JSON.stringify(args.folderId)} of bucket ` +
+    `${JSON.stringify(args.bucketId)}` +
+    (args.deleteContents ? " and every file and subfolder below it" : "") +
+    "? Console has no undelete."
+  );
+}
+
 /** The prompt for delete_file. */
 export function deleteFileConfirmationMessage(args: {
   readonly bucketId: string;

@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = path.join(__dirname, "..");
 
-/** The 17 tools the MCP server is expected to register. */
+/** The 22 tools the MCP server is expected to register. */
 const EXPECTED_TOOLS = [
   "ping_console",
   "list_spaces",
@@ -30,6 +30,11 @@ const EXPECTED_TOOLS = [
   "rename_bucket",
   "delete_bucket",
   "delete_file",
+  "list_folders",
+  "create_folder",
+  "update_folder",
+  "delete_folder",
+  "move_file",
   "update_file",
   "get_bucket_metadata",
   "update_bucket_metadata",
@@ -62,7 +67,7 @@ function manifestToolNames(): string[] {
 }
 
 describe("tool inventory", () => {
-  it("registers exactly the 17 documented tools", () => {
+  it("registers exactly the 22 documented tools", () => {
     expect([...registeredToolNames()].sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
@@ -77,6 +82,12 @@ describe("tool inventory", () => {
     const deleteBucket = readManifest().tools.find((t) => t.name === "delete_bucket");
 
     expect(deleteBucket?.description).toMatch(/deleteContents/);
+  });
+
+  it("says delete_folder needs deleteContents for a non-empty subfolder", () => {
+    const deleteFolder = readManifest().tools.find((t) => t.name === "delete_folder");
+
+    expect(deleteFolder?.description).toMatch(/deleteContents/);
   });
 
   it("has no duplicate tool names in the manifest", () => {

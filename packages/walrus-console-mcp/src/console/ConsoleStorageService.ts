@@ -70,7 +70,7 @@ import {
   type UploadsPause,
 } from "./uploadFailure";
 import { keyAdminPinRemedy } from "./txValidation";
-import { type FileId, type SpaceId, BucketId } from "./types";
+import { type FileId, type FolderId, type SpaceId, BucketId } from "./types";
 
 /**
  * How long a write to a just-created bucket rides out Console's ACL-mirror delay:
@@ -1542,6 +1542,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         localPath: string,
         targetName?: string,
         userMetadata?: FileUserMetadata,
+        folderId?: FolderId,
       ) {
         // Before the policy lookup, the file read, or anything else that
         // costs a request: a caller that ignores the stop instruction on a
@@ -1604,6 +1605,9 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
 
             // The requested name, before any collision suffix (the row does not
             // exist yet), in the form the server's `toNfcName` stores it.
+            // The binding names the bucket, never `folderId`: a subfolder has no
+            // Seal policy of its own, and a move inside the bucket must not
+            // break the download of a file it carries.
             const originalName = canonicalOriginalName(fileName);
             const declaredType = contentTypeFromName(fileName);
             const aad = encodeFileAad({
@@ -1641,6 +1645,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
                   metadata,
                   fileBytes.length,
                   declaredType,
+                  folderId,
                 )
                 .pipe(Effect.either);
 

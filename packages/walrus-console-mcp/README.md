@@ -228,14 +228,19 @@ The command is an absolute path, not `npx`. See
 | `list_buckets`           | List buckets in a space (paged, filter by visibility)            | Read       |
 | `create_bucket`          | Create a private encrypted bucket (needs a pinned owner address) | Write      |
 | `generate_api_key`       | Mint a scoped child working key (Key-Admin)                      | Write      |
-| `upload_file`            | Encrypt + upload a local file                                    | Write      |
+| `upload_file`            | Encrypt + upload a local file, optionally into a subfolder       | Write      |
 | `download_file`          | Download + decrypt a file to disk                                | Read       |
-| `list_files`             | List files in a bucket (paged, with search)                      | Read       |
+| `list_files`             | List files in a bucket or one subfolder (paged, with search)     | Read       |
 | `get_file_status`        | Check upload progress                                            | Read       |
 | `get_bucket`             | Fetch a single bucket's metadata                                 | Read       |
 | `rename_bucket`          | Rename a bucket                                                  | Write      |
 | `delete_bucket`          | Permanently delete a bucket; `deleteContents` to take its files  | Write      |
 | `delete_file`            | Permanently delete a single file                                 | Write      |
+| `list_folders`           | List the subfolders directly inside a folder                     | Read       |
+| `create_folder`          | Create a subfolder at the root or under another subfolder        | Write      |
+| `update_folder`          | Rename, move or describe a subfolder                             | Write      |
+| `delete_folder`          | Permanently delete a subfolder; `deleteContents` to take its own | Write      |
+| `move_file`              | Move a file to another folder of its own bucket                  | Write      |
 | `update_file`            | Update a file's name, description, or tags                       | Write      |
 | `get_bucket_metadata`    | Fetch a bucket's custom metadata                                 | Read       |
 | `update_bucket_metadata` | Set a bucket's custom metadata                                   | Write      |

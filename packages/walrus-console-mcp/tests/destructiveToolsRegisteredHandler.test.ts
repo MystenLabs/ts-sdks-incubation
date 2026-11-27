@@ -151,6 +151,7 @@ const unconfirmed: ReadonlyArray<{
 
 const BUCKET_ID = "11111111-1111-4111-8111-111111111111";
 const FILE_ID = "22222222-2222-4222-8222-222222222222";
+const FOLDER_ID = "33333333-3333-4333-8333-333333333333";
 
 describe.each([
   {
@@ -163,6 +164,12 @@ describe.each([
     tool: "delete_file",
     method: "DELETE",
     args: () => ({ bucketId: BUCKET_ID, fileId: FILE_ID, confirm: true }),
+    subject: "deletion",
+  },
+  {
+    tool: "delete_folder",
+    method: "DELETE",
+    args: () => ({ bucketId: BUCKET_ID, folderId: FOLDER_ID, confirm: true }),
     subject: "deletion",
   },
 ])("$tool asks a human before it acts", { timeout: 30_000 }, ({ tool, method, args, subject }) => {
@@ -229,7 +236,7 @@ describe.each([
     const hostile = `x"><b>boom</b>`;
     const { prompts } = await probe({
       tool,
-      args: () => ({ bucketId: hostile, fileId: hostile, confirm: true }),
+      args: () => ({ bucketId: hostile, fileId: hostile, folderId: hostile, confirm: true }),
       capabilities: ELICIT,
       onElicit: decline,
     });

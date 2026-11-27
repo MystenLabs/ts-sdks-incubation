@@ -110,14 +110,21 @@ import {
   fileDescriptionSchema,
   fileTagsSchema,
 } from "../src/console/fileMetadata";
+import {
+  MAX_FOLDER_DESCRIPTION_LENGTH,
+  folderDescriptionSchema,
+  folderNameSchema,
+} from "../src/console/folderSchemas";
+import { folderOrRoot, moveFile, rootFolderIdOf } from "../src/console/folderOps";
 import { KEY_ADMIN_PIN_REMEDY, WEB_ACCOUNT_PIN_REMEDY } from "../src/console/pinRemedy";
-import { BucketId, FileId, SpaceId, withDisplaySize } from "../src/console/types";
+import { BucketId, FileId, FolderId, SpaceId, withDisplaySize } from "../src/console/types";
 import {
   confirmApiKeyMint,
   confirmIrreversibleAction,
   declinedOutcome,
   deleteBucketConfirmationMessage,
   deleteFileConfirmationMessage,
+  deleteFolderConfirmationMessage,
   overwriteConfirmationMessage,
 } from "../src/elicitation";
 import {
@@ -132,7 +139,7 @@ import {
 } from "../src/redaction";
 import { AppRuntime, HttpLayer, runPromise } from "../src/runtime";
 import { CHECK_IN_TIMEOUT_MS, checkInWithConsole } from "../src/startupCheckIn";
-import { confirmDestructive, deleteBucketContents } from "../src/toolSchemas";
+import { confirmDestructive, deleteBucketContents, deleteFolderContents } from "../src/toolSchemas";
 import { safeTool } from "../src/toolWrapper";
 import { ROOT_USAGE, isHelpFlag } from "../src/usage";
 
@@ -169,6 +176,8 @@ const server = new McpServer(
     instructions:
       "Console is ggdrive-style decentralized storage (Walrus + Seal encryption). " +
       "Use list_spaces / list_buckets / list_files (pass q to search) before mutating. " +
+      "A bucket can hold subfolders: list_folders, create_folder, update_folder, delete_folder " +
+      "and move_file manage them; a call that names no folder works on the whole bucket. " +
       "Uploads and downloads require the user's local service private key (never sent to remote).",
   },
 );
@@ -696,11 +705,23 @@ server.registerTool(
       "For a bucket created by a key this host cannot verify (e.g. another agent's), pass " +
       "the bucket's sealPolicyId to confirm it. " +
       "Once get_file_status has reported a `daily_limit` failure, upload_file refuses without " +
-      "an API call until that failure's `retry_at`.",
+      "an API call until that failure's `retry_at`. " +
+      "folderId puts the file in a subfolder of the bucket; omit it for the bucket's root. The " +
+      "file is encrypted for the bucket either way, so it can later move between the bucket's " +
+      "subfolders without being uploaded again.",
     inputSchema: {
       bucketId: z
         .string()
         .describe("The bucket's id, from list_buckets, get_bucket, or create_bucket."),
+      folderId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Optional. The subfolder to upload into, from list_folders or create_folder. It must " +
+            "belong to bucketId. Omit for the bucket's root. Refused with feature_not_enabled " +
+            "while subfolders are not enabled for the account; an upload without it still works.",
+        ),
       sealPolicyId: z
         .string()
         .optional()
@@ -737,6 +758,7 @@ server.registerTool(
     async (
       {
         bucketId,
+        folderId,
         sealPolicyId,
         localPath,
         name,
@@ -744,6 +766,7 @@ server.registerTool(
         tags,
       }: {
         bucketId: string;
+        folderId?: string | undefined;
         sealPolicyId?: string | undefined;
         localPath: string;
         name?: string | undefined;
@@ -782,6 +805,7 @@ server.registerTool(
             resolvedPath,
             name,
             { description, tags },
+            folderId !== undefined ? FolderId.make(folderId) : undefined,
           );
         }),
         extra.signal,
@@ -921,7 +945,11 @@ server.registerTool(
       "List files inside a specific bucket (supports search). One call returns one page: while " +
       "`pagination.has_more` is true, call again with `cursor` set to the " +
       "`pagination.next_cursor` the previous call returned, until `has_more` is false. A bucket " +
-      "holding more files than `limit` cannot be enumerated any other way.",
+      "holding more files than `limit` cannot be enumerated any other way. " +
+      "With no folderId the list starts at the bucket's root and, with recursive left at its " +
+      "default of true, covers the whole bucket, subfolders included. Each file carries " +
+      "folder_id and path, the subfolder names from the root down to it. " +
+      "Subfolders themselves are listed by list_folders.",
     inputSchema: {
       bucketId: z.string().describe("The bucket's id, from list_buckets or get_bucket."),
       limit: z
@@ -945,6 +973,21 @@ server.registerTool(
           "Case-insensitive substring match against the file name only — not its " +
             "description or tags.",
         ),
+      folderId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Optional. List the files of this subfolder, from list_folders. Omit for the bucket's " +
+            "root.",
+        ),
+      recursive: z
+        .boolean()
+        .optional()
+        .describe(
+          "Optional, default true: include the files of every subfolder below the folder. " +
+            "false lists only the files directly in it.",
+        ),
     },
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
@@ -956,18 +999,25 @@ server.registerTool(
         limit,
         cursor,
         q,
+        folderId,
+        recursive,
       }: {
         bucketId: string;
         limit?: number | undefined;
         cursor?: string | undefined;
         q?: string | undefined;
+        folderId?: string | undefined;
+        recursive?: boolean | undefined;
       },
       extra: ToolExtra,
     ) => {
       return await runPromise(
         Effect.gen(function* () {
           const api = yield* ConsoleApiClient;
-          const res = yield* api.listBucketFiles(BucketId.make(bucketId), limit, cursor, q);
+          const res = yield* api.listBucketFiles(BucketId.make(bucketId), limit, cursor, q, {
+            folderId,
+            recursive,
+          });
           // Resolve the size a caller should show — plaintext for private files,
           // stored length for anything without a declared one. `size` and
           // `content_size` stay on each item untouched (COMG-603).
@@ -1165,6 +1215,329 @@ server.registerTool(
         }),
         extra.signal,
       );
+    },
+  ),
+);
+
+// ======================
+// Subfolders
+// ======================
+
+// While nested folders are off for the account, every folder route and the
+// upload and move `folderId` fields answer 403 `feature_not_enabled` (the file
+// list's `folderId` filter is not gated), which these tools pass
+// through as is. The gate is Console's, so nothing here waits on it.
+const FEATURE_GATE_NOTE =
+  "Refused with feature_not_enabled while subfolders are not enabled for the account.";
+
+server.registerTool(
+  "list_folders",
+  {
+    title: "List Subfolders",
+    description:
+      "List the subfolders directly inside a folder of a bucket: the bucket's root when " +
+      "folderId is omitted. It returns `folder_id` (the folder listed), `folders` and " +
+      "`next_cursor`; while `next_cursor` is not null, call again with `cursor` set to it. " +
+      "Files are not included: list them with list_files and the same folderId. To walk a " +
+      "tree, call again with each subfolder's id. " +
+      FEATURE_GATE_NOTE,
+    inputSchema: {
+      bucketId: z.string().describe("The bucket's id, from list_buckets or get_bucket."),
+      folderId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Optional. The subfolder whose subfolders to list. Omit for the bucket's root."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .optional()
+        .describe("Max subfolders to return. Default 100."),
+      cursor: z
+        .string()
+        .optional()
+        .describe(
+          "Optional. The `next_cursor` returned by a previous list_folders call for the same " +
+            "folder, to fetch the page after it. Omit for the first page.",
+        ),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
+  safeTool(
+    "list_folders",
+    async (
+      {
+        bucketId,
+        folderId,
+        limit,
+        cursor,
+      }: {
+        bucketId: string;
+        folderId?: string | undefined;
+        limit?: number | undefined;
+        cursor?: string | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          const bucket = BucketId.make(bucketId);
+          const parent =
+            folderId !== undefined ? FolderId.make(folderId) : yield* rootFolderIdOf(bucket);
+          // A bucket with no root yet has never held a subfolder.
+          if (parent === null) return { folder_id: null, folders: [], next_cursor: null };
+          const res = yield* api.listChildFolders(bucket, parent, limit, cursor);
+          return { folder_id: parent, ...res };
+        }),
+        extra.signal,
+      );
+    },
+  ),
+);
+
+server.registerTool(
+  "create_folder",
+  {
+    title: "Create Subfolder",
+    description:
+      "Creates a subfolder in a bucket, under parentFolderId or, when that is omitted, under " +
+      "the bucket's root. Returns the subfolder with its id; pass that id as folderId to " +
+      "upload_file, list_files and list_folders, or as parentFolderId here to nest another " +
+      "one. A subfolder is only a place to keep files: it has no access settings or encryption " +
+      "of its own, and its files are encrypted for the bucket. A name a file or subfolder " +
+      "already holds in the parent is refused with folder_name_conflict; a create past the " +
+      "depth or count limit is refused with folder_depth_cap or folder_cap. " +
+      FEATURE_GATE_NOTE,
+    inputSchema: {
+      bucketId: z.string().describe("The bucket's id, from list_buckets or get_bucket."),
+      name: folderNameSchema,
+      parentFolderId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Optional. The subfolder to create it in, from list_folders or create_folder. Omit " +
+            "to create it at the bucket's root.",
+        ),
+      description: folderDescriptionSchema.optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  safeTool(
+    "create_folder",
+    async (
+      {
+        bucketId,
+        name,
+        parentFolderId,
+        description,
+      }: {
+        bucketId: string;
+        name: string;
+        parentFolderId?: string | undefined;
+        description?: string | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          const bucket = BucketId.make(bucketId);
+          const parent = yield* folderOrRoot(bucket, parentFolderId);
+          return yield* api.createFolder(bucket, {
+            parentFolderId: parent,
+            name,
+            ...(description !== undefined ? { description } : {}),
+          });
+        }),
+        extra.signal,
+      );
+    },
+  ),
+);
+
+server.registerTool(
+  "update_folder",
+  {
+    title: "Rename, Move or Describe Subfolder",
+    description:
+      "Renames a subfolder, moves it under another folder of the same bucket, and/or edits " +
+      "its description. Supply only what you want to change; at least one field is required. " +
+      "A moved subfolder takes everything inside it along. Moving it into itself or below " +
+      "itself is refused with folder_cycle, and a move past the depth limit with " +
+      "folder_depth_cap. The bucket's root cannot be changed. Pass description: null to clear " +
+      "it, which permanently replaces it with nothing; confirm with the user before clearing " +
+      "one that has content. " +
+      FEATURE_GATE_NOTE,
+    inputSchema: {
+      bucketId: z.string().describe("The bucket's id, from list_buckets or get_bucket."),
+      folderId: z
+        .string()
+        .min(1)
+        .describe("The subfolder's id, from list_folders or create_folder."),
+      name: folderNameSchema.optional(),
+      parentFolderId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Optional. Move the subfolder into this folder of the same bucket: another " +
+            "subfolder's id, or the bucket's id for its root. Omit to leave it where it is.",
+        ),
+      // zod 4 drops the description of a `.nullable()` field, so it is given again here.
+      description: folderDescriptionSchema
+        .nullable()
+        .optional()
+        .describe(
+          `Free-text note about the subfolder. Up to ${MAX_FOLDER_DESCRIPTION_LENGTH} characters. ` +
+            "Pass null to clear it.",
+        ),
+    },
+    // Clearing the description replaces its content with nothing.
+    annotations: { readOnlyHint: false, destructiveHint: true },
+  },
+  safeTool(
+    "update_folder",
+    async (
+      {
+        bucketId,
+        folderId,
+        name,
+        parentFolderId,
+        description,
+      }: {
+        bucketId: string;
+        folderId: string;
+        name?: string | undefined;
+        parentFolderId?: string | undefined;
+        description?: string | null | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
+      if (name === undefined && parentFolderId === undefined && description === undefined) {
+        throw new Error("Provide at least one of: name, parentFolderId, description.");
+      }
+      return await runPromise(
+        Effect.gen(function* () {
+          const api = yield* ConsoleApiClient;
+          const bucket = BucketId.make(bucketId);
+          // The bucket's own id names its root, as move_file's destination does.
+          const parent =
+            parentFolderId === undefined
+              ? undefined
+              : parentFolderId.trim().toLowerCase() === bucketId.trim().toLowerCase()
+                ? yield* folderOrRoot(bucket, undefined)
+                : FolderId.make(parentFolderId);
+          return yield* api.updateFolder(bucket, FolderId.make(folderId), {
+            ...(name !== undefined ? { name } : {}),
+            ...(parent !== undefined ? { parentFolderId: parent } : {}),
+            ...(description !== undefined ? { description } : {}),
+          });
+        }),
+        extra.signal,
+      );
+    },
+  ),
+);
+
+server.registerTool(
+  "delete_folder",
+  {
+    title: "Delete Subfolder",
+    description:
+      "Permanently deletes a subfolder of a bucket. Irreversible — Console has no undelete. " +
+      "Call list_folders and list_files with its folderId first, get explicit user " +
+      "confirmation for THIS subfolder, then pass confirm: true. Refuses the call otherwise. " +
+      "A client that can show a prompt also asks the user itself, and nothing is deleted " +
+      "unless they confirm there. The bucket's root cannot be deleted: use delete_bucket.\n\n" +
+      "A subfolder that still holds files or subfolders anywhere below it is refused with " +
+      "code folder_not_empty, fileCount and folderCount, and nothing is deleted, unless you " +
+      "also pass deleteContents: true. Put those counts to the user and get a second, " +
+      "explicit yes before retrying — do not set deleteContents on your own initiative. " +
+      FEATURE_GATE_NOTE,
+    inputSchema: {
+      bucketId: z.string().describe("The bucket's id, from list_buckets or get_bucket."),
+      folderId: z
+        .string()
+        .min(1)
+        .describe("The subfolder's id, from list_folders or create_folder."),
+      confirm: confirmDestructive,
+      deleteContents: deleteFolderContents,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true },
+  },
+  safeTool(
+    "delete_folder",
+    async (
+      {
+        bucketId,
+        folderId,
+        confirm,
+        deleteContents,
+      }: {
+        bucketId: string;
+        folderId: string;
+        confirm: true;
+        deleteContents?: true | undefined;
+      },
+      extra: ToolExtra,
+    ) => {
+      return await runPromise(
+        Effect.gen(function* () {
+          const elicited = yield* confirmWithClient(
+            deleteFolderConfirmationMessage({
+              bucketId,
+              folderId,
+              deleteContents: deleteContents === true,
+            }),
+          );
+          const declined = declinedOutcome(elicited, "deletion", "deleted");
+          if (declined) return declined;
+
+          const api = yield* ConsoleApiClient;
+          return yield* api.deleteFolder(BucketId.make(bucketId), FolderId.make(folderId), {
+            confirm,
+            deleteContents: deleteContents === true,
+          });
+        }),
+        extra.signal,
+      );
+    },
+  ),
+);
+
+server.registerTool(
+  "move_file",
+  {
+    title: "Move File to Another Folder",
+    description:
+      "Moves a file to another folder of its own bucket. destination is a subfolder's id, or " +
+      "a bucket's id for that bucket's root. Nothing is uploaded or encrypted again: the file " +
+      "keeps its id and its contents, and only where it is listed changes. A name already " +
+      "taken in the destination is not an error: the file takes the next free ` (n)` suffix, " +
+      "`name` in the result is the name it now has, and `renamedFrom` holds the one it had " +
+      "(null when unchanged). A destination in another bucket is refused with " +
+      "reencrypt_required, because the file is encrypted for its own bucket; nothing is moved. " +
+      FEATURE_GATE_NOTE,
+    inputSchema: {
+      fileId: z.string().min(1).describe("The file's id, from list_files or upload_file."),
+      destination: z
+        .string()
+        .min(1)
+        .describe(
+          "Where to move the file: a subfolder's id, from list_folders or create_folder, or " +
+            "the file's bucket id to move it to the bucket's root.",
+        ),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  safeTool(
+    "move_file",
+    async ({ fileId, destination }: { fileId: string; destination: string }, extra: ToolExtra) => {
+      return await runPromise(moveFile(fileId, destination), extra.signal);
     },
   ),
 );
