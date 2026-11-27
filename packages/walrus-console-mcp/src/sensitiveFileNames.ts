@@ -34,14 +34,20 @@ function canonicalSegment(segment: string, platform: NodeJS.Platform): string {
 /**
  * Check the path components below an allowed root, not just the file name: a download to
  * `<root>/.ssh/id_rsa` or `<root>/.git/config` has an innocent basename under a refused directory.
- * Returns the first offending component, or `null` when the path is fine.
+ * Also refuses dotfiles in any additional segments covered by the saved-folder policy.
+ * Returns an offending component, or `null` when the path is fine.
  */
 export function checkSensitiveDownloadPath(
   segmentsBelowRoot: readonly string[],
   platform: NodeJS.Platform = process.platform,
+  savedFolderSegments: readonly string[] = [],
 ): SensitiveDownloadPath | null {
+  const isDotfile = (segment: string) =>
+    segment.startsWith(".") && segment !== "." && segment !== "..";
+  const savedDotfile = savedFolderSegments.find(isDotfile);
+  if (savedDotfile !== undefined) return { segment: savedDotfile, reason: "dotfile" };
   for (const segment of segmentsBelowRoot) {
-    if (segment.startsWith(".") && segment !== "." && segment !== "..") {
+    if (isDotfile(segment)) {
       return { segment, reason: "dotfile" };
     }
     const canonical = canonicalSegment(segment, platform);

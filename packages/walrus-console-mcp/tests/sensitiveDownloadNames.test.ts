@@ -168,4 +168,19 @@ describe("resolveDownloadDestWithinRoots — sensitive destinations", () => {
       "report.pdf",
     );
   });
+
+  it("refuses downloads below a hidden inner folder when both roots are saved", async () => {
+    const inner = join(root, ".work");
+    mkdirSync(inner);
+
+    await expect(
+      resolveDownloadDestWithinRoots(
+        fakeServer([]),
+        join(inner, "report.pdf"),
+        "Destination",
+        NO_ENV,
+        [root, inner],
+      ),
+    ).rejects.toThrow(/"\.work" starts with a dot/);
+  });
 });

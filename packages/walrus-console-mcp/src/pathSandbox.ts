@@ -985,13 +985,11 @@ async function resolveCandidateWithinRoots(
   // green: the ONLY thing that exercises it is the `describe.runIf(win32)`
   // block in tests/pathSandbox.win32LongPath.test.ts, i.e. one CI job.
   platform: NodeJS.Platform = process.platform,
-  download = false,
 ): Promise<{
   realCandidate: string;
   absPath: string;
   lexicalPath: string;
-  rootDirs: string[];
-  declaredRoots: string[];
+  folders: readonly AllowedFolder[];
 }> {
   let unprefixed: string;
   try {
@@ -1062,35 +1060,13 @@ async function resolveCandidateWithinRoots(
         (refusedRoots?.[0] !== undefined ? ` ${homeRootRefusal(refusedRoots[0])}` : ""),
     );
   }
-  if (
-    download &&
-    !allowed.folders.some(
-      (folder) => folder.source !== "file" && isWithinRoots(realCandidate, [folder.path]),
-    )
-  ) {
-    if (
-      allowed.folders.some(
-        (folder) =>
-          folder.source === "file" &&
-          isWithinRoots(realCandidate, [folder.path]) &&
-          relative(folder.path, realCandidate)
-            .split(sep)
-            .some((part) => part.startsWith(".")),
-      )
-    ) {
-      throw new Error(
-        `${label} path "${candidatePath}" cannot be used: downloads to hidden files or directories through saved folders are refused. Use a non-hidden destination.`,
-      );
-    }
-  }
   return {
     realCandidate,
     absPath: resolved,
     lexicalPath: isAbsolute(expanded)
       ? resolved
       : resolve(allowed.folders[0]?.declared ?? firstRoot, expanded),
-    rootDirs,
-    declaredRoots: allowed.folders.map((folder) => folder.declared),
+    folders: allowed.folders,
   };
 }
 
@@ -1160,16 +1136,14 @@ export async function resolveDownloadDestWithinRoots(
   fileAllowedDirs?: readonly string[],
   platform: NodeJS.Platform = process.platform,
 ): Promise<string> {
-  const { realCandidate, absPath, lexicalPath, rootDirs, declaredRoots } =
-    await resolveCandidateWithinRoots(
-      server,
-      candidatePath,
-      label,
-      env,
-      fileAllowedDirs,
-      platform,
-      true,
-    );
+  const { realCandidate, absPath, lexicalPath, folders } = await resolveCandidateWithinRoots(
+    server,
+    candidatePath,
+    label,
+    env,
+    fileAllowedDirs,
+    platform,
+  );
 
   // Checked before any lstat, and on every platform, not only win32. Windows
   // reserves these as device names for the whole segment before the first dot,
@@ -1203,9 +1177,9 @@ export async function resolveDownloadDestWithinRoots(
     );
   }
 
-  // Every component below the root, on the path as the caller wrote it AND as it resolves, so a
-  // symlinked directory cannot carry a write into `.ssh` or `.git` under an innocent name. The
-  // root itself is never checked: a root that lives under a dot directory is the user's choice.
+  // Check both the supplied and canonical paths below their deepest containing roots.
+  // For downloads granted only by saved folders, also deny dotfiles below any containing
+  // root so a nested saved folder cannot override the restriction of its parent.
   const below = (candidate: string, roots: readonly string[]): string[] => {
     // The deepest containing root, so the result does not depend on the order roots are listed in.
     const [root] = roots
@@ -1213,12 +1187,19 @@ export async function resolveDownloadDestWithinRoots(
       .sort((a, b) => b.length - a.length);
     return root === undefined ? [] : relative(root, candidate).split(sep).filter(Boolean);
   };
+  const rootDirs = folders.map(({ path }) => path);
+  const declaredRoots = folders.map(({ declared }) => declared);
+  const containingFolders = folders.filter(({ path }) => isWithinRoots(realCandidate, [path]));
+  const savedOnly = containingFolders.every(({ source }) => source === "file");
   const sensitive = checkSensitiveDownloadPath(
     [
       ...below(lexicalPath, isWithinRoots(lexicalPath, declaredRoots) ? declaredRoots : rootDirs),
       ...below(realCandidate, rootDirs),
     ],
     platform,
+    savedOnly
+      ? containingFolders.flatMap(({ path }) => relative(path, realCandidate).split(sep))
+      : [],
   );
   if (sensitive) {
     throw new Error(

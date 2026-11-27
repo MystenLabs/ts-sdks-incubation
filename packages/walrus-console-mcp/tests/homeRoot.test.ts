@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -13,6 +14,11 @@ import {
   toRealPath,
   validateAllowedDirectory,
 } from "../src/pathSandbox";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, realpath: vi.fn(fs.realpath) };
+});
 
 /**
  * A sandbox root equal to the home directory makes the sandbox the whole account, so it is refused
@@ -108,6 +114,36 @@ describe("selectAllowedDirs — the runtime selection", () => {
     const selected = await selectAllowedDirs(fakeServer([home]), "Dest", NO_ENV, []);
 
     expect(summary(selected)).toEqual({ source: "file", rootDirs: [], refusedRoots: [home] });
+  });
+
+  it("refuses a differently cased Home root on win32 when Home cannot be canonicalized", async () => {
+    const workspace = toRealPath(home);
+    const reportedHome = join(dirname(workspace), "HOME");
+    vi.stubEnv("HOME", reportedHome);
+    vi.stubEnv("USERPROFILE", reportedHome);
+    vi.stubEnv("XDG_CONFIG_HOME", scratch);
+    vi.stubEnv("APPDATA", scratch);
+    const fs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+
+    // Keep the configured spelling even on case-insensitive test filesystems.
+    // With no Home identity available, the refusal must come from comparing paths.
+    await vi.mocked(realpath).withImplementation(
+      (path, options) =>
+        path === reportedHome
+          ? Promise.reject(new Error("Home canonicalization unavailable"))
+          : fs.realpath(path, options),
+      async () => {
+        const server = fakeServer([workspace]);
+        expect(summary(await selectAllowedDirs(server, "Dest", NO_ENV, [], "win32"))).toEqual({
+          source: "file",
+          rootDirs: [],
+          refusedRoots: [workspace],
+        });
+        expect((await selectAllowedDirs(server, "Dest", NO_ENV, [], "linux")).rootDirs).toEqual([
+          workspace,
+        ]);
+      },
+    );
   });
 
   it("drops an env root equal to home", async () => {

@@ -293,7 +293,11 @@ describe("download_file with overwrite: true", { timeout: 30_000 }, () => {
     expect(prompts[0]).toContain(
       JSON.stringify(fs.realpathSync(allowedDir) + path.sep + "out.txt"),
     );
-    expect(JSON.parse(textOf(result))).toMatchObject({ ok: false, stage: "declined" });
+    expect(JSON.parse(textOf(result))).toMatchObject({
+      ok: false,
+      stage: "declined",
+      reason: expect.stringContaining("confirm the overwrite"),
+    });
     expect(textOf(result)).toContain("Nothing was overwritten.");
   }, 20_000);
 

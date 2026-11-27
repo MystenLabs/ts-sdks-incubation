@@ -84,7 +84,7 @@ describe("config-directory exclusion", () => {
         {},
         [root],
       ),
-    ).rejects.toThrow(/hidden files/);
+    ).rejects.toThrow(/"\.git" starts with a dot/);
   });
   it("keeps saved Home out of a workspace session and refuses it outright when nothing else is allowed", async () => {
     const home = join(root, "home");
