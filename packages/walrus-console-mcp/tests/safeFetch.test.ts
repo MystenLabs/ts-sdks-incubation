@@ -228,6 +228,29 @@ describe("fetchWithRedirectGuard", () => {
     expect(headers.get("x-keep")).toBe("1");
   });
 
+  // COMG-1120. The three attribution headers follow the same rule as X-Console-Client.
+  it("drops the runtime attribution headers on a hop that crosses origins", async () => {
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(redirectTo("https://cdn.walrus.xyz/final"))
+      .mockResolvedValueOnce(ok());
+
+    await fetchWithRedirectGuard("https://api.walrus.xyz/x", {
+      headers: {
+        "X-Console-Client-Target": "cursor",
+        "X-Console-Client-Runtime": "1",
+        "X-Console-Client-Name": "Cursor",
+        "x-keep": "1",
+      },
+    });
+
+    const [, secondInit] = vi.mocked(globalThis.fetch).mock.calls[1] ?? [];
+    const headers = new Headers((secondInit as RequestInit).headers);
+    expect(headers.get("x-console-client-target")).toBeNull();
+    expect(headers.get("x-console-client-runtime")).toBeNull();
+    expect(headers.get("x-console-client-name")).toBeNull();
+    expect(headers.get("x-keep")).toBe("1");
+  });
+
   it("keeps X-Console-Client across a same-origin hop", async () => {
     vi.mocked(globalThis.fetch)
       .mockResolvedValueOnce(redirectTo("https://api.walrus.xyz/y"))

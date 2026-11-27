@@ -40,10 +40,13 @@ const decryptHooks: {
   gate: Promise<void> | undefined;
   /** When set, the stubbed key-server decrypt rejects with this. */
   reject: Error | undefined;
+  /** Last options passed to the stubbed SealClient.decrypt. */
+  lastOptions: { checkShareConsistency?: boolean } | undefined;
 } = {
   entered: undefined,
   gate: undefined,
   reject: undefined,
+  lastOptions: undefined,
 };
 const encryptHooks: {
   entered: (() => void) | undefined;
@@ -64,6 +67,7 @@ const encryptHooks: {
 const parseHooks: { aad: Uint8Array | null } = { aad: null };
 
 vi.mock("@mysten/seal", () => ({
+  InconsistentKeyServersError: class InconsistentKeyServersError extends Error {},
   EncryptedObject: {
     // The real `parse` returns `ciphertext`, which carries the AAD; null is the legacy lane.
     parse: () => ({ id: DECRYPT_ID, ciphertext: { Aes256Gcm: { aad: parseHooks.aad } } }),
@@ -79,7 +83,8 @@ vi.mock("@mysten/seal", () => ({
     },
   },
   SealClient: class {
-    async decrypt() {
+    async decrypt(options: { checkShareConsistency?: boolean }) {
+      decryptHooks.lastOptions = options;
       decryptHooks.entered?.();
       if (decryptHooks.gate) await decryptHooks.gate;
       if (decryptHooks.reject) throw decryptHooks.reject;
@@ -159,6 +164,7 @@ beforeEach(() => {
   decryptHooks.entered = undefined;
   decryptHooks.gate = undefined;
   decryptHooks.reject = undefined;
+  decryptHooks.lastOptions = undefined;
   parseHooks.aad = null;
   encryptHooks.entered = undefined;
   encryptHooks.gate = undefined;
@@ -194,6 +200,24 @@ describe("SealCryptoService.decrypt — policy derivation (COMG-848)", () => {
       step: "decrypt",
       embeddedPolicyId: POLICY_OBJECT_ID,
     });
+  });
+});
+
+describe("SealCryptoService.decrypt — share consistency", () => {
+  it("asks the SDK to check share consistency", async () => {
+    await Effect.runPromise(decryptOnce().pipe(Effect.provide(freshService())));
+    expect(decryptHooks.lastOptions).toMatchObject({ checkShareConsistency: true });
+  });
+
+  it("reports inconsistent shares as an explicit rejection, not a service-key problem", async () => {
+    const { InconsistentKeyServersError } = await import("@mysten/seal");
+    decryptHooks.reject = new InconsistentKeyServersError("shares disagree");
+    const error = await Effect.runPromise(
+      decryptOnce().pipe(Effect.flip, Effect.provide(freshService())),
+    );
+    expect(error).toMatchObject({ _tag: "SealCryptoError", step: "decrypt" });
+    expect((error as { message: string }).message).toMatch(/inconsistent/i);
+    expect((error as { message: string }).message).not.toMatch(/CONSOLE_SERVICE_PRIVATE_KEY/);
   });
 });
 

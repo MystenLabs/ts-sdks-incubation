@@ -1,8 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as configFile from "../src/configFile.js";
+
+afterEach(() => vi.restoreAllMocks());
+
 import {
   ALLOWED_DIRS_ENV,
   allowedDirsFromConfig,
@@ -13,7 +17,6 @@ import {
   resolvePathWithinRoots,
   rootsToDirs,
   readFileWithinRoot,
-  selectAllowedDirs,
   splitAllowedDirList,
   toRealPath,
   toRealPathAsync,
@@ -232,13 +235,23 @@ describe("resolvePathWithinRoots (synthetic roots)", () => {
   });
 
   it("expands a leading ~ to the home directory", async () => {
-    const out = await resolvePathWithinRoots(
-      fakeServer([homedir()]),
-      "~/notes.txt",
-      "Dest",
-      NO_ENV,
-    );
-    expect(out).toBe(toRealPath(join(homedir(), "notes.txt")));
+    const home = mkdtempSync(join(tmpdir(), "walrus-mcp-home-"));
+    const documents = join(home, "Documents");
+    mkdirSync(documents);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    try {
+      const out = await resolvePathWithinRoots(
+        fakeServer([documents]),
+        "~/Documents/notes.txt",
+        "Dest",
+        NO_ENV,
+      );
+      expect(out).toBe(toRealPath(join(documents, "notes.txt")));
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("rejects an absolute path outside every root", async () => {
@@ -253,54 +266,35 @@ describe("resolvePathWithinRoots (synthetic roots)", () => {
     ).rejects.toThrow(/outside the/);
   });
 
-  // COMG-847: names the refused path and the folders that ARE allowed. This
-  // fixture's client advertises roots, so per review on PR #58 the remedy
-  // must NOT tell the reader to run `config --allowed-dirs` as if it would
-  // fix things — client roots beat the saved list outright, so that command
-  // would be a no-op here. It's still fine for the message to name the
-  // command while explaining why (see the "would not change this" case
-  // below); what must not appear is the file-source round-trip remedy, which
-  // only makes sense when the saved list is the thing actually in effect.
   it("names the refused path and the allowed folders when rejecting a path outside client-advertised roots", async () => {
     const message = await rejectionMessageOf(
       resolvePathWithinRoots(fakeServer([workspace]), "/etc/passwd", "Source", NO_ENV),
     );
     expect(message).toContain('"/etc/passwd"');
     expect(message).toContain(toRealPath(workspace));
-    expect(message).toMatch(/workspace folders are the sandbox/);
-    expect(message).not.toMatch(/Add its folder without dropping/);
+    expect(message).toMatch(/Ask the user to open/);
+    expect(message).toMatch(/share the complete list across all sessions/g);
   });
 
-  // COMG-847 review (PR #58, finding 1): the ONLY source `config --allowed-dirs`
-  // can actually change is the saved-file fallback — client roots and the env
-  // var both beat it outright (see `describeAllowedDirsRemedy`). This is the
-  // real "npx ... install" story: no client roots, no env var, just a saved
-  // list — the remedy must be actionable here, and per finding 2 it must
-  // carry the folder that's ALREADY saved forward (`config --allowed-dirs`
-  // replaces the list rather than appending to it).
   it("recommends the round-trip config --allowed-dirs command, naming the folder already saved, when the saved list is the active source", async () => {
     const message = await rejectionMessageOf(
       resolvePathWithinRoots(fakeServer(null), "/etc/passwd", "Source", NO_ENV, [workspace]),
     );
     expect(message).toContain('"/etc/passwd"');
     expect(message).toContain(toRealPath(workspace));
-    expect(message).toMatch(/Add its folder without dropping the others already saved/);
+    expect(message).toMatch(/without dropping the others already saved/);
     // The existing folder must be carried forward, not just a bare placeholder.
     expect(message).toMatch(/config --allowed-dirs '.*' --allowed-dirs <dir>/);
   });
 
-  // COMG-847 review (PR #58, finding 3): the env var beats the saved list too,
-  // so the same no-op problem applies to it — the remedy here must point at
-  // the env var itself, not at a `config --allowed-dirs` command it would
-  // silently override.
-  it("points at CONSOLE_MCP_ALLOWED_DIRS, not config --allowed-dirs, when the env var is the active source", async () => {
+  it("offers the permanent config remedy alongside environment folders", async () => {
     const env = { [ALLOWED_DIRS_ENV]: workspace };
     const message = await rejectionMessageOf(
       resolvePathWithinRoots(fakeServer(null), "/etc/passwd", "Source", env, []),
     );
     expect(message).toContain('"/etc/passwd"');
-    expect(message).toMatch(new RegExp(`${ALLOWED_DIRS_ENV}.*beats the saved folder list`));
-    expect(message).not.toMatch(/Add its folder without dropping/);
+    expect(message).toMatch(new RegExp(`${ALLOWED_DIRS_ENV}.*adds folders`));
+    expect(message).toMatch(/share the complete list across all sessions/g);
   });
 
   it("fails closed when the client does not support roots and no env fallback", async () => {
@@ -325,62 +319,6 @@ describe("resolvePathWithinRoots (synthetic roots)", () => {
     await expect(
       resolvePathWithinRoots(fakeServer(null), join("/tmp", "anywhere.txt"), "Source", NO_ENV, []),
     ).rejects.toThrow(/config --allowed-dirs/);
-  });
-});
-
-// The one source-selection step the sandbox and `ping_console` share: client
-// roots, then the env var, then the saved list.
-describe("selectAllowedDirs", () => {
-  const rootsDir = resolve("/srv", "client-root");
-  const envDir = resolve("/srv", "env-dir");
-  const fileDir = resolve("/srv", "file-dir");
-  const env: NodeJS.ProcessEnv = { [ALLOWED_DIRS_ENV]: envDir };
-
-  it("client roots win over both the env var and the saved list", async () => {
-    expect(await selectAllowedDirs(fakeServer([rootsDir]), "Source", env, [fileDir])).toEqual({
-      source: "clientRoots",
-      rootDirs: [rootsDir],
-    });
-  });
-
-  it("a roots-capable client that declares no roots falls through to the env var", async () => {
-    expect(await selectAllowedDirs(fakeServer([]), "Source", env, [fileDir])).toEqual({
-      source: "env",
-      rootDirs: [envDir],
-    });
-  });
-
-  it("the env var wins over the saved list", async () => {
-    expect(await selectAllowedDirs(fakeServer(null), "Source", env, [fileDir])).toEqual({
-      source: "env",
-      rootDirs: [envDir],
-    });
-  });
-
-  it("the saved list is the fallback when neither client roots nor the env var yields a folder", async () => {
-    expect(await selectAllowedDirs(fakeServer(null), "Source", NO_ENV, [fileDir])).toEqual({
-      source: "file",
-      rootDirs: [fileDir],
-    });
-  });
-
-  // ping_console is "safe to call first": a client whose roots/list request
-  // fails must not make it throw, only fall through to the next source.
-  it("a listRoots() failure falls through to the next source instead of throwing", async () => {
-    expect(await selectAllowedDirs(fakeServerListRootsThrows(), "Source", env, [fileDir])).toEqual({
-      source: "env",
-      rootDirs: [envDir],
-    });
-    expect(
-      await selectAllowedDirs(fakeServerListRootsThrows(), "Source", NO_ENV, [fileDir]),
-    ).toEqual({ source: "file", rootDirs: [fileDir] });
-  });
-
-  it("nothing configured anywhere yields an empty list", async () => {
-    expect(await selectAllowedDirs(fakeServer(null), "Source", NO_ENV, [])).toEqual({
-      source: "file",
-      rootDirs: [],
-    });
   });
 });
 
@@ -792,21 +730,36 @@ describe("resolvePathWithinRoots (real filesystem: symlinks + env fallback)", ()
     expect(out).toBe(join(allowed, "ok.txt"));
   });
 
-  it("lets CONSOLE_MCP_ALLOWED_DIRS beat the saved config list", async () => {
-    const env = { [ALLOWED_DIRS_ENV]: allowed };
-    await expect(
-      resolvePathWithinRoots(fakeServer(null), join(outside, "secret.txt"), "Source", env, [
-        outside,
-      ]),
-    ).rejects.toThrow(/outside the/);
+  it("reads a saved-folder file even when environment folders are configured", async () => {
+    vi.spyOn(configFile, "loadConfigFileOrEmpty").mockReturnValue({
+      allowedDirs: [outside],
+      allowedDirsScope: "shared",
+    });
+    const resolved = await resolvePathWithinRoots(
+      fakeServer(null),
+      join(outside, "secret.txt"),
+      "Source",
+      { [ALLOWED_DIRS_ENV]: allowed },
+    );
+    expect(readFileWithinRoot(resolved, { label: "Source", maxBytes: 1024 }).toString()).toBe(
+      "top secret",
+    );
   });
 
-  it("lets client roots beat the saved config list", async () => {
-    await expect(
-      resolvePathWithinRoots(fakeServer([allowed]), join(outside, "secret.txt"), "Source", NO_ENV, [
-        outside,
-      ]),
-    ).rejects.toThrow(/outside the/);
+  it("reads a saved-folder file even when the client advertises workspace folders", async () => {
+    vi.spyOn(configFile, "loadConfigFileOrEmpty").mockReturnValue({
+      allowedDirs: [outside],
+      allowedDirsScope: "shared",
+    });
+    const resolved = await resolvePathWithinRoots(
+      fakeServer([allowed]),
+      join(outside, "secret.txt"),
+      "Source",
+      NO_ENV,
+    );
+    expect(readFileWithinRoot(resolved, { label: "Source", maxBytes: 1024 }).toString()).toBe(
+      "top secret",
+    );
   });
 });
 

@@ -25,11 +25,16 @@ import type {
   StorageUsage,
 } from "./types";
 import type { RosterMember } from "./txValidation";
+import { pathSegment } from "./pathSegment";
 
 // Defined in a leaf module so the CLI can read the pair without importing this
 // one; re-exported here because this is where every lane already looks for it.
 export { CLIENT_HEADER, CLIENT_HEADER_VALUE } from "../consoleClientHeader.js";
-import { CLIENT_HEADER, CLIENT_HEADER_VALUE } from "../consoleClientHeader.js";
+import {
+  CLIENT_HEADER,
+  CLIENT_HEADER_VALUE,
+  runtimeClientHeaders,
+} from "../consoleClientHeader.js";
 
 /**
  * Wrap a `fetch` so it carries the attribution header.
@@ -52,6 +57,9 @@ export const fetchWithClientHeader =
         (typeof input === "object" && "headers" in input ? input.headers : undefined),
     );
     headers.set(CLIENT_HEADER, CLIENT_HEADER_VALUE);
+    // The `fetch_key` requests go through Console's `/api/*` auth, so they are runtime use
+    // like any other authenticated call (COMG-1120).
+    for (const [name, value] of Object.entries(runtimeClientHeaders())) headers.set(name, value);
     // `globalThis.fetch` is read per call, not captured as a default parameter: the
     // wrapper is built once when the Seal client is constructed, and binding the
     // global there would ignore any later replacement and make the wiring
@@ -126,10 +134,14 @@ export interface FinalizeBucketResponse {
   /** See `CreateBucketReserveResponse` — the wire name is `provisioning_state`. */
   readonly provisioning_state: string;
 }
-
 export interface FileUploadResponse {
   readonly data: {
     readonly id: FileId;
+    /**
+     * The name the row was stored under: a name already taken in the folder
+     * gets a ` (n)` suffix, so this can differ from the one sent.
+     */
+    readonly name?: string;
     /** Bound columns on the created row — compared after upload (COMG-1061). */
     readonly original_name?: string | null;
     readonly declared_mime_type?: string | null;
@@ -271,10 +283,12 @@ const UNREPORTED_PERMISSION = "(not reported by Console)";
  *    field on a bucket-grant element) must never discard a mint that
  *    otherwise succeeded (the createApiKey call is a point of no return — see
  *    its own message on a validation failure). Each is built on
- *    `z.unknown().transform(...)`, not a typed Zod primitive, specifically so
- *    a WRONG-TYPED value (a number where a string was expected, a string
- *    where an array was expected) degrades the same way a missing one does,
- *    instead of failing `.safeParse` for the whole body. This closes a
+ *    `z.unknown().optional().transform(...)`, not a typed Zod primitive,
+ *    specifically so a WRONG-TYPED value (a number where a string was
+ *    expected, a string where an array was expected) degrades the same way a
+ *    missing one does, instead of failing `.safeParse` for the whole body.
+ *    The `.optional()` is load-bearing under zod 4: without it, a MISSING key
+ *    fails the parse before the transform runs (zod 3 accepted it). This closes a
  *    hazard class that surfaced three review rounds running (round 1 F1,
  *    round 3 M1, and this one): treating "optional" as `.nullish()` on an
  *    otherwise-typed field still lets any OTHER wrong type on that field nuke
@@ -334,7 +348,7 @@ const UNREPORTED_PERMISSION = "(not reported by Console)";
  * `name`, `service_signer_address`, `expected_permission`, and `created_at` are
  * real wire fields but nothing in this codebase reads them, so they are
  * deliberately left out entirely: an unread field changing shape upstream must
- * not break a mint. See docs/pr-39-code-review.md section 3.
+ * not break a mint.
  */
 const createApiKeyResponseSchema = z.object({
   id: z.string().min(1),
@@ -380,8 +394,7 @@ export interface SponsorResponse {
  *
  * Narrow on purpose — only `data.status` and `data.registration_progress` are
  * read (by `pollUntilActive` in KeyAdminService.ts). `data.id` is a real wire
- * field nothing here reads, so it is left out. See docs/pr-39-code-review.md
- * section 3.
+ * field nothing here reads, so it is left out.
  *
  * `data.status` is a plain string, not a closed enum, for the SAME reason
  * `createApiKeyResponseSchema.status` above is: `pollUntilActive` polls this
@@ -413,6 +426,16 @@ interface ConsoleErrorBody {
   readonly code?: string;
   readonly message?: string;
   readonly error?: string | { readonly code?: string; readonly message?: string };
+  /** A create's name conflict names the folder holding the name. */
+  readonly bucket_id?: unknown;
+}
+
+/** Longest server message that reaches a tool result. */
+const MAX_ERROR_MESSAGE_CHARS = 500;
+
+function clampErrorMessage(message: string | undefined): string | undefined {
+  if (message === undefined || message.length <= MAX_ERROR_MESSAGE_CHARS) return message;
+  return `${message.slice(0, MAX_ERROR_MESSAGE_CHARS)}…`;
 }
 
 /**
@@ -442,13 +465,14 @@ export function parseConsoleErrorBody(body: unknown): {
   const { code, message, error } = body as ConsoleErrorBody;
   return {
     code: code ?? (error && typeof error === "object" ? error.code : undefined),
-    message: (typeof error === "string" ? error : error?.message) ?? message,
+    message: clampErrorMessage((typeof error === "string" ? error : error?.message) ?? message),
   };
 }
 
 /**
  * Flatten a Zod validation failure into one readable line naming WHICH
- * field(s) were wrong, e.g. `"id: Required; status: Invalid enum value"`.
+ * field(s) were wrong, e.g.
+ * `"id: Invalid input: expected string, received undefined; status: Invalid option: expected one of …"`.
  * Used at the `createApiKey` / `getApiKeyStatus` parse boundary so a
  * `ConsoleApiError.message` says more than "the response was malformed".
  */
@@ -521,6 +545,7 @@ async function fetchDownloadFollowingUgcRedirect(
     headers: {
       Authorization: `Bearer ${bearerKey}`,
       [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
+      ...runtimeClientHeaders(),
     },
     redirect: "manual",
     signal,
@@ -576,6 +601,11 @@ function failFromFetchResponse(
   return Effect.gen(function* () {
     // Bounded: a non-OK response from a hostile-but-allowlisted endpoint could
     // carry a multi-megabyte body, and this text ends up on a long-lived error.
+    // The body is still read in full (up to the cap) even though only its
+    // parsed `message` is ever used below — an unread stream holds the
+    // connection open, and a large unread body is exactly what the cap
+    // above this comment exists to bound regardless of what happens to it
+    // afterward.
     const text = yield* Effect.tryPromise(() => boundedResponseText(response)).pipe(
       Effect.catchAll(() => Effect.succeed("")),
     );
@@ -583,7 +613,7 @@ function failFromFetchResponse(
     try {
       decoded = JSON.parse(text) as unknown;
     } catch {
-      decoded = undefined; // non-JSON body (proxy HTML, empty) — fall back to raw text
+      decoded = undefined; // non-JSON body (proxy HTML, empty)
     }
     const { code, message } = parseConsoleErrorBody(decoded);
     if (response.status === 401 && isRevokedKeyCode(code)) {
@@ -597,7 +627,8 @@ function failFromFetchResponse(
     }
     return yield* Effect.fail(
       new ConsoleApiError({
-        message: `${action} failed with status ${response.status}: ${message ?? text}`,
+        // Never the raw body: only Console's parsed message reaches the tool result.
+        message: `${action} failed with status ${response.status}${message !== undefined ? `: ${message}` : ""}`,
         ...(code !== undefined ? { code } : {}),
         status: response.status,
       }),
@@ -751,7 +782,10 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         HttpClientRequest.setHeader(req, "Authorization", `Bearer ${getRawApiKey(config)}`),
       ),
       HttpClient.mapRequest((req) =>
-        HttpClientRequest.setHeader(req, CLIENT_HEADER, CLIENT_HEADER_VALUE),
+        HttpClientRequest.setHeaders(req, {
+          [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
+          ...runtimeClientHeaders(),
+        }),
       ),
       HttpClient.mapRequest(HttpClientRequest.acceptJson),
     );
@@ -759,13 +793,18 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     // Admin-authed client: identical, but bears the isolated Key-Admin credential
     // (hbradm_…) instead of the working key. Used only by the mint flow — callers MUST
     // gate on hasAdminCredential() first, otherwise this sends an empty `Bearer ` header.
+    // The admin key's calls carry the runtime marker and label too. They come from the same
+    // running server, so they are its real use, and Console's key row records them the same way.
     const adminAuthed = http.pipe(
       HttpClient.mapRequest(HttpClientRequest.prependUrl(config.baseUrl)),
       HttpClient.mapRequest((req) =>
         HttpClientRequest.setHeader(req, "Authorization", `Bearer ${getRawAdminKey(config)}`),
       ),
       HttpClient.mapRequest((req) =>
-        HttpClientRequest.setHeader(req, CLIENT_HEADER, CLIENT_HEADER_VALUE),
+        HttpClientRequest.setHeaders(req, {
+          [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
+          ...runtimeClientHeaders(),
+        }),
       ),
       HttpClient.mapRequest(HttpClientRequest.acceptJson),
     );
@@ -837,11 +876,13 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
             }),
           );
         }
+        const bucketId = typeof body.bucket_id === "string" ? body.bucket_id : undefined;
         return yield* Effect.fail(
           new ConsoleApiError({
             message: String(message),
             ...(code !== undefined ? { code } : {}),
             status: res.status,
+            ...(bucketId !== undefined ? { bucketId } : {}),
           }),
         );
       });
@@ -861,13 +902,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         let message: string | undefined;
         if (rawText.length > 0) {
           try {
-            const body = JSON.parse(rawText) as ConsoleErrorBody;
-            const errBody = body.error;
-            code = body.code ?? (errBody && typeof errBody === "object" ? errBody.code : undefined);
-            message = (typeof errBody === "string" ? errBody : errBody?.message) ?? body.message;
+            ({ code, message } = parseConsoleErrorBody(JSON.parse(rawText)));
           } catch {
-            // Non-JSON body (proxy/gateway HTML page). Fall through: status alone
-            // is enough to classify deny vs size; body text goes on ConsoleApiError.
+            // Non-JSON body (proxy HTML page): `message` stays undefined.
           }
         }
         if (response.status === 415 || code === "unsupported_file_type") {
@@ -903,9 +940,8 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         }
         return yield* Effect.fail(
           new ConsoleApiError({
-            message: `Upload failed with status ${response.status}${
-              rawText.length > 0 ? `: ${rawText}` : ""
-            }`,
+            // The parsed message, never the raw body.
+            message: `Upload failed with status ${response.status}${message !== undefined ? `: ${message}` : ""}`,
             ...(code !== undefined ? { code } : {}),
             status: response.status,
           }),
@@ -919,6 +955,15 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       const res = yield* authed.get(url);
       if (res.status !== 200) return yield* handleError(res);
       const json = (yield* res.json) as DataEnvelope<readonly SpaceListItem[]>;
+      if (!Array.isArray(json.data)) {
+        return yield* Effect.fail(
+          new ConsoleApiError({
+            message: "listSpaces received a 200 response without a data array.",
+            code: "invalid_response_shape",
+            status: res.status,
+          }),
+        );
+      }
       return json.data;
     });
 
@@ -942,7 +987,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       if (args.q) params.set("q", args.q);
       if (args.visibility) params.set("visibility", args.visibility);
 
-      const res = yield* authed.get(`/api/v1/spaces/${args.spaceId}/buckets?${params.toString()}`);
+      const res = yield* authed.get(
+        `/api/v1/spaces/${yield* pathSegment(args.spaceId)}/buckets?${params.toString()}`,
+      );
       if (res.status !== 200) return yield* handleError(res);
       const json = (yield* res.json) as {
         buckets: readonly Bucket[];
@@ -988,7 +1035,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
           role: member.role,
         })),
       };
-      const res = yield* authed.post(`/api/v1/spaces/${spaceId}/buckets`, {
+      const res = yield* authed.post(`/api/v1/spaces/${yield* pathSegment(spaceId)}/buckets`, {
         body: HttpBody.text(JSON.stringify(body), "application/json"),
       });
       if (res.status !== 201) return yield* handleError(res);
@@ -999,7 +1046,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       bucketId: BucketId,
       signature: string,
     ) {
-      const res = yield* authed.post(`/api/v1/buckets/${bucketId}/finalize`, {
+      const res = yield* authed.post(`/api/v1/buckets/${yield* pathSegment(bucketId)}/finalize`, {
         body: HttpBody.text(JSON.stringify({ signature }), "application/json"),
       });
       if (res.status !== 200) return yield* handleError(res);
@@ -1009,7 +1056,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     const getBucketById = Effect.fn("ConsoleApiClient.getBucketById")(function* (
       bucketId: BucketId,
     ) {
-      const endpoint = `/api/v1/buckets/${bucketId}`;
+      const endpoint = `/api/v1/buckets/${yield* pathSegment(bucketId)}`;
       const res = yield* authed.get(endpoint);
       if (res.status !== 200) return yield* handleError(res);
       const body = (yield* res.json) as Partial<DataEnvelope<Bucket>> | null;
@@ -1032,7 +1079,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         sealPolicyId?: string | null;
       },
     ) {
-      const res = yield* authed.put(`/api/v1/buckets/${bucketId}`, {
+      const res = yield* authed.put(`/api/v1/buckets/${yield* pathSegment(bucketId)}`, {
         body: HttpBody.text(JSON.stringify(body), "application/json"),
       });
       if (res.status !== 200) return yield* handleError(res);
@@ -1068,7 +1115,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       if (opts.deleteContents) {
         query.set("deleteContents", "true");
       }
-      const res = yield* authed.del(`/api/v1/buckets/${bucketId}?${query}`);
+      const res = yield* authed.del(`/api/v1/buckets/${yield* pathSegment(bucketId)}?${query}`);
       // Console returns 204 No Content on success.
       if (res.status !== 200 && res.status !== 204) {
         return yield* handleError(res);
@@ -1118,7 +1165,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
         form.append("contentSize", String(contentSize));
       }
 
-      const url = `${config.baseUrl}/api/v1/buckets/${bucketId}/files`;
+      const url = `${config.baseUrl}/api/v1/buckets/${yield* pathSegment(bucketId)}/files`;
       // `Effect.tryPromise` hands its callback the RUNNING FIBER's AbortSignal, so
       // threading it into fetch is all it takes for a cancelled MCP request to
       // actually stop the transfer rather than just disconnect the caller.
@@ -1129,6 +1176,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
             headers: {
               Authorization: `Bearer ${getRawApiKey(config)}`,
               [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
+              ...runtimeClientHeaders(),
             },
             body: form,
             signal,
@@ -1173,7 +1221,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       bucketId: BucketId,
       fileId: FileId,
     ) {
-      const endpoint = `/api/v1/buckets/${bucketId}/files/${fileId}`;
+      const endpoint = `/api/v1/buckets/${yield* pathSegment(bucketId)}/files/${yield* pathSegment(fileId)}`;
       const res = yield* authed.get(endpoint);
       if (res.status !== 200) return yield* handleError(res);
       const body = (yield* res.json) as Partial<DataEnvelope<FileSummary>> | null;
@@ -1192,7 +1240,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       bucketId: BucketId,
       fileId: FileId,
     ) {
-      const endpoint = `/api/v1/buckets/${bucketId}/files/${fileId}/status`;
+      const endpoint = `/api/v1/buckets/${yield* pathSegment(bucketId)}/files/${yield* pathSegment(fileId)}/status`;
       const res = yield* authed.get(endpoint);
       if (res.status !== 200) return yield* handleError(res);
       const body = (yield* res.json) as Partial<FileStatusWire> | null;
@@ -1216,7 +1264,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       bucketId: BucketId,
       fileId: FileId,
     ) {
-      const url = `${config.baseUrl}/api/v1/buckets/${bucketId}/files/${fileId}/download`;
+      const url = `${config.baseUrl}/api/v1/buckets/${yield* pathSegment(bucketId)}/files/${yield* pathSegment(fileId)}/download`;
       // Same as the upload above: the fiber's signal reaches fetch, so an aborted
       // request tears the connection down instead of streaming a file nobody wants.
       // Redirect policy lives in `fetchDownloadFollowingUgcRedirect`: at most one
@@ -1277,7 +1325,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       bucketId: BucketId,
       fileId: FileId,
     ) {
-      const res = yield* authed.del(`/api/v1/buckets/${bucketId}/files/${fileId}`);
+      const res = yield* authed.del(
+        `/api/v1/buckets/${yield* pathSegment(bucketId)}/files/${yield* pathSegment(fileId)}`,
+      );
       // Console returns 204 No Content on success; tolerate 200 with a body too.
       if (res.status !== 200 && res.status !== 204) {
         return yield* handleError(res);
@@ -1296,7 +1346,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       fileId: FileId,
       patch: Record<string, unknown>,
     ) {
-      const res = yield* authed.patch(`/api/v1/files/${fileId}`, {
+      const res = yield* authed.patch(`/api/v1/files/${yield* pathSegment(fileId)}`, {
         body: HttpBody.text(JSON.stringify(patch), "application/json"),
       });
       if (res.status !== 200) return yield* handleError(res);
@@ -1307,7 +1357,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     const getBucketMetadata = Effect.fn("ConsoleApiClient.getBucketMetadata")(function* (
       bucketId: BucketId,
     ) {
-      const res = yield* authed.get(`/api/v1/buckets/${bucketId}/metadata`);
+      const res = yield* authed.get(`/api/v1/buckets/${yield* pathSegment(bucketId)}/metadata`);
       if (res.status !== 200) return yield* handleError(res);
       return (yield* res.json) as { data: BucketMetadata };
     });
@@ -1322,7 +1372,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       bucketId: BucketId,
       patch: Record<string, unknown>,
     ) {
-      const res = yield* authed.patch(`/api/v1/buckets/${bucketId}/metadata`, {
+      const res = yield* authed.patch(`/api/v1/buckets/${yield* pathSegment(bucketId)}/metadata`, {
         body: HttpBody.text(JSON.stringify(patch), "application/json"),
       });
       if (res.status !== 200) return yield* handleError(res);
@@ -1340,7 +1390,9 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       if (cursor) params.set("cursor", cursor);
       if (q) params.set("q", q);
 
-      const res = yield* authed.get(`/api/v1/buckets/${bucketId}/files?${params.toString()}`);
+      const res = yield* authed.get(
+        `/api/v1/buckets/${yield* pathSegment(bucketId)}/files?${params.toString()}`,
+      );
       if (res.status !== 200) return yield* handleError(res);
       return (yield* res.json) as FileListResponse;
     });
@@ -1434,8 +1486,10 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
       signature: string,
     ) {
       const res = yield* adminAuthed.post(
-        `/api/v1/seal/sponsor/${encodeURIComponent(digest)}/execute`,
-        { body: HttpBody.text(JSON.stringify({ signature }), "application/json") },
+        `/api/v1/seal/sponsor/${yield* pathSegment(digest)}/execute`,
+        {
+          body: HttpBody.text(JSON.stringify({ signature }), "application/json"),
+        },
       );
       if (res.status !== 200) return yield* handleError(res);
       return (yield* res.json) as { digest: string };
@@ -1444,7 +1498,7 @@ export class ConsoleApiClient extends Effect.Service<ConsoleApiClient>()("Consol
     const getApiKeyStatus = Effect.fn("ConsoleApiClient.getApiKeyStatus")(function* (
       keyId: string,
     ) {
-      const res = yield* adminAuthed.get(`/api/v1/api-keys/${encodeURIComponent(keyId)}`);
+      const res = yield* adminAuthed.get(`/api/v1/api-keys/${yield* pathSegment(keyId)}`);
       if (res.status !== 200) return yield* handleError(res);
       const parsed = apiKeyStatusResponseSchema.safeParse(yield* res.json);
       if (!parsed.success) {

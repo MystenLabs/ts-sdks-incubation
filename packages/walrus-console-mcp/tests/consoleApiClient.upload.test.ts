@@ -204,6 +204,40 @@ describe("uploadBucketFile — the error body is bounded (F9)", () => {
   });
 });
 
+describe("uploadBucketFile never forwards a raw response body", () => {
+  it("names only the status when the error body is not Console's own JSON shape", async () => {
+    // An unparseable body — a proxy's HTML error page, or anything else a
+    // compromised/impersonated Console could choose to send — must not ride
+    // into this message: it reaches an MCP tool result verbatim, read by
+    // whatever's on the other end of the session. This used to leak even on
+    // the generic (non-415/413) fallback, ignoring the parsed `message`
+    // entirely in favor of the raw body.
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response(
+        '<html><body>upstream timeout, please <a href="javascript:...">retry</a></body></html>',
+        { status: 502 },
+      ),
+    );
+
+    const err = (await runUpload("ok.txt")) as { _tag: string; message: string };
+    expect(err._tag).toBe("ConsoleApiError");
+    expect(err.message).toBe("Upload failed with status 502");
+    expect(err.message).not.toContain("html");
+    expect(err.message).not.toContain("javascript");
+  });
+
+  it("still surfaces Console's own structured message when the body IS its JSON shape", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      jsonResponse(500, { code: "internal_error", message: "Something went wrong upstream." }),
+    );
+
+    const err = (await runUpload("ok.txt")) as { _tag: string; message: string; code?: string };
+    expect(err._tag).toBe("ConsoleApiError");
+    expect(err.message).toBe("Upload failed with status 500: Something went wrong upstream.");
+    expect(err.code).toBe("internal_error");
+  });
+});
+
 describe("uploadBucketFile — a 202 whose body cannot be read (F8)", () => {
   it("reports the upload as ACCEPTED and points to list_files/get_file_status, not a re-upload", async () => {
     // 202 = accepted; an unreadable body is not an upload failure. The message
@@ -323,5 +357,22 @@ describe("uploadBucketFile — the bound form fields", () => {
 
     expect(sent.body?.has("contentType")).toBe(false);
     expect(sent.body?.has("contentSize")).toBe(false);
+  });
+});
+
+describe("uploadBucketFile clamps a JSON message on every error path", () => {
+  const huge = "x".repeat(56_000);
+
+  it.each([
+    ["500", 500],
+    ["415", 415],
+    ["413", 413],
+  ])("bounds the message on a %s", async (_label, status) => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      jsonResponse(status, { code: "x", message: huge }),
+    );
+
+    const err = (await runUpload("ok.txt")) as { message: string };
+    expect(err.message.length).toBeLessThanOrEqual(501 + "Upload failed with status 500: ".length);
   });
 });

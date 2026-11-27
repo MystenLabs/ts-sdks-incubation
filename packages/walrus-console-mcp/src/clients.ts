@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { styleText } from "node:util";
 import { writeFileAtomic } from "./atomicWrite.js";
+import { CLIENT_LABEL_ENV } from "./consoleClientHeader.js";
 import { toRealPath } from "./pathSandbox.js";
 import { runCommand } from "./spawnCommand.js";
 import {
@@ -17,6 +18,9 @@ import {
 
 /** The MCP server name registered with every client. Stays unversioned. */
 export const SERVER_NAME = "walrus-console-mcp";
+
+/** Nonempty args prevent Cursor desktop from splitting the executable on spaces. */
+export const CURSOR_STDIO_ARGS = ["--stdio"] as const;
 
 /**
  * A registerable agent. `detect()` reports whether it's installed;
@@ -75,6 +79,16 @@ const defaultRun: CommandRunner = (bin, args) => {
 export interface McpServerEntry {
   command: string;
   args: string[];
+  /** Install-target label. Absent on entries written before it, or by hand. */
+  env?: Record<string, string>;
+}
+
+/**
+ * The env a client's server entry carries to name the harness it was registered
+ * into. The label is the client's id, so it matches the documented set.
+ */
+export function clientLabelEnv(id: string): Record<string, string> {
+  return { [CLIENT_LABEL_ENV]: id };
 }
 
 /** A client config file that carries an `mcpServers` map (plus other keys). */
@@ -87,7 +101,8 @@ export interface McpConfig extends Record<string, unknown> {
  * `mcpServers[name]`. Existing servers and unrelated top-level keys are
  * preserved; a stale entry for the same name is overwritten.
  *
- * `command` is the ABSOLUTE path of the installed launcher, with no arguments.
+ * `command` is the ABSOLUTE path of the installed launcher; arguments are stored
+ * separately. Cursor uses explicit stdio mode to avoid legacy command parsing.
  * It used to be `npx -y <spec>`, which resolves the package name against
  * whatever directory the agent was started in — so a project shipping a package
  * of the same name got launched under this server's identity, with access to the
@@ -98,11 +113,15 @@ export function upsertMcpServer(
   config: Record<string, unknown>,
   name: string,
   command: string,
+  args: readonly string[] = [],
+  env?: Record<string, string>,
 ): McpConfig {
   const existing = (config as { mcpServers?: Record<string, McpServerEntry> }).mcpServers ?? {};
+  const entry: McpServerEntry = { command, args: [...args] };
+  if (env !== undefined) entry.env = { ...env };
   const mcpServers: Record<string, McpServerEntry> = {
     ...existing,
-    [name]: { command, args: [] },
+    [name]: entry,
   };
   return { ...config, mcpServers };
 }
@@ -119,9 +138,17 @@ export interface CliClientSpec {
   label: string;
   /** Executable name looked up on PATH. */
   bin: string;
-  /** `command` is the absolute launcher path — never a package spec. */
-  addArgs: (name: string, command: string) => string[];
+  /**
+   * `command` is the absolute launcher path — never a package spec. `env` is the
+   * install-target label, written through the flag each CLI documents.
+   */
+  addArgs: (name: string, command: string, env?: Record<string, string>) => string[];
   removeArgs: (name: string) => string[];
+}
+
+/** `KEY=VALUE` pairs as repeated `flag KEY=VALUE` argv, in the flag's own spelling. */
+function envFlags(flag: string, env: Record<string, string> = {}): string[] {
+  return Object.entries(env).flatMap(([key, value]) => [flag, `${key}=${value}`]);
 }
 
 export const CLI_CLIENT_SPECS: CliClientSpec[] = [
@@ -129,14 +156,25 @@ export const CLI_CLIENT_SPECS: CliClientSpec[] = [
     id: "claude-code",
     label: "Claude Code",
     bin: "claude",
-    addArgs: (name, command) => ["mcp", "add", "--scope", "user", name, "--", command],
+    addArgs: (name, command, env) => [
+      "mcp",
+      "add",
+      "--scope",
+      "user",
+      // The name goes before `--env`: Claude's `--env <env...>` is variadic and would
+      // otherwise take the name as a second KEY=VALUE.
+      name,
+      ...envFlags("--env", env),
+      "--",
+      command,
+    ],
     removeArgs: (name) => ["mcp", "remove", "--scope", "user", name],
   },
   {
     id: "codex",
     label: "Codex",
     bin: "codex",
-    addArgs: (name, command) => ["mcp", "add", name, "--", command],
+    addArgs: (name, command, env) => ["mcp", "add", ...envFlags("--env", env), name, "--", command],
     removeArgs: (name) => ["mcp", "remove", name],
   },
   {
@@ -144,7 +182,17 @@ export const CLI_CLIENT_SPECS: CliClientSpec[] = [
     label: "Gemini",
     bin: "gemini",
     // Gemini's `mcp add` takes the command + args directly, with NO `--` separator.
-    addArgs: (name, command) => ["mcp", "add", "--scope", "user", name, command],
+    // `-e` is an array option. Checked against Gemini CLI 0.66.0: the name and command
+    // are still read as positionals with `-e` placed before them. Recheck on upgrade.
+    addArgs: (name, command, env) => [
+      "mcp",
+      "add",
+      "--scope",
+      "user",
+      ...envFlags("-e", env),
+      name,
+      command,
+    ],
     removeArgs: (name) => ["mcp", "remove", "--scope", "user", name],
   },
 ];
@@ -170,10 +218,10 @@ export function cliClient(
       } catch {
         // not registered yet — nothing to remove
       }
-      run(spec.bin, spec.addArgs(SERVER_NAME, command));
+      run(spec.bin, spec.addArgs(SERVER_NAME, command, clientLabelEnv(spec.id)));
     },
     manualHint(command) {
-      return `${spec.bin} ${spec.addArgs(SERVER_NAME, command).join(" ")}`;
+      return `${spec.bin} ${spec.addArgs(SERVER_NAME, command, clientLabelEnv(spec.id)).join(" ")}`;
     },
   };
 }
@@ -218,6 +266,10 @@ export function jsonFileClient(opts: {
    * on `chmod 000` (which a root/Windows test runner reads straight through).
    */
   readFile?: (p: string) => string;
+  /** Cursor needs nonempty args to treat command as an executable path. */
+  args?: readonly string[];
+  /** The install-target label, written into the entry's `env`. */
+  env?: Record<string, string>;
   /**
    * Test seam, passed to `writeFileAtomic`: runs after the replacement is
    * written and before the pre-publish check, so a test can land a competing
@@ -328,7 +380,13 @@ export function jsonFileClient(opts: {
       for (let attempt = 1; attempt <= MAX_MERGE_ATTEMPTS; attempt++) {
         const target = resolveTarget(configPath);
         const raw = readRaw(target);
-        const merged = upsertMcpServer(parseConfig(target, raw), SERVER_NAME, command);
+        const merged = upsertMcpServer(
+          parseConfig(target, raw),
+          SERVER_NAME,
+          command,
+          opts.args,
+          opts.env,
+        );
         try {
           // Atomic replacement: a direct write can truncate the target and then
           // fail (full disk, SIGTERM, competing writer), leaving the user with an
@@ -367,11 +425,14 @@ export function jsonFileClient(opts: {
       } catch (err) {
         return `${configPath} could not be read back (${(err as Error).message})`;
       }
-      // An app's own rewrite may drop an empty `args` or add `disabled: false`;
-      // that is our entry, kept. A different command or any argument is not.
+      // Apps may drop empty args or add disabled:false. Nonempty launch args
+      // must survive exactly; Cursor's --stdio prevents legacy space splitting.
       const { command: actual, args } = (entry ?? {}) as { command?: unknown; args?: unknown };
-      const noArgs = args === undefined || (Array.isArray(args) && args.length === 0);
-      return actual === command && noArgs
+      const expectedArgs = opts.args ?? [];
+      const matchingArgs =
+        (args === undefined && expectedArgs.length === 0) ||
+        (Array.isArray(args) && JSON.stringify(args) === JSON.stringify(expectedArgs));
+      return actual === command && matchingArgs
         ? undefined
         : `the "${SERVER_NAME}" entry in ${configPath} is no longer there, or no longer ` +
             `points at ${command} — ${opts.label} may have saved older settings over it`;
@@ -584,6 +645,7 @@ export function antigravityClient(opts: { home?: string; hasAgy?: () => boolean 
   const base = jsonFileClient({
     id: "antigravity",
     label: "Antigravity",
+    env: clientLabelEnv("antigravity"),
     configPath: () => antigravityConfigPath(home),
     detect: () =>
       ["antigravity", "antigravity-cli", "antigravity-ide"].some((d) =>
@@ -630,6 +692,10 @@ export function getClients(opts: { run?: CommandRunner } = {}): Client[] {
     jsonFileClient({
       id: "cursor",
       label: "Cursor",
+      // Cursor splits command on spaces when args is empty. An explicit stdio
+      // mode selects its executable-plus-argv path on every platform.
+      args: CURSOR_STDIO_ARGS,
+      env: clientLabelEnv("cursor"),
       configPath: () => cursorConfigPath(),
       detect: () => dirExists(path.dirname(cursorConfigPath())),
     }),

@@ -51,7 +51,7 @@ interface UploadCall {
   declaredType: string | undefined;
 }
 
-function uploadHarness() {
+function uploadHarness(opts: { storedName?: (sent: string) => string } = {}) {
   const encrypts: EncryptCall[] = [];
   const uploads: UploadCall[] = [];
   const api = {
@@ -71,6 +71,7 @@ function uploadHarness() {
         return {
           data: {
             id: FileId.make("file-1"),
+            name: opts.storedName?.(fileName) ?? fileName.trim().normalize("NFC"),
             original_name: fileName.trim().normalize("NFC"),
             declared_mime_type: declaredType ?? null,
             content_size: contentSize ?? null,
@@ -107,6 +108,45 @@ function uploadHarness() {
     );
   return { encrypts, uploads, upload };
 }
+
+describe("upload_file reports the name the file was stored under", () => {
+  it("returns the suffixed name and the requested one when the name was taken", async () => {
+    const local = path.join(tmpDir, "report.txt");
+    await fs.writeFile(local, "x");
+    const { uploads, upload } = uploadHarness({ storedName: () => "report (1).txt" });
+
+    const result = await upload(local);
+
+    // The requested name still goes on the wire and into the binding.
+    expect(uploads[0]?.fileName).toBe("report.txt");
+    expect(result).toMatchObject({ name: "report (1).txt", renamedFrom: "report.txt" });
+    expect(result.note).toContain('stored as "report (1).txt"');
+  });
+
+  it("reports no rename when the name was free", async () => {
+    const local = path.join(tmpDir, "fresh.txt");
+    await fs.writeFile(local, "x");
+    const { upload } = uploadHarness();
+
+    const result = await upload(local);
+
+    expect(result).toMatchObject({ name: "fresh.txt", renamedFrom: null });
+    expect(result.note).not.toContain("already exists");
+  });
+
+  // The server stores NFC, so a decomposed name comes back composed. That is
+  // the same name, not a rename.
+  it("does not call a normal-form change a rename", async () => {
+    const nfd = "café.txt";
+    const local = path.join(tmpDir, "nfd-source.txt");
+    await fs.writeFile(local, "x");
+    const { upload } = uploadHarness();
+
+    const result = await upload(local, nfd);
+
+    expect(result).toMatchObject({ name: nfd.normalize("NFC"), renamedFrom: null });
+  });
+});
 
 describe("upload_file binds the record the file will live under", () => {
   it("binds the requested name, the declared type and the plaintext length", async () => {

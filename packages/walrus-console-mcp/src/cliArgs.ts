@@ -6,6 +6,7 @@
  */
 
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
+import type { AllowedDirsScope } from "./configFile.js";
 import { ALLOWED_DIRS_ENV, splitAllowedDirList } from "./pathSandbox.js";
 
 export interface CredentialValues {
@@ -29,6 +30,7 @@ export interface CredentialValues {
    * paths before they are written.
    */
   allowedDirs?: string[];
+  allowedDirsScope?: AllowedDirsScope;
 }
 
 /**
@@ -62,6 +64,8 @@ export interface ParsedArgs {
   silent: boolean;
   /** `install` only; --no-register turns it off. */
   register: boolean;
+  /** Explicit install targets; an empty list means --register none. */
+  registerAgents?: string[];
   values: CredentialValues;
   errors: string[];
 }
@@ -71,7 +75,10 @@ export interface ParsedArgs {
  * documented in `--help`. A flag the parser takes but the usage screen never
  * mentions is a flag nobody can find.
  */
-export const VALUE_FLAGS: Record<string, Exclude<keyof CredentialValues, "allowedDirs">> = {
+export const VALUE_FLAGS: Record<
+  string,
+  Exclude<keyof CredentialValues, "allowedDirs" | "allowedDirsScope">
+> = {
   "--api-key": "apiKey",
   "--service-key": "serviceKey",
   "--admin-key": "adminKey",
@@ -103,6 +110,8 @@ const SECRET_VALUE_FIELD_SET = new Set<keyof CredentialValues>(SECRET_VALUE_FIEL
 export const VALUE_TAKING_FLAGS: readonly string[] = [
   ...Object.keys(VALUE_FLAGS),
   "--allowed-dirs",
+  "--allowed-dirs-scope",
+  "--register",
 ];
 
 /**
@@ -131,6 +140,7 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
   const errors: string[] = [];
   let explicitSilent = false;
   let register = true;
+  let registerAgents: string[] | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] ?? "";
@@ -163,6 +173,29 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
       return value;
     };
 
+    if (name === "--register") {
+      const value = takeValue();
+      if (value === undefined || value.trim() === "") {
+        errors.push("--register needs a comma-separated agent list or none.");
+        continue;
+      }
+      const agents = value.split(",").map((agent) => agent.trim());
+      if (agents.some((agent) => !agent) || (agents.includes("none") && agents.length !== 1)) {
+        errors.push("--register needs agent IDs, or none by itself.");
+        continue;
+      }
+      const targets = agents[0] === "none" ? [] : [...new Set(agents)];
+      if (
+        registerAgents !== undefined &&
+        JSON.stringify(registerAgents) !== JSON.stringify(targets)
+      ) {
+        errors.push("--register was given more than once with different values.");
+      } else {
+        registerAgents = targets;
+      }
+      continue;
+    }
+
     // Repeatable, and split only on `path.delimiter` (never on `:`), so a
     // Windows `C:\Users\…` drive letter is one entry. See src/pathSandbox.ts.
     if (name === "--allowed-dirs") {
@@ -177,6 +210,20 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
         continue;
       }
       values.allowedDirs = [...(values.allowedDirs ?? []), ...parts];
+      continue;
+    }
+
+    if (name === "--allowed-dirs-scope") {
+      // This closed enum never echoes invalid input, even if it looks like a flag.
+      // Consuming that token avoids sending it through the unknown-flag diagnostic.
+      const value = (inlineValue ?? argv[++i])?.trim();
+      if (value !== "shared" && value !== "fallback") {
+        errors.push("--allowed-dirs-scope must be shared or fallback.");
+      } else if (values.allowedDirsScope !== undefined && values.allowedDirsScope !== value) {
+        errors.push("--allowed-dirs-scope was given more than once with different values.");
+      } else {
+        values.allowedDirsScope = value;
+      }
       continue;
     }
 
@@ -243,13 +290,22 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
     values[field] = trimmed;
   }
 
+  // Sharing must name the complete list explicitly, never promote an implicit env import.
+  if (values.allowedDirsScope !== undefined && values.allowedDirs === undefined) {
+    errors.push("--allowed-dirs-scope requires the complete saved list via --allowed-dirs.");
+  }
+
+  if (!register && registerAgents !== undefined) {
+    errors.push("--register and --no-register cannot be used together.");
+  }
+
   // --silent with no value flags means "take the credentials from the
   // environment" — the documented safer path, since flags land in shell history
   // and `ps` output. Explicit flags still win per-field.
   if (explicitSilent) {
     for (const [envName, field] of Object.entries(ENV_FLAGS) as [
       string,
-      Exclude<keyof CredentialValues, "allowedDirs">,
+      Exclude<keyof CredentialValues, "allowedDirs" | "allowedDirsScope">,
     ][]) {
       const raw = env[envName];
       if (values[field] === undefined && raw && raw.trim() !== "") {
@@ -273,6 +329,7 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv): ParsedArgs {
   return {
     silent: explicitSilent || hasSecret || (hasDirs && !hasSeed),
     register,
+    ...(registerAgents === undefined ? {} : { registerAgents }),
     values,
     errors,
   };

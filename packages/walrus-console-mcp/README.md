@@ -16,7 +16,7 @@ Set up the @mysten-incubation/walrus-console-mcp MCP server for me by running th
 
 1. Run the interactive installer from an empty directory (so it can't launch a same-named package the current project happens to ship): `cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install`. At the first prompt choose **Credential bundle** and paste the CONSOLE_CREDENTIAL_BUNDLE value from the Console key-mint screen — one paste carries the API key, the service key and the two addresses `create_bucket` needs pinned. If I only kept the individual values, choose **API key** instead: it asks for CONSOLE_API_KEY (starts with `hbr_`) and CONSOLE_SERVICE_PRIVATE_KEY (starts with `suiprivkey1`), then for the two addresses. Either way it validates and saves to a user-only config file. Don't print my keys back to me; the addresses are not secret and it will show them for me to confirm.
 2. Let the same installer register the server — it offers a checklist of the agents it detects. That step installs the package into its own directory and writes the **absolute** path of the launcher into each config. Prefer it over registering by hand.
-3. Then tell me: restart the agent (or run `/mcp`), approve walrus-console-mcp when prompted, and test with the `ping_console` tool. For Antigravity (the desktop app, the IDE or `agy`), reload its MCP servers instead, since it does not pick up the new entry on its own (in `agy`, open `/mcp` and reload; in the app, press refresh under Settings → Customizations → Installed MCP Servers).
+3. Then tell me: restart the agent (or run `/mcp`), approve walrus-console-mcp when prompted. Starting the server is enough for Console to show it as connected; if it does not, test with the `ping_console` tool. For Antigravity (the desktop app, the IDE or `agy`), reload its MCP servers instead, since it does not pick up the new entry on its own (in `agy`, open `/mcp` and reload; in the app, press refresh under Settings → Customizations → Installed MCP Servers).
 
 Never put my keys anywhere except where the installer saves them.
 ```
@@ -84,16 +84,19 @@ This interactive CLI will:
    and the two address pins — or for those values one at a time
 2. Validate your credentials against the Console API, show you the addresses it is about to
    pin, and save nothing until you confirm them
-3. Ask which folders `upload_file` / `download_file` may use when your agent does not share
-   workspace folders (Grok, Claude Desktop, Cursor). Skip this if your agent advertises MCP roots.
+3. Ask which folders `upload_file` / `download_file` may use, then choose their scope.
+   Shared folders add to workspace and environment folders across sessions; fallback folders
+   apply only when neither source provides folders. An ancestor of Home stays fallback-only, and Home itself is refused.
 4. Install the server into its own directory and register it with the agents you tick
    (Claude Code, Cursor, Codex, Gemini CLI, Antigravity). Claude Desktop is not on this list — see
    [Claude Desktop](#claude-desktop).
 
 **Restart your agent when it finishes.** The tools do not appear in a session
 that was already running, even though `claude mcp list` reports the server as
-Connected as soon as it is registered. After the restart, run `ping_console` to
-confirm. Antigravity is the exception: it does not reload its config on its own, so
+Connected as soon as it is registered. Once restarted, the server checks in with
+Console on its own (see [Startup check-in](#startup-check-in)), so Console shows the
+agent as connected with nothing typed. To check by hand, run `ping_console`: `ok: true`
+means Console accepted your API key. Antigravity is the exception: it does not reload its config on its own, so
 follow [Antigravity](#antigravity) instead of restarting.
 
 Both commands take `--help`:
@@ -102,6 +105,67 @@ Both commands take `--help`:
 walrus-console-mcp install --help
 walrus-console-mcp config --help
 ```
+
+### Scripted installation
+
+Use `--silent` with an explicit agent list to save credentials, install the
+stable launcher, and register it without terminal prompts:
+
+```bash
+# Supply CONSOLE_CREDENTIAL_BUNDLE through your secret manager or environment.
+cd "$(mktemp -d)" && npm install --prefix . --no-audit --no-fund --ignore-scripts @mysten-incubation/walrus-console-mcp && ./node_modules/.bin/walrus-console-mcp install --silent --register claude-code,codex --allowed-dirs "$HOME/Documents" --allowed-dirs "$HOME/Downloads"
+```
+
+A non-interactive install requires an explicit agent list or opt-out. Omitting
+both `--register` and `--no-register` exits **1** before any credential probe,
+configuration write, or package installation. This also applies when credential
+flags imply non-interactive mode without an explicit `--silent`.
+
+Use `--silent --register none` (or `--silent --no-register`) to save configuration
+and install the stable launcher without registering it. Both opt-outs exit **0**
+when those requested steps succeed. Use `config --silent` for configuration-only
+updates on an existing installation.
+
+Agent IDs are `claude-code`, `cursor`, `codex`, `gemini`, and `antigravity`.
+Explicit selection attempts registration even when detection does not find the
+agent. CLI agents require their executable on `PATH`; Cursor and Antigravity
+use the same config-file registration as the interactive installer.
+
+| Flag                            | Purpose                                                             |
+| ------------------------------- | ------------------------------------------------------------------- |
+| `--silent`                      | Read values from flags and environment without prompting.           |
+| `--register <agents>`           | Register the comma-separated agent IDs, or `none`.                  |
+| `--no-register`                 | Skip agent registration while installing the stable launcher.       |
+| `--credential-bundle <json>`    | Supply the complete credential bundle.                              |
+| `--api-key <key>`               | Supply the working API key.                                         |
+| `--service-key <key>`           | Supply its Sui signer.                                              |
+| `--admin-key <key>`             | Supply the management key.                                          |
+| `--admin-signer <key>`          | Supply its Sui signer.                                              |
+| `--owner-address <address>`     | Pin the owner address.                                              |
+| `--key-admin-address <address>` | Pin the Key-Admin address.                                          |
+| `--allowed-dirs <dir>`          | Save a fallback folder; repeat for additional folders.              |
+| `--allowed-dirs-scope <scope>`  | `shared` or `fallback`; requires the complete explicit folder list. |
+
+Use `--allowed-dirs-scope shared` with the complete explicit folder list to make
+those folders available alongside workspaces in every session using the same
+config. This grants access from unrelated projects. Without the scope flag, a
+replacement list uses `fallback` and applies only without workspace/environment
+folders. Environment-imported lists also use fallback scope.
+
+Under explicit `--silent`, the credential environment variables are
+`CONSOLE_CREDENTIAL_BUNDLE`, `CONSOLE_API_KEY`, `CONSOLE_SERVICE_PRIVATE_KEY`,
+`CONSOLE_ADMIN_KEY`, and `CONSOLE_ADMIN_SERVICE_PRIVATE_KEY`.
+`CONSOLE_MCP_ALLOWED_DIRS` supplies allowed folders separated by the platform's
+path delimiter (`:` on Unix, `;` on Windows). Explicit flags override the
+corresponding environment value. Prefer environment variables for secrets:
+credential flags can appear in shell history and process listings.
+
+Exit code **2** means installation is incomplete after configuration was saved:
+the launcher install or one of the requested registrations failed. The output
+names the failed step and agent, and registration continues for the remaining
+agents. Fix the reported error and rerun. Validation errors exit **1**.
+Restart or reload the agent after registration. Console shows it as connected once
+it starts; `ping_console` checks by hand.
 
 If you would rather register by hand, see
 [Adding to an agent (npm)](#adding-to-an-agent-npm) — and note that the launch
@@ -158,7 +222,7 @@ The command is an absolute path, not `npx`. See
 
 | Tool                     | Description                                                      | Read/Write |
 | ------------------------ | ---------------------------------------------------------------- | ---------- |
-| `ping_console`           | Check that your keys are configured                              | Read       |
+| `ping_console`           | Check that Console accepts your API key (one authenticated call) | Read       |
 | `list_spaces`            | List your Personal + Team spaces                                 | Read       |
 | `get_storage_usage`      | Aggregated storage usage for your space                          | Read       |
 | `list_buckets`           | List buckets in a space (paged, filter by visibility)            | Read       |
@@ -241,10 +305,30 @@ Scripted / CI equivalents:
 CONSOLE_ADMIN_KEY=… CONSOLE_ADMIN_SERVICE_PRIVATE_KEY=… "${XDG_DATA_HOME:-$HOME/.local/share}/walrus-console-mcp/node_modules/.bin/walrus-console-mcp" config --silent
 ```
 
-Environment variables still work and still win over the saved file.
+Nonblank environment variables override the saved configuration **per value**.
+`CONSOLE_API_KEY`, `CONSOLE_SERVICE_PRIVATE_KEY`, `CONSOLE_ADMIN_KEY`, and
+`CONSOLE_ADMIN_SERVICE_PRIVATE_KEY` each replace only their matching saved field. Unset, empty,
+and whitespace-only variables fall back to the saved value. For example, an environment service
+key keeps the saved API key, and an environment API key keeps the saved service key.
+`CONSOLE_API_BASE_URL`, `CONSOLE_WEB_ACCOUNT_ADDRESS`, and `CONSOLE_KEY_ADMIN_ADDRESS` also
+resolve independently with their existing validation. Import `CONSOLE_CREDENTIAL_BUNDLE` through
+`config --silent` or `install --silent` before starting the server.
 
-Call `ping_console` to confirm what's loaded — it reports `has_admin_key` and `has_admin_signer`
-(booleans only; the secret values are never echoed).
+When rotating to a different credential identity, override both the bearer and its matching signer.
+The server does not verify that resolved credentials belong together at startup. A mismatched
+admin pair can mint a child key before a later bucket grant fails.
+
+Call `ping_console` to confirm which values are present. It reports `has_api_key`,
+`has_service_key`, `has_admin_key`, and `has_admin_signer` as booleans and never echoes secrets.
+Presence does not confirm that a bearer and signer match.
+
+`ping_console` also makes one authenticated Console call with your API key. `ok` is `true` only
+when Console accepts the key; then `api_key_check` lists the spaces the key can see. When Console
+refuses the key, `ok` is `false` and `api_key_check.error_code` carries the same code the failing
+call would return (for example `invalid_api_key`). A key with no visible resources still
+passes. If `CONSOLE_SERVICE_PRIVATE_KEY` is not set, `operations_needing_service_key` names the
+operations that will fail (`create_bucket`, `upload_file`, `download_file`) and `service_key_warning`
+says why. A missing service key does not make `ok` false.
 
 ### Confirming the mint
 
@@ -293,7 +377,9 @@ as a failure. See [When the spaceId does not match](#when-the-spaceid-does-not-m
 
 This mint-time PTB back-fills access to the private buckets that **already
 exist** in the space. Later buckets this client creates do **not** grant every active key
-automatically — that was Console's memberless-reserve path, which this client refuses. A child
+automatically — that was Console's memberless-reserve path. Console now rejects an omitted
+`members` outright (400), not on a deprecation grace period, and this client already refused it
+either way. A child
 key is included on a later create only if it is still active and already a member of one of the
 locally recorded anchor groups (the mint-time grant is what puts it there, once an anchor exists). A key
 that missed that back-fill is left off and named in `roster.droppedCandidates`; repair it with a
@@ -798,25 +884,109 @@ After registering, restart the agent (or reload the window if using it inside VS
 
 **About `upload_file`'s accept-then-poll pattern:** it returns as soon as Console accepts the upload — `fileId`, a non-terminal `state`, and a note — not once the file finishes processing, even for a large file that takes minutes. Poll `get_file_status` with the returned `fileId` until it reports `completed` or `failed`; do not call `upload_file` again for the same file while waiting, even if the response feels fast. The read/encrypt/upload step itself (before accept) is bounded at 4 minutes server-side as a hang guard, but it can still take **longer than your MCP client's own default request timeout** (commonly 60s) on a slow connection or a very large file — that limit is spent transferring the file, which nothing server-side can shorten. If your client disconnects before this call returns, that is not necessarily a failed upload: Console may have already accepted enough of the transfer to create the file before the disconnect. Check `list_files` for a file with that name before uploading again, to avoid creating a duplicate. If your client lets you configure its own request timeout, raising it is the more reliable fix for large uploads over a slow connection.
 
-> **Note for clients that don't advertise MCP roots** (e.g. Grok, Claude Desktop, Cursor): file access **fails closed**. A refused `upload_file` / `download_file` names the path it refused and the folders that ARE allowed today, and points at the `config` command below — not just the env var. The installer asks for folders during setup — or you can name them on the command line, including alongside the address pins the Console's **Connect MCP** panel copies, and the **File access** step is skipped:
+> **Note for clients that don't advertise MCP roots**: file access **fails closed**. A refused `upload_file` / `download_file` names the path it refused and the folders that ARE allowed today, and points at the `config` command below — not just the env var. The installer asks for folders during setup — or you can name them on the command line, including alongside the address pins the Console's **Connect MCP** panel copies, and the **File access** step is skipped:
 >
 > ```bash
-> walrus-console-mcp install --allowed-dirs ~/Documents --owner-address 0x…
+> walrus-console-mcp install --allowed-dirs ~/Documents --allowed-dirs-scope shared --owner-address 0x…
 > ```
 >
 > Run that one at a terminal: carrying a pin keeps the run interactive, so it goes on to prompt for the credentials, and outside a TTY it cancels and writes nothing. A folder that does not exist is refused before anything is written, naming every bad path. To change the folders later:
 >
 > ```bash
-> walrus-console-mcp config --allowed-dirs ~/Documents --allowed-dirs ~/Downloads
+> walrus-console-mcp config --allowed-dirs ~/Documents --allowed-dirs ~/Downloads --allowed-dirs-scope shared
 > ```
 >
 > PowerShell:
 >
 > ```powershell
-> walrus-console-mcp config --allowed-dirs $HOME\Documents --allowed-dirs $HOME\Downloads
+> walrus-console-mcp config --allowed-dirs $HOME\Documents --allowed-dirs $HOME\Downloads --allowed-dirs-scope shared
 > ```
 >
-> You can also set `CONSOLE_MCP_ALLOWED_DIRS` to a `PATH`-style list separated by `:` (`;` on Windows), with `~` expansion — that env var still beats the saved list. Example: `CONSOLE_MCP_ALLOWED_DIRS="$HOME/Documents:$HOME/Downloads"`. Clients that advertise roots (your open workspace folders) need no extra configuration.
+> You can also set `CONSOLE_MCP_ALLOWED_DIRS` to a `PATH`-style list separated by `:` (`;` on Windows), with `~` expansion — that env var adds to workspace and explicitly shared saved folders. Example: `CONSOLE_MCP_ALLOWED_DIRS="$HOME/Documents:$HOME/Downloads"`. Saved folders with shared scope also apply in clients that advertise workspace roots.
+
+### Saved folders and session access
+
+Saved folders have one scope for the complete list:
+
+| Scope      | When saved folders grant access                                                                                        |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `fallback` | Only when neither workspace nor environment folders are provided.                                                      |
+| `shared`   | Alongside workspace and environment folders, across every session using this config, subject to the protections below. |
+
+**Existing installations keep fallback scope.** Missing or invalid
+`allowedDirsScope` never enables sharing. Upgrading or changing credentials does
+not promote an existing saved list. To migrate once, run `walrus-console-mcp config`,
+choose **File access folders**, then **Review saved folders**. Review the complete
+list and choose `shared` at the scope prompt. New interactive folder choices also
+ask for scope; pressing Enter selects `fallback`. Canceling saves no folder or scope
+changes.
+
+To explicitly share a complete list without prompts:
+
+```sh
+walrus-console-mcp config --silent \
+  --allowed-dirs "$HOME/Downloads" \
+  --allowed-dirs "$HOME/WalrusTransfers" \
+  --allowed-dirs-scope shared
+```
+
+Every agent session using this configuration can upload files from and download
+files into these folders, including sessions opened in unrelated projects. A
+compromised session can use these grants too. Consider a dedicated transfer folder
+rather than sharing all of Documents or Downloads.
+
+`--allowed-dirs` **replaces the complete saved list**. Include every saved folder
+you want to retain. `--allowed-dirs-scope shared|fallback` requires that complete
+list to be explicitly supplied with `--allowed-dirs`; a scope flag alone is refused.
+An unscoped replacement saves `fallback`, even if the previous list was shared.
+Folders imported from `CONSOLE_MCP_ALLOWED_DIRS` under `--silent` also save with
+fallback scope; an environment import does not establish shared consent.
+
+The scope is persisted beside the list, for example:
+
+```json
+{
+  "allowedDirs": ["/Users/example/WalrusTransfers"],
+  "allowedDirsScope": "shared"
+}
+```
+
+To return to fallback access, save the complete list with
+`--allowed-dirs-scope fallback`. List and scope changes take effect on the next
+tool call without reconnecting. They do not stop an already-running transfer.
+
+Each connection uses its client's reported workspace roots and its server
+process's environment folders. Shared saved folders add to those grants;
+fallback folders contribute only when neither source provides folders.
+Connections never share or persist one another's workspace roots. A client
+reporting no roots receives no workspace permission from the terminal's working
+directory. Removing a saved folder or changing its scope does not revoke an
+independent workspace/environment grant. Concurrent CLI saves retain replacement
+behavior; they do not automatically merge folder lists.
+
+`ping_console` keeps `allowed_dirs` as an array of effective canonical folder
+strings. Canonical duplicates retain their first source in workspace →
+environment → saved order. `allowed_dirs_source` reports:
+
+| Value         | Effective entries come from                              |
+| ------------- | -------------------------------------------------------- |
+| `clientRoots` | Client workspace roots only                              |
+| `env`         | `CONSOLE_MCP_ALLOWED_DIRS` only                          |
+| `file`        | Saved config only; also the existing empty-list fallback |
+| `union`       | Multiple contributing sources                            |
+
+If Home cannot be resolved while workspace/environment folders are present,
+shared saved grants are temporarily withheld because they cannot be classified safely.
+Explicit workspace/environment grants remain usable; config-subtree protection
+still fails closed. Restore Home access before retrying a saved-only path.
+
+An empty allowed list denies transfers. A saved ancestor of Home remains fallback-only
+when workspace/environment folders are present, and Home itself is refused. The canonical MCP config subtree
+is always protected, and saved-only downloads reject hidden components below the
+saved folder. Explicit workspace/environment grants retain their existing
+behavior, subject to config protection. These are limited safeguards, not project
+isolation: ordinary files inside shared folders remain accessible across projects.
+See [Security Model](#security-model).
 
 ### Antigravity
 
@@ -931,13 +1101,13 @@ and only in this form:
 - Name the entry `walrus-console-mcp`, the name the installer registers. A
   later `install` that ticks Cursor then replaces this entry with its absolute
   launcher instead of adding a second copy of the server.
-- The bundle carries keys and address pins, not folders, and Cursor advertises
-  no MCP roots, so after a link install `upload_file` and `download_file` refuse
-  every path until folders are set. Save them once with
-  `walrus-console-mcp config --allowed-dirs <dir>`. Setting
-  `CONSOLE_MCP_ALLOWED_DIRS` in the entry's `env` also works, but the variable
-  beats the saved list: while the entry carries it, folders saved with `config`
-  are ignored, and changing them means editing `mcp.json`.
+- The bundle carries keys and address pins, not folders. After a link install,
+  share folders with `walrus-console-mcp config --allowed-dirs <dir> --allowed-dirs-scope shared`.
+  Workspace folders, `CONSOLE_MCP_ALLOWED_DIRS` and explicitly shared saved folders combine; changing
+  saved folders takes effect on the next tool call without editing `mcp.json`.
+  `ping_console.allowed_dirs` is a string array of effective canonical folders;
+  `allowed_dirs_source` is `union` when multiple sources contribute effective
+  entries. Security boundaries are explained by CLI warnings and refusal errors.
 
 The bundle still travels in the link itself: in the page, in Cursor's install
 dialog, and on the command line of the process tree that first start launched
@@ -945,6 +1115,27 @@ dialog, and on the command line of the process tree that first start launched
 does not change the command line of a process already running; it is gone once
 Cursor restarts the server from the cleaned entry, which it does when it sees
 the file change.
+
+### Install target and runtime attribution
+
+Console's key list can show which harness a key is connected to and whether a running server has used it. Two facts travel as separate headers, and only the running server sends either:
+
+| Header                     | Sent when                                                                 | Value                                                                                         |
+| -------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `X-Console-Client-Target`  | `WALRUS_MCP_CLIENT` is set in the server's environment                    | The install-target label: `claude-code`, `codex`, `gemini`, `cursor`, `antigravity` or `mcpb` |
+| `X-Console-Client-Runtime` | Every authenticated Console call from the running server, labelled or not | `1`                                                                                           |
+| `X-Console-Client-Name`    | The harness supplies `clientInfo.name` during initialize                  | The reported name (printable ASCII, up to 64 characters)                                      |
+
+The installer writes the label into each harness's entry through that harness's own channel (`--env` for Claude Code and Codex, `-e` for Gemini, `env` in the JSON for Cursor and Antigravity). A copied config can keep a stale label, so treat the label as the latest recorded target and nothing more. The installer's key probe sends none of these headers, even when its shell inherits `WALRUS_MCP_CLIENT`. `X-Console-Client: mcp` is unchanged.
+
+### Startup check-in
+
+When a harness starts the server, the server makes one authenticated `GET /api/v1/spaces` 3 seconds after the initialize handshake, carrying the headers above. Console records the key as used from it, so the key list and Connect MCP show the agent after a restart, with no prompt typed. It reads nothing beyond the spaces list it already reads for `ping_console`.
+
+- Once per server process. Console records at most one use per key per minute.
+- Never awaited: startup and tool calls do not wait for it. It gives up after 10 seconds, and any failure (offline, Console down, a refused key) is one line on stderr. Run `ping_console` to check by hand.
+- No API key, no call. The installer never starts the server, so it never checks in.
+- Health checks do not count. `claude mcp list` and `claude mcp get` start the server and close it again within about 100 ms, so the server skips the check-in when stdin closes before the 3 seconds are up, and drops a check-in in flight when stdin closes.
 
 ## Security Model
 
@@ -963,10 +1154,40 @@ the file change.
   real file path. The sandbox decides where a download may land; this decides what happens when
   something is already there, so a prompt-injected agent cannot overwrite a dotfile or a
   credential file with content it chose.
-- Path sandboxing **fails closed**. `upload_file` (localPath) and `download_file` (destPath) are confined to the allowed roots — the filesystem roots your MCP client advertises, or `CONSOLE_MCP_ALLOWED_DIRS` when the client advertises none, or `allowedDirs` saved by `install` / `config`. If none of those is available the path is **rejected**, so a model-chosen path (e.g. from prompt injection) can't reach an arbitrary file. Relative paths (and a leading `~`) are resolved against the first allowed root rather than the MCP server directory.
+- Path sandboxing **fails closed**. `upload_file` (localPath) and `download_file` (destPath) are confined to the allowed roots — the union of your MCP client’s workspace folders, `CONSOLE_MCP_ALLOWED_DIRS`, and `allowedDirs` explicitly saved with `allowedDirsScope: "shared"`, in that order. Saved lists with fallback or missing scope contribute only when no workspace/environment folders are provided. A saved ancestor of Home stays fallback-only when workspace or environment folders are available; Home itself is refused. The MCP config directory is always protected, including through symlinks. Downloads authorized only by saved folders refuse hidden path components below those folders. If none of those is available the path is **rejected**, so a model-chosen path (e.g. from prompt injection) can't reach an arbitrary file. Relative paths (and a leading `~`) are resolved against the first allowed root rather than the MCP server directory.
+- **Destructive tools ask the human, not only the model.** `delete_bucket`, `delete_file` and
+  `download_file` with `overwrite: true` need `confirm: true`, which a calling model can compose
+  itself. Where the client supports MCP elicitation, the server also shows a prompt in the client's
+  own UI, and nothing is deleted or replaced unless the user confirms there. A decline, a timeout
+  or an unticked box refuses the call and changes nothing; a client without elicitation relies on
+  `confirm: true` alone. For `download_file` the prompt comes after the destination is checked, so
+  a destination the sandbox refuses never costs a prompt. `confirm` is required for
+  `download_file` only together with `overwrite: true`.
+- **A sandbox root cannot be your home directory.** A root equal to `~` would make the sandbox your
+  whole account, so `install` and `config --allowed-dirs` refuse it with a named message, and a
+  client root or saved folder that is the home directory is dropped at run time and reported by
+  `ping_console` as `refused_roots`. Name a subfolder such as `~/Documents`. A path that needs the
+  refused root fails with the same message.
+- **Downloads cannot write dotfiles or credential names.** Inside an allowed root, a destination is
+  refused when any component below the root starts with a dot (`.env`, `.npmrc`, `.ssh/...`,
+  `.git/...`, `.aws/...`) or is a credential name (`id_rsa`, `id_ed25519`, `authorized_keys`,
+  `known_hosts`, ...). Both the path as written and the path after symlinks are checked, so a
+  symlinked directory cannot carry a write into `.ssh`.
+- **Seal decryption rejects inconsistent shares.** Every decrypt asks Seal to check share
+  consistency, so a file whose key shares disagree is refused with an explicit message instead of
+  failing as a generic decrypt error. A ciphertext naming a key server this build is not
+  configured for can be refused for the same reason.
 - Symlinks are resolved before the containment check: a symlink inside an allowed root that points outside it is rejected, not followed. `upload_file` still follows live in-root links (macOS `/tmp` → `/private/tmp`). `download_file` additionally refuses a dest whose **final component** is a symlink, even when the target is inside the roots. A new file under an in-root **directory** symlink (`link-dir/new.txt`) is still allowed; the link is resolved before the write, so the file lands in the real directory it points at — refusing parent links would break `/tmp`.
 - **Accepted limitation (ancestor-directory TOCTOU):** the _final_ path component is protected against a symlink swapped in after validation (reads open with `O_NOFOLLOW`; downloads write a sibling temp then `rename`), but a swap of an _ancestor_ directory between the check and the open is not closed — Node exposes no `openat2`/descriptor-relative traversal on any platform. Exploiting it requires a local process that already holds write access inside an allowed root and wins a race — a strictly weaker position than reading the credential file directly. Prefer per-user allowed roots, and avoid pointing `CONSOLE_MCP_ALLOWED_DIRS` at a directory that other local users can write — or whose ancestor directories they can write.
 - Contract identity is resolved by **network** (one Console deployment per network: testnet, mainnet); a loopback host gets the testnet package set. A wrong package set cannot over-permission anything — the validator allowlists exact packages and refuses to sign, anchors recorded under other ids go stale, and `seal_approve` targets a package the key servers will not honour.
+- A decrypted `download_file` output is written `0600` (pinned via `fchmod`, not just the open mode a loose umask could widen) — it was private enough to be Seal-encrypted at rest, so it should not land world- or group-readable on a shared machine.
+- `download_file` bounds the ciphertext it buffers: `Content-Length` is checked before anything is read, and the running byte count is enforced again while reading, since the header is a claim by the server, not a guarantee.
+- A server error's raw response body never rides into a tool result: `failFromFetchResponse` / `handleUploadError` only ever surface Console's own parsed `message` field, never an unparseable body (a proxy's HTML page, or anything else a compromised/impersonated Console could choose to send). A tool result is read by whatever's on the other end of the MCP session.
+- A failed tool call returns the structured error only — message plus any typed fields (`code`, `status`, …) — never the raw JS stack trace, which is ~12 frames of library internals plus the absolute filesystem path the server runs from. Set `CONSOLE_MCP_DEBUG=1` to include it when debugging the server itself; `console.error` to stderr always has the full detail regardless.
+- Every bucket/file/space id goes through `pathSegment` before it reaches a Console API URL: it is encoded, so a model-chosen id containing `/`, `?`, or `#` cannot alter which endpoint or query a request reaches, and `""`, `.` and `..` are refused, since the URL parser resolves dot segments as path navigation.
+- **Accepted (clearing a metadata field):** `update_bucket_metadata` is marked `destructiveHint: true`, and both metadata tools' descriptions say that clearing a field replaces its content with nothing. `destructiveHint` is a hint that some MCP clients ignore, so this is not a guard against a prompt-injected agent.
+- Masked prompts (`install` / `config`, entering a key by hand) render a fixed-width run of bullets, not one per typed character, on every code path — a bullet count that scales with length leaks the secret's length, and these lengths identify the credential type (`hbr_` 36, `hbradm_` 39, `suiprivkey1` 70).
+- **Accepted (loopback `CONSOLE_API_BASE_URL`, and a relocatable config path via `XDG_CONFIG_HOME`):** both require an attacker who already controls the machine's environment — a strictly stronger position than anything this server's own threat model (a prompt-injected agent with tool access, not shell/env control) reaches. Disallowing loopback would also break local dev against a real localhost server, which is the reason it is allowed at all.
 
 ## MCPB bundle (no-terminal install for Claude Desktop)
 
@@ -983,15 +1204,15 @@ pnpm mcpb:pack       # build the self-contained bundle, then pack -> walrus-cons
 
 Double-clicking the packed file opens Claude Desktop's extension install form, which asks for seven discrete fields, in the order below. The form blocks Install until the four **Required** fields are filled; the three **Optional** fields have no such gate:
 
-| Group        | Field                    | Env var                             | Needed for                                                    |
-| ------------ | ------------------------ | ----------------------------------- | ------------------------------------------------------------- |
-| **Required** | Web Account Address      | `CONSOLE_WEB_ACCOUNT_ADDRESS`       | `create_bucket`'s owner pin                                   |
-| **Optional** | Key Admin Address        | `CONSOLE_KEY_ADMIN_ADDRESS`         | `create_bucket`'s manager pin, if the space has a Key-Admin   |
-| **Required** | Console API Key          | `CONSOLE_API_KEY`                   | every Console API call                                        |
-| **Required** | Service Private Key      | `CONSOLE_SERVICE_PRIVATE_KEY`       | upload/download (Seal encrypt/decrypt + signing)              |
-| **Required** | Allowed Directories      | `CONSOLE_MCP_ALLOWED_DIRS`          | upload/download, since Claude Desktop advertises no MCP roots |
-| **Optional** | Key Admin Credential     | `CONSOLE_ADMIN_KEY`                 | `generate_api_key` (provisioning host only)                   |
-| **Optional** | Admin Signer Private Key | `CONSOLE_ADMIN_SERVICE_PRIVATE_KEY` | `generate_api_key` (provisioning host only)                   |
+| Group        | Field                    | Env var                             | Needed for                                                                  |
+| ------------ | ------------------------ | ----------------------------------- | --------------------------------------------------------------------------- |
+| **Required** | Web Account Address      | `CONSOLE_WEB_ACCOUNT_ADDRESS`       | `create_bucket`'s owner pin                                                 |
+| **Optional** | Key Admin Address        | `CONSOLE_KEY_ADMIN_ADDRESS`         | `create_bucket`'s manager pin, if the space has a Key-Admin                 |
+| **Required** | Console API Key          | `CONSOLE_API_KEY`                   | every Console API call                                                      |
+| **Required** | Service Private Key      | `CONSOLE_SERVICE_PRIVATE_KEY`       | upload/download (Seal encrypt/decrypt + signing)                            |
+| **Required** | Allowed Directories      | `CONSOLE_MCP_ALLOWED_DIRS`          | extra upload/download folders, alongside workspace and shared saved folders |
+| **Optional** | Key Admin Credential     | `CONSOLE_ADMIN_KEY`                 | `generate_api_key` (provisioning host only)                                 |
+| **Optional** | Admin Signer Private Key | `CONSOLE_ADMIN_SERVICE_PRIVATE_KEY` | `generate_api_key` (provisioning host only)                                 |
 
 Key Admin Address depends on the space, not on whether this host holds the admin pair. Console adds a management grant to a new bucket only while the space has an active Key-Admin key, and `create_bucket` refuses to sign a grant it can't check. So on such a space a host with only a working key needs the address, which the Connect MCP panel shows as **Management Service Account**; a host holding the admin pair derives it from the admin signer. A space with no active Key-Admin key builds no grant and needs no address, and the panel shows none, which is why the field can't be Required. Left blank on a space that does have one, `create_bucket` refuses and names this field.
 

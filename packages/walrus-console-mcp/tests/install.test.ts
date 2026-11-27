@@ -78,19 +78,20 @@ describe("isValidServiceKeyFormat", () => {
 });
 
 describe("maskedLine", () => {
-  it("renders one bullet per typed character after the prompt", () => {
-    expect(maskedLine("Key: ", 3)).toBe("\x1b[2K\x1b[0GKey: •••");
+  it("renders a fixed-width run of bullets once non-empty", () => {
+    expect(maskedLine("Key: ", 3)).toBe(`\x1b[2K\x1b[0GKey: ${"•".repeat(MASK_WIDTH)}`);
   });
 
   it("renders no bullets for an empty input", () => {
     expect(maskedLine("Key: ", 0)).toBe("\x1b[2K\x1b[0GKey: ");
   });
 
-  it("never echoes the secret itself — output length is independent of content", () => {
+  // A bullet count that scales with length would leak the secret's length.
+  it("never echoes the secret itself, and stays the same width for every non-empty length", () => {
     const short = maskedLine("Key: ", 4);
     const long = maskedLine("Key: ", 40);
     expect(short).not.toContain("hbr_");
-    expect(long.length).toBeGreaterThan(short.length);
+    expect(long).toBe(short);
   });
 
   it("clamps bullets so a long paste can never exceed the terminal width", () => {
@@ -131,18 +132,22 @@ describe("maskedLine", () => {
   });
 
   // Regression: step 2 draws inside a panel, but this sized itself against the
-  // terminal, so on a wide terminal a pasted key's bullets ran past the border.
+  // terminal, so on a wide terminal the PROMPT ran past the border. (Bullets
+  // Bullets are fixed-width, so only the prompt text can overflow.)
   it("stays inside the panel when given the panel width, not the terminal width", () => {
     const width = panelWidth(140); // wide terminal, panel capped at MAX_PANEL_WIDTH
     expect(width).not.toBeNull();
     if (width === null) return;
 
-    const question = `│  CONSOLE_ADMIN_SERVICE_PRIVATE_KEY (suiprivkey1…): `;
-    const body = maskedLine(question, 200, width).replace("\x1b[2K\x1b[0G", "");
+    // Long enough that clamping it against the wrong (wider) column count
+    // keeps more of it than the narrower panel has room for.
+    const question = `│  ${"CONSOLE_ADMIN_SERVICE_PRIVATE_KEY ".repeat(3)}(suiprivkey1…): `;
+    const body = maskedLine(question, 3, width).replace("\x1b[2K\x1b[0G", "");
     expect(visibleWidth(body)).toBeLessThanOrEqual(width);
 
-    // Without the width it sizes against the terminal and overflows the panel.
-    const unbounded = maskedLine(question, 200, 140).replace("\x1b[2K\x1b[0G", "");
+    // Without the width, the prompt clamps against the real terminal instead
+    // of the narrower panel and overflows it.
+    const unbounded = maskedLine(question, 3, 140).replace("\x1b[2K\x1b[0G", "");
     expect(visibleWidth(unbounded)).toBeGreaterThan(width);
   });
 });
@@ -613,6 +618,7 @@ describe("stepAllowedDirs", () => {
   it("persists the cwd preset and does not ask for a custom path", async () => {
     const merged: unknown[] = [];
     const write = await stepAllowedDirs({
+      scope: "fallback",
       cwd: tmpDir,
       home: tmpDir,
       select: async () => 0,
@@ -623,12 +629,13 @@ describe("stepAllowedDirs", () => {
       },
     });
     expect(write.updates.allowedDirs).toEqual([toRealPath(tmpDir)]);
-    expect(merged).toEqual([{ allowedDirs: [toRealPath(tmpDir)] }]);
+    expect(merged).toEqual([{ allowedDirs: [toRealPath(tmpDir)], allowedDirsScope: "fallback" }]);
   });
 
   it("writes nothing on skip", async () => {
     let merged = false;
     const write = await stepAllowedDirs({
+      scope: "fallback",
       cwd: tmpDir,
       home: tmpDir,
       select: async () => 5,
@@ -643,6 +650,7 @@ describe("stepAllowedDirs", () => {
 
   it("writes nothing when the radio is cancelled", async () => {
     const write = await stepAllowedDirs({
+      scope: "fallback",
       cwd: tmpDir,
       home: tmpDir,
       select: async () => null,
@@ -658,6 +666,7 @@ describe("stepAllowedDirs", () => {
     try {
       const answers = [extra, "n"];
       const write = await stepAllowedDirs({
+        scope: "fallback",
         cwd: tmpDir,
         home: tmpDir,
         select: async () => 4, // custom
@@ -696,6 +705,7 @@ describe("stepAllowedDirs", () => {
       const capture = captureStdout();
       try {
         await stepAllowedDirs({
+          scope: "fallback",
           cwd: tmpDir,
           home: tmpDir,
           select: async () => 4, // custom
@@ -745,7 +755,33 @@ describe("stepRegister outcome and exit code", () => {
     });
     expect(result.outcome).toBe("install-failed");
     expect(result.configured).toBe(0);
-    expect(registerExitCode(result.outcome)).toBe(1);
+    expect(registerExitCode(result.outcome)).toBe(2);
+  });
+
+  it("reports a partial install when one requested agent fails", async () => {
+    const result = await stepRegister(spec, {
+      select: async () => [
+        fakeClient(),
+        fakeClient({
+          register: () => {
+            throw new Error("missing CLI");
+          },
+        }),
+      ],
+      install: () => "/abs/launcher",
+    });
+    expect(result.outcome).toBe("registration-failed");
+    expect(result.configured).toBe(1);
+    expect(registerExitCode(result.outcome)).toBe(2);
+  });
+
+  it("reports a partial install when verification fails", async () => {
+    const result = await stepRegister(spec, {
+      select: async () => [fakeClient({ verify: () => "entry disappeared" })],
+      install: () => "/abs/launcher",
+    });
+    expect(result.outcome).toBe("registration-failed");
+    expect(registerExitCode(result.outcome)).toBe(2);
   });
 
   it("reports installed and a zero exit code when registration succeeds", async () => {
@@ -1232,6 +1268,7 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
       const merged: unknown[] = [];
       let selectCalls = 0;
       const write = await stepAllowedDirs({
+        scope: "fallback",
         cwd: tmpDir,
         home: tmpDir,
         seed: [tmpDir, extra],
@@ -1248,11 +1285,14 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
         },
       });
       expect(write.updates.allowedDirs).toEqual([toRealPath(tmpDir), toRealPath(extra)]);
-      expect(merged).toEqual([{ allowedDirs: [toRealPath(tmpDir), toRealPath(extra)] }]);
+      expect(merged).toEqual([
+        { allowedDirs: [toRealPath(tmpDir), toRealPath(extra)], allowedDirsScope: "fallback" },
+      ]);
       expect(selectCalls).toBe(0);
       // The operator must be able to see what was saved, and that the flag is
       // why the picker never appeared.
       const out = capture.text();
+      expect(out).toContain("Saved Home (or an ancestor) applies only when no workspace");
       expect(out).toContain(toRealPath(extra));
       expect(out).toContain("--allowed-dirs");
     } finally {
@@ -1265,6 +1305,7 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
     const capture = captureStdout();
     try {
       const write = await stepAllowedDirs({
+        scope: "fallback",
         cwd: tmpDir,
         home: tmpDir,
         seed: [tmpDir, tmpDir],
@@ -1288,6 +1329,7 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
     let selectCalls = 0;
     try {
       const write = await stepAllowedDirs({
+        scope: "fallback",
         cwd: tmpDir,
         home: tmpDir,
         seed: [missing],
@@ -1314,6 +1356,7 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
     const capture = captureStdout();
     try {
       const write = await stepAllowedDirs({
+        scope: "fallback",
         cwd: tmpDir,
         home: tmpDir,
         seed: [missingA, missingB],
@@ -1338,6 +1381,7 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
     try {
       let selectCalls = 0;
       const write = await stepAllowedDirs({
+        scope: "fallback",
         cwd: tmpDir,
         home: tmpDir,
         seed: [],
@@ -1373,7 +1417,12 @@ describe("stepAllowedDirs — --allowed-dirs seed", () => {
       const warn = vi.spyOn(console, "error").mockImplementation(() => {});
       const capture = captureStdout();
       try {
-        await stepAllowedDirs({ cwd: tmpDir, home: tmpDir, seed: [target] });
+        await stepAllowedDirs({
+          scope: "fallback",
+          cwd: tmpDir,
+          home: tmpDir,
+          seed: [target],
+        });
         expect(capture.text()).toContain("config.json + admin.json");
         // Review, "test gap": pins that the migration notice reached
         // `rail.line`, not a bare `console.error` — a revert of that specific
@@ -1560,10 +1609,13 @@ describe("runInstall", () => {
   });
 
   /** Run the silent path and report the exit code it asked for. */
-  async function runSilent(argv: string[]): Promise<{ code: number; out: string }> {
+  async function runSilent(
+    argv: string[],
+    deps: Parameters<typeof runInstall>[1] = {},
+  ): Promise<{ code: number; out: string }> {
     const capture = captureStdout();
     try {
-      await runInstall(argv);
+      await runInstall(argv, deps);
     } catch (err) {
       if (err instanceof ExitSignal) return { code: err.code, out: capture.text() };
       throw err;
@@ -1573,9 +1625,126 @@ describe("runInstall", () => {
     throw new Error("runInstall returned without exiting");
   }
 
+  async function runSilentOptOut(argv: string[]) {
+    return runSilent([...argv, "--no-register"], {
+      register: (spec, selected) =>
+        stepRegister(spec, { selected, install: () => "/abs/test-launcher" }),
+    });
+  }
+
   describe("silent mode", () => {
+    it("requires explicit targets before saving or probing", async () => {
+      const fetch = vi.fn(() => {
+        throw new Error("must not probe");
+      });
+      vi.stubGlobal("fetch", fetch);
+      const { code, out } = await runSilent(["--silent", "--api-key", "hbr_working_key_value"]);
+      expect(code).toBe(1);
+      expect(fs.existsSync(getConfigDir())).toBe(false);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(out).toContain("--register");
+      expect(out).toContain("Nothing was saved");
+    });
+
+    it.each([["--register", "none"], ["--no-register"]])(
+      "installs the launcher with explicit opt-out %j",
+      async (...optOut) => {
+        let installs = 0;
+        const { code, out } = await runSilent(
+          ["--silent", "--owner-address", OWNER_ADDRESS, ...optOut],
+          {
+            register: (spec, selected) =>
+              stepRegister(spec, {
+                selected,
+                select: async () => {
+                  throw new Error("must not prompt");
+                },
+                install: () => {
+                  installs++;
+                  return "/abs/launcher";
+                },
+              }),
+          },
+        );
+        expect(code).toBe(0);
+        expect(installs).toBe(1);
+        expect(loadConfigFile().webAccountAddress).toBe(OWNER_ADDRESS);
+        expect(out).toContain("registration skipped");
+      },
+    );
+
+    it("installs and registers only the named agents without opening a chooser", async () => {
+      const configPath = path.join(tmpDir, "agent.json");
+      const client = jsonFileClient({
+        id: "cursor",
+        label: "Cursor",
+        detect: () => false,
+        configPath: () => configPath,
+      });
+      const { code } = await runSilent(
+        ["--silent", "--owner-address", OWNER_ADDRESS, "--register", "cursor"],
+        {
+          clients: () => [
+            client,
+            jsonFileClient({
+              id: "codex",
+              label: "Unselected client",
+              detect: () => true,
+              configPath: () => path.join(tmpDir, "unselected.json"),
+            }),
+          ],
+          register: (spec, selected) =>
+            stepRegister(spec, {
+              selected,
+              select: async () => {
+                throw new Error("must not prompt");
+              },
+              install: () => "/abs/launcher",
+            }),
+        },
+      );
+      expect(code).toBe(0);
+      expect(
+        JSON.parse(fs.readFileSync(configPath, "utf8")).mcpServers["walrus-console-mcp"],
+      ).toEqual({ command: "/abs/launcher", args: [] });
+      expect(fs.existsSync(path.join(tmpDir, "unselected.json"))).toBe(false);
+      expect(loadConfigFile().webAccountAddress).toBe(OWNER_ADDRESS);
+    });
+
+    it("refuses unknown targets before saving credentials without echoing the value", async () => {
+      const { code, out } = await runSilent([
+        "--silent",
+        "--owner-address",
+        OWNER_ADDRESS,
+        "--register",
+        "hbr_MISPASTED_SECRET",
+      ]);
+      expect(code).toBe(1);
+      expect(loadConfigFile()).toEqual({});
+      expect(out).not.toContain("hbr_MISPASTED_SECRET");
+      expect(out).toContain("--register");
+    });
+
+    it("reports a failed launcher install as a partial install", async () => {
+      const { code, out } = await runSilent(
+        ["--silent", "--owner-address", OWNER_ADDRESS, "--register", "cursor"],
+        {
+          register: (spec, selected) =>
+            stepRegister(spec, {
+              selected,
+              install: () => {
+                throw new Error("EACCES");
+              },
+            }),
+        },
+      );
+      expect(code).toBe(2);
+      expect(loadConfigFile().webAccountAddress).toBe(OWNER_ADDRESS);
+      expect(out).toMatch(/nothing was registered/i);
+    });
+
     it("writes the management pair and exits 0", async () => {
-      const { code } = await runSilent([
+      const { code } = await runSilentOptOut([
         "--admin-key",
         "hbradm_management_key",
         "--admin-signer",
@@ -1588,7 +1757,7 @@ describe("runInstall", () => {
     });
 
     it("writes both address pins from the flags", async () => {
-      const { code } = await runSilent([
+      const { code } = await runSilentOptOut([
         "--silent",
         "--owner-address",
         OWNER_ADDRESS,
@@ -1607,7 +1776,7 @@ describe("runInstall", () => {
     // report success and leave that to be discovered at runtime.
     it("prints the owner warning for a working key with no pin", async () => {
       vi.stubGlobal("fetch", async () => new Response("", { status: 200 }));
-      const { code, out } = await runSilent(["--api-key", "hbr_working_key_value"]);
+      const { code, out } = await runSilentOptOut(["--api-key", "hbr_working_key_value"]);
       expect(code).toBe(0);
       expect(out).toContain("Credentials saved");
       expect(out).toContain("create_bucket will REFUSE");
@@ -1616,7 +1785,7 @@ describe("runInstall", () => {
 
     it("writes nothing and exits 1 when the probe rejects the key", async () => {
       vi.stubGlobal("fetch", async () => new Response("", { status: 401 }));
-      const { code } = await runSilent([
+      const { code } = await runSilentOptOut([
         "--admin-key",
         "hbradm_management_key",
         "--admin-signer",
@@ -1627,7 +1796,7 @@ describe("runInstall", () => {
     });
 
     it("writes nothing and exits 1 on a bad flag", async () => {
-      const { code } = await runSilent(["--owner-address", "0xNOT_AN_ADDRESS"]);
+      const { code } = await runSilentOptOut(["--owner-address", "0xNOT_AN_ADDRESS"]);
       expect(code).toBe(1);
       expect(loadConfigFile()).toEqual({});
     });
@@ -1635,7 +1804,7 @@ describe("runInstall", () => {
     it("persists a seeded --allowed-dirs without credentials", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-install-dirs-"));
       try {
-        const { code } = await runSilent(["--allowed-dirs", dir]);
+        const { code } = await runSilentOptOut(["--allowed-dirs", dir]);
         expect(code).toBe(0);
         expect(loadConfigFile().allowedDirs).toEqual([toRealPath(dir)]);
       } finally {
@@ -1658,7 +1827,7 @@ describe("runInstall", () => {
       fs.mkdirSync(getConfigDir(), { recursive: true });
       fs.writeFileSync(getAdminConfigFilePath(), '{ "adminKey": "hbradm_TRUNC', "utf-8");
 
-      const { code, out } = await runSilent([
+      const { code, out } = await runSilentOptOut([
         "--admin-key",
         "hbr_wrong_type",
         "--admin-signer",
@@ -1703,6 +1872,7 @@ describe("runInstall", () => {
               dirSeeds.push(deps.seed);
               return { updates: {}, clear: [] };
             },
+            register: async () => ({ outcome: "installed", configured: 0 }),
           },
         );
       } finally {
@@ -1832,6 +2002,7 @@ describe("runInstall", () => {
           createReadline: pipeReadline,
           auth: async () => ({ updates: { apiKey: "hbr_x" }, clear: [] }),
           allowedDirs: async () => ({ updates: {}, clear: [], seedRejected: true }),
+          register: async () => ({ outcome: "installed", configured: 0 }),
         });
         seenExitCode = process.exitCode;
       } finally {
@@ -1844,6 +2015,33 @@ describe("runInstall", () => {
       // The summary row and the exit code must not contradict each other.
       expect(seenExitCode).toBe(1);
     });
+
+    it.each([["--register", "none"], ["--no-register"]])(
+      "reports an interactive explicit opt-out %j without a dangling warning",
+      async (...optOut) => {
+        const capture = captureStdout();
+        const previousExit = process.exitCode;
+        try {
+          await runInstall(optOut, {
+            choose: async () => "api",
+            createReadline: pipeReadline,
+            auth: async () => ({ updates: {}, clear: [] }),
+            allowedDirs: async () => ({ updates: {}, clear: [] }),
+            register: async (_spec, selected) => {
+              expect(selected).toEqual([]);
+              return { outcome: "installed", configured: 0 };
+            },
+          });
+          expect(capture.text()).toContain("registration skipped by explicit opt-out");
+          expect(capture.text()).not.toContain("No agent registered — see the note above");
+          expect(capture.text()).not.toContain("Restart your agent");
+          expect(process.exitCode ?? 0).toBe(0);
+        } finally {
+          capture.restore();
+          process.exitCode = previousExit;
+        }
+      },
+    );
 
     // COMG-1133 review: ticking nothing is now the normal Claude Desktop path, so
     // a green "0 agents configured" plus "Restart your agent" reads as success
@@ -1901,7 +2099,7 @@ describe("runInstall", () => {
           allowedDirs: async () => ({ updates: {}, clear: [] }),
           register: async () => ({ outcome: "install-failed", configured: 0 }),
         });
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode).toBe(2);
         expect(capture.text()).toContain("Server install failed");
       } finally {
         capture.restore();
@@ -1920,7 +2118,12 @@ describe("stepAllowedDirs — esc (COMG-1036)", () => {
     const capture = captureStdout();
     let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
     try {
-      write = await stepAllowedDirs({ select: async () => null, cwd: tmpDir, home: tmpDir });
+      write = await stepAllowedDirs({
+        scope: "fallback",
+        select: async () => null,
+        cwd: tmpDir,
+        home: tmpDir,
+      });
     } finally {
       capture.restore();
     }
@@ -1935,6 +2138,7 @@ describe("stepAllowedDirs — esc (COMG-1036)", () => {
     let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
     try {
       write = await stepAllowedDirs({
+        scope: "fallback",
         select: async () => null,
         cwd: tmpDir,
         home: tmpDir,
@@ -1954,6 +2158,7 @@ describe("stepAllowedDirs — esc (COMG-1036)", () => {
     try {
       for (const back of [false, true]) {
         await stepAllowedDirs({
+          scope: "fallback",
           select: async (_items, opts) => {
             hints.push(opts?.hint);
             return null;
@@ -2006,6 +2211,7 @@ describe("stepAllowedDirs — the custom-path prompt (COMG-1036)", () => {
     let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
     try {
       write = await stepAllowedDirs({
+        scope: "fallback",
         select: async () => customRow(tmpDir, tmpDir),
         ask: askAtMost(["", "back"]),
         cwd: tmpDir,
@@ -2026,6 +2232,7 @@ describe("stepAllowedDirs — the custom-path prompt (COMG-1036)", () => {
     let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
     try {
       write = await stepAllowedDirs({
+        scope: "fallback",
         select: async () => customRow(tmpDir, tmpDir),
         ask: askAtMost(["BACK "]),
         cwd: tmpDir,
@@ -2048,6 +2255,7 @@ describe("stepAllowedDirs — the custom-path prompt (COMG-1036)", () => {
     let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
     try {
       write = await stepAllowedDirs({
+        scope: "fallback",
         select: async () => customRow(tmpDir, tmpDir),
         // A folder that validates, then `back` at "Add another directory?".
         ask: askAtMost([real, "back"]),
@@ -2074,6 +2282,7 @@ describe("stepAllowedDirs — the custom-path prompt (COMG-1036)", () => {
     let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
     try {
       write = await stepAllowedDirs({
+        scope: "fallback",
         select: async () => customRow(tmpDir, tmpDir),
         ask: askAtMost([real, "y", "back"]),
         cwd: tmpDir,
@@ -2099,6 +2308,7 @@ describe("stepAllowedDirs — the custom-path prompt (COMG-1036)", () => {
     let write: Awaited<ReturnType<typeof stepAllowedDirs>>;
     try {
       write = await stepAllowedDirs({
+        scope: "fallback",
         select: async () => customRow(tmpDir, tmpDir),
         ask: askAtMost([real, "n"]),
         cwd: tmpDir,
@@ -2119,6 +2329,7 @@ describe("stepAllowedDirs — the custom-path prompt (COMG-1036)", () => {
     const capture = captureStdout();
     try {
       await stepAllowedDirs({
+        scope: "fallback",
         select: async () => customRow(tmpDir, tmpDir),
         ask: askAtMost(["back"]),
         cwd: tmpDir,
@@ -2151,11 +2362,12 @@ describe("runInstall — the last thing it says (COMG-1036)", () => {
     }
     const capture = captureStdout();
     try {
-      await runInstall(["--no-register"], {
+      await runInstall([], {
         choose: async () => "api",
         createReadline: pipeReadline,
         auth: async () => ({ updates: { apiKey: "hbr_x" }, clear: [] }),
         allowedDirs: async () => ({ updates: {}, clear: [] }),
+        register: async () => ({ outcome: "installed", configured: 1 }),
       });
     } finally {
       capture.restore();
@@ -2182,7 +2394,8 @@ describe("runInstall — the last thing it says (COMG-1036)", () => {
       expect(flat).toContain(
         "Restart your agent now. The tools will not appear in a session that was already running.",
       );
-      expect(flat).toContain("Then run ping_console to confirm.");
+      expect(flat).toContain("Console shows the agent as connected once it starts.");
+      expect(flat).toContain("Not showing? Ask the agent to run ping_console.");
     }
   });
 
@@ -2191,11 +2404,12 @@ describe("runInstall — the last thing it says (COMG-1036)", () => {
     process.env = { ...process.env, XDG_CONFIG_HOME: tmpDir };
     const capture = captureStdout();
     try {
-      await runInstall(["--no-register"], {
+      await runInstall([], {
         choose: async () => "api",
         createReadline: pipeReadline,
         auth: async () => ({ updates: { apiKey: "hbr_x" }, clear: [] }),
         allowedDirs: async () => ({ updates: {}, clear: [] }),
+        register: async () => ({ outcome: "installed", configured: 1 }),
       });
     } finally {
       capture.restore();

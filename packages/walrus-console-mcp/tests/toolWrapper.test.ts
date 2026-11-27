@@ -28,6 +28,7 @@ function textOf(result: McpToolResult): string {
 afterEach(() => {
   clearSecrets();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("safeTool success results", () => {
@@ -97,6 +98,19 @@ describe("safeTool failure results", () => {
 
     expect(result.isError).toBe(true);
     expect(textOf(result)).not.toContain("hbr_leaky");
+  });
+
+  it("withholds the JS stack trace from the tool result by default", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubEnv("CONSOLE_MCP_DEBUG", "");
+    const tool = safeTool("demo", async () => {
+      throw new Error("something broke");
+    });
+
+    const result = await tool({}, noExtra);
+
+    expect(textOf(result)).toContain("something broke");
+    expect(textOf(result)).not.toContain("at ");
   });
 });
 

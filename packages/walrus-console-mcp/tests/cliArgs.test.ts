@@ -453,3 +453,35 @@ describe("SECRET_VALUE_FIELDS", () => {
     expect(SECRET_VALUE_FIELDS).not.toContain("allowedDirs");
   });
 });
+
+describe("parseArgs — explicit registration", () => {
+  it("takes a comma-separated agent list without treating it as credentials", () => {
+    const args = parseArgs(["--silent", "--register=claude-code,codex"], {});
+    expect(args.errors).toEqual([]);
+    expect(args.registerAgents).toEqual(["claude-code", "codex"]);
+    expect(args.values).toEqual({});
+  });
+
+  it.each(
+    [
+      ["--register"],
+      ["--register="],
+      ["--register", "none,codex"],
+      ["--register", "codex,,cursor"],
+      ["--register", "codex", "--no-register"],
+      ["--no-register", "--register", "codex"],
+      ["--register", "codex", "--register", "cursor"],
+    ].map((argv) => ({ label: argv.join(" "), argv })),
+  )("refuses ambiguous or empty registration instructions $label", ({ argv }) => {
+    expect(parseArgs(argv, {}).errors.length).toBeGreaterThan(0);
+  });
+
+  it("takes an explicit opt-out", () => {
+    expect(parseArgs(["--register", "none"], {}).registerAgents).toEqual([]);
+  });
+
+  it("does not echo a mis-pasted secret in duplicate errors", () => {
+    const args = parseArgs(["--register", "codex", "--register", "hbr_SECRET"], {});
+    expect(args.errors.join(" ")).not.toContain("hbr_SECRET");
+  });
+});

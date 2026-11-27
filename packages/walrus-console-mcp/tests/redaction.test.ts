@@ -2,6 +2,8 @@ import { HttpClientError, HttpClientRequest } from "@effect/platform";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearSecrets,
+  DEBUG_ERRORS_ENV,
+  debugErrorsEnabled,
   formatToolError,
   installLogRedaction,
   REDACTION_PLACEHOLDER,
@@ -125,6 +127,41 @@ describe("formatToolError", () => {
 
     expect(out).toContain("RequestError");
     expect(out).toContain("Refused to follow a redirect to an unapproved host: evil.example.com");
+  });
+
+  it("withholds the stack trace by default", () => {
+    const err = new Error("bucket not found");
+    const out = formatToolError("get_bucket", err, {});
+
+    expect(out).toContain("bucket not found");
+    expect(out).not.toContain(err.stack);
+    expect(out).not.toContain("at ");
+  });
+
+  it("includes the stack trace when CONSOLE_MCP_DEBUG is set", () => {
+    const err = new Error("bucket not found");
+    const out = formatToolError("get_bucket", err, { [DEBUG_ERRORS_ENV]: "1" });
+
+    expect(out).toContain(err.stack);
+  });
+
+  it("does not enable debug output for an arbitrary truthy-looking value", () => {
+    const err = new Error("bucket not found");
+    const out = formatToolError("get_bucket", err, { [DEBUG_ERRORS_ENV]: "yes" });
+
+    expect(out).not.toContain(err.stack);
+  });
+});
+
+describe("debugErrorsEnabled", () => {
+  it.each(["1", "true", "TRUE", "True"])("treats %j as enabled", (value) => {
+    expect(debugErrorsEnabled({ [DEBUG_ERRORS_ENV]: value })).toBe(true);
+  });
+
+  it.each([undefined, "", "0", "false", "yes"])("treats %j as disabled", (value) => {
+    expect(debugErrorsEnabled(value === undefined ? {} : { [DEBUG_ERRORS_ENV]: value })).toBe(
+      false,
+    );
   });
 });
 

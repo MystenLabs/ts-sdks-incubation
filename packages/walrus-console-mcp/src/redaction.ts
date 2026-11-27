@@ -9,7 +9,8 @@ import type { ConfigFileData } from "./configFile.js";
  * From that point a secret can ride along inside an error and surface in two
  * places the user/operator sees:
  *
- *   - **Tool output** — `safeTool` returns `error.message` + `error.stack`.
+ *   - **Tool output** — `safeTool` returns `error.message` (plus `error.stack` only when
+ *     `CONSOLE_MCP_DEBUG` is set; see `formatToolError` below).
  *   - **Logs (stderr)** — `console.error(error)`.
  *
  * The most concrete leak is an `@effect/platform` transport error
@@ -181,12 +182,36 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
+/** Set to `1` or `true` to have failed tool calls include the raw JS stack trace. */
+export const DEBUG_ERRORS_ENV = "CONSOLE_MCP_DEBUG";
+
+/**
+ * Whether `formatToolError` should append the raw stack trace below the
+ * structured error. Off by default: a stack is ~12 frames of library
+ * internals (fiber-runtime plumbing an agent has no use for) plus the
+ * absolute filesystem path under the operator's home directory the server
+ * runs from — paid out of every failing call, which during normal
+ * exploration is most of them. `describeError` above already carries
+ * everything actionable (message, `code`, `status`, and any tagged-error
+ * fields), so the trace is reserved for someone debugging the server
+ * itself, not the agent calling it.
+ */
+export function debugErrorsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[DEBUG_ERRORS_ENV];
+  return raw === "1" || raw?.toLowerCase() === "true";
+}
+
 /**
  * Build the user-facing text for a failed tool call, with secrets scrubbed.
  * Mirrors the previous inline formatting in `safeTool`, but redacted.
  */
-export function formatToolError(toolName: string, error: unknown): string {
-  const stack = error instanceof Error && error.stack ? `\n\n${error.stack}` : "";
+export function formatToolError(
+  toolName: string,
+  error: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const stack =
+    debugErrorsEnabled(env) && error instanceof Error && error.stack ? `\n\n${error.stack}` : "";
   return redactString(`**Error in ${toolName}**\n\n${describeError(error)}${stack}`);
 }
 

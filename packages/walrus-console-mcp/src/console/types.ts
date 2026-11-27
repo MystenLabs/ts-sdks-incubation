@@ -58,6 +58,18 @@ export interface Bucket {
    * private bucket rather than silently skipping the check.
    */
   readonly creator?: string | null;
+  /**
+   * `pending_policy` is a bucket still being created: listed because it holds
+   * a slot under the plan's bucket limit, but it cannot hold files yet.
+   * Optional because a Console that predates pending buckets in the list sends
+   * neither field.
+   */
+  readonly provisioning_state?: "pending_policy" | "active";
+  /**
+   * The pending bucket's transaction landed: it finishes on its own and
+   * `delete_bucket` refuses to discard it.
+   */
+  readonly chain_landed?: boolean;
   readonly storage_used: number;
   readonly created_at: string;
   readonly updated_at: string;

@@ -1,10 +1,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { HttpClient, HttpClientResponse } from "@effect/platform";
 import { bcs } from "@mysten/sui/bcs";
 import type { Transaction } from "@mysten/sui/transactions";
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
-import { Effect, Layer, Redacted } from "effect";
+import { Duration, Effect, Fiber, Layer, Redacted, TestClock, TestContext } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic } from "../src/atomicWrite";
 import { type ConsoleConfig, ConsoleConfigTag } from "../src/config";
@@ -26,6 +27,7 @@ import type {
   SimulationRead,
 } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
+import { BucketFinalizeError, ConsoleApiError } from "../src/console/errors";
 import { SpaceId } from "../src/console/types";
 import type {
   CreateBucketIdentitySummary,
@@ -38,9 +40,8 @@ import type {
  * per `@vitest/mocker`) so a single test can fail the NEXT write with
  * `mockImplementationOnce` instead of `chmod`ing the config dir. `chmod 0o500`
  * is a no-op under root (root ignores DAC entirely), which made the old version
- * of these tests pass locally and fail in a privileged container — see m2 in
- * `docs/pr44-major-findings-verification.md`. This seam has no such
- * dependency: it fails the call regardless of who is running the process.
+ * of these tests pass locally and fail in a privileged container (PR #44,
+ * finding m2). This seam has no such dependency: it fails the call regardless of who is running the process.
  */
 vi.mock("../src/atomicWrite", { spy: true });
 
@@ -282,12 +283,26 @@ interface HarnessOptions {
   readonly finalizeBucketId?: unknown;
   /** Make finalize fail, to prove nothing is cached when it does. */
   readonly finalizeFails?: boolean;
+  /**
+   * Console errors finalize answers with, one per call, before it succeeds;
+   * the last one repeats when `finalizeErrorsRepeat` is set.
+   */
+  readonly finalizeErrors?: readonly ConsoleApiError[];
+  readonly finalizeErrorsRepeat?: boolean;
+  /** What the reserve fails with, instead of answering. */
+  readonly reserveError?: ConsoleApiError;
+  /**
+   * The REAL `ConsoleApiClient` over this HTTP stub, in place of the faked
+   * client: for wiring that only the real client can prove.
+   */
+  readonly http?: HttpClient.HttpClient;
 }
 
 function makeHarness(opts: HarnessOptions = {}) {
   const reserves: Reserve[] = [];
   const seen: SponsoredTxExpectation[] = [];
   const finalized: string[] = [];
+  const signatures: string[] = [];
   const chainReads: string[] = [];
   let candidateCalls = 0;
 
@@ -297,6 +312,7 @@ function makeHarness(opts: HarnessOptions = {}) {
 
   const api = {
     createBucket: (spaceId: string, name: string, ownerAddress: string, members: unknown) => {
+      if (opts.reserveError !== undefined) return Effect.fail(opts.reserveError);
       currentBucketId = opts.bucketIds?.[reserves.length] ?? currentBucketId;
       reserves.push({ spaceId, name, ownerAddress, members });
       return Effect.succeed({
@@ -307,16 +323,23 @@ function makeHarness(opts: HarnessOptions = {}) {
         ...opts.echo,
       });
     },
-    finalizeBucket: (bucketId: string) => {
-      finalized.push(bucketId);
-      if (opts.finalizeFails) return Effect.fail(new Error("504 Gateway Timeout"));
-      return Effect.succeed({
-        bucket_id: opts.finalizeBucketId === undefined ? currentBucketId : opts.finalizeBucketId,
-        seal_policy_id:
-          opts.sealPolicyId === undefined ? groupOf(currentBucketId) : opts.sealPolicyId,
-        provisioning_state: "active",
-      });
-    },
+    // Suspended, like the real `Effect.fn` client, so a retry calls it again.
+    finalizeBucket: (bucketId: string, signature: string) =>
+      Effect.suspend(() => {
+        finalized.push(bucketId);
+        signatures.push(signature);
+        if (opts.finalizeFails) return Effect.fail(new Error("504 Gateway Timeout"));
+        const errors = opts.finalizeErrors ?? [];
+        const failure =
+          errors[finalized.length - 1] ?? (opts.finalizeErrorsRepeat ? errors.at(-1) : undefined);
+        if (failure !== undefined) return Effect.fail(failure);
+        return Effect.succeed({
+          bucket_id: opts.finalizeBucketId === undefined ? currentBucketId : opts.finalizeBucketId,
+          seal_policy_id:
+            opts.sealPolicyId === undefined ? groupOf(currentBucketId) : opts.sealPolicyId,
+          provisioning_state: "active",
+        });
+      }),
     listSpaceSigners: () => {
       candidateCalls += 1;
       return opts.candidates?.() ?? Effect.succeed(signers());
@@ -408,7 +431,16 @@ function makeHarness(opts: HarnessOptions = {}) {
   const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
+        opts.http === undefined
+          ? Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service)
+          : ConsoleApiClient.Default.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(ConsoleConfigTag, { ...BASE_CONFIG, ...opts.config }),
+                  Layer.succeed(HttpClient.HttpClient, opts.http),
+                ),
+              ),
+            ),
         Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
         Layer.succeed(ConsoleConfigTag, { ...BASE_CONFIG, ...opts.config }),
         Layer.succeed(RosterChainDepsTag, rosterDeps),
@@ -421,6 +453,7 @@ function makeHarness(opts: HarnessOptions = {}) {
     reserves,
     seen,
     finalized,
+    signatures,
     chainReads,
     candidateCalls: () => candidateCalls,
   };
@@ -1472,5 +1505,204 @@ describe("createBucket — the result never reports a bare success", () => {
 
     expect(error._tag).toBe("SealCryptoError");
     expect(h.finalized).toEqual([]);
+  });
+});
+
+// A 502 from finalize means nothing was created, a 503 that the bucket may
+// still complete. Losing the reserved id on either is what sent agents into
+// duplicate creates, so every finalize failure names it.
+describe("createBucket — a finalize that fails names the bucket and its outcome", () => {
+  const consoleError = (status: number, code: string) =>
+    new ConsoleApiError({ message: `HTTP ${status}`, status, code });
+
+  /** Runs a create on the test clock, far past the whole retry budget. */
+  const createOnTestClock = (layer: Layer.Layer<ConsoleStorageService>) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.either(create(layer)));
+        yield* TestClock.adjust(Duration.minutes(5));
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestContext.TestContext)),
+    );
+
+  it("retries a 503 with the same signature until finalize answers", async () => {
+    const h = makeHarness({
+      finalizeErrors: [
+        consoleError(503, "enoki_execute_unconfirmed"),
+        consoleError(503, "chain_probe_unavailable"),
+      ],
+    });
+
+    const result = await createOnTestClock(h.layer);
+
+    expect(result._tag).toBe("Right");
+    expect(h.finalized).toEqual([BUCKET_UUID, BUCKET_UUID, BUCKET_UUID]);
+    expect(new Set(h.signatures).size).toBe(1);
+    // One reserve: the retry never creates a second bucket.
+    expect(h.reserves).toHaveLength(1);
+  });
+
+  it("reports may_complete with the bucket id once the 503s outlast the retries", async () => {
+    const h = makeHarness({
+      finalizeErrors: [consoleError(503, "bucket_provision_pending")],
+      finalizeErrorsRepeat: true,
+    });
+
+    const result = await createOnTestClock(h.layer);
+
+    expect(result._tag).toBe("Left");
+    const error = (result as { left: unknown }).left as BucketFinalizeError;
+    expect(error).toBeInstanceOf(BucketFinalizeError);
+    expect(error.outcome).toBe("may_complete");
+    expect(error.bucketId).toBe(BUCKET_UUID);
+    expect(error.code).toBe("bucket_provision_pending");
+    expect(error.message).toMatch(/do not create it\s+again/i);
+    // A transaction that never landed stays pending; the agent must be able to discard it.
+    expect(error.message).toMatch(/chain_landed false[\s\S]*delete_bucket/);
+    // One attempt plus five retries, past Console's 60s "may still be indexing" window.
+    expect(h.finalized).toHaveLength(6);
+    expect(readAnchors(SPACE)).toEqual([]);
+  });
+
+  it("reports may_complete when finalize fails with no status", async () => {
+    const h = makeHarness({
+      finalizeErrors: [new ConsoleApiError({ message: "fetch failed" })],
+    });
+
+    const error = (await Effect.runPromise(
+      create(h.layer).pipe(Effect.flip),
+    )) as BucketFinalizeError;
+
+    expect(error).toBeInstanceOf(BucketFinalizeError);
+    expect(error.outcome).toBe("may_complete");
+    expect(error.bucketId).toBe(BUCKET_UUID);
+    expect(h.finalized).toHaveLength(1);
+  });
+
+  it.each([
+    [502, "enoki_execute_failed", "not_created", /safe/i],
+    [409, "bucket_group_claimed_elsewhere", "pending", /delete_bucket/],
+    [410, "digest_expired", "pending", /delete_bucket/],
+  ] as const)(
+    "does not retry a %i, and reports it as %s",
+    async (status, code, outcome, guidance) => {
+      const h = makeHarness({ finalizeErrors: [consoleError(status, code)] });
+
+      const error = (await Effect.runPromise(
+        create(h.layer).pipe(Effect.flip),
+      )) as BucketFinalizeError;
+
+      expect(error).toBeInstanceOf(BucketFinalizeError);
+      expect(error.outcome).toBe(outcome);
+      expect(error.bucketId).toBe(BUCKET_UUID);
+      expect(error.status).toBe(status);
+      expect(error.message).toMatch(guidance);
+      expect(h.finalized).toHaveLength(1);
+    },
+  );
+});
+
+describe("createBucket — a name conflict points at the folder holding the name", () => {
+  it("names the holder and says how to finish or discard it", async () => {
+    const h = makeHarness({
+      reserveError: new ConsoleApiError({
+        message: 'Bucket name "notes" already exists in this space.',
+        status: 409,
+        code: "bucket_name_conflict",
+        bucketId: "bucket-held",
+      }),
+    });
+
+    const error = (await Effect.runPromise(create(h.layer).pipe(Effect.flip))) as ConsoleApiError;
+
+    expect(error).toBeInstanceOf(ConsoleApiError);
+    expect(error.code).toBe("bucket_name_conflict");
+    expect(error.bucketId).toBe("bucket-held");
+    expect(error.message).toMatch(/bucket bucket-held/);
+    expect(error.message).toMatch(/delete_bucket/);
+  });
+
+  it("passes a conflict that names no folder through unchanged", async () => {
+    const original = new ConsoleApiError({
+      message: 'Bucket name "notes" already exists in this space.',
+      status: 409,
+      code: "bucket_name_conflict",
+    });
+    const h = makeHarness({ reserveError: original });
+
+    const error = await Effect.runPromise(create(h.layer).pipe(Effect.flip));
+
+    expect(error).toBeInstanceOf(ConsoleApiError);
+    expect((error as ConsoleApiError).message).toBe(original.message);
+    expect((error as ConsoleApiError).bucketId).toBeUndefined();
+  });
+});
+
+// The tests above fake `ConsoleApiClient`, and a fake that builds its Effect
+// once makes a retry re-run the same failure without calling it again. Only the
+// real client shows that each retry sends a new finalize request.
+describe("createBucket — finalize retries through the real ConsoleApiClient", () => {
+  it("sends a new finalize request per retry, with one signature and one reserve", async () => {
+    const requests: { method: string; url: string; body: unknown }[] = [];
+    const finalizeAnswers: [number, unknown][] = [
+      [503, { error: "An unexpected error occurred.", code: "enoki_execute_unconfirmed" }],
+      [503, { error: "An unexpected error occurred.", code: "chain_probe_unavailable" }],
+      [
+        200,
+        {
+          bucket_id: BUCKET_UUID,
+          seal_policy_id: groupOf(BUCKET_UUID),
+          provisioning_state: "active",
+        },
+      ],
+    ];
+    const http = HttpClient.make((request) => {
+      const raw = (request.body as { body?: Uint8Array }).body;
+      requests.push({
+        method: request.method,
+        url: request.url,
+        body: raw ? JSON.parse(new TextDecoder().decode(raw)) : undefined,
+      });
+      const [status, body]: [number, unknown] = request.url.endsWith("/finalize")
+        ? (finalizeAnswers.shift() ?? [500, { error: "unexpected extra finalize" }])
+        : request.url.endsWith("/buckets") && request.method === "POST"
+          ? [
+              201,
+              {
+                bucket_id: BUCKET_UUID,
+                bytes: "AAAA",
+                digest: "0xdigest",
+                provisioning_state: "pending_policy",
+              },
+            ]
+          : [200, { signers: [] }];
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
+        ),
+      );
+    });
+    const h = makeHarness({ http });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.either(create(h.layer)));
+        yield* TestClock.adjust(Duration.minutes(5));
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestContext.TestContext)),
+    );
+
+    expect(result._tag).toBe("Right");
+    const finalizes = requests.filter((r) => r.url.endsWith(`/buckets/${BUCKET_UUID}/finalize`));
+    expect(finalizes).toHaveLength(3);
+    expect(new Set(finalizes.map((r) => JSON.stringify(r.body))).size).toBe(1);
+    expect(requests.filter((r) => r.method === "POST" && r.url.endsWith("/buckets"))).toHaveLength(
+      1,
+    );
+    expect(finalizeAnswers).toHaveLength(0);
   });
 });

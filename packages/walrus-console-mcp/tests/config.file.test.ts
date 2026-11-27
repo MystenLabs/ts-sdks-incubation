@@ -19,15 +19,11 @@ async function loadConfigModuleWith(data: Record<string, string>) {
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-config-file-test-"));
   originalEnv = { ...process.env };
-  // Strip the real credentials so only the file can supply a value.
-  const {
-    CONSOLE_API_KEY: _a,
-    CONSOLE_SERVICE_PRIVATE_KEY: _b,
-    CONSOLE_ADMIN_KEY: _c,
-    CONSOLE_ADMIN_SERVICE_PRIVATE_KEY: _d,
-    ...rest
-  } = process.env;
-  process.env = { ...rest, XDG_CONFIG_HOME: tmpDir };
+  process.env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("CONSOLE_")),
+  );
+  process.env["XDG_CONFIG_HOME"] = tmpDir;
+  process.env["APPDATA"] = tmpDir;
 });
 
 afterEach(() => {
@@ -161,71 +157,124 @@ describe("ConsoleConfig — corrupt config file at startup (review #5)", () => {
   });
 });
 
-describe("ConsoleConfig — mismatched credential source (review #6)", () => {
-  it("suppresses a file signer when the working bearer comes from env", async () => {
-    // An env-supplied bearer paired with a file-supplied signer is almost
-    // certainly a mismatched pair (the env key is not the one the file was saved
-    // for). Suppress the file signer to "" and warn, rather than sign with it.
-    process.env = { ...process.env, CONSOLE_API_KEY: "hbr_env_bearer" };
-    const mod = await loadConfigModuleWith({
-      apiKey: "hbr_file_bearer",
-      servicePrivateKey: "suiprivkey1_file_signer",
-    });
+describe("ConsoleConfig credential overrides per value", () => {
+  const saved = {
+    apiKey: "hbr_file_bearer",
+    servicePrivateKey: "suiprivkey1_file_signer",
+    adminKey: "hbradm_file_bearer",
+    adminServicePrivateKey: "suiprivkey1_file_admin_signer",
+    baseUrl: "https://api.testnet.console.walrus.xyz",
+    webAccountAddress: `0x${"1".repeat(64)}`,
+    keyAdminAddress: `0x${"2".repeat(64)}`,
+  };
+  const overrides = [
+    { env: "CONSOLE_API_KEY", field: "apiKey", value: "hbr_env_bearer" },
+    {
+      env: "CONSOLE_SERVICE_PRIVATE_KEY",
+      field: "servicePrivateKey",
+      value: "suiprivkey1_env_signer",
+    },
+    { env: "CONSOLE_ADMIN_KEY", field: "adminKey", value: "hbradm_env_bearer" },
+    {
+      env: "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY",
+      field: "adminServicePrivateKey",
+      value: "suiprivkey1_env_admin_signer",
+    },
+  ] as const;
 
-    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  it.each(overrides)("$env overrides only its saved value", async ({ env, field, value }) => {
+    process.env[env] = value;
+    const mod = await loadConfigModuleWith(saved);
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect({
+      apiKey: mod.getRawApiKey(cfg),
+      servicePrivateKey: mod.getRawServiceKey(cfg),
+      adminKey: mod.getRawAdminKey(cfg),
+      adminServicePrivateKey: mod.getRawAdminServiceKey(cfg),
+      baseUrl: cfg.baseUrl,
+      webAccountAddress: mod.getWebAccountAddress(cfg),
+      keyAdminAddress: mod.getKeyAdminAddress(cfg),
+    }).toEqual({ ...saved, [field]: value });
+    expect(mod.hasAdminCredential(cfg)).toBe(true);
+  });
+
+  it.each([
+    ["neither", {}],
+    ["empty", Object.fromEntries(overrides.map(({ env }) => [env, ""]))],
+    ["whitespace-only", Object.fromEntries(overrides.map(({ env }) => [env, "   "]))],
+  ])("uses saved credentials with %s environment values", async (_name, env) => {
+    Object.assign(process.env, env);
+    const mod = await loadConfigModuleWith(saved);
+    const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+    expect(mod.getRawApiKey(cfg)).toBe(saved.apiKey);
+    expect(mod.getRawServiceKey(cfg)).toBe(saved.servicePrivateKey);
+    expect(mod.getRawAdminKey(cfg)).toBe(saved.adminKey);
+    expect(mod.getRawAdminServiceKey(cfg)).toBe(saved.adminServicePrivateKey);
+    expect(mod.hasAdminCredential(cfg)).toBe(true);
+  });
+
+  it("uses all environment credentials when both pairs are overridden", async () => {
+    for (const { env, value } of overrides) process.env[env] = value;
+    const mod = await loadConfigModuleWith(saved);
     const cfg = await Effect.runPromise(mod.ConsoleConfig);
 
     expect(mod.getRawApiKey(cfg)).toBe("hbr_env_bearer");
-    expect(mod.getRawServiceKey(cfg)).toBe("");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("CONSOLE_SERVICE_PRIVATE_KEY"));
-    warn.mockRestore();
+    expect(mod.getRawServiceKey(cfg)).toBe("suiprivkey1_env_signer");
+    expect(mod.getRawAdminKey(cfg)).toBe("hbradm_env_bearer");
+    expect(mod.getRawAdminServiceKey(cfg)).toBe("suiprivkey1_env_admin_signer");
+    expect(mod.hasAdminCredential(cfg)).toBe(true);
   });
 
-  it("suppresses a file admin signer when the admin bearer comes from env", async () => {
-    process.env = { ...process.env, CONSOLE_ADMIN_KEY: "hbradm_env_bearer" };
-    const mod = await loadConfigModuleWith({
-      adminKey: "hbradm_file_bearer",
-      adminServicePrivateKey: "suiprivkey1_file_admin_signer",
-    });
+  it.each(["", "   "])(
+    "keeps a saved signer when its environment value is %j and the bearer is overridden",
+    async (blank) => {
+      Object.assign(process.env, {
+        CONSOLE_API_KEY: "hbr_env_bearer",
+        CONSOLE_SERVICE_PRIVATE_KEY: blank,
+        CONSOLE_ADMIN_KEY: "hbradm_env_bearer",
+        CONSOLE_ADMIN_SERVICE_PRIVATE_KEY: blank,
+      });
+      const mod = await loadConfigModuleWith(saved);
+      const cfg = await Effect.runPromise(mod.ConsoleConfig);
 
-    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+      expect(mod.getRawApiKey(cfg)).toBe("hbr_env_bearer");
+      expect(mod.getRawServiceKey(cfg)).toBe(saved.servicePrivateKey);
+      expect(mod.getRawAdminKey(cfg)).toBe("hbradm_env_bearer");
+      expect(mod.getRawAdminServiceKey(cfg)).toBe(saved.adminServicePrivateKey);
+      expect(mod.hasAdminCredential(cfg)).toBe(true);
+    },
+  );
+
+  it.each(["", "   "])(
+    "keeps a saved bearer when its environment value is %j and the signer is overridden",
+    async (blank) => {
+      Object.assign(process.env, {
+        CONSOLE_API_KEY: blank,
+        CONSOLE_SERVICE_PRIVATE_KEY: "suiprivkey1_env_signer",
+        CONSOLE_ADMIN_KEY: blank,
+        CONSOLE_ADMIN_SERVICE_PRIVATE_KEY: "suiprivkey1_env_admin_signer",
+      });
+      const mod = await loadConfigModuleWith(saved);
+      const cfg = await Effect.runPromise(mod.ConsoleConfig);
+
+      expect(mod.getRawApiKey(cfg)).toBe(saved.apiKey);
+      expect(mod.getRawServiceKey(cfg)).toBe("suiprivkey1_env_signer");
+      expect(mod.getRawAdminKey(cfg)).toBe(saved.adminKey);
+      expect(mod.getRawAdminServiceKey(cfg)).toBe("suiprivkey1_env_admin_signer");
+      expect(mod.hasAdminCredential(cfg)).toBe(true);
+    },
+  );
+
+  it("leaves credentials absent when neither source supplies them", async () => {
+    const mod = await loadConfigModuleWith({});
     const cfg = await Effect.runPromise(mod.ConsoleConfig);
 
-    expect(mod.getRawAdminKey(cfg)).toBe("hbradm_env_bearer");
+    expect(mod.getRawApiKey(cfg)).toBe("");
+    expect(mod.getRawServiceKey(cfg)).toBe("");
+    expect(mod.getRawAdminKey(cfg)).toBe("");
     expect(mod.getRawAdminServiceKey(cfg)).toBe("");
     expect(mod.hasAdminCredential(cfg)).toBe(false);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("CONSOLE_ADMIN_SERVICE_PRIVATE_KEY"));
-    warn.mockRestore();
-  });
-
-  it("keeps a file signer when its bearer also comes from the file", async () => {
-    // No env bearer → no mismatch → the saved pair resolves intact.
-    const mod = await loadConfigModuleWith({
-      apiKey: "hbr_file_bearer",
-      servicePrivateKey: "suiprivkey1_file_signer",
-    });
-    const cfg = await Effect.runPromise(mod.ConsoleConfig);
-
-    expect(mod.getRawApiKey(cfg)).toBe("hbr_file_bearer");
-    expect(mod.getRawServiceKey(cfg)).toBe("suiprivkey1_file_signer");
-  });
-
-  it("suppresses a file BEARER when only the signer comes from env (bug_003 mirror)", async () => {
-    // The mirror of the first case: a saved bearer paired with an env-only signer
-    // is equally a mismatch. Drop the file bearer to "" and warn, rather than
-    // pairing it with an unrelated env signer.
-    process.env = { ...process.env, CONSOLE_SERVICE_PRIVATE_KEY: "suiprivkey1_env_signer" };
-    const mod = await loadConfigModuleWith({
-      apiKey: "hbr_file_bearer",
-      servicePrivateKey: "suiprivkey1_file_signer",
-    });
-
-    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    const cfg = await Effect.runPromise(mod.ConsoleConfig);
-
-    expect(mod.getRawServiceKey(cfg)).toBe("suiprivkey1_env_signer");
-    expect(mod.getRawApiKey(cfg)).toBe("");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("CONSOLE_API_KEY"));
-    warn.mockRestore();
   });
 });

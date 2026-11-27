@@ -52,6 +52,13 @@ afterEach(() => {
 });
 
 describe("runConfigure — silent mode", () => {
+  it.each([["--register", "cursor"], ["--register", "none"], ["--no-register"]])(
+    "refuses install-only %j before writes",
+    async (...flags) => {
+      expect(await runConfigure(["--silent", "--owner-address", OWNER_ADDRESS, ...flags])).toBe(1);
+      expect(fs.existsSync(path.join(tmpDir, "walrus-console-mcp"))).toBe(false);
+    },
+  );
   it("writes the management pair and returns 0", async () => {
     const code = await runConfigure([
       "--admin-key",
@@ -1012,6 +1019,7 @@ describe("runConfigure — back to the menu (COMG-1036)", () => {
         },
         allowedDirs: (deps) =>
           stepAllowedDirs({
+            scope: "fallback",
             ...deps,
             select: async () => null,
             cwd: tmpDir,

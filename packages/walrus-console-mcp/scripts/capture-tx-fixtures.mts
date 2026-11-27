@@ -70,9 +70,12 @@ async function main() {
 
   const spaces = await call("/api/v1/spaces", cfg.apiKey);
   const space = (spaces.data ?? spaces)[0];
+  // `members: []`, not omitted: Console now rejects the omitted form outright (400), and `[]`
+  // is also what `create_bucket` itself always sends for a bucket with no other grantees — the
+  // same no-extra-grants shape this fixture is meant to capture.
   const reserve = await call(`/api/v1/spaces/${space.id}/buckets`, cfg.apiKey, {
     method: "POST",
-    body: JSON.stringify({ name: `txshape-fixture-${Date.now()}`, scope: "private" }),
+    body: JSON.stringify({ name: `txshape-fixture-${Date.now()}`, scope: "private", members: [] }),
   });
 
   const child = Ed25519Keypair.generate();

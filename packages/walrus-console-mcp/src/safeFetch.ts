@@ -1,4 +1,10 @@
 import { isAllowedBaseUrl, isLoopbackUrl } from "./baseUrl.js";
+import {
+  CLIENT_HEADER,
+  REPORTED_NAME_HEADER,
+  RUNTIME_HEADER,
+  TARGET_HEADER,
+} from "./consoleClientHeader.js";
 
 /**
  * Bounded, not unlimited: a legitimate redirect chain here is at most one hop
@@ -67,13 +73,19 @@ function isAllowedRedirectTarget(currentUrl: string, nextUrl: string): boolean {
  * would otherwise travel where `Authorization` deliberately does not. Harmless while
  * the value is a static constant; the point is that it stays harmless if it ever
  * stops being one.
+ *
+ * The attribution headers from `consoleClientHeader.ts` are listed by their constants,
+ * so a rename cannot leave one of them behind on a cross-origin hop.
  */
 const CROSS_ORIGIN_STRIPPED_HEADERS = [
   "authorization",
   "cookie",
   "proxy-authorization",
-  "x-console-client",
-];
+  CLIENT_HEADER,
+  TARGET_HEADER,
+  RUNTIME_HEADER,
+  REPORTED_NAME_HEADER,
+].map((name) => name.toLowerCase());
 
 /**
  * Drop credential-bearing headers on a cross-origin hop.

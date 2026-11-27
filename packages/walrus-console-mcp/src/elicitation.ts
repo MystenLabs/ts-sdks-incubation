@@ -108,3 +108,64 @@ export function confirmApiKeyMint(
 ): Promise<ElicitationOutcome> {
   return confirmIrreversibleAction(server, apiKeyMintConfirmationMessage(args), signal);
 }
+
+/** The result a tool returns when the human did not confirm, in place of acting. */
+export interface ConfirmationDeclined {
+  readonly ok: false;
+  readonly stage: "declined";
+  readonly reason: string;
+}
+
+/**
+ * Turn an elicitation outcome into the refusal a tool returns, or `undefined` when the action may
+ * go ahead (confirmed, or the client cannot prompt and the schema `confirm: true` stands alone).
+ * `subject` names the action ("mint", "deletion") and `done` what did not happen ("minted").
+ */
+export function declinedOutcome(
+  outcome: ElicitationOutcome,
+  subject: string,
+  done: string,
+): ConfirmationDeclined | undefined {
+  if (!outcome.gated || outcome.confirmed) return undefined;
+  const nothing = `Nothing was ${done}.`;
+  const reason =
+    outcome.action === "timeout"
+      ? `The user did not answer the ${subject} confirmation prompt before it timed out. ${nothing}`
+      : outcome.action === "unavailable"
+        ? `The ${subject} confirmation prompt did not complete. ${nothing}`
+        : outcome.action === "accept"
+          ? `The user accepted the prompt without checking its confirmation box. ${nothing}`
+          : `The user did not confirm the ${subject} through the client's elicitation UI (answered "${outcome.action}"). ${nothing}`;
+  return { ok: false, stage: "declined", reason };
+}
+
+/** The prompt for delete_bucket. Model-controlled values are rendered as JSON strings. */
+export function deleteBucketConfirmationMessage(args: {
+  readonly bucketId: string;
+  readonly deleteContents: boolean;
+}): string {
+  return (
+    `Permanently delete bucket ${JSON.stringify(args.bucketId)}` +
+    (args.deleteContents ? " and every file in it" : "") +
+    "? Console has no undelete."
+  );
+}
+
+/** The prompt for delete_file. */
+export function deleteFileConfirmationMessage(args: {
+  readonly bucketId: string;
+  readonly fileId: string;
+}): string {
+  return (
+    `Permanently delete file ${JSON.stringify(args.fileId)} from bucket ` +
+    `${JSON.stringify(args.bucketId)}? Console has no undelete.`
+  );
+}
+
+/** The prompt for download_file with overwrite: true. `destPath` is the resolved path. */
+export function overwriteConfirmationMessage(args: { readonly destPath: string }): string {
+  return (
+    `Replace ${JSON.stringify(args.destPath)} with a downloaded file? If a file is already ` +
+    "there, its contents are lost."
+  );
+}

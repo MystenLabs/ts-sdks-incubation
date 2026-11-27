@@ -7,7 +7,7 @@ import { ConsoleApiClient } from "../src/console/ConsoleApiClient";
 import { ConsoleApiError } from "../src/console/errors";
 
 /**
- * PR #39 code review (docs/pr-39-code-review.md, section 3) — `createApiKey`
+ * PR #39 code review — `createApiKey`
  * and `getApiKeyStatus` used to `(yield* res.json) as X` with no runtime
  * validation. `mintedCredentialStore.ts` grew a `typeof keyId !== "string"`
  * guard purely to defend against the first cast, and `KeyAdminService.ts`'s
@@ -180,6 +180,10 @@ describe("createApiKey", () => {
     // word "validation" earlier in the message also contains "id" as a
     // substring, which would make a bare `toContain("id")` pass vacuously.
     expect(apiError.message).toContain("id:");
+    // The exact zod 4 issue text. keyAdmin.test.ts stubs this same message for
+    // its stage:"mint" test, so a zod upgrade that changes the wording shows
+    // up here first instead of leaving that stub quietly out of date.
+    expect(apiError.message).toContain("id: Invalid input: expected string, received undefined");
   });
 
   /**
