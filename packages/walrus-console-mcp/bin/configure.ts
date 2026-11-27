@@ -64,7 +64,7 @@ const CHOICES: { choice: ConfigureChoice; label: string; hint: string }[] = [
   {
     choice: "paths",
     label: "File access folders",
-    hint: "upload/download directories when the agent has no MCP roots",
+    hint: "saved upload/download folders and fallback/shared scope",
   },
 ];
 
@@ -123,6 +123,9 @@ export async function runConfigure(
     return 0;
   }
   const args = parseArgs(argv, process.env);
+  if (args.registerAgents !== undefined)
+    args.errors.push("--register is only supported by install.");
+  if (!args.register) args.errors.push("--no-register is only supported by install.");
   if (args.errors.length > 0) {
     for (const err of args.errors) print(fail(err));
     return 1;
@@ -230,6 +233,7 @@ export async function runConfigure(
     const write = await runAllowedDirs({
       step: "2/2",
       seed: args.values.allowedDirs,
+      scope: args.values.allowedDirsScope,
       back: true,
     });
     if (write.backRequested) return "back";
@@ -256,7 +260,10 @@ export async function runConfigure(
             // come back from the shell as two argv entries — parseArgs then reads
             // the first word as the folder and rejects the rest, so the remedy
             // this notice promises would truncate the very path it names.
-            seededDirs.map((dir) => `--allowed-dirs ${shellQuote(dir)}`).join(" "),
+            seededDirs.map((dir) => `--allowed-dirs ${shellQuote(dir)}`).join(" ") +
+            (args.values.allowedDirsScope
+              ? ` --allowed-dirs-scope ${args.values.allowedDirsScope}`
+              : ""),
         ),
       );
     }

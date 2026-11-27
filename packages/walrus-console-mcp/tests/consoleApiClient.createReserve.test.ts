@@ -187,6 +187,17 @@ describe("createBucket", () => {
     expect(apiError.status).toBe(409);
   });
 
+  it("reports the HTTP error status when the response body is JSON null", async () => {
+    const { layer } = harness(null, 502);
+
+    const error = await runFail(layer, (api) =>
+      api.createBucket(SpaceId.make("space-1"), "notes", OWNER, []),
+    );
+
+    expect(error).toBeInstanceOf(ConsoleApiError);
+    expect(error).toMatchObject({ status: 502, message: "HTTP 502" });
+  });
+
   it("surfaces a 400 authored-members-invalid with code and status on ConsoleApiError", async () => {
     const { layer } = harness(
       { error: "member is not an active signer", code: "bucket_create_authored_members_invalid" },
@@ -203,6 +214,27 @@ describe("createBucket", () => {
     const apiError = error as ConsoleApiError;
     expect(apiError.code).toBe("bucket_create_authored_members_invalid");
     expect(apiError.status).toBe(400);
+  });
+
+  // A name conflict can identify the folder holding the name.
+  it.each([
+    ["carries the bucket id a name conflict names", { bucket_id: "bucket-held" }, "bucket-held"],
+    ["leaves it out when Console names none", {}, undefined],
+    ["ignores a bucket id that is not a string", { bucket_id: 42 }, undefined],
+    ["ignores an empty bucket id", { bucket_id: "" }, undefined],
+    ["ignores an oversized bucket id", { bucket_id: "x".repeat(1024) }, undefined],
+  ] as const)("%s", async (_, extra, expected) => {
+    const { layer } = harness(
+      { error: 'Bucket name "notes" already exists', code: "bucket_name_conflict", ...extra },
+      409,
+    );
+
+    const error = (await runFail(layer, (api) =>
+      api.createBucket(SpaceId.make("space-1"), "notes", OWNER, []),
+    )) as ConsoleApiError;
+
+    expect(error.code).toBe("bucket_name_conflict");
+    expect(error.bucketId).toBe(expected);
   });
 });
 

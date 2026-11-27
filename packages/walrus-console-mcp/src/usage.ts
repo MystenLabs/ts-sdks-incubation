@@ -39,7 +39,11 @@ const CREDENTIAL_FLAGS = `  --credential-bundle <json>   The whole bundle the Co
   --admin-signer <key>         Sui signer that goes with the management key.
   --owner-address <0x...>      Pin the owner a created bucket is granted to.
   --key-admin-address <0x...>  Pin its Key-Admin manager.
-  --allowed-dirs <dir>         A folder upload and download may use. Repeatable.`;
+  --allowed-dirs <dir>         A folder upload and download may use. Repeatable.
+  --allowed-dirs-scope <scope> shared or fallback (default for a replacement).
+                               Requires the complete --allowed-dirs list.
+                               shared grants access across unrelated projects;
+                               fallback applies without workspace/env folders.`;
 
 const SILENT_FLAG = `  --silent                     Do not prompt. Take the values from the flags and
                                the environment, write them, exit.`;
@@ -62,13 +66,21 @@ Usage
 Flags
 ${CREDENTIAL_FLAGS}
 ${SILENT_FLAG}
-  --no-register                Save the credentials, skip the agent step.
+  --register <agents>          Comma-separated IDs: claude-code, cursor, codex,
+                               gemini, antigravity; or none.
+  --no-register                Skip agent registration; still install the
+                               stable launcher (same as --register none).
 ${HELP_FLAG}
 
 ${ENVIRONMENT}
 
 Example
-  walrus-console-mcp install --allowed-dirs ~/Documents
+  walrus-console-mcp install --allowed-dirs ~/Documents \\
+    --allowed-dirs-scope shared --register cursor
+
+Non-interactive installs require --register <agents> or an explicit opt-out.
+--register none installs the stable launcher without registering any agent.
+Exit codes: 0 success, 1 validation error, 2 incomplete installation.
 
 After it finishes, restart your agent. A session that was already running will
 not see the tools until it is restarted.`;
@@ -88,13 +100,15 @@ ${HELP_FLAG}
 ${ENVIRONMENT}
 
 Example
-  walrus-console-mcp config --silent --allowed-dirs ~/Documents`;
+  walrus-console-mcp config --silent --allowed-dirs ~/Documents \\
+    --allowed-dirs-scope shared`;
 
 export const ROOT_USAGE = `walrus-console-mcp: the MCP server for Walrus Console.
 
 Usage
   walrus-console-mcp            Serve over stdio. This is what an agent runs,
                                 and it is not meant to be typed by hand.
+  walrus-console-mcp --stdio    Explicit stdio mode (used by Cursor).
   walrus-console-mcp install    Save credentials, pick folders, register agents.
   walrus-console-mcp config     Change credentials or folders later.
   walrus-console-mcp --import-bundle <base64url>

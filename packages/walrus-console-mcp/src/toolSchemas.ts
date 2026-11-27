@@ -55,3 +55,17 @@ export const deleteBucketContents = z
       "telling the user how many files Console reported and getting an explicit yes to " +
       "deleting them — never infer it from the first confirmation.",
   );
+
+/**
+ * `delete_folder`'s second answer, the same shape as `deleteBucketContents`: a
+ * subfolder that still holds anything is refused with Console's counts, and
+ * those counts are what the user says yes to.
+ */
+export const deleteFolderContents = z
+  .literal(true)
+  .optional()
+  .describe(
+    "Must be exactly `true` to delete a subfolder that still holds files or subfolders. Only " +
+      "set this after telling the user the fileCount and folderCount Console reported and " +
+      "getting an explicit yes to deleting them — never infer it from the first confirmation.",
+  );

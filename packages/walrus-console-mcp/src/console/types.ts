@@ -14,6 +14,9 @@ export type BucketId = typeof BucketId.Type;
 export const FileId = Schema.String.pipe(Schema.brand("FileId"));
 export type FileId = typeof FileId.Type;
 
+export const FolderId = Schema.String.pipe(Schema.brand("FolderId"));
+export type FolderId = typeof FolderId.Type;
+
 export interface SpaceListItem {
   readonly id: SpaceId;
   readonly type: "personal" | "team";
@@ -58,7 +61,41 @@ export interface Bucket {
    * private bucket rather than silently skipping the check.
    */
   readonly creator?: string | null;
+  /**
+   * `pending_policy` is a bucket still being created: listed because it holds
+   * a slot under the plan's bucket limit, but it cannot hold files yet.
+   * Optional because a Console that predates pending buckets in the list sends
+   * neither field.
+   */
+  readonly provisioning_state?: "pending_policy" | "active";
+  /**
+   * The pending bucket's transaction landed: it finishes on its own and
+   * `delete_bucket` refuses to discard it.
+   */
+  readonly chain_landed?: boolean;
   readonly storage_used: number;
+  readonly created_at: string;
+  readonly updated_at: string;
+  /**
+   * The folder the bucket's file tree starts at. On the single-bucket read
+   * only, not on the list. Null for a bucket created before folders existed,
+   * until its first upload; optional for a Console that predates the field.
+   */
+  readonly root_folder_id?: string | null;
+}
+
+/** A subfolder, or a bucket's root when `parent_folder_id` is null. */
+export interface Folder {
+  readonly id: FolderId;
+  readonly bucket_id: BucketId;
+  readonly parent_folder_id: FolderId | null;
+  /** The empty string for the root: the bucket's name is shown there. */
+  readonly name: string;
+  readonly is_root: boolean;
+  /** 0 for the root, 1 for a subfolder directly under it. */
+  readonly depth: number;
+  readonly status: string;
+  readonly description: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -92,6 +129,10 @@ export interface FileSummary {
   readonly metadata: Record<string, unknown> | null;
   readonly created_at: string;
   readonly updated_at: string;
+  /** The folder holding the file; the bucket's root for a file in no subfolder. */
+  readonly folder_id?: FolderId | null;
+  /** Names of the subfolders from below the root down to the file's folder. */
+  readonly path?: readonly string[];
 }
 
 /**

@@ -27,12 +27,12 @@ describe("paged listing tools accept a cursor", () => {
   it("list_files forwards the cursor to the client instead of a hardcoded undefined", () => {
     const block = toolRegistrationBlock("list_files");
 
-    // The client signature is (bucketId, limit, cursor, q) — positional, so a
+    // The client signature is (bucketId, limit, cursor, q, folder) — positional, so a
     // dropped cursor is not a type error, only a listing that never advances.
     // `[^;]` scans to the end of the statement: `[^)]` would stop at the paren
     // closing `BucketId.make(bucketId)` and never reach the cursor or q slot.
     expect(block).toMatch(
-      /listBucketFiles\(\s*BucketId\.make\(bucketId\),\s*limit,\s*cursor,\s*q\s*\)/,
+      /listBucketFiles\(\s*BucketId\.make\(bucketId\),\s*limit,\s*cursor,\s*q,\s*\{\s*folderId,\s*recursive,?\s*\}\s*\)/,
     );
     expect(block).not.toMatch(/listBucketFiles\([^;]*\bundefined\b/);
   });

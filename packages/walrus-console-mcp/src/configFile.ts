@@ -17,6 +17,8 @@ import { withFileLock } from "./fileLock.js";
  * from here as a fallback when env vars are not set.
  */
 
+export type AllowedDirsScope = "fallback" | "shared";
+
 export interface ConfigFileData {
   apiKey?: string;
   servicePrivateKey?: string;
@@ -38,11 +40,14 @@ export interface ConfigFileData {
    */
   keyAdminAddress?: string;
   /**
-   * Directories `upload_file` / `download_file` may touch when the MCP client
-   * does not advertise filesystem roots. Absolute paths, persisted as a JSON
-   * array so a Windows `C:\…` drive letter is never a separator. Not a secret.
+   * Saved upload/download directories, governed by allowedDirsScope.
+   * Home or an ancestor stays fallback-only; the config directory is protected.
+   * Absolute paths, persisted as a JSON array so a Windows `C:\…` drive letter
+   * is never a separator. Not a secret.
    */
   allowedDirs?: string[];
+  /** Missing scope retains legacy fallback behavior; only explicit shared adds grants. */
+  allowedDirsScope?: AllowedDirsScope;
 }
 
 const APP_NAME = "walrus-console-mcp";
@@ -187,16 +192,17 @@ function parseConfigFields(parsed: Record<string, unknown>): ConfigFileData {
   const keyAdminAddress = parsed["keyAdminAddress"];
   if (typeof keyAdminAddress === "string" && isValidSuiAddress(keyAdminAddress))
     config.keyAdminAddress = keyAdminAddress;
-  // Keep only non-empty strings. A tampered file that puts a number or a nested
-  // object here must not become a sandbox root, and an empty array is "unset".
+  // Drop blank or malformed entries without altering valid filesystem names.
+  // A trailing space can distinguish two different directories on POSIX.
   const allowedDirs = parsed["allowedDirs"];
   if (Array.isArray(allowedDirs)) {
-    const dirs = allowedDirs
-      .filter((p): p is string => typeof p === "string")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0);
+    const dirs = allowedDirs.filter(
+      (p): p is string => typeof p === "string" && p.trim().length > 0,
+    );
     if (dirs.length > 0) config.allowedDirs = dirs;
   }
+  const scope = parsed["allowedDirsScope"];
+  if (scope === "shared" || scope === "fallback") config.allowedDirsScope = scope;
   return config;
 }
 

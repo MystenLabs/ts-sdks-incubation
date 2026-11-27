@@ -29,7 +29,8 @@
         "CONSOLE_KEY_ADMIN_ADDRESS": "${user_config.console_key_admin_address}",
         "CONSOLE_ADMIN_KEY": "${user_config.console_admin_key}",
         "CONSOLE_ADMIN_SERVICE_PRIVATE_KEY": "${user_config.console_admin_service_private_key}",
-        "CONSOLE_MCP_ALLOWED_DIRS": "${user_config.console_mcp_allowed_dirs}"
+        "CONSOLE_MCP_ALLOWED_DIRS": "${user_config.console_mcp_allowed_dirs}",
+        "WALRUS_MCP_CLIENT": "mcpb"
       }
     }
   },
@@ -94,7 +95,7 @@
   "tools": [
     {
       "name": "ping_console",
-      "description": "Check whether required Console credentials are present."
+      "description": "Check configuration and verify the configured API key against Console."
     },
     {
       "name": "list_spaces",
@@ -106,11 +107,11 @@
     },
     {
       "name": "list_buckets",
-      "description": "List buckets in a space, one page at a time. Filter by visibility (public/private) and page by passing the returned next_cursor back as cursor until next_cursor is null."
+      "description": "List buckets in a space, one page at a time. Filter by visibility (public/private) and page by passing the returned next_cursor back as cursor until next_cursor is null. A bucket with provisioning_state pending_policy is still being created and cannot hold files yet."
     },
     {
       "name": "create_bucket",
-      "description": "Create a new Seal-encrypted bucket. Refuses unless Web Account Address is set in this extension's settings, and, on a space that hands group management to a Key-Admin, Key Admin Address too. Returns identity.owner and identity.members — who the signed transaction makes the owner and which addresses it grants access to — plus disclosure, one sentence on who can read the bucket and on what evidence; show it and confirm the roster before uploading sensitive data. There is no top-level members field."
+      "description": "Create a new Seal-encrypted bucket. Refuses unless Web Account Address is set in this extension's settings, and, on a space that hands group management to a Key-Admin, Key Admin Address too. Returns identity.owner and identity.members — who the signed transaction makes the owner and which addresses it grants access to — plus disclosure, one sentence on who can read the bucket and on what evidence; show it and confirm the roster before uploading sensitive data. There is no top-level members field. If it fails after reserving, the error carries the bucket id and an outcome saying whether it is safe to create again."
     },
     {
       "name": "generate_api_key",
@@ -118,7 +119,7 @@
     },
     {
       "name": "upload_file",
-      "description": "Read a local file, encrypt it with Seal, and upload it."
+      "description": "Read a local file, encrypt it with Seal, and upload it, optionally into a subfolder of the bucket."
     },
     {
       "name": "download_file",
@@ -126,7 +127,7 @@
     },
     {
       "name": "list_files",
-      "description": "List files inside a specific bucket, one page at a time. Page by passing pagination.next_cursor back as cursor while pagination.has_more is true."
+      "description": "List files inside a specific bucket, one page at a time. Page by passing pagination.next_cursor back as cursor while pagination.has_more is true. With no folderId it covers the whole bucket; folderId and recursive narrow it to one subfolder."
     },
     {
       "name": "get_file_status",
@@ -147,6 +148,26 @@
     {
       "name": "delete_file",
       "description": "Permanently delete a single file from a bucket."
+    },
+    {
+      "name": "list_folders",
+      "description": "List the subfolders directly inside a folder of a bucket, the root when folderId is omitted."
+    },
+    {
+      "name": "create_folder",
+      "description": "Create a subfolder in a bucket, at its root or under another subfolder."
+    },
+    {
+      "name": "update_folder",
+      "description": "Rename a subfolder, move it under another folder of the same bucket, or edit its description."
+    },
+    {
+      "name": "delete_folder",
+      "description": "Permanently delete a subfolder. One that still holds files or subfolders is refused with the counts unless deleteContents is also set."
+    },
+    {
+      "name": "move_file",
+      "description": "Move a file to another folder of its own bucket. A destination in another bucket is refused with reencrypt_required."
     },
     {
       "name": "update_file",

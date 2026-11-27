@@ -10,22 +10,69 @@ export class ConsoleApiError extends Data.TaggedError("ConsoleApiError")<{
   readonly code?: string;
   readonly status?: number;
   readonly endpoint?: string;
+  /**
+   * The bucket an error names, when Console sends one: a create's
+   * `bucket_name_conflict` carries the folder that holds the name.
+   */
+  readonly bucketId?: string;
+  /**
+   * A `folder_not_empty` refusal's counts: files and subfolders anywhere below
+   * the folder, which the agent puts to the user before asking for
+   * `deleteContents`.
+   */
+  readonly fileCount?: number;
+  readonly folderCount?: number;
 }> {}
+
+/**
+ * `create_bucket` reserved a bucket, signed it and called finalize, and
+ * finalize failed. Always carries the reserved `bucketId`, since the folder
+ * may exist even though the call failed, and losing the id is what made agents
+ * retry into duplicate folders.
+ *
+ * - `not_created` — Console confirmed the execute failure and released the slot.
+ * - `may_complete` — the failure does not establish whether the transaction landed.
+ *   Check the reserved ID with `list_buckets` and wait for the folder to become active.
+ * - `pending` — Console refused the first finalize attempt. The folder remains
+ *   reserved. Use `list_buckets` to inspect its provisioning and on-chain status.
+ */
+export class BucketFinalizeError extends Data.TaggedError("BucketFinalizeError")<{
+  readonly message: string;
+  readonly bucketId: string;
+  readonly outcome: "not_created" | "may_complete" | "pending";
+  readonly code?: string;
+  readonly status?: number;
+}> {}
+
+/**
+ * Every code a ConsoleAuthError can carry. The union and the runtime list come
+ * from this one array, so a new code is picked up wherever the list is read
+ * (ping_console's hint in bin/console-mcp.ts, for one) without a second edit.
+ */
+export const CONSOLE_AUTH_ERROR_CODES = [
+  "missing_api_key",
+  "invalid_api_key",
+  "read_only_api_key",
+  // A 403 from a scope violation (e.g. a working key hitting the Key-Admin mint
+  // endpoints). Kept distinct so the fidelity isn't lost to invalid_api_key.
+  "insufficient_scope",
+  // A revoked key: plainly, by a rotation that has not finished, or replaced by
+  // one. Each has a different remedy; see `revokedKey.ts`.
+  "api_key_revoked",
+  "api_key_rotation_incomplete",
+  "api_key_replaced",
+] as const;
+
+export type ConsoleAuthErrorCode = (typeof CONSOLE_AUTH_ERROR_CODES)[number];
 
 export class ConsoleAuthError extends Data.TaggedError("ConsoleAuthError")<{
   readonly message: string;
-  readonly code:
-    | "missing_api_key"
-    | "invalid_api_key"
-    | "read_only_api_key"
-    // A 403 from a scope violation (e.g. a working key hitting the Key-Admin mint
-    // endpoints). Kept distinct so the fidelity isn't lost to invalid_api_key.
-    | "insufficient_scope"
-    // A revoked key: plainly, by a rotation that has not finished, or replaced by
-    // one. Each has a different remedy; see `revokedKey.ts`.
-    | "api_key_revoked"
-    | "api_key_rotation_incomplete"
-    | "api_key_replaced";
+  readonly code: ConsoleAuthErrorCode;
+  /**
+   * The HTTP status behind it. Console answers a bad key with 401; a 403 means the
+   * key is valid but may not reach the resource, which some callers report apart.
+   */
+  readonly status?: 401 | 403;
 }> {}
 
 export class SealCryptoError extends Data.TaggedError("SealCryptoError")<{

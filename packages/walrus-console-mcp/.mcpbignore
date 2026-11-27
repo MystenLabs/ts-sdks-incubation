@@ -25,3 +25,7 @@ README.md
 .claude/
 .mcp.json
 .env.example
+docs/
+scripts/
+.superpowers/
+temp/

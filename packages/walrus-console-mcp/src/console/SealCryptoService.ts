@@ -1,4 +1,4 @@
-import { EncryptedObject, SealClient, SessionKey } from "@mysten/seal";
+import { EncryptedObject, InconsistentKeyServersError, SealClient, SessionKey } from "@mysten/seal";
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -81,6 +81,13 @@ export interface DownloadBinding {
  *
  * Pattern: exact match to console/api Effect v3 services (CLAUDE.md).
  */
+
+/**
+ * Options every decrypt passes. `checkShareConsistency` re-derives each share in the ciphertext
+ * and rejects an object whose shares disagree, so a corrupted or tampered share fails with
+ * `InconsistentKeyServersError` rather than as a generic decrypt failure.
+ */
+export const SEAL_DECRYPT_CHECKS = { checkShareConsistency: true } as const;
 
 /**
  * Lifetime of a Seal SessionKey, in minutes. Long enough that a multi-file
@@ -528,7 +535,8 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
       // the one way this promise fails to settle promptly. `SealClient`'s `timeout`
       // (10s, pinned above) bounds that; the helper's own bound is the backstop.
       const plaintext = yield* tryPromiseSettling({
-        try: () => sealClient.decrypt({ data: ciphertext, sessionKey, txBytes }),
+        try: () =>
+          sealClient.decrypt({ data: ciphertext, sessionKey, txBytes, ...SEAL_DECRYPT_CHECKS }),
         // A failure inside the Console proxy is not a decryption problem and must not be
         // reported as one: an agent told "check your service key" when the proxy is simply
         // switched off will keep retrying the wrong fix. Seal's own denials carry no
@@ -538,6 +546,16 @@ export class SealCryptoService extends Effect.Service<SealCryptoService>()("Seal
             rawKey: getRawApiKey(config),
             baseUrl: config.baseUrl,
           }) ??
+          (cause instanceof InconsistentKeyServersError
+            ? new SealCryptoError({
+                message:
+                  "Seal rejected this file: its key shares are inconsistent, so it is corrupted " +
+                  "or was tampered with. It was not decrypted.",
+                cause,
+                step: "decrypt",
+                embeddedPolicyId,
+              })
+            : undefined) ??
           new SealCryptoError({
             message:
               "Seal decryption failed. Common causes: CONSOLE_SERVICE_PRIVATE_KEY is not " +

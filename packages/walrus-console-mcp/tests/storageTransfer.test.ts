@@ -470,3 +470,43 @@ describe("an aborted download leaves nothing behind (F10)", () => {
     expect(entries.some((f) => f.includes("aborted-dl.bin"))).toBe(false);
   });
 });
+
+describe("downloadFile writes the decrypted file as 0600", () => {
+  it("never lands world- or group-readable, regardless of umask", async () => {
+    const dest = path.join(tmpDir, "private-dl.bin");
+
+    const api = {
+      getBucketById: (id: string) => Effect.succeed(verifiedBucket(STUB_CONFIG.baseUrl, id)),
+      getBucketFile: (_b: string, f: string) => Effect.succeed(boundFile(f)),
+      downloadBucketFile: () => Effect.succeed(new Uint8Array([1, 2, 3])),
+    };
+    const seal = {
+      decrypt: (ct: Uint8Array) =>
+        Effect.succeed({ plaintext: ct, authenticatedName: null, bound: false }),
+    };
+    const layer = ConsoleStorageService.DefaultWithoutDependencies.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ConsoleApiClient, api as unknown as typeof ConsoleApiClient.Service),
+          Layer.succeed(SealCryptoService, seal as unknown as typeof SealCryptoService.Service),
+          Layer.succeed(ConsoleConfigTag, STUB_CONFIG),
+          NO_CHAIN_READS,
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConsoleStorageService;
+        return yield* svc.downloadFile(BucketId.make("bucket-1"), FileId.make("file-1"), dest);
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // 0o600 pinned via fchmod, not just the open() mode — a loose umask (022,
+    // say) must not loosen it. This is plaintext that was private enough to
+    // be Seal-encrypted at rest; it must not land world-readable on a shared
+    // machine.
+    const mode = (await fs.stat(dest)).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});

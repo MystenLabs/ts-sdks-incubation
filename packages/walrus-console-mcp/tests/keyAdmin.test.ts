@@ -890,7 +890,8 @@ describe("generateApiKey — the 201 arrived but its body failed validation (F1)
         capturedName = a.name;
         return Effect.fail(
           new ConsoleApiError({
-            message: "createApiKey received a 201 response that failed validation: id: Required",
+            message:
+              "createApiKey received a 201 response that failed validation: id: Invalid input: expected string, received undefined",
             code: "invalid_response_shape",
             status: 201,
           }),
@@ -927,7 +928,7 @@ describe("generateApiKey — the 201 arrived but its body failed validation (F1)
     if (outcome.ok || outcome.stage !== "mint") {
       throw new Error(`expected a "mint" stage failure, got: ${JSON.stringify(outcome)}`);
     }
-    expect(outcome.reason).toContain("id: Required");
+    expect(outcome.reason).toContain("id: Invalid input: expected string, received undefined");
     expect(capturedName).toMatch(/mcp-mint-/);
     const marker = capturedName?.match(/mcp-mint-[0-9a-f]+/)?.[0];
     expect(marker).toBeTruthy();

@@ -19,15 +19,11 @@ async function loadConfigModuleWith(data: Record<string, string>) {
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-config-file-test-"));
   originalEnv = { ...process.env };
-  // Strip the real credentials so only the file can supply a value.
-  const {
-    CONSOLE_API_KEY: _a,
-    CONSOLE_SERVICE_PRIVATE_KEY: _b,
-    CONSOLE_ADMIN_KEY: _c,
-    CONSOLE_ADMIN_SERVICE_PRIVATE_KEY: _d,
-    ...rest
-  } = process.env;
-  process.env = { ...rest, XDG_CONFIG_HOME: tmpDir };
+  process.env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("CONSOLE_")),
+  );
+  process.env["XDG_CONFIG_HOME"] = tmpDir;
+  process.env["APPDATA"] = tmpDir;
 });
 
 afterEach(() => {

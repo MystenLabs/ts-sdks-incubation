@@ -8,6 +8,7 @@ import {
   antigravityConfigPath,
   CLI_CLIENT_SPECS,
   cliClient,
+  clientLabelEnv,
   commandExists,
   cursorConfigPath,
   dirExists,
@@ -211,7 +212,7 @@ describe("cliClient", () => {
 
     expect(calls.map((c) => c.args[1])).toEqual(["remove", "add"]);
     expect(calls[0]?.bin).toBe("claude");
-    expect(calls[1]?.args).toEqual(spec.addArgs(SERVER_NAME, pkgSpec));
+    expect(calls[1]?.args).toEqual(spec.addArgs(SERVER_NAME, pkgSpec, clientLabelEnv(spec.id)));
   });
 
   it("still runs add when the best-effort remove fails (not yet registered)", () => {
@@ -245,7 +246,9 @@ describe("cliClient", () => {
 
   it("manualHint() is the copy-pasteable add command", () => {
     const hint = cliClient(spec).manualHint(pkgSpec);
-    expect(hint).toBe(`claude ${spec.addArgs(SERVER_NAME, pkgSpec).join(" ")}`);
+    expect(hint).toBe(
+      `claude ${spec.addArgs(SERVER_NAME, pkgSpec, clientLabelEnv(spec.id)).join(" ")}`,
+    );
   });
 });
 
@@ -268,6 +271,26 @@ describe("jsonFileClient", () => {
       command: pkgSpec,
       args: [],
     });
+  });
+
+  it("refuses readback after a client drops required launch arguments", () => {
+    const configPath = path.join(tmpDir, "required-args.json");
+    const client = jsonFileClient({
+      id: "cursor",
+      label: "Cursor",
+      configPath: () => configPath,
+      detect: () => true,
+      args: ["--stdio"],
+    });
+    client.register(pkgSpec);
+    expect(client.verify?.(pkgSpec)).toBeUndefined();
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    config.mcpServers[SERVER_NAME].args = [];
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    expect(client.verify?.(pkgSpec)).toBeTypeOf("string");
+    delete config.mcpServers[SERVER_NAME].args;
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    expect(client.verify?.(pkgSpec)).toBeTypeOf("string");
   });
 
   it("preserves other servers already in the file", () => {
@@ -655,11 +678,17 @@ describe("antigravityClient", () => {
       expect(fs.readdirSync(cfgDir())).toEqual(["mcp_config.json"]);
     });
 
-    it("writes {command, args: []} once migrated", () => {
+    it("writes {command, args: [], env} once migrated", () => {
       markMigrated();
       client().register(INSTALLED_BIN);
       expect(JSON.parse(fs.readFileSync(cfgFile(), "utf-8"))).toEqual({
-        mcpServers: { [SERVER_NAME]: { command: INSTALLED_BIN, args: [] } },
+        mcpServers: {
+          [SERVER_NAME]: {
+            command: INSTALLED_BIN,
+            args: [],
+            env: { WALRUS_MCP_CLIENT: "antigravity" },
+          },
+        },
       });
     });
 

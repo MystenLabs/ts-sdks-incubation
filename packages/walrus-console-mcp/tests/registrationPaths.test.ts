@@ -63,7 +63,14 @@ describe.each(["cursor", "antigravity"])("%s actual registry registration path",
     const after = JSON.parse(fs.readFileSync(configPath(id), "utf-8"));
     expect(after).toEqual({
       ...before,
-      mcpServers: { ...before.mcpServers, "walrus-console-mcp": { command: launcher(), args: [] } },
+      mcpServers: {
+        ...before.mcpServers,
+        "walrus-console-mcp": {
+          command: launcher(),
+          args: id === "cursor" ? ["--stdio"] : [],
+          env: { WALRUS_MCP_CLIENT: id },
+        },
+      },
     });
     expect(fs.readFileSync(configPath(other), "utf-8")).toBe(untouched);
     const once = fs.readFileSync(configPath(id), "utf-8");
@@ -89,7 +96,11 @@ describe.each(["cursor", "antigravity"])("%s actual registry registration path",
         ...before,
         mcpServers: {
           ...before.mcpServers,
-          "walrus-console-mcp": { command: launcher(), args: [] },
+          "walrus-console-mcp": {
+            command: launcher(),
+            args: id === "cursor" ? ["--stdio"] : [],
+            env: { WALRUS_MCP_CLIENT: id },
+          },
         },
       });
     },
@@ -123,7 +134,7 @@ describe.each(["cursor", "antigravity"])("%s actual registry registration path",
   it("does not report success after a later selected client overwrites its entry", () => {
     seed(id);
     const { result, output } = run(id, "stale");
-    expect(result).toEqual({ outcome: "installed", configured: 0 });
+    expect(result).toEqual({ outcome: "registration-failed", configured: 0 });
     expect(output).toContain(`${id === "cursor" ? "Cursor" : "Antigravity"} could not be verified`);
     expect(output).not.toContain(`${id === "cursor" ? "Cursor" : "Antigravity"} configured`);
     expect(

@@ -15,8 +15,21 @@ import { resolveSuiNetwork } from "../src/console/packageConfig.js";
 import { SECRET_VALUE_FIELDS, VALUE_TAKING_FLAGS, parseArgs } from "../src/cliArgs.js";
 import { type Client, getClients, selectClients } from "../src/clients.js";
 import { installServer } from "../src/installDir.js";
-import { type ConfigFileData, loadConfigFileOrEmpty, mergeConfigFile } from "../src/configFile.js";
-import { validateAllowedDirectory } from "../src/pathSandbox.js";
+import {
+  type ConfigFileData,
+  type AllowedDirsScope,
+  loadConfigFileOrEmpty,
+  mergeConfigFile,
+  mergeConfigFileIf,
+} from "../src/configFile.js";
+import {
+  HOME_DIR_WARNING,
+  SHARED_DIRS_NOTICE,
+  FALLBACK_DIRS_NOTICE,
+  isBroadHomeFolder,
+  isHomeDirectory,
+  validateAllowedDirectory,
+} from "../src/pathSandbox.js";
 import {
   type CredentialChoice,
   type CredentialWrite,
@@ -26,7 +39,7 @@ import {
   validateSilent,
   type PinSeeds,
 } from "../src/credentials.js";
-import { registerSecret } from "../src/redaction.js";
+import { quoteForDisplay, registerSecret } from "../src/redaction.js";
 import { INSTALL_USAGE, wantsHelp } from "../src/usage.js";
 import {
   clampVisible,
@@ -159,8 +172,8 @@ export function packageSpec(version = getPackageVersion()): string {
  * Step 1 — Choose:    Pick which credential to configure (API key, management
  *                     key, or both — see src/credentials.ts).
  * Step 2 — Auth:      Prompt for the chosen key(s), validate against the live API.
- * Step 3 — Files:     Pick directories upload/download may use when the agent
- *                     does not advertise MCP roots (see src/pathSandbox.ts).
+ * Step 3 — Files:     Pick upload/download directories and their fallback/shared
+ *                     scope (see src/pathSandbox.ts).
  * Step 4 — Register:  Detect installed agents and register the pinned launcher
  *                     with the ones the user ticks (see src/clients.ts).
  *
@@ -209,7 +222,7 @@ const MIN_MASK = 4;
 
 /**
  * Build the redraw for a masked line: clear the row, jump to column 0, then
- * re-render the (colored) prompt followed by one bullet per typed character.
+ * re-render the (colored) prompt followed by a fixed-width run of bullets.
  *
  * The whole line — prompt included — is kept inside the terminal width. The
  * single-line clear (`\x1b[2K`) only erases the row the cursor is on, so
@@ -219,6 +232,8 @@ const MIN_MASK = 4;
  * gets truncated too, holding back `MIN_MASK` columns so there is still
  * feedback that a keystroke registered. Pure so it can be unit-tested; the
  * escape codes are the only I/O concern.
+ *
+ * Fixed-width once non-empty, so the bullet count does not leak the secret's length.
  */
 export function maskedLine(
   question: string,
@@ -228,7 +243,7 @@ export function maskedLine(
   const budget = Math.max(0, columns - 1); // leave the last cell; writing it wraps
   const prompt = clampVisible(question, Math.max(0, budget - MIN_MASK));
   const maxBullets = Math.max(0, budget - visibleWidth(prompt));
-  const bullets = "•".repeat(Math.min(length, maxBullets));
+  const bullets = "•".repeat(length === 0 ? 0 : Math.min(MASK_WIDTH, maxBullets));
   return `\x1b[2K\x1b[0G${prompt}${bullets}`;
 }
 
@@ -739,15 +754,11 @@ const isAffirmative = (answer: string): boolean => {
   return normalized === "y" || normalized === "yes";
 };
 
-/**
- * Loud on purpose: Home as a sandbox root lets the model read/write anything
- * under the user's profile, which is the opposite of the fail-closed default.
- */
-export const HOME_DIR_WARNING =
-  "Home is broad — this server may read and write anything in your home directory.";
+/** Shared warning for interactive and flag-based Home-folder choices. */
+export { HOME_DIR_WARNING };
 
 export interface AllowedDirChoice {
-  id: "cwd" | "documents" | "downloads" | "home" | "custom" | "skip";
+  id: "cwd" | "documents" | "downloads" | "custom" | "skip" | "review";
   label: string;
   hint: string;
   path?: string;
@@ -756,7 +767,9 @@ export interface AllowedDirChoice {
 /** Preset radio rows for the File access step. `path` is omitted for custom/skip. */
 export function allowedDirChoices(cwd: string, home: string): AllowedDirChoice[] {
   return [
-    { id: "cwd", path: cwd, label: "This folder", hint: cwd },
+    ...(isHomeDirectory(cwd, home)
+      ? []
+      : [{ id: "cwd" as const, path: cwd, label: "This folder", hint: cwd }]),
     {
       id: "documents",
       path: join(home, "Documents"),
@@ -769,12 +782,11 @@ export function allowedDirChoices(cwd: string, home: string): AllowedDirChoice[]
       label: "Downloads",
       hint: join(home, "Downloads"),
     },
-    { id: "home", path: home, label: "Home", hint: "your whole home directory — broad" },
     { id: "custom", label: "Custom path…", hint: "type a folder this server may read and write" },
     {
       id: "skip",
       label: "Skip",
-      hint: "only works if your agent shares workspace folders",
+      hint: "keep existing folders and scope unchanged",
     },
   ];
 }
@@ -787,6 +799,7 @@ export interface StepAllowedDirsDeps {
   home?: string;
   step?: string;
   merge?: typeof mergeConfigFile;
+  mergeIf?: typeof mergeConfigFileIf;
   /**
    * `--allowed-dirs` values from the command line. A dirs-only argv goes silent
    * (see `ParsedArgs.silent`), so this is the case where the flag arrived beside
@@ -795,6 +808,8 @@ export interface StepAllowedDirsDeps {
    * the picker asks, and asking it again is what made the flag look ignored.
    */
   seed?: readonly string[] | undefined;
+  scope?: AllowedDirsScope | undefined;
+  existing?: ConfigFileData;
   /**
    * Make esc mean "back to the previous step" instead of "skip".
    *
@@ -858,6 +873,8 @@ function applySeededAllowedDirs(
   seed: readonly string[],
   merge: typeof mergeConfigFile,
   step: string,
+  home: string,
+  scope: AllowedDirsScope = "fallback",
 ): AllowedDirsWrite {
   const rail = streamPanel("FILE ACCESS", step);
   rail.blank();
@@ -876,7 +893,9 @@ function applySeededAllowedDirs(
     return { updates: {}, clear: [], seedRejected: true };
   }
 
-  // This step only ever writes `allowedDirs` — it never carries an admin
+  if (dirs.some((dir) => isBroadHomeFolder(dir, home))) rail.show(warn(HOME_DIR_WARNING));
+
+  // This step only writes saved folders and scope — it never carries an admin
   // field in `updates` — so the only way admin.json gets touched here is a
   // side-effect migration of a pre-existing legacy inline pair (see the
   // `onNotice` doc comment on mergeConfigFile). Track whether that fired so
@@ -886,14 +905,15 @@ function applySeededAllowedDirs(
   // mid-render and break `rail`'s `│` border, the same bug the AUTHENTICATE
   // step's onNotice wiring fixes.
   let migratedLegacyAdmin = false;
-  merge({ allowedDirs: dirs }, [], (msg) => {
+  rail.show(info(scope === "shared" ? SHARED_DIRS_NOTICE : FALLBACK_DIRS_NOTICE));
+  merge({ allowedDirs: dirs, allowedDirsScope: scope }, [], (msg) => {
     migratedLegacyAdmin = true;
     rail.line(info(msg));
   });
   rail.line(info("Folders from --allowed-dirs:"));
   // `show`, not `line`: a long path must be confirmed in full rather than
   // clamped to a prefix (see showRow).
-  for (const dir of dirs) rail.show(ok(dir));
+  for (const dir of dirs) rail.show(ok(quoteForDisplay(dir)));
   rail.line(
     styleText(
       "dim",
@@ -905,12 +925,12 @@ function applySeededAllowedDirs(
   rail.blank();
   rail.close();
   gap();
-  return { updates: { allowedDirs: dirs }, clear: [] };
+  return { updates: { allowedDirs: dirs, allowedDirsScope: scope }, clear: [] };
 }
 
 /**
- * Pick directories upload/download may use when the MCP client advertises no
- * filesystem roots. Persists `allowedDirs` in the shared config file — not in
+ * Pick saved upload/download folders and their fallback/shared scope.
+ * Persists `allowedDirs` in the shared config file — not in
  * each agent's launch env — so `config` can change them without re-registering.
  *
  * A skip or cancel writes nothing (credentials from the previous step stay).
@@ -926,9 +946,17 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
 
   // The flag wins outright: it is a decision already made, in writing.
   const seed = deps.seed ?? [];
-  if (seed.length > 0) return applySeededAllowedDirs(seed, merge, step);
+  if (seed.length > 0) return applySeededAllowedDirs(seed, merge, step, home, deps.scope);
 
   const choices = allowedDirChoices(cwd, home);
+  const existing = deps.existing ?? loadConfigFileOrEmpty();
+  if (existing.allowedDirs?.length) {
+    choices.push({
+      id: "review",
+      label: "Review saved folders",
+      hint: `keep the complete saved list; current scope: ${existing.allowedDirsScope ?? "fallback"}`,
+    });
+  }
 
   const index = await select(
     choices.map(({ label, hint }) => ({ label, hint })),
@@ -936,7 +964,7 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
       title: "FILE ACCESS",
       step,
       notice:
-        "Some agents don't share workspace folders. Pick directories upload and download may use.",
+        "Choose folders, then choose fallback or shared access. Shared folders are available across unrelated projects.",
       // What esc actually does here, which is not "cancel" in either mode: it
       // skips the step in the installer, and returns to the menu under `config`.
       hint: deps.back ? "↑/↓ move   enter select   esc back" : "↑/↓ move   enter select   esc skip",
@@ -963,9 +991,7 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
   };
 
   if (index === null) {
-    return leave(
-      "File access skipped — upload/download will fail on agents that don't share folders.",
-    );
+    return leave("File access skipped — existing folders and scope are unchanged.");
   }
 
   const picked = choices[index];
@@ -979,7 +1005,6 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
   }
 
   print("");
-  if (picked.id === "home") line(warn(HOME_DIR_WARNING));
   // Before the first prompt, and for every row: `back` is honoured at all three
   // prompts below, so advertising it once here is the whole step's promise.
   line(
@@ -1002,20 +1027,26 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     });
 
   const dirs: string[] = [];
-  const accept = (raw: string): boolean => {
-    const result = validateAllowedDirectory(raw);
+  const accept = (raw: string, literal = false): boolean => {
+    const result = validateAllowedDirectory(raw, process.platform, literal);
     if ("error" in result) {
       line(fail(result.error));
       return false;
     }
     if (!dirs.includes(result.dir)) {
       dirs.push(result.dir);
-      line(ok(result.dir));
+      if (isBroadHomeFolder(result.dir, home)) line(warn(HOME_DIR_WARNING));
+      line(ok(quoteForDisplay(result.dir)));
     }
     return true;
   };
 
-  if (picked.id === "custom") {
+  if (picked.id === "review") {
+    for (const dir of existing.allowedDirs ?? []) {
+      if (!accept(dir, true))
+        return leave("Nothing saved — repair the saved folder or choose a new list.");
+    }
+  } else if (picked.id === "custom") {
     while (true) {
       const typed = await ask("Folder: ");
       // The one prompt in this step with no other way out: it re-asks until a
@@ -1030,7 +1061,7 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
       if (accept(typed)) break;
     }
   } else if (picked.path) {
-    if (!accept(picked.path)) {
+    if (!accept(picked.path, true)) {
       line(info("Nothing saved — pick an existing folder with --allowed-dirs, or re-run."));
       gap();
       return { updates: {}, clear: [] };
@@ -1060,6 +1091,24 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     return { updates: {}, clear: [] };
   }
 
+  line(info("Complete saved folder list:"));
+  for (const dir of dirs) line(info(quoteForDisplay(dir)));
+  line(info(SHARED_DIRS_NOTICE));
+  line(
+    info(
+      "Fallback access uses these folders only when no usable workspace or environment folders are available.",
+    ),
+  );
+  let scope = deps.scope;
+  while (scope === undefined) {
+    const answer = (await ask("Scope [fallback/shared] (default fallback): ")).trim().toLowerCase();
+    if (isBackAnswer(answer)) return leave(LEAVE_NOTE);
+    if (answer === "" || answer === "fallback") scope = "fallback";
+    else if (answer === "shared") scope = "shared";
+    else line(fail("Choose fallback or shared, or type back to cancel."));
+  }
+  line(info(`Saved folder scope: ${scope}`));
+
   // Same reasoning as applySeededAllowedDirs above: this step never writes
   // an admin field itself, so admin.json is only touched by a side-effect
   // migration, and the closing line needs to say so when it happens. This
@@ -1067,10 +1116,32 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
   // route the notice through it anyway for consistent indentation/styling
   // rather than a bare stderr write.
   let migratedLegacyAdmin = false;
-  merge({ allowedDirs: dirs }, [], (msg) => {
+  const updates = { allowedDirs: dirs, allowedDirsScope: scope };
+  const notice = (msg: string) => {
     migratedLegacyAdmin = true;
     line(info(msg));
-  });
+  };
+  if (picked.id === "review") {
+    const result = (deps.mergeIf ?? mergeConfigFileIf)(
+      (current) =>
+        JSON.stringify(current.allowedDirs) === JSON.stringify(existing.allowedDirs) &&
+        (current.allowedDirsScope ?? "fallback") === (existing.allowedDirsScope ?? "fallback"),
+      updates,
+      [],
+      notice,
+    );
+    if (!result.written) {
+      line(
+        warn(
+          "Nothing saved because the folder configuration changed during review. Open it again to review the current list.",
+        ),
+      );
+      gap();
+      return { updates: {}, clear: [], ...(deps.back ? { backRequested: true } : {}) };
+    }
+  } else {
+    merge(updates, [], notice);
+  }
   line(
     styleText(
       "dim",
@@ -1080,7 +1151,7 @@ export async function stepAllowedDirs(deps: StepAllowedDirsDeps = {}): Promise<A
     ),
   );
   gap();
-  return { updates: { allowedDirs: dirs }, clear: [] };
+  return { updates, clear: [] };
 }
 
 /**
@@ -1207,7 +1278,8 @@ export async function stepAuth(
  * "cancelled" / "nothing ticked", so a scripted install couldn't tell a real
  * failure from a deliberate no-op.
  */
-export type RegisterOutcome = "installed" | "install-failed" | "cancelled" | "none-selected";
+export type RegisterOutcome =
+  "installed" | "install-failed" | "registration-failed" | "cancelled" | "none-selected";
 export interface RegisterResult {
   outcome: RegisterOutcome;
   configured: number;
@@ -1215,18 +1287,20 @@ export interface RegisterResult {
 
 /** Injectable seams so stepRegister's outcomes are unit-testable. */
 interface StepRegisterDeps {
+  /** Explicit targets bypass the checklist; [] installs a launcher only. */
+  selected?: Client[] | undefined;
   select?: typeof selectClients;
   install?: typeof installServer;
 }
 
 /**
- * The process exit code implied by a Register outcome. Only a failed server
- * install is a hard error — the credentials were still saved (auth completed),
- * but nothing usable was registered, so a scripted caller must see a non-zero
- * exit. Cancelling the checklist or ticking no clients is a normal exit.
+ * Exit 2 identifies an incomplete install after credentials were saved: either
+ * the launcher install failed or a requested agent could not be registered or
+ * verified. Exit 1 is reserved for validation errors. A deliberate interactive
+ * checklist cancel or empty selection is a normal exit.
  */
 export function registerExitCode(outcome: RegisterOutcome): number {
-  return outcome === "install-failed" ? 1 : 0;
+  return outcome === "install-failed" || outcome === "registration-failed" ? 2 : 0;
 }
 
 /**
@@ -1253,11 +1327,13 @@ export async function stepRegister(
   const select = deps.select ?? selectClients;
   const install = deps.install ?? installServer;
 
-  const selected = await select(getClients(), {
-    title: "REGISTER",
-    step: "4/4",
-    hint: "↑/↓ move   space toggle   a all   enter confirm",
-  });
+  const selected =
+    deps.selected ??
+    (await select(getClients(), {
+      title: "REGISTER",
+      step: "4/4",
+      hint: "↑/↓ move   space toggle   a all   enter confirm",
+    }));
 
   if (selected === null) {
     print("");
@@ -1265,7 +1341,7 @@ export async function stepRegister(
     launcherSkippedNote();
     return { outcome: "cancelled", configured: 0 };
   }
-  if (selected.length === 0) {
+  if (selected.length === 0 && deps.selected === undefined) {
     print("");
     line(info("No clients selected — nothing registered."));
     launcherSkippedNote();
@@ -1323,7 +1399,10 @@ export async function stepRegister(
     detail(`re-run the installer, or run manually: ${client.manualHint(command)}`);
   }
   gap();
-  return { outcome: "installed", configured };
+  return {
+    outcome: configured === selected.length ? "installed" : "registration-failed",
+    configured,
+  };
 }
 
 /**
@@ -1335,11 +1414,6 @@ export async function stepRegister(
 function launcherSkippedNote(): void {
   detail("The launcher was not installed or upgraded.");
   detail('For Claude Desktop, see the README section "Claude Desktop".');
-}
-
-/** Silent mode does not run the interactive checklist; point at the manual path. */
-function stepRegisterSilentNote(): void {
-  print(info("Skipped agent registration — run `walrus-console-mcp install` to configure agents."));
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -1360,7 +1434,8 @@ export interface RunInstallDeps {
     seeds: PinSeeds,
   ) => Promise<CredentialWrite>;
   allowedDirs?: (deps: StepAllowedDirsDeps) => Promise<AllowedDirsWrite>;
-  register?: (spec: string) => Promise<RegisterResult>;
+  register?: (spec: string, selected?: Client[]) => Promise<RegisterResult>;
+  clients?: () => Client[];
   /** The readline interface the auth prompts read from — pipes, under test. */
   createReadline?: () => readline.Interface;
 }
@@ -1369,7 +1444,7 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
   const choose = deps.choose ?? chooseCredentials;
   const auth = deps.auth ?? stepAuth;
   const allowedDirs = deps.allowedDirs ?? stepAllowedDirs;
-  const runRegister = deps.register ?? stepRegister;
+  const runRegister = deps.register ?? ((spec, selected) => stepRegister(spec, { selected }));
   // Before parseArgs, which would otherwise answer `--help` with "Unknown
   // flag: --help". Help wins over every other argument: it writes nothing, so
   // there is no half-applied command to reason about.
@@ -1383,7 +1458,32 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
     process.exit(1);
   }
 
-  // Silent: no banner, no chooser, no prompts. Validate, save, exit.
+  if (args.silent && args.registerAgents === undefined && args.register) {
+    print(
+      fail(
+        "Agent registration skipped: a non-interactive install requires --register <agents>, --register none, or --no-register. Nothing was saved or installed.",
+      ),
+    );
+    process.exit(1);
+  }
+
+  let selected: Client[] | undefined;
+  if (!args.register) {
+    selected = [];
+  } else if (args.registerAgents !== undefined) {
+    const clients = (deps.clients ?? getClients)();
+    if (args.registerAgents.some((id) => !clients.some((client) => client.id === id))) {
+      print(
+        fail(
+          `--register contains an unsupported agent. Choose ${clients.map((client) => client.id).join(", ")}, or none. Nothing was saved.`,
+        ),
+      );
+      process.exit(1);
+    }
+    selected = args.registerAgents.map((id) => clients.find((client) => client.id === id)!);
+  }
+
+  // Silent: validate explicit inputs, save, install, register; never prompt.
   if (args.silent) {
     const baseUrl = resolveInstallBaseUrl();
     // Flag- and env-supplied secrets never pass through the interactive `ask`
@@ -1414,8 +1514,17 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
     // After the saved line: they describe what the just-written config costs,
     // not a reason it failed. Exit code is unaffected.
     for (const warning of warnings) print(warn(warning));
-    if (args.register) stepRegisterSilentNote();
-    process.exit(0);
+    const result = await runRegister(packageSpec(), selected ?? []);
+    const code = registerExitCode(result.outcome);
+    if (code !== 0)
+      print(
+        fail(
+          "Partial install: configuration saved. Launcher installation or agent registration is incomplete. See the failed step above.",
+        ),
+      );
+    if (code === 0 && (selected?.length ?? 0) === 0)
+      print(info("Agent registration skipped by explicit opt-out; stable launcher installed."));
+    process.exit(code);
   }
 
   // Fail fast on a bad --allowed-dirs, BEFORE the chooser and before the auth
@@ -1438,6 +1547,20 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
       process.exitCode = 1;
       return;
     }
+  }
+
+  if (
+    selected === undefined &&
+    deps.register === undefined &&
+    (!process.stdin.isTTY || !process.stdout.isTTY)
+  ) {
+    print(
+      fail(
+        "The agent checklist requires a terminal. Use --register <agents>, --register none, or --no-register. Nothing was saved or installed.",
+      ),
+    );
+    process.exitCode = 1;
+    return;
   }
 
   // util.styleText strips ANSI unless it detects a color-capable stream; some
@@ -1512,14 +1635,17 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
     rl.close();
     // The folder flag is honoured here or nowhere: `--allowed-dirs` beside an
     // address seed stays interactive on purpose, so this is its only consumer.
-    allowedWrite = await allowedDirs({ seed: args.values.allowedDirs });
-    if (args.register) register = await runRegister(packageSpec());
+    allowedWrite = await allowedDirs({
+      seed: args.values.allowedDirs,
+      scope: args.values.allowedDirsScope,
+    });
+    register = await runRegister(packageSpec(), selected);
     phase = "done";
   } finally {
     rl.close();
   }
 
-  if (register && register.outcome === "install-failed") {
+  if (register && registerExitCode(register.outcome) !== 0) {
     // Auth completed, so the credentials ARE saved — but the server install
     // failed and nothing was registered. Surface that to a scripted caller with
     // a non-zero exit (propagated out of bin/console-mcp.ts) and say so plainly,
@@ -1527,7 +1653,11 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
     process.exitCode = registerExitCode(register.outcome);
     printSummaryPanel("FAILED", [
       savedRow(authWrite),
-      fail("Server install failed — nothing was registered"),
+      fail(
+        register.outcome === "install-failed"
+          ? "Server install failed — nothing was registered"
+          : "Agent registration incomplete — see failed agents above",
+      ),
       "",
       `Fix the install error above, then run ${accent("walrus-console-mcp install")}`,
     ]);
@@ -1557,10 +1687,10 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
         : [ok("File access folders saved")]),
     // Zero agents is not a success to celebrate: ticking nothing is the normal
     // Claude Desktop path now (COMG-1133), and no agent has anything to restart.
-    ...(!args.register
-      ? []
-      : configured > 0
-        ? [ok(`${configured} ${configured === 1 ? "agent" : "agents"} configured`)]
+    ...(configured > 0
+      ? [ok(`${configured} ${configured === 1 ? "agent" : "agents"} configured`)]
+      : selected?.length === 0
+        ? [ok("Agent registration skipped by explicit opt-out; stable launcher installed")]
         : [warn("No agent registered — see the note above")]),
     "",
     `Change a key later:  ${accent("walrus-console-mcp config")}`,
@@ -1571,14 +1701,17 @@ export async function runInstall(argv: string[] = [], deps: RunInstallDeps = {})
     // natural next move is to re-run the installer, which changes nothing.
     // Omitted when registration ran and configured nothing: there is no agent
     // to restart, and no launcher for one to start (COMG-1133).
-    ...(args.register && configured === 0
+    ...(configured === 0
       ? []
       : [
           "",
           warn(
             "Restart your agent now. The tools will not appear in a session that was already running.",
           ),
-          `Then run ${accent("ping_console")} to confirm.`,
+          // The server checks in with Console when the agent starts it,
+          // so the restart alone shows up in Console. ping_console is the fallback.
+          "With a working API key, Console shows the agent as connected once it starts.",
+          `Not showing? Ask the agent to run ${accent("ping_console")}.`,
         ]),
   ]);
   // Trailing gap so the shell prompt doesn't come back flush against the panel.

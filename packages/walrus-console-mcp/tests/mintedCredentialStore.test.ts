@@ -17,9 +17,8 @@ import {
  * per `@vitest/mocker`) so a single test can fail the NEXT write with
  * `mockImplementationOnce` instead of `chmod`ing the config dir. `chmod 0o500`
  * is a no-op under root (root ignores DAC entirely), which made the old version
- * of these tests pass locally and fail in a privileged container — see m2 in
- * `docs/pr44-major-findings-verification.md`. This seam has no such
- * dependency: it fails the call regardless of who is running the process.
+ * of these tests pass locally and fail in a privileged container (PR #44,
+ * finding m2). This seam has no such dependency: it fails the call regardless of who is running the process.
  */
 vi.mock("../src/atomicWrite.js", { spy: true });
 

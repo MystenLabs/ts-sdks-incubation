@@ -5,7 +5,7 @@ import { ConsoleApiClient } from "./console/ConsoleApiClient";
 import { ConsoleStorageService } from "./console/ConsoleStorageService";
 import { KeyAdminService } from "./console/KeyAdminService";
 import { SealCryptoService } from "./console/SealCryptoService";
-import { fetchWithRedirectGuard } from "./safeFetch";
+import { fetchConsoleWithRedirectGuard } from "./safeFetch";
 
 /**
  * Single ManagedRuntime for the entire console-mcp server.
@@ -15,16 +15,15 @@ import { fetchWithRedirectGuard } from "./safeFetch";
 // `FetchHttpClient.Fetch` overrides the `fetch` implementation `HttpClient`
 // calls internally — it reads this tag from the fiber's context and falls
 // back to `globalThis.fetch` only if unset — so installing
-// `fetchWithRedirectGuard` here covers every `HttpClient`-based API call in
-// one place. The two raw `fetch()` calls in ConsoleApiClient.ts bypass
-// HttpClient entirely and call the same guard directly.
+// `fetchConsoleWithRedirectGuard` here keeps API calls at the configured
+// origin where the bearer was sent. File transfers use their own CDN policy.
 //
 // Exported on its own so a test can prove the override actually intercepts `HttpClient`
 // traffic, without needing `ConsoleConfigLive`'s env-var-backed config just to
 // construct a layer — see tests/runtime.test.ts.
 export const HttpLayer = Layer.mergeAll(
   FetchHttpClient.layer,
-  Layer.succeed(FetchHttpClient.Fetch, fetchWithRedirectGuard),
+  Layer.succeed(FetchHttpClient.Fetch, fetchConsoleWithRedirectGuard),
 );
 
 // Base layers (config + HTTP client) that every service depends on.

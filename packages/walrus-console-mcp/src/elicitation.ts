@@ -1,4 +1,5 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { quoteForDisplay } from "./redaction.js";
 
 /** Ten minutes gives a human enough time to read a billing/revocation prompt. */
 export const ELICITATION_TIMEOUT_MS = 10 * 60_000;
@@ -107,4 +108,90 @@ export function confirmApiKeyMint(
   signal?: AbortSignal,
 ): Promise<ElicitationOutcome> {
   return confirmIrreversibleAction(server, apiKeyMintConfirmationMessage(args), signal);
+}
+
+/** The result a tool returns when the human did not confirm, in place of acting. */
+export interface ConfirmationDeclined {
+  readonly ok: false;
+  readonly stage: "declined";
+  readonly reason: string;
+}
+
+/**
+ * Turn an elicitation outcome into the refusal a tool returns, or `undefined` when the action may
+ * go ahead (confirmed, or the client cannot prompt and the schema `confirm: true` stands alone).
+ * `subject` names the action ("mint", "deletion") and `done` what did not happen ("minted").
+ */
+export function declinedOutcome(
+  outcome: ElicitationOutcome,
+  subject: string,
+  done: string,
+): ConfirmationDeclined | undefined {
+  if (!outcome.gated || outcome.confirmed) return undefined;
+  const nothing = `Nothing was ${done}.`;
+  let reason: string;
+  switch (outcome.action) {
+    case "timeout":
+      reason = `The user did not answer the ${subject} confirmation prompt before it timed out.`;
+      break;
+    case "unavailable":
+      reason = `The ${subject} confirmation prompt did not complete.`;
+      break;
+    case "accept":
+      reason = "The user accepted the prompt without checking its confirmation box.";
+      break;
+    default:
+      reason = `The user did not confirm the ${subject} through the client's elicitation UI (answered "${outcome.action}").`;
+  }
+  return { ok: false, stage: "declined", reason: `${reason} ${nothing}` };
+}
+
+/** The prompt for delete_bucket. Model-controlled values are rendered as JSON strings. */
+export function deleteBucketConfirmationMessage(args: {
+  readonly bucketId: string;
+  readonly deleteContents: boolean;
+}): string {
+  return (
+    `Permanently delete bucket ${quoteForDisplay(args.bucketId)}` +
+    (args.deleteContents ? " and every file in it" : "") +
+    "? Console has no undelete."
+  );
+}
+
+/** The prompt for delete_folder. */
+export function deleteFolderConfirmationMessage(args: {
+  readonly bucketId: string;
+  readonly folderId: string;
+  readonly deleteContents: boolean;
+}): string {
+  return (
+    `Permanently delete subfolder ${JSON.stringify(args.folderId)} of bucket ` +
+    `${JSON.stringify(args.bucketId)}` +
+    (args.deleteContents ? " and every file and subfolder below it" : "") +
+    "? Console has no undelete."
+  );
+}
+
+/** The prompt for delete_file. */
+export function deleteFileConfirmationMessage(args: {
+  readonly bucketId: string;
+  readonly fileId: string;
+}): string {
+  return (
+    `Permanently delete file ${quoteForDisplay(args.fileId)} from bucket ` +
+    `${quoteForDisplay(args.bucketId)}? Console has no undelete.`
+  );
+}
+
+/** The prompt for download_file with overwrite: true. `destPath` is the resolved path. */
+export function overwriteConfirmationMessage(args: {
+  readonly destPath: string;
+  readonly bucketId: string;
+  readonly fileId: string;
+}): string {
+  return (
+    `Replace ${quoteForDisplay(args.destPath)} with file ${quoteForDisplay(args.fileId)} ` +
+    `from bucket ${quoteForDisplay(args.bucketId)}? If a file is already ` +
+    "there, its contents are lost."
+  );
 }

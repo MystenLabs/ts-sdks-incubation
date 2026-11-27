@@ -55,14 +55,9 @@ interface CredentialSource {
  * Resolve a bearer + its signer *as a pair*, keyed on where each half came from.
  *
  * The hazard is a split source: a bearer taken from the environment paired with a
- * signer left over in the saved config file. That file signer almost certainly
- * belongs to a *different* bearer (the one the file was written for), so signing
- * with it would use a mismatched key. When the bearer resolves from env but the
- * one half resolves from env, drop the *other* half if it came from the file and
- * warn — better a missing half that fails a clear check than a mismatched pair
- * that signs with the wrong key. This is symmetric: env-bearer + file-signer AND
- * file-bearer + env-signer are both mismatches. Both-env and both-file are
- * internally consistent and pass through untouched.
+ * signer left over in the saved config file, or the reverse. When one half is
+ * supplied by the environment, discard the other half if it came from disk.
+ * A shared source preserves the pairing the operator configured.
  */
 const resolvedPair = (bearer: CredentialSource, signer: CredentialSource) =>
   Config.all({
@@ -221,6 +216,10 @@ const unwrap = (v: string | Redacted.Redacted<string>): string =>
   typeof v === "string" ? v : Redacted.value(v);
 
 export const getRawApiKey = (cfg: ConsoleConfig): string => Redacted.value(cfg.apiKey);
+
+/** The one rule for "an API key is set": ping_console and the startup check-in share it. */
+export const hasApiKey = (cfg: ConsoleConfig): boolean => getRawApiKey(cfg) !== "";
+
 export const getRawServiceKey = (cfg: ConsoleConfig): string => unwrap(cfg.servicePrivateKey);
 
 // Admin (Key-Admin) credential getters — mirror the working-key helpers above.

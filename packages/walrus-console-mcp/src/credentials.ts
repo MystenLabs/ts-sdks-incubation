@@ -17,7 +17,13 @@ import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import type { CredentialValues } from "./cliArgs.js";
 import { CLIENT_HEADER, CLIENT_HEADER_VALUE } from "./consoleClientHeader.js";
 import type { ConfigFileData } from "./configFile.js";
-import { validateAllowedDirectory } from "./pathSandbox.js";
+import {
+  HOME_DIR_WARNING,
+  SHARED_DIRS_NOTICE,
+  FALLBACK_DIRS_NOTICE,
+  isBroadHomeFolder,
+  validateAllowedDirectory,
+} from "./pathSandbox.js";
 import { registerSecret } from "./redaction.js";
 
 export type CredentialChoice = "api" | "admin" | "both" | "bundle";
@@ -1503,7 +1509,14 @@ export async function validateSilent(
       if ("error" in result) errors.push(`--allowed-dirs: ${result.error}`);
       else if (!dirs.includes(result.dir)) dirs.push(result.dir);
     }
-    if (errors.length === 0) updates.allowedDirs = dirs;
+    if (errors.length === 0) {
+      updates.allowedDirs = dirs;
+      updates.allowedDirsScope = values.allowedDirsScope ?? "fallback";
+      warnings.push(
+        updates.allowedDirsScope === "shared" ? SHARED_DIRS_NOTICE : FALLBACK_DIRS_NOTICE,
+      );
+      if (dirs.some((dir) => isBroadHomeFolder(dir))) warnings.push(HOME_DIR_WARNING);
+    }
   }
 
   // Warnings are dropped alongside the write they described: nothing was saved,

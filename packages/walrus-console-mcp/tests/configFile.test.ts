@@ -246,6 +246,12 @@ describe("address pin fields", () => {
 });
 
 describe("allowedDirs field", () => {
+  it("round trips an absolute directory with trailing whitespace", () => {
+    const withSpace = path.join(tmpDir, "folder ");
+    saveConfigFile({ allowedDirs: [withSpace], allowedDirsScope: "shared" });
+    expect(loadConfigFile().allowedDirs).toEqual([withSpace]);
+  });
+
   it("round-trips a list of absolute directories", () => {
     saveConfigFile({ allowedDirs: [tmpDir, path.join(tmpDir, "nested")] });
     expect(loadConfigFile().allowedDirs).toEqual([tmpDir, path.join(tmpDir, "nested")]);

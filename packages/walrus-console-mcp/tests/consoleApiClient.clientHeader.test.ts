@@ -107,6 +107,22 @@ describe("X-Console-Client", () => {
   });
 });
 
+describe("listSpaces response shape", () => {
+  it.each([null, { data: [null] }, { data: [{}] }, { data: [{ id: "" }] }])(
+    "reports a typed response error for %j",
+    async (body) => {
+      const { layer } = harness(body);
+
+      const result = await run(layer, (api) => api.listSpaces().pipe(Effect.either));
+
+      expect(result).toMatchObject({
+        _tag: "Left",
+        left: { _tag: "ConsoleApiError", code: "invalid_response_shape" },
+      });
+    },
+  );
+});
+
 // `uploadBucketFile` builds its own request rather than going through either
 // HttpClient lane, so the lane tests above say nothing about it — and it is the
 // call the upload events are attributed from.

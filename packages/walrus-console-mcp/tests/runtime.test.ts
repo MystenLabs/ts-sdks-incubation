@@ -39,6 +39,33 @@ describe("HttpLayer (runtime.ts wiring)", () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("follows a redirect within the configured API origin", async () => {
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "/new" } }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+    const response = await getThrough("https://api.walrus.xyz/old");
+
+    expect(response.status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.walrus.xyz/new",
+      expect.anything(),
+    );
+  });
+
+  it("requires Console API responses to stay at the configured origin", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://storage.walrus.xyz/spaces" },
+      }),
+    );
+
+    await expect(getThrough("https://api.walrus.xyz/spaces")).rejects.toThrow();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
   // The wiring question, not the guard's own logic (already covered directly):
   // does an `HttpClient`-based call actually go through `fetchWithRedirectGuard`
   // at all, or does it fall back to the real `fetch` because the override was

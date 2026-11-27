@@ -1,6 +1,7 @@
 import { execFileSync, type StdioOptions } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { SECRET_ENV_VARS } from "./redaction.js";
 
 /**
  * Run an external command (`npm`, `claude`, `codex`, `gemini`) by name, in a way
@@ -252,8 +253,14 @@ export function runCommand(
   args: readonly string[],
   opts: { stdio?: StdioOptions } = {},
 ): void {
-  const { file, args: argv, windowsVerbatimArguments } = commandInvocation(bin, args);
+  // npm and client registration only need the launcher, never the Console credentials.
+  const secretNames = new Set<string>(SECRET_ENV_VARS);
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !secretNames.has(name.toUpperCase())),
+  );
+  const { file, args: argv, windowsVerbatimArguments } = commandInvocation(bin, args, { env });
   execFileSync(file, argv, {
+    env,
     stdio: opts.stdio ?? "ignore",
     ...(windowsVerbatimArguments ? { windowsVerbatimArguments } : {}),
   });

@@ -9,7 +9,7 @@ import { ConsoleStorageService, RosterChainDepsTag } from "../src/console/Consol
 import { encodeFileAad } from "../src/console/fileAad";
 import type { RosterChainDeps } from "../src/console/rosterVerification";
 import { SealCryptoService } from "../src/console/SealCryptoService";
-import { BucketId, FileId } from "../src/console/types";
+import { BucketId, FileId, FolderId } from "../src/console/types";
 import { boundFile, derivedPolicy, FIXTURE_OWNER, verifiedBucket } from "./verifiedBucket";
 
 /**
@@ -49,9 +49,10 @@ interface UploadCall {
   fileName: string;
   contentSize: number | undefined;
   declaredType: string | undefined;
+  folderId?: string | undefined;
 }
 
-function uploadHarness() {
+function uploadHarness(opts: { storedName?: (sent: string) => string | undefined } = {}) {
   const encrypts: EncryptCall[] = [];
   const uploads: UploadCall[] = [];
   const api = {
@@ -63,14 +64,20 @@ function uploadHarness() {
       _metadata: unknown,
       contentSize?: number,
       declaredType?: string,
+      folderId?: string,
     ) =>
       Effect.sync(() => {
-        uploads.push({ fileName, contentSize, declaredType });
+        uploads.push({ fileName, contentSize, declaredType, folderId });
+        const name =
+          opts.storedName === undefined
+            ? fileName.trim().normalize("NFC")
+            : opts.storedName(fileName);
         // Echo the bound columns the real Console 202 body carries, so the
         // post-upload check passes for an honest store.
         return {
           data: {
             id: FileId.make("file-1"),
+            ...(name === undefined ? {} : { name }),
             original_name: fileName.trim().normalize("NFC"),
             declared_mime_type: declaredType ?? null,
             content_size: contentSize ?? null,
@@ -96,17 +103,80 @@ function uploadHarness() {
       ),
     ),
   );
-  const upload = (localPath: string, targetName?: string) =>
+  const upload = (localPath: string, targetName?: string, folderId?: string) =>
     Effect.runPromise(
       ConsoleStorageService.pipe(
         Effect.flatMap((s) =>
-          s.uploadFileToBucket(BucketId.make(BUCKET), undefined, localPath, targetName),
+          s.uploadFileToBucket(
+            BucketId.make(BUCKET),
+            undefined,
+            localPath,
+            targetName,
+            undefined,
+            folderId !== undefined ? FolderId.make(folderId) : undefined,
+          ),
         ),
         Effect.provide(layer),
       ),
     );
   return { encrypts, uploads, upload };
 }
+
+describe("upload_file reports the name the file was stored under", () => {
+  it("returns the suffixed name and the requested one when the name was taken", async () => {
+    const local = path.join(tmpDir, "report.txt");
+    await fs.writeFile(local, "x");
+    const { uploads, upload } = uploadHarness({ storedName: () => "report (1).txt" });
+
+    const result = await upload(local);
+
+    // The requested name still goes on the wire and into the binding.
+    expect(uploads[0]?.fileName).toBe("report.txt");
+    expect(result).toMatchObject({ name: "report (1).txt", renamedFrom: "report.txt" });
+    expect(result.note).toContain('stored as "report (1).txt"');
+  });
+
+  it("reports no rename when the name was free", async () => {
+    const local = path.join(tmpDir, "fresh.txt");
+    await fs.writeFile(local, "x");
+    const { upload } = uploadHarness();
+
+    const result = await upload(local);
+
+    expect(result).toMatchObject({ name: "fresh.txt", renamedFrom: null });
+    expect(result.note).not.toContain("already exists");
+  });
+
+  it("reports the accepted file ID even when its stored name is unknown", async () => {
+    const local = path.join(tmpDir, "accepted.txt");
+    await fs.writeFile(local, "x");
+    const { upload, uploads } = uploadHarness({ storedName: () => undefined });
+
+    const result = await upload(local);
+
+    expect(result).toMatchObject({
+      fileId: "file-1",
+      name: null,
+      renamedFrom: null,
+      pending: true,
+    });
+    expect(result.note).toContain("Look up this fileId in list_files.");
+    expect(uploads).toHaveLength(1);
+  });
+
+  // The server stores NFC, so a decomposed name comes back composed. That is
+  // the same name, not a rename.
+  it("does not call a normal-form change a rename", async () => {
+    const nfd = "café.txt";
+    const local = path.join(tmpDir, "nfd-source.txt");
+    await fs.writeFile(local, "x");
+    const { upload } = uploadHarness();
+
+    const result = await upload(local, nfd);
+
+    expect(result).toMatchObject({ name: nfd.normalize("NFC"), renamedFrom: null });
+  });
+});
 
 describe("upload_file binds the record the file will live under", () => {
   it("binds the requested name, the declared type and the plaintext length", async () => {
@@ -132,6 +202,28 @@ describe("upload_file binds the record the file will live under", () => {
       contentSize: 7,
       declaredType: "application/pdf",
     });
+  });
+
+  // A subfolder has no Seal policy of its own and a file can move between the
+  // bucket's subfolders without being re-encrypted, so the binding must name
+  // the bucket. Binding the folder would make every moved file refuse to open.
+  it("binds the bucket id, not the subfolder, for an upload into a subfolder", async () => {
+    const folder = "f01de700-0000-4000-8000-0000000000f1";
+    const local = path.join(tmpDir, "into-subfolder.pdf");
+    await fs.writeFile(local, "nested!");
+    const { encrypts, uploads, upload } = uploadHarness();
+
+    await upload(local, "into-subfolder.pdf", folder);
+
+    const expected = {
+      originalName: "into-subfolder.pdf",
+      declaredType: "application/pdf",
+      contentSize: 7,
+    };
+    expect(encrypts[0]?.aad).toEqual(encodeFileAad({ bucketId: BUCKET, ...expected }));
+    expect(encrypts[0]?.aad).not.toEqual(encodeFileAad({ bucketId: folder, ...expected }));
+    // The folder still reaches Console, as the upload's destination.
+    expect(uploads[0]?.folderId).toBe(folder);
   });
 
   // The server stores the NFC form (`toNfcName`), so a client binding the form it

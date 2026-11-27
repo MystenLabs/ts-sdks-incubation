@@ -307,9 +307,8 @@ describe("downloadBucketFile UGC redirect policy (COMG-817)", () => {
 });
 
 describe("downloadBucketFile bounds the ERROR body too (F9)", () => {
-  it("stops reading an oversized error body, cancels it, and truncates the message", async () => {
-    // A non-OK response from a hostile-but-allowlisted endpoint could stream an
-    // endless error body; `failFromFetchResponse` must not buffer it whole.
+  it("stops reading an oversized error body and cancels it, without ever buffering it whole", async () => {
+    // An endless error body must not be buffered whole.
     let pulls = 0;
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
@@ -328,11 +327,87 @@ describe("downloadBucketFile bounds the ERROR body too (F9)", () => {
 
     const error = (await downloadError()) as { _tag: string; message: string };
     expect(error._tag).toBe("ConsoleApiError");
-    // Bounded to ~64 KiB, nowhere near the endless body it was fed.
-    expect(error.message.length).toBeLessThan(70_000);
-    expect(error.message).toMatch(/truncated/);
     expect(cancelled).toBe(true);
     // 64 KiB / 1 KiB ≈ 64 reads, not an unbounded drain.
     expect(pulls).toBeLessThan(200);
+  });
+});
+
+describe("downloadBucketFile never forwards a raw response body", () => {
+  it("names only the status when the error body is not Console's own JSON shape", async () => {
+    // An unparseable body — a proxy's HTML error page, or anything else a
+    // compromised/impersonated Console could choose to send — must not ride
+    // into this message: it reaches an MCP tool result verbatim, read by
+    // whatever's on the other end of the session.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            '<html><body>upstream timeout, please <a href="javascript:...">retry</a></body></html>',
+            {
+              status: 502,
+            },
+          ),
+      ),
+    );
+
+    const error = (await downloadError()) as { _tag: string; message: string };
+    expect(error._tag).toBe("ConsoleApiError");
+    expect(error.message).toBe("Download failed with status 502");
+    expect(error.message).not.toContain("html");
+    expect(error.message).not.toContain("javascript");
+  });
+
+  it("still surfaces Console's own structured message when the body IS its JSON shape", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ code: "mirror_missing_grant", message: "Grant pending." }),
+            {
+              status: 403,
+            },
+          ),
+      ),
+    );
+
+    const error = (await downloadError()) as { _tag: string; message: string; code?: string };
+    expect(error._tag).toBe("ConsoleApiError");
+    expect(error.message).toBe("Download failed with status 403: Grant pending.");
+    expect(error.code).toBe("mirror_missing_grant");
+  });
+});
+
+describe("downloadBucketFile URL-encodes its path segments", () => {
+  it("percent-encodes a bucketId/fileId containing URL-meaningful characters", async () => {
+    const weirdBucket = "b/../admin?x=1#frag" as BucketId;
+    const weirdFile = "f?y=2&z=3" as FileId;
+    let requestedUrl = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        requestedUrl = url;
+        return streamed([new Uint8Array([9])], { "content-length": "1" });
+      }),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const api = yield* ConsoleApiClient;
+        return yield* api.downloadBucketFile(weirdBucket, weirdFile);
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    // Neither raw value survives verbatim in the path: every reserved
+    // character (/, ?, #, &, =) is percent-encoded, so the server sees one
+    // opaque path segment per id rather than a request whose route or query
+    // this client's caller could redirect by choosing an id string.
+    expect(requestedUrl).not.toContain(weirdBucket);
+    expect(requestedUrl).not.toContain(weirdFile);
+    expect(requestedUrl).toBe(
+      `https://api.testnet.console.walrus.xyz/api/v1/buckets/${encodeURIComponent(weirdBucket)}/files/${encodeURIComponent(weirdFile)}/download`,
+    );
   });
 });

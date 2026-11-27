@@ -7,6 +7,8 @@ import { stepRegister } from "../bin/install.js";
 import { cliClient } from "../src/clients.js";
 import { loadConfigFile, mergeConfigFile } from "../src/configFile.js";
 import { serverBinPath } from "../src/installDir.js";
+import { cursorCommand } from "./helpers/cursorCommand.js";
+import { installProfile } from "./helpers/installProfile.js";
 import { type CommandInvocation, commandInvocation } from "../src/spawnCommand.js";
 
 /**
@@ -133,6 +135,146 @@ describe("installer step 4/4, end to end", () => {
     const run = commandInvocation(launcher, []);
     const out = execFileSync(run.file, run.args, { encoding: "utf-8", ...verbatim(run) });
     expect(out.trim()).toBe("stub-ok");
+  }, 180_000);
+
+  it.each(["cursor", "claude-code,cursor,codex,antigravity", "none", "no-register"])(
+    "production silent CLI registers exactly %s with all clients available",
+    (targets) => {
+      const profile = installProfile();
+      try {
+        profile.localPackage(packStub());
+        const log = path.join(profile.root, "calls.jsonl");
+        for (const bin of ["claude", "codex", "gemini", "agy"]) {
+          profile.executable(
+            bin,
+            `require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify([${JSON.stringify(bin)}, ...process.argv.slice(2)])+'\\n');`,
+          );
+        }
+        const cursor = path.join(profile.root, ".cursor", "mcp.json");
+        const agy = path.join(profile.root, ".gemini", "config", "mcp_config.json");
+        const sentinel = {
+          extra: "preserve",
+          mcpServers: { existing: { command: "existing", args: ["keep"] } },
+        };
+        for (const file of [cursor, agy]) {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, JSON.stringify(sentinel));
+        }
+        // Fixture represents an already initialized Antigravity profile.
+        fs.writeFileSync(path.join(path.dirname(agy), ".migrated"), "");
+        const opt = targets === "no-register" ? ["--no-register"] : ["--register", targets];
+        const result = profile.run([
+          "install",
+          "--silent",
+          "--allowed-dirs",
+          profile.allowed,
+          ...opt,
+        ]);
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+        const selected = targets.split(",");
+        const entry = { command: profile.launcher, args: [] };
+        for (const [id, file] of [
+          ["cursor", cursor],
+          ["antigravity", agy],
+        ]) {
+          expect(JSON.parse(fs.readFileSync(file!, "utf8"))).toEqual(
+            selected.includes(id!)
+              ? {
+                  ...sentinel,
+                  mcpServers: {
+                    ...sentinel.mcpServers,
+                    "walrus-console-mcp": {
+                      ...entry,
+                      args: id === "cursor" ? ["--stdio"] : [],
+                      env: { WALRUS_MCP_CLIENT: id },
+                    },
+                  },
+                }
+              : sentinel,
+          );
+        }
+        if (selected.includes("cursor")) {
+          const saved = JSON.parse(fs.readFileSync(cursor, "utf8")).mcpServers[
+            "walrus-console-mcp"
+          ];
+          const parsed = cursorCommand(saved);
+          const invocation = commandInvocation(parsed.file, parsed.args);
+          expect(
+            execFileSync(invocation.file, invocation.args, {
+              encoding: "utf8",
+              ...verbatim(invocation),
+            }).trim(),
+          ).toBe("stub-ok");
+        }
+        const calls = fs.existsSync(log)
+          ? fs
+              .readFileSync(log, "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line))
+          : [];
+        expect(calls).toEqual(
+          targets.includes("claude-code")
+            ? [
+                ["claude", "mcp", "remove", "--scope", "user", "walrus-console-mcp"],
+                [
+                  "claude",
+                  "mcp",
+                  "add",
+                  "--scope",
+                  "user",
+                  "walrus-console-mcp",
+                  "--env",
+                  "WALRUS_MCP_CLIENT=claude-code",
+                  "--",
+                  profile.launcher,
+                ],
+                ["codex", "mcp", "remove", "walrus-console-mcp"],
+                [
+                  "codex",
+                  "mcp",
+                  "add",
+                  "--env",
+                  "WALRUS_MCP_CLIENT=codex",
+                  "walrus-console-mcp",
+                  "--",
+                  profile.launcher,
+                ],
+              ]
+            : [],
+        );
+        expect(fs.existsSync(profile.launcher)).toBe(true);
+        const config = JSON.parse(
+          fs.readFileSync(
+            path.join(profile.root, "config", "walrus-console-mcp", "config.json"),
+            "utf8",
+          ),
+        );
+        expect(config.allowedDirs).toEqual([fs.realpathSync(profile.allowed)]);
+        const metadata = JSON.parse(
+          fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),
+        );
+        expect(
+          JSON.parse(fs.readFileSync(path.join(profile.root, "npm-args.json"), "utf8")).at(-1),
+        ).toBe(`${metadata.name}@${metadata.version}`);
+      } finally {
+        profile.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it("production silent CLI refuses missing targets before any writes", () => {
+    const profile = installProfile();
+    try {
+      const result = profile.run(["install", "--silent", "--allowed-dirs", profile.allowed]);
+      expect(result.status).toBe(1);
+      expect(fs.existsSync(path.join(profile.root, "config"))).toBe(false);
+      expect(fs.existsSync(path.join(profile.root, "data"))).toBe(false);
+    } finally {
+      profile.cleanup();
+    }
   }, 180_000);
 
   it("saves and then re-saves the config file", () => {

@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import * as path from "node:path";
+import { HttpClientError } from "@effect/platform";
 import { bcs } from "@mysten/sui/bcs";
 import {
   deriveObjectID,
@@ -19,6 +20,7 @@ import {
 import { tryPromiseSettling } from "../effectPromise";
 import { checkFileNameLength } from "../fileNameLimit";
 import { readFileWithinRootAsync } from "../pathSandbox";
+import { quoteForDisplay } from "../redaction";
 import { maxTransferBytes } from "../transferLimits";
 import { type AnchorEntry, readAnchors, recordAnchor } from "./anchorStore";
 import type {
@@ -36,7 +38,9 @@ import {
 } from "./fileAad";
 import {
   BucketCreatePinError,
+  BucketFinalizeError,
   ConsoleApiError,
+  ConsoleAuthError,
   FileBindingRefusedError,
   UploadBindingStoredUnreadableError,
   LocalFsError,
@@ -66,7 +70,7 @@ import {
   type UploadsPause,
 } from "./uploadFailure";
 import { keyAdminPinRemedy } from "./txValidation";
-import { type FileId, type SpaceId, BucketId } from "./types";
+import { type FileId, type FolderId, type SpaceId, BucketId } from "./types";
 
 /**
  * How long a write to a just-created bucket rides out Console's ACL-mirror delay:
@@ -76,6 +80,70 @@ import { type FileId, type SpaceId, BucketId } from "./types";
  */
 const MIRROR_GRANT_ATTEMPTS = 12;
 const MIRROR_GRANT_RETRY_INTERVAL = "3 seconds";
+
+/**
+ * Retry 503 with the original signature so Console can settle the same reserve.
+ * The last retry follows Console's 60-second indexing window, when a submission
+ * Console never found can be retried. Bound each HTTP attempt so an unanswered
+ * request can return the reserved ID to a client that is still waiting.
+ */
+const FINALIZE_RETRY_BASE = "2 seconds";
+const FINALIZE_RETRIES = 5;
+const FINALIZE_ATTEMPT_TIMEOUT = "45 seconds";
+
+/** What finalize's failure means for the reserved folder; see `BucketFinalizeError`. */
+function finalizeOutcome(
+  error: ConsoleApiError | ConsoleAuthError | HttpClientError.HttpClientError,
+  retried: boolean,
+): BucketFinalizeError["outcome"] {
+  if (
+    error instanceof ConsoleApiError &&
+    error.status === 502 &&
+    error.code === "enoki_execute_failed"
+  ) {
+    return "not_created";
+  }
+  if (retried) return "may_complete";
+  if (error instanceof ConsoleAuthError) return "pending";
+  if (
+    error instanceof ConsoleApiError &&
+    error.status !== undefined &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 408
+  ) {
+    return "pending";
+  }
+  return "may_complete";
+}
+
+const finalizeFailureMessage = (
+  outcome: BucketFinalizeError["outcome"],
+  bucketId: string,
+  detail: string,
+): string => {
+  switch (outcome) {
+    case "not_created":
+      return (
+        `Nothing was created: Console could not submit the transaction (${detail}), and ` +
+        `reserved bucket ${bucketId} was released. Calling create_bucket again is safe.`
+      );
+    case "may_complete":
+      return (
+        `Bucket ${bucketId} may still be created: Console could not confirm the ` +
+        `transaction yet (${detail}), and this client stopped retrying. Do NOT create it ` +
+        `again under the same name yet. Check this bucket in list_buckets for ` +
+        `provisioning_state "pending_policy" and wait for "active". A pending listing with ` +
+        `chain_landed false can still be waiting for the transaction to be indexed.`
+      );
+    case "pending":
+      return (
+        `Bucket ${bucketId} was reserved but not finished: ${detail}. list_buckets shows ` +
+        `its provisioning_state and chain_landed status. If it is still pending and ` +
+        `chain_landed is false, use delete_bucket only if you intend to abandon this reservation.`
+      );
+  }
+};
 
 /**
  * Bound on `uploadFileToBucket`'s whole accept step — read, encrypt, upload,
@@ -943,11 +1011,32 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
           listCandidates: () => api.listSpaceSigners(),
         });
 
-        // 2. Reserve. `members` is authored explicitly, never omitted: the server
-        //    treats an absent `members` key as "fall back to my own derived
-        //    roster", which this client's validator then refuses. An EMPTY authored
+        // 2. Reserve. `members` is authored explicitly, never omitted: Console now
+        //    rejects an absent `members` outright (400), and its server-derived
+        //    roster is one this client's validator already refused. An EMPTY authored
         //    roster is a real answer (see the disclosure), not an absent one.
-        const reserve = yield* api.createBucket(spaceId, name, ownerAddress, roster.members);
+        //    A name conflict identifies the holder of the name, which could be
+        //    another user's folder in a shared space.
+        const reserve = yield* api.createBucket(spaceId, name, ownerAddress, roster.members).pipe(
+          Effect.catchIf(
+            (e): e is ConsoleApiError & { readonly bucketId: string } =>
+              e instanceof ConsoleApiError &&
+              e.code === "bucket_name_conflict" &&
+              e.bucketId !== undefined,
+            (e) =>
+              Effect.fail(
+                new ConsoleApiError({
+                  message:
+                    `${e.message} The folder holding the name is bucket ${e.bucketId}. Check it ` +
+                    `with list_buckets. If it is a previously reserved folder you recognize, ` +
+                    `check its provisioning_state before deciding how to continue.`,
+                  code: "bucket_name_conflict",
+                  bucketId: e.bucketId,
+                  ...(e.status !== undefined ? { status: e.status } : {}),
+                }),
+              ),
+          ),
+        );
 
         // 3. Echo diagnostics. Not the security boundary — see `checkReserveEcho`.
         const echoProblem = checkReserveEcho(
@@ -1025,8 +1114,51 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
           });
         }
 
-        // 6. Finalize — this is the call that submits the transaction.
-        const finalized = yield* api.finalizeBucket(BucketId.make(reservedId), signature);
+        // 6. Finalize — this is the call that submits the transaction. A 503 is
+        //    retried with the same signature (see `FINALIZE_RETRY_BASE`). Any
+        //    failure that remains names the reserved id and what became of it,
+        //    since an agent that loses the id can only create the bucket again.
+        let retriedFinalize = false;
+        const finalized = yield* api.finalizeBucket(BucketId.make(reservedId), signature).pipe(
+          Effect.timeoutFail({
+            duration: FINALIZE_ATTEMPT_TIMEOUT,
+            onTimeout: () =>
+              new ConsoleApiError({
+                message: `A Console finalize request did not finish within ${FINALIZE_ATTEMPT_TIMEOUT}.`,
+                code: "finalize_timeout",
+              }),
+          }),
+          Effect.retry({
+            while: (e) => {
+              if (!(e instanceof ConsoleApiError && e.status === 503)) return false;
+              retriedFinalize = true;
+              return true;
+            },
+            schedule: Schedule.exponential(FINALIZE_RETRY_BASE),
+            times: FINALIZE_RETRIES,
+          }),
+          Effect.catchIf(
+            (e) =>
+              e instanceof ConsoleApiError ||
+              e instanceof ConsoleAuthError ||
+              HttpClientError.isHttpClientError(e),
+            (e) => {
+              const status = e instanceof ConsoleApiError ? e.status : undefined;
+              const code =
+                e instanceof ConsoleApiError || e instanceof ConsoleAuthError ? e.code : undefined;
+              const outcome = finalizeOutcome(e, retriedFinalize);
+              return Effect.fail(
+                new BucketFinalizeError({
+                  message: finalizeFailureMessage(outcome, reservedId, e.message),
+                  bucketId: reservedId,
+                  outcome,
+                  ...(code !== undefined ? { code } : {}),
+                  ...(status !== undefined ? { status } : {}),
+                }),
+              );
+            },
+          ),
+        );
 
         // The reserved id is what the validated PTB bound the group to. Finalize
         // reporting a different one would make `result.bucketId` a server-chosen
@@ -1387,7 +1519,10 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
        */
       interface UploadAcceptedResult {
         readonly fileId: string;
-        readonly name: string;
+        /** The name Console stored the file under, or null if Console did not report it. */
+        readonly name: string | null;
+        /** The requested name after a confirmed rename; otherwise null. */
+        readonly renamedFrom: string | null;
         readonly state: string;
         readonly pending: true;
         readonly note: string;
@@ -1407,6 +1542,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         localPath: string,
         targetName?: string,
         userMetadata?: FileUserMetadata,
+        folderId?: FolderId,
       ) {
         // Before the policy lookup, the file read, or anything else that
         // costs a request: a caller that ignores the stop instruction on a
@@ -1432,7 +1568,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         // this returns, which is also the moment the bytes are ACCEPTED: from
         // there on this holds nothing but ids, so it does not need to serialize
         // against another transfer's payload (M12).
-        const { fileId, fileName } = yield* transferLock.withPermits(1)(
+        const { fileId, storedName, renamedFrom } = yield* transferLock.withPermits(1)(
           Effect.gen(function* () {
             // readFileWithinRoot, not fs.readFile: it opens with O_NOFOLLOW so a
             // symlink planted between the path's validation and this read cannot
@@ -1469,6 +1605,9 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
 
             // The requested name, before any collision suffix (the row does not
             // exist yet), in the form the server's `toNfcName` stores it.
+            // The binding names the bucket, never `folderId`: a subfolder has no
+            // Seal policy of its own, and a move inside the bucket must not
+            // break the download of a file it carries.
             const originalName = canonicalOriginalName(fileName);
             const declaredType = contentTypeFromName(fileName);
             const aad = encodeFileAad({
@@ -1506,6 +1645,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
                   metadata,
                   fileBytes.length,
                   declaredType,
+                  folderId,
                 )
                 .pipe(Effect.either);
 
@@ -1557,7 +1697,17 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
               });
             }
 
-            return { fileId: uploadResult.data.id, fileName };
+            // A name already taken in the folder is stored with a ` (n)` suffix, so
+            // report the row's own name: a caller that trusts the one it sent looks
+            // for a file that does not exist. Compared in the stored (NFC) form, so
+            // a name that only changed normal form is not reported as a rename.
+            const storedName =
+              typeof stored.name === "string" && stored.name.length > 0 ? stored.name : null;
+            return {
+              fileId: uploadResult.data.id,
+              storedName,
+              renamedFrom: storedName !== null && storedName !== originalName ? fileName : null,
+            };
           }).pipe(
             Effect.timeoutFail({
               duration: UPLOAD_ACCEPT_TIMEOUT,
@@ -1589,12 +1739,22 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         // completed/failed states it reports.
         console.error(`[console-mcp] upload accepted — fileId=${fileId} (bucket ${bucketId})`);
 
+        let nameNote = "";
+        if (storedName === null) {
+          nameNote = "Console did not report the stored name. Look up this fileId in list_files. ";
+        } else if (renamedFrom !== null) {
+          nameNote =
+            `A file named ${quoteForDisplay(renamedFrom)} already exists in this folder, ` +
+            `so this one was stored as ${quoteForDisplay(storedName)}. `;
+        }
         return {
           fileId,
-          name: fileName,
+          name: storedName,
+          renamedFrom,
           state: "queued",
           pending: true,
           note:
+            nameNote +
             "Upload accepted; Console is still processing it. Poll get_file_status with " +
             "this fileId until it reports completed or failed — do not upload again while " +
             "waiting.",
@@ -1615,6 +1775,7 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         fileId: FileId,
         destPath: string,
         overwrite = false,
+        recheckDestination?: () => Promise<void>,
       ) {
         // Checked before anything is fetched or decrypted. A destination name over
         // the filesystem's 255 cap can never be written, and on Windows the open
@@ -1732,8 +1893,10 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
         // `rm` in its catch, or the pre-rename signal check drops it — so waiting
         // for the promise to settle IS the guarantee that nothing was left behind.
         yield* tryPromiseSettling({
-          try: (signal) =>
-            writeFileAtomicAsync(destPath, plaintext, {
+          try: async (signal) => {
+            // A tool call can spend minutes waiting on approval, transfer and decryption.
+            await recheckDestination?.();
+            return writeFileAtomicAsync(destPath, plaintext, {
               mode: 0o600,
               // COMG-790: the destination is chosen by the agent, so a file
               // already sitting there is not ours to replace. Exclusive publish
@@ -1749,7 +1912,8 @@ export class ConsoleStorageService extends Effect.Service<ConsoleStorageService>
               preserveExistingMode: overwrite,
               maxMode: 0o600,
               signal,
-            }),
+            });
+          },
           catch: (cause) =>
             new LocalFsError({
               message: destinationIsDirectory(destPath)

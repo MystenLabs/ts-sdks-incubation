@@ -31,3 +31,6 @@ coverage/
 
 # Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
 .superpowers/
+
+# Local investigation, review, and verification notes
+/docs

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runConfigure } from "../bin/configure.js";
 import { runInstall } from "../bin/install.js";
-import { BOOLEAN_FLAGS, VALUE_FLAGS } from "../src/cliArgs.js";
+import { BOOLEAN_FLAGS, VALUE_TAKING_FLAGS } from "../src/cliArgs.js";
 import { loadConfigFile } from "../src/configFile.js";
 import { unsupportedNodeMessage } from "../src/nodeVersion.js";
 import { CONFIG_USAGE, INSTALL_USAGE, ROOT_USAGE, isHelpFlag, wantsHelp } from "../src/usage.js";
@@ -45,10 +45,10 @@ describe("isHelpFlag / wantsHelp", () => {
 });
 
 describe("usage screens document every flag the parser takes", () => {
-  const VALUE_FLAG_NAMES = Object.keys(VALUE_FLAGS);
+  const VALUE_FLAG_NAMES = VALUE_TAKING_FLAGS;
 
   it("install", () => {
-    for (const flag of [...VALUE_FLAG_NAMES, "--allowed-dirs", ...BOOLEAN_FLAGS]) {
+    for (const flag of [...VALUE_FLAG_NAMES, ...BOOLEAN_FLAGS]) {
       expect(INSTALL_USAGE).toContain(flag);
     }
     expect(INSTALL_USAGE).toContain("--help");
@@ -59,7 +59,10 @@ describe("usage screens document every flag the parser takes", () => {
     // exclusion rather than a list, so a new boolean flag fails this test until
     // someone decides which verbs it belongs to.
     const forConfig = BOOLEAN_FLAGS.filter((flag) => flag !== "--no-register");
-    for (const flag of [...VALUE_FLAG_NAMES, "--allowed-dirs", ...forConfig]) {
+    for (const flag of [
+      ...VALUE_FLAG_NAMES.filter((flag) => flag !== "--register"),
+      ...forConfig,
+    ]) {
       expect(CONFIG_USAGE).toContain(flag);
     }
     expect(CONFIG_USAGE).toContain("--help");
@@ -67,8 +70,9 @@ describe("usage screens document every flag the parser takes", () => {
 
   // `config` has no registration step at all, so offering the flag that turns
   // one off would be describing a command that does not exist.
-  it("config does not offer --no-register", () => {
+  it("config does not offer registration flags", () => {
     expect(CONFIG_USAGE).not.toContain("--no-register");
+    expect(CONFIG_USAGE).not.toContain("--register");
   });
 
   it("names every environment variable the silent path reads", () => {
@@ -86,7 +90,8 @@ describe("usage screens document every flag the parser takes", () => {
   });
 
   it("gives one runnable example per command", () => {
-    expect(INSTALL_USAGE).toContain("walrus-console-mcp install --allowed-dirs");
+    expect(INSTALL_USAGE).toContain("walrus-console-mcp install --allowed-dirs ~/Documents");
+    expect(INSTALL_USAGE).toContain("--allowed-dirs-scope shared --register cursor");
     expect(CONFIG_USAGE).toContain("walrus-console-mcp config --silent --allowed-dirs");
   });
 
@@ -199,7 +204,7 @@ describe("--help on the commands themselves", () => {
   it("a help flag in a value position stays the error it was", async () => {
     const capture = captureStdout();
     try {
-      await runInstall(["--allowed-dirs", "-h"]).catch(() => undefined);
+      await runInstall(["--allowed-dirs", "-h", "--no-register"]).catch(() => undefined);
     } finally {
       capture.restore();
     }

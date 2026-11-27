@@ -1,4 +1,10 @@
 import { isAllowedBaseUrl, isLoopbackUrl } from "./baseUrl.js";
+import {
+  CLIENT_HEADER,
+  REPORTED_NAME_HEADER,
+  RUNTIME_HEADER,
+  TARGET_HEADER,
+} from "./consoleClientHeader.js";
 
 /**
  * Bounded, not unlimited: a legitimate redirect chain here is at most one hop
@@ -67,13 +73,19 @@ function isAllowedRedirectTarget(currentUrl: string, nextUrl: string): boolean {
  * would otherwise travel where `Authorization` deliberately does not. Harmless while
  * the value is a static constant; the point is that it stays harmless if it ever
  * stops being one.
+ *
+ * The attribution headers from `consoleClientHeader.ts` are listed by their constants,
+ * so a rename cannot leave one of them behind on a cross-origin hop.
  */
 const CROSS_ORIGIN_STRIPPED_HEADERS = [
   "authorization",
   "cookie",
   "proxy-authorization",
-  "x-console-client",
-];
+  CLIENT_HEADER,
+  TARGET_HEADER,
+  RUNTIME_HEADER,
+  REPORTED_NAME_HEADER,
+].map((name) => name.toLowerCase());
 
 /**
  * Drop credential-bearing headers on a cross-origin hop.
@@ -166,9 +178,25 @@ function nextHopInit(
  * also be installed as `@effect/platform`'s `FetchHttpClient.Fetch`
  * override — see `runtime.ts`.
  */
-export async function fetchWithRedirectGuard(
+export function fetchWithRedirectGuard(
   input: string | URL | Request,
   init?: RequestInit,
+): Promise<Response> {
+  return fetchGuarded(input, init, false);
+}
+
+/** Console JSON API responses must come from an origin that received the bearer. */
+export function fetchConsoleWithRedirectGuard(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<Response> {
+  return fetchGuarded(input, init, true);
+}
+
+async function fetchGuarded(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+  sameOriginOnly: boolean,
 ): Promise<Response> {
   let currentUrl = urlOf(input);
   let currentInit = requestInitOf(input, init);
@@ -201,7 +229,10 @@ export async function fetchWithRedirectGuard(
       // a TypeError and the callers' UnapprovedRedirectError checks miss it.
       throw new UnapprovedRedirectError(location);
     }
-    if (!isAllowedRedirectTarget(currentUrl, nextUrl)) {
+    if (
+      !isAllowedRedirectTarget(currentUrl, nextUrl) ||
+      (sameOriginOnly && new URL(currentUrl).origin !== new URL(nextUrl).origin)
+    ) {
       throw new UnapprovedRedirectError(nextUrl);
     }
     currentInit = nextHopInit(currentInit, currentUrl, nextUrl, response.status);
